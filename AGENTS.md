@@ -176,7 +176,7 @@ since launching the installer programmatically is unreliable on some devices.
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 48 tests across six classes:
+it**. 111 tests across nine classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -192,6 +192,12 @@ it**. 48 tests across six classes:
 - `ComfyWorkflowTest` — the ComfyUI graph wiring, especially that the depth
   node reads node 1 and `SaveImage` reads node **2**, not 1. An off-by-one
   there renders the wrong tensor with no error.
+- `LibraryTest` / `LibraryItemTest` / `SortOrderTest` — the gallery index. The
+  traps are the ones this file already names: a corrupt blob must not throw, a
+  restored backup must not resurrect a dangling selection, an absolute path
+  must never be stored, and deleting the *active* item has to clear the
+  wallpaper pointer in the same write — otherwise the next reconcile adopts
+  the deleted files straight back and the delete never sticks.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the
