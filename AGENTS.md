@@ -62,9 +62,17 @@ is `project(':core')` — no AndroidX, no Maven artifacts.
 **Two surfaces, one process.** The studio (`MainActivity`) and the live
 wallpaper (`DepthWallpaperService`) each own a `GLSurfaceView` and a
 `ReliefRenderer`. SharedPreferences `depthwall` is the *transport* between them:
-the studio writes, the wallpaper reads and re-renders. It is not a data store —
-it holds exactly one item's config and has no concept of a library. A gallery
-will need a real data layer (Room, relative paths, a versioned config blob).
+the studio writes, the wallpaper reads and re-renders.
+
+There is now a gallery, so that file holds two versioned JSON blobs: `config`
+(Motion, and nothing else) and `library` (the index). **The index owns the
+selection and only the index** — the pointer exists in exactly one place, because
+two copies can disagree and a disagreeing pointer is a wallpaper showing a
+photo the user deleted. Everything about a photograph (Depth, Zoom, framing,
+files) is on its `LibraryItem`; Motion is global because it describes the device
+rather than any image. `AppState` is the single read path, and `Framing` the
+single resolution of that state into numbers, because the two surfaces computing
+it themselves is how they came to disagree about the bundled item.
 
 Because they share a process, one shares the other's `SharedPreferences`
 instance — which is why "does it work cold?" can only be answered by
@@ -88,6 +96,15 @@ may only write `volatile` fields. Anything touching GL state — including
 These are invisible from the code and easy to undo by accident. Each one has
 already cost real time.
 
+- **The bundled demo is a row in the gallery, and it is the one item with no
+  file.** `Library.BUNDLED_ID` is a reserved id; a null image name is the signal
+  the renderer already used to read
+  `android/app/src/main/res/raw/image.png`. Because it cannot be recreated from
+  `filesDir`, three things refuse to drop it — `remove`,
+  `retainExisting`, and `fromJson` — and all three are in the data layer rather
+  than the UI, so no caller can route around them. The third was a real bug the
+  tests found: `fromJson` dropped any item with no image name, which is correct
+  for a user item and fatal for this one.
 - **The bundled demo is a pair, and an unreferenced asset fails silently.**
   `android/app/src/main/res/raw/image.png` and
   `android/app/src/main/res/raw/depth.png` are loaded together; ship one
