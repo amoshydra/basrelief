@@ -24,6 +24,16 @@ public final class SensorPolicy {
     private boolean charging = false;
     private boolean batteryGate = true; // false = bypass the low-battery pause
     private int batteryPercent = 100;
+    /**
+     * Last value handed to onChange. ACTION_BATTERY_CHANGED is sticky and fires
+     * repeatedly -- several times a second on some ROMs -- so notifying on every
+     * broadcast made the studio re-register the gyro and re-capture its neutral
+     * each time, which reads as the view resetting itself every few seconds.
+     * The percentage is still tracked for display; only the run/stop DECISION
+     * is allowed to notify.
+     */
+    private boolean lastNotified = false;
+    private boolean notifiedOnce = false;
 
     private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
         @Override
@@ -37,9 +47,18 @@ public final class SensorPolicy {
                     || status == BatteryManager.BATTERY_STATUS_FULL;
             // low battery only pauses the gyro when NOT charging
             batteryLow = batteryPercent <= LOW_BATTERY_PERCENT && !charging;
-            onChange.run();
+            notifyIfChanged();
         }
     };
+
+    /** Fire onChange only when shouldRunSensor() actually flips. */
+    private void notifyIfChanged() {
+        boolean now = shouldRunSensor();
+        if (notifiedOnce && now == lastNotified) return;
+        lastNotified = now;
+        notifiedOnce = true;
+        onChange.run();
+    }
 
     public SensorPolicy(Context context, Runnable onChange) {
         this.context = context.getApplicationContext();
@@ -57,13 +76,13 @@ public final class SensorPolicy {
 
     public void setVisible(boolean v) {
         visible = v;
-        onChange.run();
+        notifyIfChanged();
     }
 
     /** When false, the low-battery pause is ignored (used by the studio). */
     public void setBatteryGate(boolean enabled) {
         batteryGate = enabled;
-        onChange.run();
+        notifyIfChanged();
     }
 
     public boolean isVisible() {

@@ -26,12 +26,10 @@ public final class TiltController implements SensorEventListener {
     private static final float RANGE_DEG = 25f; // saturate beyond ±25° from neutral
     private static final int SKIP_FIRST = 1; // drop the cached reading delivered on register
     private static final int SETTLE_SAMPLES = 8; // average these for a stable neutral
-    private static final long IDLE_SLEEP_MS = 5000; // still for this long -> sleep
+    private static final long IDLE_SLEEP_MS = 10000; // still for this long -> sleep
     private static final float IDLE_EPS = 0.04f; // ~1° of tilt counts as activity
     private static final float SHAKE_MPS2 = 1.2f; // accel deviation from gravity to wake
     private static final int ACCEL_DELAY = SensorManager.SENSOR_DELAY_NORMAL;
-    private static final long AUTO_RECAL_MS = 5000; // re-capture neutral cadence
-    private static final float STILL_EPS = 0.16f; // ~4°: "resting" threshold for auto-recal
 
     private final SensorManager sensorManager;
     private final Sensor rotationSensor;
@@ -52,8 +50,9 @@ public final class TiltController implements SensorEventListener {
 
     private boolean asleep;
     private long lastMoveNanos;
+    /** True while a sensor listener is actually registered. */
+    private boolean registered;
     private float idleBaseX, idleBaseY;
-    private long lastAutoRecalNanos;
 
     public TiltController(Context context, Listener listener) {
         this.listener = listener;
@@ -74,17 +73,29 @@ public final class TiltController implements SensorEventListener {
      * (Re)start listening with fresh calibration for this viewing. Clears any
      * sleep-state accelerometer first.
      */
+    /**
+     * Idempotent. Calling this while already running does nothing.
+     *
+     * <p>It used to unregister, re-calibrate and re-register unconditionally,
+     * and recalibrate() re-captures the neutral -- so every redundant call reset
+     * the view to centre and tore down the sensor registration. With a caller
+     * that polls (a battery broadcast, say) that produced a visible stutter and
+     * a view that kept snapping back on its own.
+     */
     public void start() {
         if (rotationSensor == null) return;
+        if (registered && !asleep) return; // already running
         sensorManager.unregisterListener(this);
         asleep = false;
         recalibrate();
         sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        registered = true;
     }
 
     public void stop() {
         sensorManager.unregisterListener(this); // both rotation-vector and accelerometer
         asleep = false;
+        registered = false;
     }
 
     /** Re-arm calibration without re-registering. */
@@ -93,7 +104,6 @@ public final class TiltController implements SensorEventListener {
         idleBaseX = 0f;
         idleBaseY = 0f;
         lastMoveNanos = System.nanoTime();
-        lastAutoRecalNanos = System.nanoTime();
     }
 
     /** Reset only the calibration/settle state (used for auto-recal). */
@@ -155,26 +165,22 @@ public final class TiltController implements SensorEventListener {
         // scene (the subject's head), tilting down reveals the bottom
         y = clamp(-pitch / range);
 
-        // auto-recalibrate periodically while RESTING (within ~4° of neutral) so
-        // slow drift and a changed hold get re-centered — never fights an
-        // intentional tilt you're holding. This is an INSTANT re-capture (the
-        // phone is already still, so the current pose IS the neutral); the
-        // settle sequence would race the idle-sleep below and never complete.
-        long now = System.nanoTime();
-        if (now - lastAutoRecalNanos > AUTO_RECAL_MS * 1_000_000L) {
-            lastAutoRecalNanos = now;
-            if (Math.abs(x) < STILL_EPS && Math.abs(y) < STILL_EPS) {
-                System.arraycopy(rot, 0, neutralRot, 0, 9); // re-capture neutral
-                idleBaseX = 0f;
-                idleBaseY = 0f;
-                x = 0f;
-                y = 0f;
-                listener.onTiltChanged(); // re-center immediately
-            }
-        }
+        // There is deliberately NO periodic re-calibration here. There used to be
+        // a 5-second heartbeat that re-captured the neutral and hard-zeroed the
+        // tilt whenever the view sat within 4 degrees of centre -- so holding the
+        // phone at a deliberate 3 degrees got yanked back to centre every five
+        // seconds. A timer cannot tell "the user is holding an angle" from "the
+        // sensor has drifted", and the view is the one thing a user is watching.
+        //
+        // Neutral is now re-captured only on events that genuinely warrant it:
+        // waking from idle-sleep (the phone demonstrably moved), and the explicit
+        // Calibrate action. The cost is that slow sensor drift is no longer
+        // corrected while the phone lies untouched -- which only really matters
+        // for the wallpaper, where nobody is watching the framing anyway.
 
         // idle detection: a slowly-tracking baseline separates still-holding
         // (sensor jitter, ~<1°) from real motion; still for IDLE_SLEEP_MS -> sleep
+        long now = System.nanoTime();
         idleBaseX += (x - idleBaseX) * 0.01f;
         idleBaseY += (y - idleBaseY) * 0.01f;
         float move = (float) Math.hypot(x - idleBaseX, y - idleBaseY);
@@ -190,6 +196,7 @@ public final class TiltController implements SensorEventListener {
 
     private void goToSleep() {
         asleep = true;
+        registered = false;
         sensorManager.unregisterListener(this);
         if (accelerometer != null) {
             sensorManager.registerListener(this, accelerometer, ACCEL_DELAY);
@@ -202,6 +209,7 @@ public final class TiltController implements SensorEventListener {
         if (rotationSensor != null) {
             recalibrate(); // neutral matches the (shaken) current pose
             sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            registered = true;
         }
         listener.onTiltChanged(); // trigger a fresh render
     }
