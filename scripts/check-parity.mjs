@@ -17,7 +17,7 @@
  * Exits non-zero on failure so CI goes red. No dependencies — plain Node, so it
  * runs in the web job with no install step.
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +64,55 @@ function checkDocLinks() {
     }
   }
   console.log(`doc links: ${seen.size} repo paths checked, ${skipped} host paths skipped`);
+}
+
+// --------------------------------------------------------------- test counts
+
+/**
+ * AGENTS.md states how many tests there are and lists the classes. That went
+ * stale the moment a class was added — the file claimed "20 tests across four
+ * classes" while the tree had 48 across six — because a hand-maintained count
+ * is exactly the kind of claim nothing checks. Derive it instead.
+ */
+function checkTestCounts() {
+  const doc = readFileSync(join(root, 'AGENTS.md'), 'utf8');
+  const claimed = doc.match(/(\d+)\s+tests across (\w+)\s+classes/);
+  if (!claimed) {
+    failures.push(
+      'AGENTS.md no longer states "N tests across M classes" — update this script'
+    );
+    return;
+  }
+
+  const testDir = join(root, 'android/core/src/test/java/com/amoshydra/basrelief/core');
+  const classes = [];
+  let methods = 0;
+  for (const dir of readdirSync(testDir, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    for (const f of readdirSync(join(testDir, dir.name))) {
+      if (!f.endsWith('Test.java')) continue;
+      classes.push(f.replace('.java', ''));
+      methods += (readFileSync(join(testDir, dir.name, f), 'utf8').match(/@Test/g) || []).length;
+    }
+  }
+
+  // AGENTS.md spells small numbers out ("six classes"), so compare words for the
+  // class count and digits for the test count.
+  const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+    'eight', 'nine', 'ten'];
+  if (+claimed[1] !== methods) {
+    failures.push(
+      `AGENTS.md says ${claimed[1]} tests but the tree has ${methods} @Test methods`
+    );
+  }
+  if (words[classes.length] !== claimed[2]) {
+    failures.push(
+      `AGENTS.md says ${claimed[2]} test classes but the tree has ${classes.length}: ` +
+        classes.sort().join(', ')
+    );
+  } else {
+    console.log(`test counts: ${methods} tests across ${classes.length} classes — matches AGENTS.md`);
+  }
 }
 
 // --------------------------------------------------------- web/Android parity
@@ -116,6 +165,7 @@ function checkParity() {
 }
 
 checkDocLinks();
+checkTestCounts();
 checkParity();
 
 if (failures.length) {
