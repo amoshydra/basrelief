@@ -203,6 +203,34 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile Runnable renderRequester;
 
+    /**
+     * Load the first image synchronously instead of on the Io thread.
+     *
+     * <p>Set by the live wallpaper ONLY, and for a specific reason.
+     *
+     * <p>The system takes a snapshot of the wallpaper surface roughly 100 ms
+     * after the engine's surface becomes valid, then destroys the engine and
+     * keeps that snapshot. An asynchronous first load cannot finish inside that
+     * window -- a 6 MB PNG decode plus a 393k-vertex mesh build is close to a
+     * second -- so the snapshot captures an empty surface. The launcher then
+     * displays black with nothing alive to redraw it, and it never recovers.
+     *
+     * <p>So the first load of each engine runs inline, putting a texture in the
+     * surface before anything can snapshot it. Every LATER load stays
+     * asynchronous: by then the wallpaper is on screen and a change does not
+     * race a snapshot.
+     *
+     * <p>Each engine builds its own renderer, so "first load" is naturally
+     * per-engine. An engine recreated after the wallpaper is hidden and shown
+     * again gets a synchronous first load too, which is exactly when the race
+     * would otherwise come back.
+     *
+     * <p>The studio leaves this off. It redraws continuously, has no snapshot
+     * step, and would only suffer the stall.
+     */
+    private volatile boolean syncFirstLoad = false;
+    private boolean loadedOnce = false;
+
     /** Wire this to GLSurfaceView.requestRender(). */
     public void setRenderRequester(Runnable r) {
         this.renderRequester = r;
@@ -680,8 +708,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and must not sit between two frames of a live wallpaper. The dispatcher
         // comes from the host (see setGlDispatch), which both surfaces set before
         // this can run.
-        loadPairAsync(img == null ? null : img.getAbsolutePath(),
-                      dep == null ? null : dep.getAbsolutePath());
+        final String imgAbs = img == null ? null : img.getAbsolutePath();
+        final String depAbs = dep == null ? null : dep.getAbsolutePath();
+        if (syncFirstLoad && !loadedOnce) {
+            loadedOnce = true;
+            // Inline on purpose: see syncFirstLoad. Blocks this thread for one
+            // decode so the surface is never empty when the system snapshots it.
+            applyPending(decodePair(imgAbs, depAbs));
+        } else {
+            loadPairAsync(imgAbs, depAbs);
+        }
+    }
+
+    /** The live wallpaper sets this; the studio must not. */
+    public void setSyncFirstLoad(boolean b) {
+        this.syncFirstLoad = b;
     }
 
     @Override

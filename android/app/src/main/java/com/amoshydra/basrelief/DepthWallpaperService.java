@@ -92,6 +92,9 @@ public class DepthWallpaperService extends WallpaperService {
             // The renderer needs a way back onto the GL thread; only the host
             // has the GLSurfaceView whose queueEvent provides it.
             renderer.setGlDispatch(ReliefRenderer.glExecutor(glView));
+            // The system snapshots this surface ~100 ms after it appears, so the
+            // first load must be inline or that snapshot is black forever.
+            renderer.setSyncFirstLoad(true);
             renderer.setRenderRequester(new Runnable() {
                 @Override
                 public void run() {
@@ -111,6 +114,18 @@ public class DepthWallpaperService extends WallpaperService {
                 }
             });
             sensorPolicy.start();
+        }
+
+        @Override
+        public void onSurfaceCreated(SurfaceHolder h) {
+        }
+
+        @Override
+        public void onSurfaceChanged(SurfaceHolder h, int f, int w, int ht) {
+        }
+
+        @Override
+        public void onSurfaceDestroyed(SurfaceHolder h) {
         }
 
         @Override
