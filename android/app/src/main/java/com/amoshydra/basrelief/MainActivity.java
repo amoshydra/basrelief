@@ -30,6 +30,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Locale;
+import java.util.concurrent.Callable;
 
 /**
  * Live studio: the relief preview fills the screen and the image/depth
@@ -142,8 +143,11 @@ public class MainActivity extends Activity {
 
         sectionLabel("Adjust");
 
+        // 0..100 = fraction of the maximum depth the camera allows at the
+        // current zoom. Was 0..200, but the top half was a silent no-op at
+        // high zoom because of the z-clamp.
         panel.addView(addSlider("Depth", "intensity",
-                prefs.getInt("intensity", 90), 0, 200));
+                Math.max(0, Math.min(100, prefs.getInt("intensity", 90))), 0, 100));
         panel.addView(addSlider("Motion", "motion",
                 prefs.getInt("motion", 33), 0, 100));
         panel.addView(addSlider("Zoom", "zoom",
@@ -316,35 +320,42 @@ public class MainActivity extends Activity {
         if (intent == null) return;
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action)) return;
-        Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        final Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         if (uri == null) return;
-        try {
-            InputStream in = getContentResolver().openInputStream(uri);
-            if (in == null) throw new Exception("cannot open shared image");
-            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
-            in.close();
-            byte[] bytes = ImageUtil.downscale(bos.toByteArray(), ImageUtil.MAX_SIDE);
-            File target = new File(getFilesDir(), "shared_image.png");
-            FileOutputStream out = new FileOutputStream(target);
-            out.write(bytes);
-            out.close();
-            prefs.edit()
-                    .putString("image_path", target.getAbsolutePath())
-                    .remove("depth_path")
-                    .remove("status")
-                    .apply();
-            applyFiles();
-            Toast.makeText(this, "Shared image loaded — set as wallpaper, or generate depth",
-                    Toast.LENGTH_LONG).show();
-            // open the Depth AI page for this image (it may lack depth)
-            openDepthGen();
-        } catch (Exception e) {
-            Toast.makeText(this, "Failed to load shared image: " + e.getMessage(),
-                    Toast.LENGTH_LONG).show();
-        }
+        // Read + downscale off the UI thread: PNG re-encode of a large photo
+        // takes seconds and would be an ANR inline.
+        Io.run(this, new Callable<File>() {
+            @Override
+            public File call() throws Exception {
+                byte[] bytes = ImageUtil.downscale(Io.readAll(MainActivity.this, uri),
+                        ImageUtil.MAX_SIDE);
+                File target = new File(getFilesDir(), "shared_image.png");
+                Io.writeFile(target, bytes);
+                return target;
+            }
+        }, new Io.Callback<File>() {
+            @Override
+            public void onDone(File target, Exception error) {
+                if (error != null || target == null) {
+                    Toast.makeText(MainActivity.this,
+                            "Failed to load shared image: "
+                                    + (error == null ? "unknown" : error.getMessage()),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                prefs.edit()
+                        .putString("image_path", target.getAbsolutePath())
+                        .remove("depth_path")
+                        .remove("status")
+                        .apply();
+                applyFiles();
+                Toast.makeText(MainActivity.this,
+                        "Shared image loaded \u2014 set as wallpaper, or generate depth",
+                        Toast.LENGTH_LONG).show();
+                // open the Depth AI page for this image (it may lack depth)
+                openDepthGen();
+            }
+        });
     }
 
     /** Show the Depth AI dialog, pre-loaded with the current studio image. */
@@ -396,11 +407,18 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         if (sensorPolicy != null) sensorPolicy.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
+        Io.shutdown();
         super.onDestroy();
     }
 
     /** Start/stop the preview gyro based on visibility and battery. */
     private void updateTilt() {
+        glView.queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                renderer.setPowerSave(PowerSave.isOn(MainActivity.this));
+            }
+        });
         boolean run = sensorPolicy != null && sensorPolicy.shouldRunSensor()
                 && tilt != null && tilt.isSupported();
         if (run) {
@@ -644,7 +662,7 @@ public class MainActivity extends Activity {
                         } else if (isMotion) {
                             renderer.setMotion(stored / 100f * 3f);
                         } else {
-                            renderer.setIntensity(stored / 100f);
+                            renderer.setDepth(stored / 100f);
                         }
                     }
                 });
@@ -714,31 +732,41 @@ public class MainActivity extends Activity {
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
-        String key = requestCode == REQ_IMAGE ? "image_path" : "depth_path";
-        File target = new File(getFilesDir(),
-                "custom_" + (requestCode == REQ_IMAGE ? "image" : "depth") + ".png");
-        try {
-            InputStream in = getContentResolver().openInputStream(data.getData());
-            if (in == null) throw new Exception("cannot open picked file");
-            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
-            in.close();
-            // huge images (e.g. 3000x4000) are downscaled before use; depth maps
-            // are small and left alone
-            byte[] bytes = requestCode == REQ_IMAGE
-                    ? ImageUtil.downscale(bos.toByteArray(), ImageUtil.MAX_SIDE)
-                    : bos.toByteArray();
-            FileOutputStream out = new FileOutputStream(target);
-            out.write(bytes);
-            out.close();
-            prefs.edit().putString(key, target.getAbsolutePath()).apply();
-            Toast.makeText(this, "Picked — updating preview…", Toast.LENGTH_SHORT).show();
-            applyFiles();
-        } catch (Exception e) {
-            Toast.makeText(this, "Failed to read file: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
+        final String key = requestCode == REQ_IMAGE ? "image_path" : "depth_path";
+        final boolean isImage = requestCode == REQ_IMAGE;
+        final File target = new File(getFilesDir(),
+                "custom_" + (isImage ? "image" : "depth") + ".png");
+        final Uri uri = data.getData();
+        // Off the UI thread: huge images (e.g. 3000x4000) are decoded and
+        // re-encoded as PNG here, which is slow enough to trip an ANR.
+        Io.run(this, new Callable<File>() {
+            @Override
+            public File call() throws Exception {
+                byte[] raw = Io.readAll(MainActivity.this, uri);
+                // huge images are downscaled before use; depth maps are small
+                // and left alone
+                byte[] bytes = isImage
+                        ? ImageUtil.downscale(raw, ImageUtil.MAX_SIDE)
+                        : raw;
+                Io.writeFile(target, bytes);
+                return target;
+            }
+        }, new Io.Callback<File>() {
+            @Override
+            public void onDone(File done, Exception error) {
+                if (error != null || done == null) {
+                    Toast.makeText(MainActivity.this,
+                            "Failed to read file: "
+                                    + (error == null ? "unknown" : error.getMessage()),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                prefs.edit().putString(key, target.getAbsolutePath()).apply();
+                Toast.makeText(MainActivity.this, "Picked \u2014 updating preview\u2026",
+                        Toast.LENGTH_SHORT).show();
+                applyFiles();
+            }
+        });
     }
 
     private void applyFiles() {

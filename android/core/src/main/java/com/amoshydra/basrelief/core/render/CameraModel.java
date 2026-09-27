@@ -38,7 +38,7 @@ public final class CameraModel {
     private float aspect;        // image width / height
     private float surfaceAspect; // viewport width / height
     private float zoom = 1f;
-    private float intensity = 1f;
+    private float depth = 1f;    // 0..1 fraction of maxZScale()
     private float motion = 1f;
 
     private final Frame frame = new Frame();
@@ -61,8 +61,12 @@ public final class CameraModel {
         this.zoom = Math.max(0.25f, Math.min(2f, zoom));
     }
 
-    public void setIntensity(float intensity) {
-        this.intensity = intensity;
+    /**
+     * @param depth 0..1 as a FRACTION of {@link #maxZScale()} at the current
+     *               zoom, not an absolute z-scale. See {@link #computeZScale}.
+     */
+    public void setDepth(float depth) {
+        this.depth = Math.max(0f, Math.min(1f, depth));
     }
 
     public void setMotion(float motion) {
@@ -81,10 +85,33 @@ public final class CameraModel {
         return Math.max(visH, visW / aspect) * CROP_MARGIN * zoom;
     }
 
-    /** z-scale, clamped so the camera can never end up inside the relief. */
+    /**
+     * The deepest the relief may go at the current zoom without the camera
+     * ending up inside it: the relief half-depth (0.5) times the model scale
+     * must stay under 0.9x the camera distance.
+     */
+    public float maxZScale() {
+        float s = computeScale();
+        return s <= 0f ? 0f : (0.9f * CAM_DIST) / s;
+    }
+
+    /**
+     * Actual z-scale = the Depth fraction of {@link #maxZScale()}.
+     *
+     * <p>Depth used to be an absolute value hard-clamped to {@code maxZScale()},
+     * which meant the top of the slider did nothing once the clamp bit — at
+     * Zoom 2.0 more than half the slider range was a silent no-op, and the UI
+     * never said so. Making it a fraction means the whole 0..1 range is always
+     * live at every zoom, and "100%" always means "as deep as the camera
+     * allows here".
+     *
+     * <p>Consequence: absolute depth now varies with zoom (a zoomed-out view can
+     * carry a deeper relief, since more plane is visible). At Zoom 1.0 the
+     * default is within 1% of the old absolute behaviour.
+     */
     public float computeZScale(float scale) {
         if (scale <= 0f) return 0f;
-        return Math.min(intensity, (0.9f * CAM_DIST) / scale);
+        return depth * maxZScale();
     }
 
     /**

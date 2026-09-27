@@ -43,13 +43,13 @@ public class DepthWallpaperService extends WallpaperService {
                     @Override
                     public void onSharedPreferenceChanged(SharedPreferences p, String key) {
                         if ("intensity".equals(key) || "zoom".equals(key) || "motion".equals(key)) {
-                            final int inten = p.getInt("intensity", 90);
+                            final int inten = Math.max(0, Math.min(100, p.getInt("intensity", 90)));
                             final int zoomv = p.getInt("zoom", 100);
                             final int motionv = p.getInt("motion", 33);
                             glView.queueEvent(new Runnable() {
                                 @Override
                                 public void run() {
-                                    renderer.setIntensity(inten / 100f);
+                                    renderer.setDepth(inten / 100f);
                                     renderer.setZoom(zoomv / 100f);
                                     renderer.setMotion(motionv / 100f * 3f);
                                 }
@@ -115,10 +115,18 @@ public class DepthWallpaperService extends WallpaperService {
                 glView.onPause();
             }
             sensorPolicy.setVisible(visible); // screen off / other app on top
+            // Re-check on every show/hide: the user can flip battery saver
+            // while the wallpaper is running.
+            if (renderer != null) {
+                renderer.setPowerSave(PowerSave.isOn(DepthWallpaperService.this));
+            }
         }
 
         /** Start/stop the gyro based on visibility and battery, then report. */
         private void updateSensor() {
+            if (renderer != null) {
+                renderer.setPowerSave(PowerSave.isOn(DepthWallpaperService.this));
+            }
             boolean run = sensorPolicy != null && sensorPolicy.shouldRunSensor();
             if (run) {
                 if (tilt == null) {

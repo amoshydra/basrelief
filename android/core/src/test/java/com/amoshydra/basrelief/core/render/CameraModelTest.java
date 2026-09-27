@@ -31,7 +31,7 @@ public class CameraModelTest {
         m.setAspect(IMAGE_ASPECT);
         m.setSurfaceAspect(SURFACE_W / (float) SURFACE_H);
         m.setZoom(1f);
-        m.setIntensity(1f);
+        m.setDepth(1f);
         m.setMotion(1f);
         return m;
     }
@@ -92,12 +92,52 @@ public class CameraModelTest {
     @Test
     public void zScaleIsClampedSoCameraStaysOutside() {
         CameraModel m = model();
-        m.setIntensity(100f); // absurd
+        m.setDepth(100f); // clamped to 1 by setDepth
         float scale = m.computeScale();
         float z = m.computeZScale(scale);
         // relief half-depth (0.5) * z * scale must stay under the camera distance
         assertTrue("zScale must clamp so the relief does not engulf the camera",
                 0.5f * z * scale < CameraModel.CAM_DIST);
+    }
+
+    /**
+     * The bug this replaced: Depth used to be an absolute value hard-clamped to
+     * maxZScale, so the top of the slider was a silent no-op once the clamp bit
+     * (at Zoom 2.0 more than half the range did nothing). Depth is now a
+     * fraction of maxZScale, so every step of 0..1 must actually change zScale
+     * at every zoom.
+     */
+    @Test
+    public void everyDepthStepIsLiveAtEveryZoom() {
+        for (float zoom : new float[]{0.25f, 0.5f, 1f, 1.5f, 2f}) {
+            CameraModel m = model();
+            m.setZoom(zoom);
+            float scale = m.computeScale();
+            float previous = -1f;
+            for (int pct = 0; pct <= 100; pct += 5) {
+                m.setDepth(pct / 100f);
+                float z = m.computeZScale(scale);
+                assertTrue("zoom " + zoom + " at " + pct + "% must increase zScale",
+                        z > previous - 1e-9f);
+                previous = z;
+            }
+            // 100% must land exactly on the camera-safe maximum
+            m.setDepth(1f);
+            assertEquals("zoom " + zoom + ": 100% == maxZScale",
+                    m.maxZScale(), m.computeZScale(scale), 1e-6f);
+        }
+    }
+
+    /** Depth 0 must be a genuinely flat surface, whatever the zoom. */
+    @Test
+    public void depthZeroIsFlatAtEveryZoom() {
+        for (float zoom : new float[]{0.25f, 0.5f, 1f, 2f}) {
+            CameraModel m = model();
+            m.setZoom(zoom);
+            m.setDepth(0f);
+            assertEquals("zoom " + zoom + ": Depth 0% must be flat",
+                    0f, m.computeZScale(m.computeScale()), 0f);
+        }
     }
 
     @Test

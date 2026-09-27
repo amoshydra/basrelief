@@ -65,10 +65,13 @@ public class ReliefMeshGoldenTest {
         Arrays.fill(flat, (byte) 100);
         for (int y = 0; y < H; y++) flat[y * W + W / 2] = (byte) 101; // one step
 
-        float[] blurred = ReliefMesh.blur(flat, W, H);
+        // blur now runs on the grid-resolution height field, so go through the
+        // same path build() uses.
+        int n = GRID + 1;
+        float[] field = ReliefMesh.blur(ReliefMesh.resample(flat, W, H, n, GRID), n, n);
 
         boolean fractional = false;
-        for (float v : blurred) {
+        for (float v : field) {
             if (v != Math.floor(v)) { fractional = true; break; }
         }
         assertTrue("blur output must contain fractional values; an all-integer "

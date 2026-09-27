@@ -34,7 +34,7 @@ import javax.microedition.khronos.opengles.GL10;
  * parallax, shading) instead of a flat-card texture trick.
  *
  * Settings (SharedPreferences "depthwall") are read at startup; live
- * changes arrive through setIntensity / setZoom / setMotion / loadPair,
+ * changes arrive through setDepth / setZoom / setMotion / loadPair,
  * always invoked on the GL thread.
  */
 public final class ReliefRenderer implements GLSurfaceView.Renderer {
@@ -45,8 +45,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     // do NOT duplicate them here, or the two will drift apart.
     // smoothing time constant (seconds) — display-refresh independent
     private static final float SMOOTHING_TAU = 0.2f;
-    private static final int DEFAULT_INTENSITY = 90; // percent
+    /** Depth default: 90% of the maximum the camera allows at this zoom. */
+    private static final int DEFAULT_DEPTH = 90;
     private static final int GRID = 256; // relief grid resolution
+
+    // --- explicit frame clock ---
+    // The gyro samples at 50Hz, so without a cap the wallpaper redraws as fast
+    // as the sensor fires, forever, for a 1px change. A live wallpaper that
+    // never idles is a battery and thermal problem, so draws are paced
+    // explicitly rather than following whatever rate requestRender arrives at.
+    private static final float FPS_NORMAL = 60f;
+    private static final float FPS_POWER_SAVE = 30f;
+    /** Fade up from black once the first real frame after a load is on screen. */
+    private static final float FADE_SECONDS = 0.25f;
+
+    private long lastDrawNanos = 0L;
+    private float minFrameNanos = 1e9f / FPS_NORMAL;
+    private float fade = 0f;               // 0 = black, 1 = fully faded in
+    private volatile float powerSave = 0f; // 0..1, written from the UI thread
 
     private static final String VERT =
             "uniform mat4 uMVP;\n" +
@@ -74,6 +90,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "varying vec3 vWorldPos;\n" +
             "varying vec3 vWorldNormal;\n" +
             "uniform sampler2D uColor;\n" +
+            "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
             "uniform vec3 uCamPos;\n" +
             "void main() {\n" +
@@ -83,7 +100,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "  float diff = max(dot(n, l), 0.0);\n" +
             "  vec3 color = texture2D(uColor, vUv).rgb;\n" +
             "  color *= 1.0 + 0.25 * diff;\n" +
-            "  gl_FragColor = vec4(color, 1.0);\n" +
+            "  gl_FragColor = vec4(color * uFade, 1.0);\n" +
             "}\n";
 
     private static final String MARKER_VERT =
@@ -105,6 +122,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     private int program;
     private int aPosition, aUV, aNormal, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
+    private int uFade = -1;
     private FloatBuffer posBuffer, uvBuffer, normalBuffer;
     private int vertexCount;
 
@@ -133,7 +151,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float zoom = 1f;
     private float surfaceW, surfaceH;
     private volatile float motion = 1f;
-    private volatile float intensity = DEFAULT_INTENSITY / 100f;
+    private volatile float depth = DEFAULT_DEPTH / 100f; // 0..1 fraction of maxZScale
 
     /** Pure-JVM camera model: scale, projection, view, z-clamp, tap unprojection. */
     private final CameraModel camera = new CameraModel();
@@ -183,8 +201,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         orbitY = ny;
     }
 
-    public void setIntensity(float v) {
-        intensity = v;
+    /**
+     * Drop to the power-saving frame rate. Called from the UI thread; the
+     * derived interval is recomputed on the GL thread.
+     */
+    public void setPowerSave(boolean on) {
+        powerSave = on ? 1f : 0f;
+    }
+
+    /** @param v Depth as a 0..1 fraction of the maximum safe z-scale. */
+    public void setDepth(float v) {
+        depth = Math.max(0f, Math.min(1f, v));
     }
 
     public void setZoom(float v) {
@@ -377,6 +404,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uColor = GLES20.glGetUniformLocation(program, "uColor");
         uLightDir = GLES20.glGetUniformLocation(program, "uLightDir");
         uCamPos = GLES20.glGetUniformLocation(program, "uCamPos");
+        uFade = GLES20.glGetUniformLocation(program, "uFade");
 
         markerProgram = createProgram(MARKER_VERT, MARKER_FRAG);
         markerAPos = GLES20.glGetAttribLocation(markerProgram, "aPos");
@@ -389,7 +417,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        intensity = p.getInt("intensity", DEFAULT_INTENSITY) / 100f;
+        depth = Math.max(0, Math.min(100, p.getInt("intensity", DEFAULT_DEPTH))) / 100f;
         zoom = Math.max(0.25f, Math.min(2f, p.getInt("zoom", 100) / 100f));
         motion = Math.max(0f, Math.min(3f, p.getInt("motion", 33) / 100f * 3f));
         orbitX = Math.max(-0.5f, Math.min(0.5f, p.getFloat("orbit_x", 0f)));
@@ -410,14 +438,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onDrawFrame(GL10 gl) {
-        recomputeScale();
-
+        // --- frame clock: pace draws explicitly ---
         long now = System.nanoTime();
+        if (lastDrawNanos != 0L && now - lastDrawNanos < minFrameNanos) {
+            return; // too soon; the next sensor sample will come round again
+        }
+        lastDrawNanos = now;
+        // Re-derive the budget on the GL thread from the volatile flag, so the
+        // UI thread never touches renderer state beyond a single float.
+        minFrameNanos = 1e9f / (FPS_NORMAL + (FPS_POWER_SAVE - FPS_NORMAL) * powerSave);
+
+        recomputeScale();
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
         lastFrameNanos = now;
         float alpha = 1f - (float) Math.exp(-dt / SMOOTHING_TAU);
         smoothX += (targetX - smoothX) * alpha;
         smoothY += (targetY - smoothY) * alpha;
+
+        // Fade up from black after a load, so the first frame does not pop.
+        if (fade < 1f) {
+            fade = Math.min(1f, fade + dt / FADE_SECONDS);
+        }
 
         // Projection, view, z-clamp and the model scale all live in the
         // pure-JVM CameraModel (unit-tested). One call fills a reusable Frame,
@@ -434,6 +475,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uIntensity, f.zScale);
         GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
         GLES20.glUniform3f(uLightDir, -0.35f, 0.5f, 0.75f);
+        GLES20.glUniform1f(uFade, fade);
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureColor);
@@ -497,6 +539,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         textureColor = upload(colorBmp);
         colorBmp.recycle();
 
+        fade = 0f; // new content: fade up from black rather than popping
         ReliefMesh surf = ReliefMesh.build(grayOut, w, h, GRID, aspect);
         vertexCount = surf.vertexCount;
         posBuffer = toBuffer(surf.positions);
@@ -517,7 +560,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         camera.setAspect(aspect);
         camera.setSurfaceAspect(surfaceAspect);
         camera.setZoom(zoom);
-        camera.setIntensity(intensity);
+        camera.setDepth(depth);
         camera.setMotion(motion);
         scale = camera.computeScale();
     }

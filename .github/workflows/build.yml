@@ -1,0 +1,63 @@
+name: build
+
+# Every push and PR runs the JVM unit tests and a real debug APK build.
+# The mesh golden test is the regression net for the depth-banding fix, so a
+# refactor of the blur or the sampling cannot land without a red build.
+#
+# Uses the same containerised Gradle path as `android/podman-build.sh` — the
+# host needs nothing but podman, which ubuntu-latest already has.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: android (unit tests + debug APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          java -version 2>&1 | head -1
+          podman --version
+
+      - name: Build the Android SDK image
+        run: ./android/podman-build.sh build-image
+
+      # Runs :core:test on its own. Fast, and fails with a useful message
+      # rather than being buried in an APK build.
+      - name: Unit tests (:core)
+        run: ./android/podman-build.sh test
+
+      - name: Build debug APK
+        run: ./android/podman-build.sh build-apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  web:
+    name: web (vite build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build

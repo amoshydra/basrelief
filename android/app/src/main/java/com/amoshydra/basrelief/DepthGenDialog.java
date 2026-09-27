@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 /**
  * "Depth AI" page: point the app at a ComfyUI instance, discover the depth
@@ -93,24 +94,32 @@ public final class DepthGenDialog {
 
     public void onPickedImage(Intent data) {
         if (data == null || data.getData() == null) return;
-        try {
-            Uri uri = data.getData();
-            InputStream in = activity.getContentResolver().openInputStream(uri);
-            if (in == null) throw new Exception("cannot open picked file");
-            File target = new File(activity.getFilesDir(), "depthgen_src.png");
-            FileOutputStream out = new FileOutputStream(target);
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            out.close();
-            in.close();
-            // huge sources (e.g. 3000x4000) would bloat the ComfyUI upload and
-            // the packed result; downscale before use
-            ImageUtil.downscaleFile(target, target, ImageUtil.MAX_SIDE);
-            setImage(target, "picked");
-        } catch (Exception e) {
-            Toast.makeText(activity, "Failed to read image: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
+        final Uri uri = data.getData();
+        // Off the UI thread: the copy plus the PNG downscale is slow on a big
+        // photo and would otherwise freeze the studio.
+        Io.run(activity, new Callable<File>() {
+            @Override
+            public File call() throws Exception {
+                File target = new File(activity.getFilesDir(), "depthgen_src.png");
+                Io.writeFile(target, Io.readAll(activity, uri));
+                // huge sources (e.g. 3000x4000) would bloat the ComfyUI upload
+                // and the packed result; downscale before use
+                ImageUtil.downscaleFile(target, target, ImageUtil.MAX_SIDE);
+                return target;
+            }
+        }, new Io.Callback<File>() {
+            @Override
+            public void onDone(File target, Exception error) {
+                if (error != null || target == null) {
+                    Toast.makeText(activity,
+                            "Failed to read image: "
+                                    + (error == null ? "unknown" : error.getMessage()),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                setImage(target, "picked");
+            }
+        });
     }
 
     private void setImage(File f, String kind) {
