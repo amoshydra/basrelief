@@ -60,7 +60,26 @@ import java.util.function.Supplier;
 public final class Library {
 
     /** Bump when the meaning of a stored field changes, and add a migration. */
-    public static final int VERSION = 1;
+    /**
+     * v2: per-item settings. v1 items had none, so they load with the defaults
+     * in {@link LibraryItem} -- which is why the migration below is a no-op.
+     */
+    public static final int VERSION = 2;
+
+    /**
+     * The id of the bundled marble bust, which every install has.
+     *
+     * <p>It has no files in {@code filesDir}: {@code imageName} and
+     * {@code depthName} are both null, which is exactly the signal the renderer
+     * uses to fall back to {@code res/raw}. It is the "back to the default"
+     * affordance, and it replaces the studio's old Reset button.
+     *
+     * <p>It cannot be deleted. A reserved id is used rather than a flag on the
+     * item so that the rule survives a round trip through JSON, and so that a
+     * cleanup pass cannot quietly drop the one item that cannot be recreated
+     * from files on disk.
+     */
+    public static final String BUNDLED_ID = "bundled";
 
     /** The single SharedPreferences key the blob lives under. */
     public static final String KEY = "library";
@@ -232,6 +251,10 @@ public final class Library {
      * change that must land in the same write.
      */
     public Library remove(String id) {
+        // The bundled item is the "back to the default" affordance and has no
+        // files to recreate it from, so it is not removable. Refused here rather
+        // than only in the UI, so no caller can bypass it.
+        if (BUNDLED_ID.equals(id)) return this;
         LibraryItem gone = find(id);
         if (gone == null) return this;
         List<LibraryItem> next = new ArrayList<LibraryItem>();
@@ -392,7 +415,12 @@ public final class Library {
         if (fileExists == null) return this;
         List<LibraryItem> next = new ArrayList<LibraryItem>();
         for (LibraryItem item : items) {
-            if (Boolean.TRUE.equals(fileExists.test(item.imageName))) next.add(item);
+            // The bundled item has no file to look for: it lives in res/raw.
+            // Testing its null name would drop the one item that cannot be
+            // recreated from disk, so it is kept unconditionally.
+            if (item.isBundled() || Boolean.TRUE.equals(fileExists.test(item.imageName))) {
+                next.add(item);
+            }
         }
         return of(next, activeId, sort);
     }
@@ -542,8 +570,20 @@ public final class Library {
      * {@link #reconcile} because that pair still lives in {@link Config}. It
      * exists so the next change has an obvious place to go.
      */
+    /**
+     * v0 -> v1: nothing, there was no earlier schema.
+     *
+     * <p>v1 -> v2: also nothing, deliberately. v2 moved the settings onto each
+     * item, and {@link LibraryItem} reads them with optInt/optDouble plus a
+     * default, so a v1 blob parses into v2 items that carry the defaults. No
+     * field has to be rewritten, which is what makes migration idempotent for
+     * free: parsing the same v1 blob twice gives the same result.
+     *
+     * <p>Written as a real hook rather than inlined so the next schema change
+     * has an obvious place to go.
+     */
     private static JSONObject migrate(JSONObject o, int fromVersion) {
-        return o; // no older blob schema exists yet
+        return o;
     }
 
     @Override

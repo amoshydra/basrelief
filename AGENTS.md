@@ -165,7 +165,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 111 tests across nine classes:
+it**. 129 tests across ten classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -181,6 +181,11 @@ it**. 111 tests across nine classes:
 - `ComfyWorkflowTest` — the ComfyUI graph wiring, especially that the depth
   node reads node 1 and `SaveImage` reads node **2**, not 1. An off-by-one
   there renders the wrong tensor with no error.
+- `PerItemSettingsTest` — per-item settings, and the one reserved id. The traps
+  are the ones this file already names: pan is in **pixels** and must not be
+  clamped to orbit's fraction range (delta exactly 0, so a partial clamp cannot
+  hide), and the bundled item is the one entry with no file on disk, so a cleanup
+  pass or a parse must not drop it — it cannot be recreated from filesDir.
 - `LibraryTest` / `LibraryItemTest` / `SortOrderTest` — the gallery index. The
   traps are the ones this file already names: a corrupt blob must not throw, a
   restored backup must not resurrect a dangling selection, an absolute path
