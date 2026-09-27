@@ -130,8 +130,7 @@ android/
   build.sh setup.sh legacy no-Gradle build pipeline (Termux on a phone)
   app/src/main/java/com/amoshydra/basrelief/
     DepthWallpaperService.java  live wallpaper (getHolder()→wallpaper surface)
-    ReliefRenderer.java         GLES2 renderer + camera + orbit marker
-    ReliefSurface.java          CPU relief geometry + float depth blur
+    ReliefRenderer.java         GLES2 renderer shell; delegates the maths to :core
     TiltController.java         rotation-vector tilt + calibration + idle sleep
     SensorPolicy.java           gyro pauses: not visible / battery ≤ 20%
     DepthPng.java               embedded-depth chunk parser
@@ -140,7 +139,28 @@ android/
     ComfyApi.java, ComfyWs.java ComfyUI REST + progress websocket
     DepthGenDialog.java         Depth AI page
     MainActivity.java           studio: pickers, sliders, gestures, share
+  core/src/main/java/com/amoshydra/basrelief/core/render/   pure JVM, no Android imports
+    ReliefMesh.java             depth → geometry + the float depth blur
+    CameraModel.java            projection, z-clamp, tap → orbit
+    Mat4.java                   vendored subset of android.opengl.Matrix
 ```
+
+## Tests
+
+The rendering core is a plain JVM module, so the maths that is easy to get
+subtly wrong is covered by ordinary unit tests — no device, no emulator:
+
+```
+cd android
+./podman-build.sh test        # or: just ./podman-build.sh build-apk
+```
+
+`ReliefMeshGoldenTest` pins the exact vertex output for a fixed depth map, which
+is what keeps the depth-banding fix (contour lines caused by 8-bit depth
+quantisation) from silently regressing. `CameraModelTest` checks that tapping to
+re-centre the relief round-trips through the projection.
+
+JUnit is a test-only dependency and is not packaged into the APK.
 
 ## License
 

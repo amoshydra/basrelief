@@ -14,6 +14,7 @@ show_usage() {
 Usage: $0 <command>
 
   build-image    Build the Android SDK container image (first time / Dockerfile changed)
+  test           Run the JVM unit tests in :core (also runs as part of build-apk)
   build-apk      Build the debug APK
   build-release  Build the release APK (signed only if keystore.properties exists)
   install        Build the debug APK and install it on the connected device via adb
@@ -99,8 +100,14 @@ open_shell() {
     podman run -it --rm -v "$SCRIPT_DIR:/workspace:Z" -w /workspace "$IMAGE_NAME" bash
 }
 
+run_tests() {
+    echo "Running JVM unit tests (:core)..."
+    gradle_task ":core:test"
+}
+
 case "${1:-build-apk}" in
     build-image)  build_image ;;
+    test|tests)   run_tests ;;
     build-apk|debug|assembleDebug) build_apk ;;
     build-release|release) build_release ;;
     install)      install_apk ;;

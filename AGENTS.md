@@ -124,7 +124,8 @@ Constraints (learned the hard way):
   A/B on-device; raising the grid, changing light direction, half-Lambert, framebuffer
   dithering, and nearest/bilinear/cubic sampling all made no difference, which is what
   ruled those out. Keep `DEPTH_BLUR_FRACTION` identical in `src/scene.js` and
-  `ReliefSurface.java` — nothing currently enforces that.
+  `android/core/.../ReliefMesh.java` — the Android side is now pinned by
+  `ReliefMeshGoldenTest`, but nothing still enforces the web/Android match.
 - **The two ports have already drifted** (verified, not hypothetical): default
   depth intensity is 45 on web vs 90 on Android; the web tilt range scales with
   zoom while Android's is constant; web has no z-scale clamp but Android silently
@@ -151,10 +152,9 @@ android/Dockerfile        Ubuntu 22.04 + JDK 17 + Android SDK 34 + build-tools 3
 android/app/build.gradle  AGP config (namespace, sdk levels, empty dependencies)
 android/build.sh          LEGACY no-Gradle build (Termux on the phone only)
 
-android/app/src/main/java/com/amoshydra/basrelief/
+android/app/src/main/java/com/amoshydra/basrelief/     Android shell (GLES2 + UI)
   DepthWallpaperService.java  live wallpaper (getHolder() → wallpaper surface)
-  ReliefRenderer.java         GLES2 renderer + camera + orbit marker
-  ReliefSurface.java          CPU relief geometry + float depth blur
+  ReliefRenderer.java         GL state, textures, orbit marker; delegates math to :core
   TiltController.java         tilt + calibration + idle sleep + shake wake
   SensorPolicy.java           gyro pauses (not visible / battery ≤ 20%)
   DepthPng.java               embedded-depth chunk parser
@@ -163,15 +163,51 @@ android/app/src/main/java/com/amoshydra/basrelief/
   ComfyApi.java / ComfyWs.java   Depth AI: ComfyUI REST + progress websocket
   DepthGenDialog.java         Depth AI page (host, model, generate, export)
   MainActivity.java           studio: pickers, sliders, gestures, share, immersive
+
+android/core/src/main/java/com/amoshydra/basrelief/core/render/   pure JVM, NO android.*
+  ReliefMesh.java             depth → geometry + the float depth blur (golden-tested)
+  CameraModel.java            projection/view/z-clamp/tap-unprojection (round-trip tested)
+  Mat4.java                   vendored subset of android.opengl.Matrix
 ```
 
-`SettingsActivity.java` and `ReliefMesh.java` were removed — settings live inside
-the studio, and relief geometry is `ReliefSurface.java`.
+`SettingsActivity.java` and `ReliefSurface.java` were removed — settings live
+inside the studio, and relief geometry is now `:core`'s `ReliefMesh.java`.
+
+### `:core` — the pure-JVM rendering core (why it exists)
+
+`android/core` is a `java-library` with **no Android imports at all**, holding
+the two pieces of maths that are easy to get subtly wrong: depth→geometry and
+the camera. The renderer shell depends on it; nothing depends back. This exists
+so those invariants are enforced by a build rather than by prose.
+
+- **JUnit is `testImplementation` only** — it is never packaged into the APK,
+  so the module keeps zero *runtime* dependencies even though the app shell now
+  allows some.
+- **`ReliefMeshGoldenTest` pins exact positions+normals** for a fixed synthetic
+  depth map, captured from the renderer *as it shipped*. The banding fix is
+  invisible in the code and a careless edit (re-quantising the blur to 8-bit,
+  flipping the v convention, dropping a face normal) brings back visible
+  contour lines with no failing build. Verified the test has teeth by mutation:
+  all four of those regressions fail it.
+- **`CameraModelTest` asserts the tap→unproject→project round-trip.** Re-project
+  with the ORIGINAL orbit pivot, not the newly resolved one — adopting the new
+  orbit moves the camera, so asserting a round-trip through it would be
+  asserting a bug.
+- Every `assemble`/`bundle` task `dependsOn ':core:test'`, so there is no way to
+  produce an APK without the tests having passed. `podman-build.sh test` runs
+  them alone; they are fast and need no device.
+- `Mat4` is a vendored subset of `android.opengl.Matrix` (Apache-2.0), present
+  only so the camera is testable off-device. Keep the operations in the same
+  order as the Android originals or the goldens/round-trips will drift.
 
 ## Verification
 
 - Web: `npm run build`; math checks run in Node with three.js replicating the GL
   matrix math (e.g. orbit tap→unproject→project round-trips must be ~0 px error).
+- Android core: `podman-build.sh test` — pure JVM, no device, runs as part of
+  `build-apk`. The mesh golden is the regression net for the banding fix; if it
+  fails, do NOT regenerate the goldens to make it green unless the geometry
+  change was deliberate and verified on-device.
 - Android: `android/podman-build.sh build-apk` must succeed in-container, and
   `podman-build.sh install` should install + launch without crashing (verify with
   `adb shell pidof com.amoshydra.basrelief`). **Device-only checks** (can't verify

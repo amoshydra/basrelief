@@ -57,8 +57,16 @@ android {
     }
 }
 
-// No dependencies on purpose: this app uses only the Android framework
-// (android.app.Activity, GLSurfaceView, WallpaperService) and deliberately
-// avoids AndroidX / Maven artifacts, matching the original no-Gradle build.
+// The renderer shell depends on the pure-JVM core (depth->geometry + camera
+// model), which is where the unit tests live.
+//
+// The golden test pins the exact mesh output, so a refactor of the depth blur
+// or the sampling convention cannot silently reintroduce the banding artifact.
+// Make every APK build depend on it: there is no way to produce a shippable
+// artifact without the tests having passed.
+tasks.matching { it.name.startsWith('assemble') || it.name.startsWith('bundle') }
+        .configureEach { it.dependsOn ':core:test' }
+
 dependencies {
+    implementation project(':core')
 }

@@ -19,6 +19,9 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.Arrays;
 
+import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.ReliefMesh;
+
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.egl.EGLDisplay;
@@ -38,10 +41,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public static final String PREFS = "depthwall";
 
-    private static final float FOV_DEG = 45f;
-    private static final float CAM_DIST = 1.2f;
-    private static final float CROP_MARGIN = 1.08f;
-    private static final float TILT_RANGE = 0.16f;
+    // FOV / camera distance / crop margin / tilt range live in CameraModel —
+    // do NOT duplicate them here, or the two will drift apart.
     // smoothing time constant (seconds) — display-refresh independent
     private static final float SMOOTHING_TAU = 0.2f;
     private static final int DEFAULT_INTENSITY = 90; // percent
@@ -120,6 +121,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     private float aspect = 1f;   // image w / h, baked into quad x
     private float scale = 1f;    // model scale (covers viewport with crop margin)
+    private final float[] tapOrbit = new float[2]; // scratch, avoids per-tap allocation
     private float surfaceAspect = 1f;
 
     private volatile float targetX = 0f, targetY = 0f;
@@ -133,13 +135,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float motion = 1f;
     private volatile float intensity = DEFAULT_INTENSITY / 100f;
 
-    private final float[] proj = new float[16];
-    private final float[] panMat = new float[16];
-    private final float[] projPanned = new float[16];
-    private final float[] view = new float[16];
-    private final float[] mvp = new float[16];
-    private final float[] mvpNoScale = new float[16];
-    private final float[] tmp = new float[16];
+    /** Pure-JVM camera model: scale, projection, view, z-clamp, tap unprojection. */
+    private final CameraModel camera = new CameraModel();
 
     public ReliefRenderer(Context context) {
         this.context = context;
@@ -344,40 +341,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         if (w == 0 || h == 0 || textureColor < 0) return false;
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
-
         recomputeScale();
-        applyProjection();
-
-        float px = orbitX * aspect * scale;
-        float py = orbitY * scale;
-        float range = TILT_RANGE * motion;
-        float ex = px + smoothX * range;
-        float ey = py - smoothY * range;
-        Matrix.setLookAtM(view, 0, ex, ey, CAM_DIST, px, py, 0f, 0f, 1f, 0f);
-        Matrix.multiplyMM(tmp, 0, projPanned, 0, view, 0);
-        float[] invVP = new float[16];
-        if (Matrix.invertM(invVP, 0, tmp, 0) == false) return false;
-
-        float[] near = { ndcX, ndcY, -1f, 1f };
-        float[] far = { ndcX, ndcY, 1f, 1f };
-        Matrix.multiplyMV(near, 0, invVP, 0, near, 0);
-        Matrix.multiplyMV(far, 0, invVP, 0, far, 0);
-        near[0] /= near[3]; near[1] /= near[3]; near[2] /= near[3];
-        far[0] /= far[3]; far[1] /= far[3]; far[2] /= far[3];
-
-        float dx = far[0] - near[0];
-        float dy = far[1] - near[1];
-        float dz = far[2] - near[2];
-        if (dz == 0f) return false;
-        float t = -near[2] / dz;
-        float wx = near[0] + dx * t;
-        float wy = near[1] + dy * t;
-
-        float nx = wx / (aspect * scale);
-        float ny = wy / scale;
-        if (Math.abs(nx) > 0.5f || Math.abs(ny) > 0.5f) return false;
-        orbitX = nx;
-        orbitY = ny;
+        if (!camera.screenToOrbit(ndcX, ndcY, w, h, panX, panY,
+                orbitX, orbitY, smoothX, smoothY, tapOrbit)) return false;
+        orbitX = tapOrbit[0];
+        orbitY = tapOrbit[1];
         return true;
     }
 
@@ -424,22 +392,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         surfaceH = height;
         surfaceAspect = (float) width / height;
         recomputeScale();
-        applyProjection();
-    }
-
-    private void applyProjection() {
-        Matrix.perspectiveM(proj, 0, FOV_DEG, surfaceAspect, 0.1f, 10f);
-        Matrix.setIdentityM(panMat, 0);
-        if (surfaceW > 0 && surfaceH > 0 && (panX != 0f || panY != 0f)) {
-            Matrix.translateM(panMat, 0, -2f * panX / surfaceW, 2f * panY / surfaceH, 0f);
-        }
-        Matrix.multiplyMM(projPanned, 0, panMat, 0, proj, 0);
     }
 
     @Override
     public void onDrawFrame(GL10 gl) {
         recomputeScale();
-        applyProjection();
 
         long now = System.nanoTime();
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
@@ -448,26 +405,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         smoothX += (targetX - smoothX) * alpha;
         smoothY += (targetY - smoothY) * alpha;
 
-        float px = orbitX * aspect * scale;
-        float py = orbitY * scale;
-        float range = TILT_RANGE * motion;
-        float ex = px + smoothX * range;
-        float ey = py - smoothY * range;
-        Matrix.setLookAtM(view, 0, ex, ey, CAM_DIST, px, py, 0f, 0f, 1f, 0f);
-        Matrix.multiplyMM(mvpNoScale, 0, projPanned, 0, view, 0);
-        // z-scale so the camera can never sit inside the relief
-        float zScale = Math.min(intensity, (0.9f * CAM_DIST) / scale);
-        System.arraycopy(mvpNoScale, 0, tmp, 0, 16);
-        Matrix.scaleM(mvp, 0, tmp, 0, scale, scale, scale * zScale);
+        // Projection, view, z-clamp and the model scale all live in the
+        // pure-JVM CameraModel (unit-tested). One call fills a reusable Frame,
+        // so drawing allocates nothing.
+        CameraModel.Frame f = camera.frame(surfaceW, surfaceH, panX, panY,
+                orbitX, orbitY, smoothX, smoothY);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
         if (textureColor < 0) return;
 
         GLES20.glUseProgram(program);
-        GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0);
-        GLES20.glUniform1f(uModelScale, scale);
-        GLES20.glUniform1f(uIntensity, zScale);
-        GLES20.glUniform3f(uCamPos, ex, ey, CAM_DIST);
+        GLES20.glUniformMatrix4fv(uMVP, 1, false, f.mvp, 0);
+        GLES20.glUniform1f(uModelScale, f.scale);
+        GLES20.glUniform1f(uIntensity, f.zScale);
+        GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
         GLES20.glUniform3f(uLightDir, -0.35f, 0.5f, 0.75f);
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
@@ -488,20 +439,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisableVertexAttribArray(aUV);
         GLES20.glDisableVertexAttribArray(aNormal);
 
-        if (showOrbitMarker) drawOrbitMarker();
+        if (showOrbitMarker) drawOrbitMarker(f);
     }
 
-    private void drawOrbitMarker() {
+    private void drawOrbitMarker(CameraModel.Frame f) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(markerProgram);
 
-        float cx = orbitX * aspect * scale;
-        float cy = orbitY * scale;
-        float r = 0.035f * scale;
+        float cx = orbitX * aspect * f.scale;
+        float cy = orbitY * f.scale;
+        float r = 0.035f * f.scale;
         Matrix.setIdentityM(markerMat, 0);
         Matrix.translateM(markerMat, 0, cx, cy, 0f);
         Matrix.scaleM(markerMat, 0, r, r, 1f);
-        Matrix.multiplyMM(markerMvp, 0, mvpNoScale, 0, markerMat, 0);
+        Matrix.multiplyMM(markerMvp, 0, f.viewProjection, 0, markerMat, 0);
         GLES20.glUniformMatrix4fv(markerUMVP, 1, false, markerMvp, 0);
 
         ringBuffer.position(0);
@@ -532,7 +483,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         textureColor = upload(colorBmp);
         colorBmp.recycle();
 
-        ReliefSurface surf = ReliefSurface.build(grayOut, w, h, GRID, aspect);
+        ReliefMesh surf = ReliefMesh.build(grayOut, w, h, GRID, aspect);
         vertexCount = surf.vertexCount;
         posBuffer = toBuffer(surf.positions);
         uvBuffer = toBuffer(surf.uvs);
@@ -546,11 +497,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, false);
     }
 
+    /** Push the current view state into the camera model and refresh `scale`. */
     private void recomputeScale() {
         if (aspect <= 0f) return;
-        float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2));
-        float visW = visH * surfaceAspect;
-        scale = Math.max(visH, visW / aspect) * CROP_MARGIN * zoom;
+        camera.setAspect(aspect);
+        camera.setSurfaceAspect(surfaceAspect);
+        camera.setZoom(zoom);
+        camera.setIntensity(intensity);
+        camera.setMotion(motion);
+        scale = camera.computeScale();
     }
 
     private Bitmap decodeRaw(int resId) {

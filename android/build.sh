@@ -2,8 +2,8 @@
 # Build a signed APK entirely on-device (aapt2 -> javac -> dx -> zip -> apksigner).
 #
 # This is the LEGACY Termux build, kept for fast on-device iteration.
-# The canonical build is Gradle via podman-build.sh (see ../HANDOFF.md).
-# Both compile the same sources under app/src/main/.
+# The canonical build is Gradle via podman-build.sh.
+# Both compile the same sources: core/src/main/java + app/src/main/java.
 set -e
 
 PROJECT="$(cd "$(dirname "$0")" && pwd)"
@@ -43,9 +43,17 @@ aapt2 link \
     "$COMPILED_RES"/*.flat
 
 echo "=== Step 3: Compile Java ==="
-( echo "$GEN/$APP_PACKAGE/R.java"; find "$APP/java" -name '*.java' ) > "$BUILD/sources.txt"
+# :core (pure-JVM rendering core, no Android imports) and :app are compiled
+# together here; Gradle keeps them as separate modules, this path does not.
+( echo "$GEN/$APP_PACKAGE/R.java"; \
+  find "$PROJECT/core/src/main/java" -name '*.java'; \
+  find "$APP/java" -name '*.java' ) > "$BUILD/sources.txt"
+# -encoding UTF-8 explicitly: sources contain em-dashes/degree signs, and
+# javac's default encoding follows the ambient locale, so this build would
+# otherwise break on a device configured for a non-UTF-8 charset.
 javac \
     -source 1.8 -target 1.8 \
+    -encoding UTF-8 \
     -classpath "$ANDROID_JAR" \
     -d "$OBJ" \
     @"$BUILD/sources.txt"

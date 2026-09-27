@@ -1,0 +1,26 @@
+// Pure-JVM rendering core: depth->geometry and the camera model.
+//
+// Deliberately has NO Android dependencies (not even AndroidX) so it can be
+// unit-tested on a plain JVM without a device or instrumentation runner.
+// The renderer shell in :app depends on this; nothing here depends on :app.
+//
+// JUnit is `testImplementation` only — it is not packaged into the APK, so the
+// "no runtime dependencies" property of this module is preserved.
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+test {
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}

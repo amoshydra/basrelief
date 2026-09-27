@@ -1,11 +1,15 @@
-package com.amoshydra.basrelief;
+package com.amoshydra.basrelief.core.render;
 
 /**
  * Builds a continuous displaced relief surface (no tearing) on the CPU:
  * vertex Z from the depth map, plus per-vertex normals averaged from the
  * surrounding faces so directional light can shade the relief.
+ *
+ * <p>Pure Java with no Android dependencies, so it can be unit-tested on the
+ * JVM (see {@code ReliefMeshGoldenTest}, which pins the exact output so a
+ * future refactor cannot silently reintroduce the depth-banding bug).
  */
-public final class ReliefSurface {
+public final class ReliefMesh {
 
     /**
      * Radius of the separable FLOAT box blur applied to the depth map before
@@ -13,17 +17,20 @@ public final class ReliefSurface {
      * quantization terraces (~1 level per few texels on smooth faces); grazing
      * directional light turns them into visible contour lines. Blurring in
      * float (NOT re-quantizing to 8-bit) smooths the slope so normals vary
-     * continuously. Verified in the web A/B: radius >= width/78 fully removes
-     * the banding.
+     * continuously. Verified in the web A/B: radius &gt;= width/78 fully
+     * removes the banding.
+     *
+     * <p>Keep this in sync with {@code DEPTH_BLUR_FRACTION} in the web
+     * renderer ({@code src/scene.js}).
      */
-    private static final float DEPTH_BLUR_FRACTION = 1f / 78f;
+    public static final float DEPTH_BLUR_FRACTION = 1f / 78f;
 
     public final float[] positions; // xyz per vertex
     public final float[] uvs;       // uv per vertex
     public final float[] normals;   // xyz per vertex
     public final int vertexCount;
 
-    private ReliefSurface(float[] positions, float[] uvs, float[] normals, int vertexCount) {
+    private ReliefMesh(float[] positions, float[] uvs, float[] normals, int vertexCount) {
         this.positions = positions;
         this.uvs = uvs;
         this.normals = normals;
@@ -36,7 +43,7 @@ public final class ReliefSurface {
      * @param grid   subdivisions per side
      * @param aspect image width / height (baked into vertex x)
      */
-    public static ReliefSurface build(byte[] depth, int dw, int dh, int grid, float aspect) {
+    public static ReliefMesh build(byte[] depth, int dw, int dh, int grid, float aspect) {
         float[] smooth = blur(depth, dw, dh);
         int n = grid + 1;
         float[] posV = new float[n * n * 3];
@@ -111,7 +118,7 @@ public final class ReliefSurface {
                 emit(positions, uvs, normals, idx, posV, uvV, nrmV, tr, bl, br);
             }
         }
-        return new ReliefSurface(positions, uvs, normals, verts);
+        return new ReliefMesh(positions, uvs, normals, verts);
     }
 
     private static void addFace(float[] nrm, float[] pos, int a, int b, int c) {
@@ -148,8 +155,11 @@ public final class ReliefSurface {
      * Separable box blur kept in float precision. Smooths the depth map's 8-bit
      * quantization terraces so the displaced surface has a continuous slope and
      * grazing directional light can't expose them as contour lines.
+     *
+     * <p>NOTE: the intermediate and result are {@code float} on purpose. Writing
+     * back to an 8-bit array re-creates the terraces and the banding returns.
      */
-    private static float[] blur(byte[] src, int w, int h) {
+    static float[] blur(byte[] src, int w, int h) {
         int r = Math.max(1, Math.round(w * DEPTH_BLUR_FRACTION));
         float[] tmp = new float[w * h];
         // horizontal pass

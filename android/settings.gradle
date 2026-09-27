@@ -13,4 +13,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "Basrelief"
+include ':core'
 include ':app'
