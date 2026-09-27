@@ -92,6 +92,12 @@ public class DepthWallpaperService extends WallpaperService {
             // The renderer needs a way back onto the GL thread; only the host
             // has the GLSurfaceView whose queueEvent provides it.
             renderer.setGlDispatch(ReliefRenderer.glExecutor(glView));
+            renderer.setRenderRequester(new Runnable() {
+                @Override
+                public void run() {
+                    glView.requestRender();
+                }
+            });
             glView.setRenderer(renderer);
             glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
             // the wallpaper is read-only: all interaction (orbit, pan, zoom,

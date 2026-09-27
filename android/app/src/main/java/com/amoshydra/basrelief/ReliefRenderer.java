@@ -187,6 +187,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile java.util.concurrent.Executor glDispatch;
 
+    /**
+     * Asks the host for another frame. Supplied by the host, which owns the
+     * GLSurfaceView.
+     *
+     * <p>This is REQUIRED, not an optimisation. The surface is
+     * RENDERMODE_WHEN_DIRTY, so a frame is only drawn when someone asks. The
+     * image load is asynchronous, so the first frame after a surface change
+     * almost always arrives BEFORE the texture exists: it clears and bails on
+     * textureColor < 0. When the decode finishes and applyPending() uploads the
+     * texture, nothing else in a live wallpaper will ask for a frame -- no
+     * preference changed, and the tilt callback only fires while the gyro is
+     * awake. Without this the wallpaper loads its image and then stays black
+     * until something happens to nudge it.
+     */
+    private volatile Runnable renderRequester;
+
+    /** Wire this to GLSurfaceView.requestRender(). */
+    public void setRenderRequester(Runnable r) {
+        this.renderRequester = r;
+    }
+
     private FloatBuffer ringBuffer;
     private static final int RING_SEGMENTS = 48;
     private final float[] markerMat = new float[16];
@@ -452,6 +473,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             writeStatus(p.flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
         }
         install(p.colorBmp, p.gray, p.w, p.h);
+        // The frame that revealed the empty texture has already been drawn;
+        // without this request the uploaded texture is never presented.
+        Runnable r = renderRequester;
+        if (r != null) r.run();
         return true;
     }
 

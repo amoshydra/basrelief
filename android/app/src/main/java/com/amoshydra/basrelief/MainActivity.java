@@ -97,6 +97,12 @@ public class MainActivity extends Activity {
         // The renderer needs a way back onto the GL thread; only the host has
         // the GLSurfaceView whose queueEvent provides it.
         renderer.setGlDispatch(ReliefRenderer.glExecutor(glView));
+        renderer.setRenderRequester(new Runnable() {
+            @Override
+            public void run() {
+                glView.requestRender();
+            }
+        });
         glView.setRenderer(renderer);
         glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
         root.addView(glView, new FrameLayout.LayoutParams(
