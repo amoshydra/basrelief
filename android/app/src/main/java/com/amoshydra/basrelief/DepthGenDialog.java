@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.Dialog;
@@ -364,7 +365,7 @@ public final class DepthGenDialog {
                                 displayNames.clear();
                                 for (String n : depth) {
                                     nodes.add(n);
-                                    displayNames.add(friendlyName(n));
+                                    displayNames.add(ComfyWorkflow.friendlyName(n));
                                 }
                                 connectStatus.setText("Connected — " + depth.size()
                                         + " depth node(s) found");
@@ -444,7 +445,8 @@ public final class DepthGenDialog {
 
                     setStatus("Building workflow...");
                     String info = api.getObjectInfo();
-                    String workflow = buildWorkflow(info, model, uploadedName, resolution);
+                    String workflow = ComfyWorkflow.buildWorkflow(
+                            info, model, uploadedName, resolution, System.currentTimeMillis());
 
                     setStatus("Submitting to ComfyUI...");
                     String resp = api.submitPrompt(workflow, clientId);
@@ -453,7 +455,7 @@ public final class DepthGenDialog {
                     final String promptId = r.getString("prompt_id");
 
                     // live progress via websocket (like the web tool)
-                    final String wsUrl = "ws://" + hostPort(comfyBase) + "/ws?clientId=" + clientId;
+                    final String wsUrl = "ws://" + ComfyWorkflow.hostPort(comfyBase) + "/ws?clientId=" + clientId;
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
@@ -481,7 +483,7 @@ public final class DepthGenDialog {
                     JSONObject statusObj = history.optJSONObject("status");
                     if (statusObj != null && statusObj.optString("status_str", "").equals("error")) {
                         throw new Exception("ComfyUI execution error: "
-                                + extractExecutionError(statusObj));
+                                + ComfyWorkflow.extractExecutionError(statusObj));
                     }
 
                     JSONObject outputs = history.optJSONObject("outputs");
@@ -523,7 +525,7 @@ public final class DepthGenDialog {
                         public void run() {
                             preview.setImageBitmap(depthBmp);
                             preview.setVisibility(View.VISIBLE);
-                            status.setText("Done — " + friendlyName(model) + " @ " + resolution
+                            status.setText("Done — " + ComfyWorkflow.friendlyName(model) + " @ " + resolution
                                     + ", loaded into studio.");
                             progress.setProgress(1000);
                             generateBtn.setEnabled(true);
@@ -551,117 +553,6 @@ public final class DepthGenDialog {
     }
 
     /** Build {LoadImage -> <model> -> SaveImage} from the node's own spec. */
-    private static String buildWorkflow(String objectInfo, String model, String uploadedName,
-                                        int resolution) throws JSONException {
-        JSONObject info = new JSONObject(objectInfo);
-        JSONObject nodeInfo = info.getJSONObject(model);
-        // /object_info nests inputs under "input": { "required": {...}, ... }
-        JSONObject input = nodeInfo.optJSONObject("input");
-        JSONObject required = input != null ? input.optJSONObject("required") : null;
-        if (required == null) required = nodeInfo.optJSONObject("required"); // fallback
-        if (required == null) required = new JSONObject();
-
-        JSONObject load = new JSONObject();
-        load.put("class_type", "LoadImage");
-        load.put("inputs", new JSONObject().put("image", uploadedName));
-
-        JSONObject depth = new JSONObject();
-        depth.put("class_type", model);
-        JSONObject depthIn = new JSONObject();
-        depthIn.put("image", new JSONArray().put("1").put(0));
-        Iterator<String> it = required.keys();
-        while (it.hasNext()) {
-            String inName = it.next();
-            if (inName.equals("image")) continue;
-            JSONArray spec = required.getJSONArray(inName);
-            String type = spec.getString(0);
-            Object def = spec.length() > 1 ? spec.opt(1) : null;
-            Object value;
-            if (inName.equals("resolution")) {
-                value = Integer.valueOf(resolution);
-            } else if (def instanceof JSONObject) {
-                // options dict — use the node's own default when present
-                JSONObject opts = (JSONObject) def;
-                value = opts.has("default") ? opts.get("default") : defaultForType(type);
-            } else if (def == null) {
-                value = defaultForType(type); // never drop a required input
-            } else {
-                value = def;
-            }
-            depthIn.put(inName, value);
-        }
-        depth.put("inputs", depthIn);
-
-        JSONObject save = new JSONObject();
-        save.put("class_type", "SaveImage");
-        JSONObject saveIn = new JSONObject();
-        saveIn.put("images", new JSONArray().put("2").put(0)); // depth node output
-        saveIn.put("filename_prefix", "depthmap_" + System.currentTimeMillis());
-        save.put("inputs", saveIn);
-
-        JSONObject wf = new JSONObject();
-        wf.put("1", load);
-        wf.put("2", depth);
-        wf.put("3", save);
-        return wf.toString();
-    }
-
-    private static Object defaultForType(String type) {
-        if (type.equals("INT")) return 0;
-        if (type.equals("FLOAT")) return 0.0;
-        if (type.equals("BOOLEAN")) return true;
-        return "";
-    }
-
-    /** Turn a raw ComfyUI class name into something human-readable. */
-    private static String friendlyName(String name) {
-        if (name.contains("DepthAnythingV2")) return "Depth Anything V2";
-        if (name.contains("DepthAnything")) return "Depth Anything V1";
-        String lower = name.toLowerCase();
-        if (lower.contains("midas")) return "MiDaS";
-        if (lower.contains("zoe")) return "ZoeDepth";
-        StringBuilder b = new StringBuilder();
-        for (int i = 0; i < name.length(); i++) {
-            char c = name.charAt(i);
-            if (c == '-') {
-                b.append(' ');
-                continue;
-            }
-            if (i > 0 && Character.isUpperCase(c)
-                    && !Character.isUpperCase(name.charAt(i - 1))) {
-                b.append(' ');
-            }
-            b.append(c);
-        }
-        return b.toString();
-    }
-
-    /** Pull a readable error out of history.status.messages. */
-    private static String extractExecutionError(JSONObject status) {
-        try {
-            JSONArray messages = status.getJSONArray("messages");
-            for (int i = 0; i < messages.length(); i++) {
-                JSONArray pair = messages.getJSONArray(i);
-                if (pair.length() >= 2 && pair.getString(0).equals("execution_error")) {
-                    JSONObject err = pair.getJSONObject(1);
-                    String type = err.optString("exception_type", "");
-                    String msg = err.optString("exception_message", "");
-                    if (!type.isEmpty()) return type + ": " + msg;
-                }
-            }
-        } catch (JSONException ignored) {
-        }
-        return "execution error (see ComfyUI console)";
-    }
-
-    private static String hostPort(String base) {
-        String s = base;
-        if (s.startsWith("http://")) s = s.substring(7);
-        int slash = s.indexOf('/');
-        if (slash >= 0) s = s.substring(0, slash);
-        return s;
-    }
-
     // ------------------------------------------------------------------ websocket
 
     private void startWs(String url) {

@@ -6,6 +6,11 @@
 //
 // JUnit is `testImplementation` only — it is not packaged into the APK, so the
 // "no runtime dependencies" property of this module is preserved.
+//
+// org.json is `compileOnly` + `testImplementation`: on a device it comes from
+// the platform, and neither scope is packaged, so :core still ships with zero
+// runtime dependencies. Tests parse the JSON rather than comparing strings,
+// because Android's org.json and Maven's disagree on key order.
 plugins {
     id 'java-library'
 }
@@ -16,6 +21,8 @@ java {
 }
 
 dependencies {
+    compileOnly 'org.json:json:20231013'
+    testImplementation 'org.json:json:20231013'
     testImplementation 'junit:junit:4.13.2'
 }
 
