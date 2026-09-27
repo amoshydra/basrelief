@@ -37,7 +37,6 @@ public class DepthWallpaperService extends WallpaperService {
         private TiltController tilt;
         private SensorPolicy sensorPolicy;
         private boolean tiltRunning = false;
-        private boolean loaded = false;
         private SharedPreferences prefs;
         private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
                 new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -105,38 +104,6 @@ public class DepthWallpaperService extends WallpaperService {
                 }
             });
             sensorPolicy.start();
-        }
-
-        /**
-         * Load the configured image/depth once, when a real surface exists.
-         *
-         * <p>This has to be explicit. The only other path that loads anything is
-         * {@link #prefListener}, which fires when a preference CHANGES — and the
-         * wallpaper never writes preferences (it is read-only; the studio owns
-         * them). So on a genuine cold start (reboot, or the engine recreated
-         * before the studio has ever been opened) nothing was ever loaded,
-         * {@code textureColor} stayed -1 and the wallpaper rendered pure black.
-         *
-         * <p>It only appeared to work because the wallpaper service runs in the
-         * SAME process as the studio (no android:process), so opening the studio
-         * writes a preference and the listener happens to fire.
-         *
-         * <p>{@code onSurfaceChanged} is the right hook: it means a surface
-         * really exists, so the GL thread can create textures. Guarded by
-         * {@code loaded} so we rebuild the mesh only once per engine.
-         */
-        @Override
-        public void onSurfaceChanged(SurfaceHolder holder, int format, int w, int h) {
-            super.onSurfaceChanged(holder, format, w, h);
-            if (loaded || glView == null) return;
-            loaded = true;
-            glView.queueEvent(new Runnable() {
-                @Override
-                public void run() {
-                    renderer.reloadFromPrefs();
-                }
-            });
-            glView.requestRender();
         }
 
         @Override
