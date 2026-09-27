@@ -10,6 +10,12 @@ import android.hardware.SensorManager;
  * Fused rotation-vector tilt, calibrated to the neutral pose captured at
  * start. Exposes normalized x/y in [-1, 1] (x = left/right, y = front/back).
  *
+ * <p>A re-calibration makes the current pose the new neutral, so the tilt
+ * becomes 0 -- usually a long way from where the view already is. Rather than
+ * publish that as a step, it eases in over a fraction of a second; see
+ * {@link #beginGlide} for the mechanism and the reasons. Deliberate movement
+ * is untouched.
+ *
  * Idle power saving: if the device stays still (tilt within ~1° of a slowly
  * tracking baseline) for IDLE_SLEEP_MS, the rotation-vector listener is
  * unregistered — the caller only renders on onTiltChanged, so rendering stops
@@ -30,6 +36,26 @@ public final class TiltController implements SensorEventListener {
     private static final float IDLE_EPS = 0.04f; // ~1° of tilt counts as activity
     private static final float SHAKE_MPS2 = 1.2f; // accel deviation from gravity to wake
     private static final int ACCEL_DELAY = SensorManager.SENSOR_DELAY_NORMAL;
+
+    // Re-centre glide. See beginGlide() for why it lives here and not in the
+    // renderer. RECENTRE_RATE is a RATE, not a duration, so the glide is
+    // proportional to how far it has to travel: 15 degrees takes ~0.86 s, a
+    // 1-degree re-centre is floored at RECENTRE_MIN_SECONDS rather than becoming
+    // a one-frame pop again, and a 50-degree re-centre takes ~2.9 s.
+    //
+    // The rate is capped well below the point at which the renderer's fast
+    // attack would fire and undo the whole thing.  That renderer is nonlinear:
+    // while below ATTACK_ERROR it closes max(alpha, 8*err) per frame, so a
+    // steadily moving target settles at a steady err = sqrt(rate*dt/8) and the
+    // attack fires once that passes ATTACK_ERROR -- i.e. at
+    // rate = 8*ATTACK_ERROR^2/dt, which is 6.25/s at the ~50 Hz that
+    // SENSOR_DELAY_GAME actually delivers, and LOWER on a slower sensor
+    // (2.5/s at 20 Hz).  The smoothstep's peak rate is 1.5x its mean, so
+    // RECENTRE_RATE = 0.7 peaks at 1.05/s: a factor of 2.4 below the worst of
+    // those, and 6x below the nominal.  If ATTACK_ERROR or SMOOTHING_TAU in
+    // ReliefRenderer is changed, re-check that budget.
+    private static final float RECENTRE_RATE = 0.7f;        // tilt units per second
+    private static final float RECENTRE_MIN_SECONDS = 0.3f; // floor, so no re-centre is a one-frame pop
 
     private final SensorManager sensorManager;
     private final Sensor rotationSensor;
@@ -53,6 +79,28 @@ public final class TiltController implements SensorEventListener {
     /** True while a sensor listener is actually registered. */
     private boolean registered;
     private float idleBaseX, idleBaseY;
+
+    /**
+     * Re-centre glide. {@link #viewX} / {@link #viewY} are what the accessors
+     * report: the measured tilt, except while a re-centre is easing into the
+     * new neutral. Sensor-thread only, apart from {@link #pendingRecentring}.
+     */
+    private float viewX, viewY;
+    private float glideFromX, glideFromY;
+    private long glideStartNanos;
+    private float glideSpan;
+    private boolean gliding;
+
+    /**
+     * Set by {@link #recalibrate} (UI thread) and consumed on the sensor thread
+     * when the new neutral is actually published. {@code volatile} because it is
+     * the one new field written from off the sensor thread: without it a
+     * recalibrate can be missed and the view snaps to centre again, which is the
+     * bug this whole mechanism exists to remove. (The neighbouring calibration
+     * fields are plain, but a missed write to one of those only costs a few more
+     * settle samples, whereas a missed write to this costs the whole glide.)
+     */
+    private volatile boolean pendingRecentring;
 
     public TiltController(Context context, Listener listener) {
         this.listener = listener;
@@ -98,8 +146,17 @@ public final class TiltController implements SensorEventListener {
         registered = false;
     }
 
-    /** Re-arm calibration without re-registering. */
+    /**
+     * Re-arm calibration without re-registering.
+     *
+     * <p>Only ARMS the glide. The neutral is not published until
+     * SETTLE_SAMPLES have arrived, and arming here rather than there is what
+     * makes a second recalibrate during one capture window harmless: the flag is
+     * a boolean, so the second call overwrites the first and a single glide
+     * starts from the final neutral, at the final position, with no jump.
+     */
     public void recalibrate() {
+        pendingRecentring = true;
         startNeutralCapture();
         idleBaseX = 0f;
         idleBaseY = 0f;
@@ -113,12 +170,18 @@ public final class TiltController implements SensorEventListener {
         samples = 0;
     }
 
+    /**
+     * Tilt as presented to the renderer: the measured tilt, except for the
+     * fraction of a re-centre glide that has not been presented yet. See
+     * {@link #beginGlide}.
+     */
     public float getX() {
-        return x;
+        return viewX;
     }
 
+    /** @see #getX() */
     public float getY() {
-        return y;
+        return viewY;
     }
 
     @Override
@@ -146,6 +209,10 @@ public final class TiltController implements SensorEventListener {
             calibrated = true;
             x = 0f;
             y = 0f;
+            if (pendingRecentring) {
+                pendingRecentring = false;
+                beginGlide(); // before the listener reads getX()/getY()
+            }
             listener.onTiltChanged();
             return;
         }
@@ -191,7 +258,91 @@ public final class TiltController implements SensorEventListener {
             return;
         }
 
+        advanceGlide();
         listener.onTiltChanged();
+    }
+
+    // ------------------------------------------------------------ re-centre glide
+
+    /**
+     * Start easing the presented tilt into a freshly captured neutral.
+     *
+     * <p><b>Why the glide is here and not in the renderer.</b> The renderer has a
+     * deliberate fast-attack mode for real hand movement
+     * ({@code ReliefRenderer.ATTACK_ERROR}: snap in one frame once the error
+     * exceeds ~3 degrees of phone rotation), which is right for a hand and
+     * wrong for a re-centre. A re-centre used to hard-zero x and y, and since
+     * the phone is very often picked up at a different angle from the one it was
+     * put down at, that hard zero arrived as a jump of many degrees -- a
+     * jump-cut exactly where an orbit belongs. That path is
+     * {@code recalibrate()}, which fires on every visibility change of the
+     * wallpaper, on wake from idle-sleep, and on the studio's Calibrate button.
+     *
+     * <p>So the filter cannot be told about it from the outside: to the
+     * renderer a re-centre and a fast flick are the same single large step in
+     * the target, and it has to snap the second one. Both surfaces reach the
+     * renderer only through {@code setTilt(getX(), getY())}, so there is no other
+     * channel for the REASON to travel -- and this is the only class that knows
+     * the reason. Hence the glide lives here, and the renderer's fast attack is
+     * left exactly as it was, which is also what keeps deliberate movement
+     * snapping: a hand never touches this code path.
+     *
+     * <p>Consequences worth knowing:
+     * <ul>
+     *   <li>Both surfaces get it, because they share this class. See
+     *       {@code DepthWallpaperService} / {@code MainActivity}.</li>
+     *   <li>The studio does NOT glide on resume, because
+     *       {@link #start} is idempotent and the studio's poll re-enters it
+     *       while the sensor is still registered. The wallpaper stops and
+     *       restarts its sensor, so it does recalibrate, and that is the snap
+     *       that was reported.</li>
+     *   <li>Until the glide ends, {@link #getX} / {@link #getY} report the
+     *       presented tilt rather than the instantaneous reading. The only
+     *       consumer is the renderer; the idle detector in onSensorChanged uses
+     *       the raw fields, so it is unaffected.</li>
+     * </ul>
+     *
+     * <p>The glide re-aims at the LIVE measurement rather than at 0, so a phone
+     * that keeps moving during the glide simply re-targets, and when the glide
+     * ends the presented value is bit-for-bit the measurement. That is what
+     * makes an interrupted or repeated re-centre seamless.
+     */
+    private void beginGlide() {
+        float travel = Math.max(Math.abs(x - viewX), Math.abs(y - viewY));
+        glideSpan = Math.max(RECENTRE_MIN_SECONDS, travel / RECENTRE_RATE);
+        glideFromX = viewX;
+        glideFromY = viewY;
+        glideStartNanos = System.nanoTime();
+        gliding = true;
+    }
+
+    /**
+     * Move the presented tilt along the glide, or just report the measurement.
+     *
+     * <p>The clock is absolute rather than a per-event delta, so the glide takes
+     * the same wall-clock time whatever rate the sensor delivers, and a dropped
+     * event cannot lengthen it.
+     */
+    private void advanceGlide() {
+        if (!gliding) {
+            viewX = x;
+            viewY = y;
+            return;
+        }
+        float u = (System.nanoTime() - glideStartNanos) / 1e9f / glideSpan;
+        if (u >= 1f) {
+            gliding = false;
+            viewX = x;
+            viewY = y;
+            return;
+        }
+        // Smoothstep: zero slope at both ends, so the glide neither starts nor
+        // stops with a step in rate -- a pop in velocity is more visible than a
+        // pop in position. Its derivative 6u(1-u) is non-negative, so the path
+        // is monotonic and cannot overshoot the new neutral.
+        float p = u * u * (3f - 2f * u);
+        viewX = glideFromX + (x - glideFromX) * p;
+        viewY = glideFromY + (y - glideFromY) * p;
     }
 
     private void goToSleep() {
