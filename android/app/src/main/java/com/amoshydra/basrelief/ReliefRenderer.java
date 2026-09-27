@@ -700,26 +700,39 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, 0, normalBuffer);
     }
 
+    /**
+     * Put a resolved framing onto the GL thread's state.
+     *
+     * <p>Taken from {@link Framing} rather than recomputed per surface, because
+     * the two surfaces computing it themselves is how they came to disagree.
+     */
+    void apply(Framing f) {
+        depth = f.depth;
+        zoom = f.zoom;
+        motion = f.motion;
+        orbitX = f.orbitX;
+        orbitY = f.orbitY;
+        setPan(f.panX, f.panY);
+    }
+
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         // The index owns the selection, so one dereference gives the files and the
         // settings together and cannot come back naming a photo that was deleted.
-        AppState state = AppState.load(p, context.getFilesDir());
-        LibraryItem active = state.activeItem();
+        // Loaded once: this runs on the GL thread at cold start, and each load
+        // re-reads and re-validates the whole gallery.
+        final AppState state = AppState.load(p, context.getFilesDir());
+        final LibraryItem active = state.activeItem();
+        // One resolution, shared with the wallpaper: they used to disagree about
+        // the bundled item, and the studio was the one that got it wrong.
+        apply(Framing.of(state));
         if (active == null || active.isBundled()) {
             // No file to resolve: the marble bust, read from res/raw. This is a
             // renderable state and not a failure, and it is where a delete of the
             // active item lands.
-            motion = state.config.motionScale();
             loadPairAsync(null, null);
             return;
         }
-        depth = active.depthFraction();
-        zoom = active.zoomScale();
-        motion = state.config.motionScale();
-        orbitX = active.orbitX;
-        orbitY = active.orbitY;
-        setPan(active.panX, active.panY);
         // Stored as bare filenames; resolve against this install's filesDir so a
         // restored backup still finds them. Null means it is not present here,
         // which retainExisting has already pruned from the index.

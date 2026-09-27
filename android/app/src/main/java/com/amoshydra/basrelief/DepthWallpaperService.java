@@ -79,10 +79,9 @@ public class DepthWallpaperService extends WallpaperService {
         private void applyFromPrefs(SharedPreferences p) {
             final AppState state = AppState.load(p, getFilesDir());
             final LibraryItem active = state.activeItem();
-            final boolean bundled = active == null || active.isBundled();
             final String img;
             final String dep;
-            if (bundled) {
+            if (active == null || active.isBundled()) {
                 // The marble bust: no file, so res/raw. Null here is a normal
                 // state and not a missing photo.
                 img = null;
@@ -93,21 +92,14 @@ public class DepthWallpaperService extends WallpaperService {
                 img = imgF == null ? null : imgF.getAbsolutePath();
                 dep = depF == null ? null : depF.getAbsolutePath();
             }
-            final float motion = state.config.motionScale();
-            final float depth = bundled ? LibraryItem.DEFAULT_INTENSITY / 100f : active.depthFraction();
-            final float zoom = bundled ? LibraryItem.DEFAULT_ZOOM / 100f : active.zoomScale();
-            final float ox = bundled ? 0f : active.orbitX;
-            final float oy = bundled ? 0f : active.orbitY;
-            final float px = bundled ? 0f : active.panX;
-            final float py = bundled ? 0f : active.panY;
+            // Resolved once, on the calling thread, and applied on the GL thread.
+            // queueEvent is the one thread hop the renderer allows (see the
+            // threading table in AGENTS.md).
+            final Framing framing = Framing.of(state);
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
-                    renderer.setDepth(depth);
-                    renderer.setZoom(zoom);
-                    renderer.setMotion(motion);
-                    renderer.setOrbit(ox, oy);
-                    renderer.setPan(px, py);
+                    renderer.apply(framing);
                     // Only reload when the file actually changed; re-decoding on
                     // every Depth nudge would drop a frame for nothing. Compared
                     // through a null-safe helper, because both are null for the
