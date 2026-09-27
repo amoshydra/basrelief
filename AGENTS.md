@@ -132,6 +132,30 @@ Constraints (learned the hard way):
   clamps `intensity` to `0.9*CAM_DIST/scale`, so the Depth slider stops working at
   high zoom without saying so. Treat "matches the web" as an explicit list of
   invariants to check, not a general claim.
+- **The bundled demo depth map is `res/raw/depth.png` and must be loaded as a
+  pair with `res/raw/image.png`.** It shipped unreferenced from the first commit,
+  so the out-of-the-box demo fell through to a flat depth map and rendered with
+  no relief at all. The status line now distinguishes the two
+  ("bundled demo + depth" vs "bundled demo, FLAT") because when they both said
+  "bundled demo" the failure was invisible.
+- **The build container bakes in its own debug keystore** (`android/Dockerfile`).
+  Without it AGP mints a fresh key in ephemeral storage on every build, every
+  APK gets a different signature, `adb install -r` always fails with
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE, and the only recovery is an uninstall —
+  which silently wipes the user's studio settings each time. If you ever see
+  that error, this is why.
+- **The wallpaper DOES load itself on a cold start, via
+  `ReliefRenderer.onSurfaceCreated` -> `reloadFromPrefs()`.** Do not "discover" a
+  missing initial load here: it was checked, and the pref-change listener is
+  only a *live update* path on top of it. An attempt to add a second
+  one-shot load in `Engine.onSurfaceChanged` was written, reviewed and reverted
+  as redundant — it only cost a duplicate 393k-vertex mesh build. A cold start
+  was verified rendering correctly (app force-stopped, studio never opened,
+  reached via Settings -> Wallpaper -> Live wallpapers -> Preview).
+- **This ROM's wallpaper picker does not apply the selection.** Tapping "Set
+  wallpaper" reports success and no app-side error is logged, but
+  `dumpsys wallpaper` still shows `com.android.systemui...ImageWallpaper`. That
+  is a device/ROM quirk, not an app bug — do not chase it as one.
 - **SharedPreferences key `depthwall` is the single source of truth** between the
   studio and the wallpaper (image/depth paths, intensity, motion, zoom, orbit,
   pan). The wallpaper is read-only; the studio edits. (This is the *transport*
