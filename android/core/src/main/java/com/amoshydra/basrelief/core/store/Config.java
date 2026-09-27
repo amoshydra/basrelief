@@ -4,145 +4,79 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The user's settings as one versioned blob, so their meaning does not depend
- * on which build wrote it.
+ * The settings that are genuinely global.
  *
- * <p><b>Why this exists.</b> The settings used to live as nine loose
- * SharedPreferences keys with no version. That is only unambiguous while the
- * meaning of every key is frozen forever: an earlier build wrote {@code
- * intensity} on a 0..200 scale, and because the reader clamped 0..100 the value
- * silently changed meaning instead of being migrated. The same class of problem
- * is waiting for {@code zoom} and {@code motion}, which are stored as 0..100 but
- * mapped onto 0.25..2.0 and 0..3.
+ * <p><b>What moved and why.</b> This used to hold the image, the depth map,
+ * Depth, Zoom and the framing, on top of Motion. All of those are properties of
+ * <i>a photograph</i> rather than of the app, so they now live on
+ * {@link LibraryItem} -- otherwise every photo in a gallery would share one
+ * framing. What is left is Motion, which describes how this device is held and
+ * moved.
  *
- * <p><b>Why it is a single JSON string.</b> One pref key means one atomic write,
- * so a reader can never observe half-updated settings, and adding a field later
- * does not mean adding a key that older builds will not know to ignore.
+ * <p><b>Why the selection is not here either.</b> An earlier draft of this shrink
+ * kept {@code activeItemId} in both this class and {@link Library}. That is two
+ * owners of one value, and the two can disagree: {@link Library#of()} already
+ * guarantees its selection names a real item, so a second copy in the config can
+ * only ever be a copy that dangles. The index owns the selection, and
+ * {@code activeItem()} returns null for "the bundled demo" -- a state that
+ * renders, so it needs no representation of its own.
  *
  * <p><b>Never throws.</b> {@link #parse} returns defaults for anything it cannot
- * understand — missing, corrupt, or written by a newer build. The wallpaper
+ * understand -- missing, corrupt, or written by a newer build. The wallpaper
  * parses this on the GL thread during a cold start, where an exception means no
- * wallpaper at all, which is a far worse outcome than falling back to defaults.
+ * wallpaper at all, which is a far worse outcome than falling back.
  */
 public final class Config {
 
-    /** Bump when the meaning of a stored field changes, and add a migration. */
-    public static final int VERSION = 1;
+    /**
+     * v2: the per-photograph settings left this blob, so it now holds only
+     * Motion. A v1 blob is still readable -- see {@link #migrate}.
+     */
+    public static final int VERSION = 2;
 
     /** The single SharedPreferences key the blob lives under. */
     public static final String KEY = "config";
 
-    public static final int DEFAULT_INTENSITY = 90;
-    public static final int DEFAULT_ZOOM = 100;
     public static final int DEFAULT_MOTION = 33;
-
-    public static final int INTENSITY_MIN = 0;
-    public static final int INTENSITY_MAX = 100;
-    public static final int ZOOM_MIN = 25;   // 0.25x
-    public static final int ZOOM_MAX = 200;  // 2.0x
     public static final int MOTION_MIN = 0;
     public static final int MOTION_MAX = 100; // scaled to 0..3 internally
 
-    /** Filenames relative to filesDir, or null. See {@link PrefFiles}. */
-    public final String imagePath;
-    public final String depthPath;
-    public final int intensity; // 0..100
-    public final int zoom;      // 25..200
-    public final int motion;    // 0..100
-    public final float orbitX;  // -0.5..0.5, a fraction of the plane
-    public final float orbitY;
-    public final float panX;    // PIXELS, not a fraction — see below
-    public final float panY;
+    /** 0..100. */
+    public final int motion;
 
-    public Config(String imagePath, String depthPath, int intensity, int zoom, int motion,
-                  float orbitX, float orbitY, float panX, float panY) {
-        this.imagePath = imagePath;
-        this.depthPath = depthPath;
-        this.intensity = clamp(intensity, INTENSITY_MIN, INTENSITY_MAX);
-        this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    public Config(int motion) {
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
-        this.orbitX = clamp(orbitX, -0.5f, 0.5f);
-        this.orbitY = clamp(orbitY, -0.5f, 0.5f);
-        // Pan is deliberately NOT clamped here. It is carried in pixels and
-        // consumed as panX / surfaceW, so its valid range is the surface size —
-        // which this class cannot know, and which differs per device and per
-        // orientation. ReliefRenderer.setPan() clamps against the real surface.
-        //
-        // Clamping to the orbit-style +/-0.5 here looked harmless and silently
-        // flattened every pan offset to almost nothing: a stored -135px became
-        // -0.5px. Do not add a range check without knowing the units.
-        this.panX = panX;
-        this.panY = panY;
     }
 
     public static Config defaults() {
-        return new Config(null, null, DEFAULT_INTENSITY, DEFAULT_ZOOM, DEFAULT_MOTION,
-                0f, 0f, 0f, 0f);
+        return new Config(DEFAULT_MOTION);
     }
 
-    // ------------------------------------------------- single-field updates
-    //
-    // The studio changes one setting at a time. These exist so a write site
-    // cannot forget to carry the other eight fields along — the failure mode of
-    // read-modify-write on a nine-field value, and one that would silently reset
-    // a user's image every time they nudged the Depth slider.
-
-    public Config withIntensity(int v) {
-        return new Config(imagePath, depthPath, v, zoom, motion, orbitX, orbitY, panX, panY);
-    }
-
-    public Config withZoom(int v) {
-        return new Config(imagePath, depthPath, intensity, v, motion, orbitX, orbitY, panX, panY);
+    public static int clampMotion(int v) {
+        return clamp(v, MOTION_MIN, MOTION_MAX);
     }
 
     public Config withMotion(int v) {
-        return new Config(imagePath, depthPath, intensity, zoom, v, orbitX, orbitY, panX, panY);
+        return new Config(v);
     }
 
-    public Config withOrbit(float x, float y) {
-        return new Config(imagePath, depthPath, intensity, zoom, motion, x, y, panX, panY);
-    }
-
-    public Config withPan(float x, float y) {
-        return new Config(imagePath, depthPath, intensity, zoom, motion, orbitX, orbitY, x, y);
-    }
-
-    public Config withFiles(String image, String depth) {
-        return new Config(image, depth, intensity, zoom, motion, orbitX, orbitY, panX, panY);
-    }
-
-    // ------------------------------------------------------------- derived
-
-    /** Depth as a fraction of the reachable maximum — see CameraModel.setDepth. */
-    public float depthFraction() {
-        return intensity / 100f;
-    }
-
-    public float zoomScale() {
-        return zoom / 100f;
-    }
-
+    /**
+     * Motion as the renderer wants it: 0..3.
+     *
+     * <p>0 is still a live value, not "off" -- the relief is built and the
+     * camera still moves, it just barely responds to tilt.
+     */
     public float motionScale() {
         return motion / 100f * 3f;
     }
 
-    // ---------------------------------------------------------- serialise
+    // ------------------------------------------------------------ serialise
 
     public String toJson() {
         JSONObject o = new JSONObject();
         try {
             o.put("version", VERSION);
-            o.put("intensity", intensity);
-            o.put("zoom", zoom);
             o.put("motion", motion);
-            o.put("orbit_x", (double) orbitX);
-            o.put("orbit_y", (double) orbitY);
-            o.put("pan_x", (double) panX);
-            o.put("pan_y", (double) panY);
-            // Absent rather than null: JSONObject drops nulls anyway, and a
-            // missing key reads as "not set" without a special case.
-            if (imagePath != null) o.put("image_path", imagePath);
-            if (depthPath != null) o.put("depth_path", depthPath);
         } catch (JSONException e) {
             throw new AssertionError("Config.toJson cannot fail", e);
         }
@@ -155,7 +89,7 @@ public final class Config {
      * @param raw the stored string, or null if nothing has been written yet
      */
     public static Config parse(String raw) {
-        if (raw == null || raw.isEmpty()) return defaults();
+        if (raw == null || raw.trim().isEmpty()) return defaults();
         JSONObject o;
         try {
             o = new JSONObject(raw);
@@ -171,54 +105,83 @@ public final class Config {
         if (version < VERSION) {
             o = migrate(o, version);
         }
-        return new Config(
-                o.isNull("image_path") ? null : o.optString("image_path", null),
-                o.isNull("depth_path") ? null : o.optString("depth_path", null),
-                o.optInt("intensity", DEFAULT_INTENSITY),
-                o.optInt("zoom", DEFAULT_ZOOM),
-                o.optInt("motion", DEFAULT_MOTION),
-                (float) o.optDouble("orbit_x", 0d),
-                (float) o.optDouble("orbit_y", 0d),
-                (float) o.optDouble("pan_x", 0d),
-                (float) o.optDouble("pan_y", 0d));
+        return new Config(readMotion(o));
     }
 
     /**
-     * Bring an older blob up to {@link #VERSION}.
+     * Motion, distinguishing a value out of range from a value that is not a
+     * number at all.
      *
-     * <p>Currently a no-op for v0, because v0 is the first versioned schema —
-     * the pre-blob era was nine loose keys, handled by
-     * {@link #fromLegacyKeys}. It exists so the next change has an obvious
-     * place to go, and so the parse path is already shaped like a real one.
+     * <p>Those two need different answers. A build that stored 0..200 hands us
+     * 150, and clamping it into 0..100 is the right recovery — that is a known
+     * older range. But a blob containing {@code 1e400} hands us an infinity, and
+     * casting that to an int yields 0: <i>silently the strongest possible
+     * setting</i>, on a field where 0 is a real value meaning "the relief barely
+     * responds". A user whose motion reset to no response would have no way to
+     * tell that from the app having decided it for them.
+     *
+     * <p>So a value that is not a finite number becomes the default, and only
+     * an out-of-range finite number is clamped.
+     */
+    private static int readMotion(JSONObject o) {
+        Object v = o.opt("motion");
+        if (v instanceof Number) {
+            double d = ((Number) v).doubleValue();
+            // NaN and the infinities have no meaningful int, and every one of
+            // them casts to 0 or MAX_VALUE rather than failing.
+            if (!Double.isNaN(d) && !Double.isInfinite(d)) {
+                return clamp((int) d, MOTION_MIN, MOTION_MAX);
+            }
+        }
+        return DEFAULT_MOTION;
+    }
+
+    /**
+     * v0 -> v1 -> v2.
+     *
+     * <p>v2 removed the image, depth, Depth, Zoom and framing fields. Nothing is
+     * rewritten here: the files an install already has are adopted into the index
+     * by {@link #legacyFiles}, which the caller reads once, and Motion is the
+     * only surviving field.
+     *
+     * <p>Idempotent, because reading an absent key yields a default.
      */
     private static JSONObject migrate(JSONObject o, int fromVersion) {
-        return o; // no older blob schema exists yet
+        return o;
     }
 
+    // ------------------------------------------------------------ migration
+
     /**
-     * Fold the pre-blob flat keys into a v1 config, so an existing install
-     * keeps its settings across the upgrade.
+     * The image and depth a v1 blob named, read once by the migration.
      *
-     * <p>The one lossy part is {@code intensity}: the oldest build wrote it on a
-     * 0..200 scale and nothing recorded which build wrote a given value, so a
-     * stored 150 is clamped to 100 rather than guessed at. That is a deliberate
-     * one-time reinterpretation — after this, the value is unambiguous.
+     * <p><b>Migration only.</b> These are not live fields and must not be used
+     * to resolve what to render -- the index does that, from items that carry
+     * their own file names. This exists because a v1 install's photo is
+     * recorded <i>only</i> in the old config blob, so dropping the field without
+     * reading it first would lose the photo that install is currently showing.
      *
-     * @param legacy value for each key, as it would have been read before
+     * <p>Returns {@code {image, depth}}, with nulls for anything absent, or
+     * null if the blob is unusable. Both names are normalised, so a stored
+     * absolute path cannot escape into the index.
+     *
+     * @param raw the stored config blob, of any version
      */
-    public static Config fromLegacyKeys(String imagePath, String depthPath,
-                                        int intensity, int zoom, int motion,
-                                        float orbitX, float orbitY,
-                                        float panX, float panY) {
-        return new Config(imagePath, depthPath, intensity, zoom, motion,
-                orbitX, orbitY, panX, panY);
+    public static String[] legacyFiles(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return null;
+        JSONObject o;
+        try {
+            o = new JSONObject(raw);
+        } catch (JSONException e) {
+            return null;
+        }
+        if (o.optInt("version", 0) > 1) return null; // a newer build's shape is not ours to read
+        String image = LibraryItem.normaliseName(o.optString("image_path", null));
+        if (image == null) return null; // nothing to adopt
+        return new String[]{image, LibraryItem.normaliseName(o.optString("depth_path", null))};
     }
 
     private static int clamp(int v, int lo, int hi) {
-        return Math.max(lo, Math.min(hi, v));
-    }
-
-    private static float clamp(float v, float lo, float hi) {
         return Math.max(lo, Math.min(hi, v));
     }
 }

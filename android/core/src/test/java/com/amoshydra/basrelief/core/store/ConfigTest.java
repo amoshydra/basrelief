@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief.core.store;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -10,160 +11,264 @@ import org.junit.Test;
 /**
  * Pins the settings blob.
  *
- * <p>The theme is that the stored meaning must not depend on which build wrote
- * it, and that nothing here may throw — the wallpaper parses this on the GL
- * thread during a cold start, where an exception means no wallpaper at all.
+ * <p>Two themes, and both have already cost something:
+ *
+ * <ol>
+ *   <li><b>Nothing here may throw.</b> The wallpaper parses this on the GL
+ *       thread during a cold start, where an exception means no wallpaper at
+ *       all. So every shape of bad input has a defined answer rather than an
+ *       exception.
+ *   <li><b>The stored meaning must not depend on which build wrote it.</b> A
+ *       v1 blob names an image and a depth that this build no longer renders
+ *       from here, and losing them silently would lose the photo the install is
+ *       currently showing.
+ * </ol>
+ *
+ * <p>The per-photograph settings that used to live here are pinned by
+ * {@link PerItemSettingsTest} instead, on the item that owns them now.
  */
 public class ConfigTest {
 
-    private static Config sample() {
-        return new Config("img.png", "dep.png", 60, 150, 40, 0.1f, -0.2f, 0.3f, -0.4f);
-    }
+    // ------------------------------------------------------------ round trip
 
     @Test
-    public void roundTripsEveryField() {
-        Config c = sample();
-        Config r = Config.parse(c.toJson());
-        assertEquals("img.png", r.imagePath);
-        assertEquals("dep.png", r.depthPath);
-        assertEquals(60, r.intensity);
-        assertEquals(150, r.zoom);
-        assertEquals(40, r.motion);
-        assertEquals(0.1f, r.orbitX, 1e-6f);
-        assertEquals(-0.2f, r.orbitY, 1e-6f);
-        assertEquals(0.3f, r.panX, 1e-6f);
-        assertEquals(-0.4f, r.panY, 1e-6f);
+    public void roundTripsMotion() {
+        for (int motion : new int[]{0, 1, 33, 66, 100}) {
+            Config c = new Config(motion);
+            assertEquals("motion " + motion, motion, Config.parse(c.toJson()).motion);
+        }
     }
 
     @Test
     public void writesItsVersion() {
-        assertTrue(Config.parse(sample().toJson()).toJson().contains("\"version\":" + Config.VERSION));
+        JSONObjectish version = new JSONObjectish(Config.defaults().toJson());
+        assertEquals(String.valueOf(Config.VERSION), version.get("version"));
     }
 
-    /** Absent paths must stay absent, not become the string "null". */
+    /** The blob is one small number, and nothing that used to be global rode along. */
     @Test
-    public void noImageSurvivesAsNullNotTheStringNull() {
-        Config c = Config.parse(Config.defaults().toJson());
-        assertNull(c.imagePath);
-        assertNull(c.depthPath);
+    public void theBlobHoldsNothingButMotion() {
+        String json = new Config(42).toJson();
+        assertFalse("a dead field is a promise to migrate it later",
+                json.contains("intensity") || json.contains("zoom")
+                        || json.contains("orbit") || json.contains("pan")
+                        || json.contains("image") || json.contains("depth")
+                        || json.contains("active"));
     }
 
-    // ------------------------------------------------------- never throws
+    // --------------------------------------------------------------- nothing
 
     @Test
     public void missingBlobYieldsDefaults() {
-        assertEquals(Config.DEFAULT_INTENSITY, Config.parse(null).intensity);
-        assertEquals(Config.DEFAULT_ZOOM, Config.parse(null).zoom);
         assertEquals(Config.DEFAULT_MOTION, Config.parse(null).motion);
-        assertNull(Config.parse(null).imagePath);
     }
 
     @Test
     public void emptyBlobYieldsDefaults() {
-        assertEquals(Config.DEFAULT_INTENSITY, Config.parse("").intensity);
-        assertEquals(Config.DEFAULT_INTENSITY, Config.parse("   ").intensity);
-    }
-
-    /**
-     * The one that matters most on a cold start: a truncated write must not
-     * take the wallpaper down.
-     */
-    @Test
-    public void corruptBlobYieldsDefaultsInsteadOfThrowing() {
-        for (String bad : new String[]{
-                "{", "not json at all", "[]", "{\"version\":", "{\"intensity\":\"abc\"}",
-                "\u0000\u0001", "{\"version\":1,\"zoom\":[1,2,3]}"}) {
-            Config c = Config.parse(bad);
-            assertNotNull("threw or returned null for: " + bad, c);
-            assertEquals("bad blob should fall back to defaults: " + bad,
-                    Config.DEFAULT_INTENSITY, c.intensity);
+        for (String blank : new String[]{"", "   ", "\n", "\t"}) {
+            assertEquals("blank: " + blank, Config.DEFAULT_MOTION, Config.parse(blank).motion);
         }
     }
 
-    /** Guessing at a future schema would be worse than starting clean. */
+    /**
+     * The one that has to hold. A throw here is not a crash the user sees "for
+     * a moment" — it is a wallpaper that never appears, on the GL thread, with
+     * nothing left to recover it.
+     */
+    @Test
+    public void corruptBlobYieldsDefaultsInsteadOfThrowing() {
+        String[] nasty = {
+                "{", "}", "[]", "nonsense", "{\"version\":", "{\"motion\":",
+                "{\"motion\":\"lots\"}", "{\"motion\":null}", "null", "3", "\"str\"",
+                "{\"version\":1,\"motion\":[1,2]}", "{\"motion\":1e400}",
+        };
+        for (String bad : nasty) {
+            Config c = Config.parse(bad);
+            assertNotNull("must not return null for: " + bad, c);
+            assertEquals("bad blob: " + bad, Config.DEFAULT_MOTION, c.motion);
+        }
+    }
+
     @Test
     public void newerVersionFallsBackToDefaults() {
-        Config c = Config.parse("{\"version\":" + (Config.VERSION + 1) + ",\"intensity\":42}");
-        assertEquals(Config.DEFAULT_INTENSITY, c.intensity);
-    }
-
-    // ------------------------------------------------------------ clamping
-
-    @Test
-    public void outOfRangeIntsAreClampedNotWrapped() {
-        assertEquals(Config.INTENSITY_MAX, new Config(null, null, 500, 100, 33, 0, 0, 0, 0).intensity);
-        assertEquals(Config.INTENSITY_MIN, new Config(null, null, -7, 100, 33, 0, 0, 0, 0).intensity);
-        // zoom below 25% would invert the camera
-        assertEquals(Config.ZOOM_MIN, new Config(null, null, 50, 1, 33, 0, 0, 0, 0).zoom);
-        assertEquals(Config.ZOOM_MAX, new Config(null, null, 50, 9999, 33, 0, 0, 0, 0).zoom);
-        assertEquals(Config.MOTION_MAX, new Config(null, null, 50, 100, 400, 0, 0, 0, 0).motion);
-    }
-
-    @Test
-    public void orbitIsClampedToThePanRange() {
-        Config c = new Config(null, null, 50, 100, 33, 9f, -9f, 0, 0);
-        assertEquals(0.5f, c.orbitX, 1e-6f);
-        assertEquals(-0.5f, c.orbitY, 1e-6f);
+        String future = "{\"version\":" + (Config.VERSION + 1) + ",\"motion\":99}";
+        assertEquals("guessing at a newer shape is worse than starting clean",
+                Config.DEFAULT_MOTION, Config.parse(future).motion);
     }
 
     /**
-     * Pan is in PIXELS (CameraModel consumes panX / surfaceW), so its range is the
-     * surface size and this class must not clamp it. Clamping it to orbit's
-     * +/-0.5 range silently turned a stored -135px pan into -0.5px, i.e. no pan
-     * at all, and it survived review because the value still round-tripped.
+     * A motion we failed to read falls back to the default, not to zero.
+     *
+     * <p>Zero is a real value meaning "the relief barely responds to tilt", so
+     * choosing it for a field we could not parse would look like a fault in the
+     * response curve rather than a fault in the parse — and would be far harder
+     * to trace back to storage.
      */
     @Test
-    public void panIsPixelsAndMustNotBeClampedToAFraction() {
-        Config c = new Config(null, null, 50, 100, 33, 0f, 0f, -135.25f, -632.5f);
-        assertEquals(-135.25f, c.panX, 0f);
-        assertEquals(-632.5f, c.panY, 0f);
-        // and it must survive a round trip unmangled
-        Config r = Config.parse(c.toJson());
-        assertEquals(-135.25f, r.panX, 1e-3f);
-        assertEquals(-632.5f, r.panY, 1e-3f);
-        // large values pass through too; the renderer clamps to the real surface
-        assertEquals(5000f, new Config(null, null, 50, 100, 33, 0, 0, 5000f, 5000f).panX, 0f);
+    public void anUnreadableMotionFallsBackToTheDefaultNotToZero() {
+        assertEquals(Config.DEFAULT_MOTION, Config.parse("{\"motion\":\"x\"}").motion);
+        assertEquals(Config.DEFAULT_MOTION, Config.parse("{\"version\":2}").motion);
+        assertEquals(Config.DEFAULT_MOTION, Config.parse("{}").motion);
     }
 
     /**
-     * The old 0..200 intensity scale. A stored value's meaning is unrecoverable
-     * — nothing recorded which build wrote it — so it is clamped once, here,
-     * and is unambiguous from v1 onward.
+     * The case that motivated separating "out of range" from "not a number".
+     *
+     * <p>{@code optInt} casts whatever it finds, and every one of these casts to
+     * 0 or to MAX_VALUE rather than failing. On this field 0 is a real setting,
+     * so a corrupt blob would have produced a working app that no longer responds
+     * to tilt, with nothing on screen to suggest the stored value was at fault.
      */
     @Test
-    public void legacyWideIntensityIsClampedOnceOnUpgrade() {
-        Config c = Config.fromLegacyKeys("i.png", "d.png", 150, 100, 33, 0, 0, 0, 0);
-        assertEquals(100, c.intensity);
-        assertEquals("i.png", c.imagePath);
+    public void aNonFiniteMotionBecomesTheDefaultNotTheStrongestSetting() {
+        for (String bad : new String[]{
+                "{\"motion\":1e400}", "{\"motion\":-1e400}", "{\"motion\":1e999}",
+                "{\"motion\":-1e999}", "{\"motion\":1e309}",
+        }) {
+            assertEquals("must not clamp a non-finite number: " + bad,
+                    Config.DEFAULT_MOTION, Config.parse(bad).motion);
+        }
     }
-
-    // --------------------------------------------------- derived mappings
 
     /**
-     * The three 0..100 sliders map onto three different internal ranges. These
-     * are the conversions the renderer used to inline; if one drifts, Depth or
-     * Motion silently stops doing what the slider says.
+     * ...whereas a merely out-of-range value is clamped, because that is a known
+     * older range rather than corruption. The line is finiteness, not magnitude:
+     * a value beyond {@code Long} parses as a huge finite double, which is a
+     * range problem like any other, so it clamps. Drawing the line at "seems too
+     * big to be real" would be a guess about the writer's intent.
      */
     @Test
-    public void sliderToInternalMappings() {
-        assertEquals(0f, new Config(null, null, 0, 100, 0, 0, 0, 0, 0).depthFraction(), 1e-6f);
-        assertEquals(1f, new Config(null, null, 100, 100, 0, 0, 0, 0, 0).depthFraction(), 1e-6f);
-        assertEquals(0.6f, new Config(null, null, 60, 100, 0, 0, 0, 0, 0).depthFraction(), 1e-6f);
-
-        assertEquals(1f, new Config(null, null, 0, 100, 0, 0, 0, 0, 0).zoomScale(), 1e-6f);
-        assertEquals(2f, new Config(null, null, 0, 200, 0, 0, 0, 0, 0).zoomScale(), 1e-6f);
-        assertEquals(0.25f, new Config(null, null, 0, 25, 0, 0, 0, 0, 0).zoomScale(), 1e-6f);
-
-        assertEquals(0f, new Config(null, null, 0, 100, 0, 0, 0, 0, 0).motionScale(), 1e-6f);
-        assertEquals(3f, new Config(null, null, 0, 100, 100, 0, 0, 0, 0).motionScale(), 1e-6f);
+    public void anOutOfRangeMotionIsStillClamped() {
+        assertEquals(100, Config.parse("{\"motion\":150}").motion);
+        assertEquals(100, Config.parse("{\"motion\":400}").motion);
+        assertEquals(0, Config.parse("{\"motion\":-5}").motion);
+        assertEquals(100, Config.parse("{\"motion\":99999999999999999999}").motion);
+        assertEquals(0, Config.parse("{\"motion\":-99999999999999999999}").motion);
     }
 
-    /** Depth 0% must be exactly flat — the property that regressed once already. */
+    // -------------------------------------------------------------- clamping
+
     @Test
-    public void depthZeroIsExactlyZeroNotNearly() {
-        Config flat = new Config(null, null, 0, 100, 33, 0, 0, 0, 0);
-        assertEquals(0f, flat.depthFraction(), 0f); // delta 0: must be bit-exact
-        // and it must survive a round trip as exactly zero
-        assertEquals(0f, Config.parse(flat.toJson()).depthFraction(), 0f);
+    public void motionIsClampedNotWrapped() {
+        assertEquals(100, new Config(500).motion);
+        assertEquals(0, new Config(-7).motion);
+        assertEquals(100, Config.parse("{\"motion\":99999}").motion);
+        assertEquals(0, Config.parse("{\"motion\":-99999}").motion);
+    }
+
+    @Test
+    public void motionSlidersMapToTheRenderersRange() {
+        assertEquals(0f, new Config(0).motionScale(), 1e-6f);
+        assertEquals(1.5f, new Config(50).motionScale(), 1e-6f);
+        assertEquals(3f, new Config(100).motionScale(), 1e-6f);
+    }
+
+    // -------------------------------------------------------------- migration
+
+    /**
+     * A v1 blob's Motion is the one field that survives, so it must be read
+     * rather than defaulted. Losing it would reset the response curve on upgrade,
+     * which is a silent behaviour change to every existing install.
+     */
+    @Test
+    public void aV1BlobKeepsItsMotion() {
+        String v1 = "{\"version\":1,\"image_path\":\"a.png\",\"depth_path\":\"a-depth.png\","
+                + "\"intensity\":40,\"zoom\":150,\"motion\":77,"
+                + "\"orbit_x\":0.1,\"orbit_y\":-0.2,\"pan_x\":-135.25,\"pan_y\":-632.5}";
+        assertEquals(77, Config.parse(v1).motion);
+    }
+
+    @Test
+    public void aV0BlobStillParses() {
+        assertEquals(5, Config.parse("{\"motion\":5}").motion);
+    }
+
+    // ------------------------------------------------------- legacy file read
+
+    /**
+     * Migration only: the pair a v1 install is showing has to be readable, or the
+     * upgrade drops the photo that install is currently displaying.
+     */
+    @Test
+    public void legacyFilesReadsThePairAV1InstallIsShowing() {
+        String v1 = "{\"version\":1,\"image_path\":\"custom_image.png\","
+                + "\"depth_path\":\"custom_depth.png\"}";
+        String[] files = Config.legacyFiles(v1);
+        assertNotNull(files);
+        assertEquals("custom_image.png", files[0]);
+        assertEquals("custom_depth.png", files[1]);
+    }
+
+    @Test
+    public void legacyFilesHandlesAFlatItem() {
+        String v1 = "{\"version\":1,\"image_path\":\"a.png\"}";
+        String[] files = Config.legacyFiles(v1);
+        assertNotNull(files);
+        assertEquals("a.png", files[0]);
+        assertNull("a missing depth is a flat item, not a reason to skip", files[1]);
+    }
+
+    /**
+     * A restored backup carries absolute paths from the old device's filesDir.
+     * The index stores bare filenames, so an absolute path that reached it
+     * unresolved would leave a gallery entry that can never be opened — this is
+     * the same data-loss case {@code PrefFilesTest} covers for a single setting.
+     */
+    @Test
+    public void legacyFilesStripsARestoredAbsolutePath() {
+        String v1 = "{\"version\":1,\"image_path\":"
+                + "\"/data/user/0/com.amoshydra.basrelief/files/beach.png\"}";
+        String[] files = Config.legacyFiles(v1);
+        assertNotNull(files);
+        assertEquals("beach.png", files[0]);
+    }
+
+    @Test
+    public void legacyFilesReturnsNullWhenThereIsNothingToAdopt() {
+        // v2 already: the files belong to items, not to here
+        assertNull(Config.legacyFiles(Config.defaults().toJson()));
+        // a newer build's shape is not ours to read
+        assertNull(Config.legacyFiles("{\"version\":99,\"image_path\":\"a.png\"}"));
+        // no image named, or nothing stored at all
+        assertNull(Config.legacyFiles("{\"version\":1,\"image_path\":null}"));
+        assertNull(Config.legacyFiles("{\"version\":1}"));
+        assertNull(Config.legacyFiles(null));
+        assertNull(Config.legacyFiles(""));
+        assertNull(Config.legacyFiles("{oops"));
+    }
+
+    /**
+     * Not a live accessor, so it must not answer for a current blob. If it ever
+     * did, an upgrade run on a v2 install could adopt a file that has since been
+     * deleted by hand.
+     */
+    @Test
+    public void legacyFilesDoesNotAnswerForTheCurrentVersion() {
+        String v2 = "{\"version\":2,\"motion\":33}";
+        assertNull(Config.legacyFiles(v2));
+    }
+
+    // --------------------------------------------------------------- helpers
+
+    /**
+     * A one-field read of the serialised form, so the version assertion does not
+     * drag in a JSON dependency the rest of this file does not use.
+     */
+    private static final class JSONObjectish {
+        private final String json;
+
+        JSONObjectish(String json) {
+            this.json = json;
+        }
+
+        String get(String key) {
+            String needle = "\"" + key + "\":";
+            int at = json.indexOf(needle);
+            if (at < 0) return null;
+            int from = at + needle.length();
+            int to = from;
+            while (to < json.length() && "-0123456789".indexOf(json.charAt(to)) >= 0) to++;
+            return from == to ? null : json.substring(from, to);
+        }
     }
 }

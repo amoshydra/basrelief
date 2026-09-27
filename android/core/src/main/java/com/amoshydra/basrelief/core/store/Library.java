@@ -247,8 +247,15 @@ public final class Library {
      * <p><b>This touches the index only, never the files.</b> Delete the files
      * <i>after</i> persisting the result, so a crash in between leaves orphan
      * files — recoverable, and invisible to the user — rather than an index that
-     * references files which are gone. Use {@link #removeFrom} to get the config
-     * change that must land in the same write.
+     * references files which are gone.
+     *
+     * <p><b>There is no paired config change to make, and that is the point.</b>
+     * An earlier design returned the config alongside the index precisely so the
+     * selection pointer and the config's copy of the files could not drift apart
+     * in one write and not the other. Now that the pointer lives here and only
+     * here, the two writes have collapsed into one, and the pair of writes that
+     * had to be kept in step no longer exists. The trap did not get harder to
+     * remember; it was removed.
      */
     public Library remove(String id) {
         // The bundled item is the "back to the default" affordance and has no
@@ -264,114 +271,54 @@ public final class Library {
         return of(next, isActive(id) ? null : activeId, sort);
     }
 
-    /**
-     * An index and the config that go with it after removing an item.
-     *
-     * <p>Two things have to change together, and doing them as two calls means one
-     * of them gets forgotten. If the config still named the removed item's files,
-     * the wallpaper would keep rendering a photo the user deleted — and
-     * {@link #reconcile} would then adopt those files straight back into the
-     * index, so the delete would not just fail, it would fail <i>loudly and
-     * permanently</i>. Clearing the config's files is what stops that.
-     */
-    public static final class Removal {
-        public final Library library;
-        public final Config config;
-
-        Removal(Library library, Config config) {
-            this.library = library;
-            this.config = config;
-        }
-    }
+    // ------------------------------------------------------------- migration
 
     /**
-     * Remove an item and hand back the config to write with it.
+     * Adopt the single photo pair a pre-gallery build recorded, so an existing
+     * install does not silently lose the wallpaper it is showing.
      *
-     * <p>The config is cleared whenever it named the removed item, whether or not
-     * the selection pointer agreed — the two can disagree after a partial
-     * migration, and the config is what actually renders.
-     *
-     * @param config the current config, or null if there is none
-     * @return the pair to persist; {@code library} is unchanged and
-     *         {@code config} untouched if the id was not in the index
-     */
-    public Removal removeFrom(Config config, String id) {
-        LibraryItem gone = find(id);
-        Library next = remove(id);
-        if (gone == null) return new Removal(next, config);
-        return new Removal(next, namesTheSameFiles(config, gone) ? withFiles(config, null, null) : config);
-    }
-
-    private static boolean namesTheSameFiles(Config config, LibraryItem item) {
-        if (config == null) return false;
-        String img = LibraryItem.normaliseName(config.imagePath);
-        return img != null && img.equals(item.imageName);
-    }
-
-    private static Config withFiles(Config config, String image, String depth) {
-        return config == null ? null : config.withFiles(image, depth);
-    }
-
-    // ------------------------------------------------- the other direction
-
-    /**
-     * The config this index implies: the selected item's files, everything else
-     * carried through untouched.
-     *
-     * <p>With nothing selected the config is returned as-is rather than
-     * emptied. An index that has never been written must not blank a config
-     * that already holds a real image, or the upgrade path would throw away the
-     * wallpaper on the very first launch of the build that introduced the
-     * gallery.
-     *
-     * <p>Only the files move. Zoom, orbit and pan are left alone, because
-     * whether a new photo should inherit the framing of the old one is a
-     * product decision and not this class's to make.
-     */
-    public Config applyTo(Config config) {
-        LibraryItem active = activeItem();
-        if (active == null || config == null) return config;
-        return config.withFiles(active.imageName, active.depthName);
-    }
-
-    /**
-     * Fold a config into the index: adopt a file the config knows and the index
-     * does not, and make the selection follow what the config is really
-     * rendering. This is the migration off a single pair, and the self-heal
-     * after any write path that sets files without touching the index.
+     * <p><b>Run once, at upgrade, not on every load.</b> This used to be called
+     * {@code reconcile} and invoked on every load, which made a self-heal out of
+     * a migration: any write path that put a file into filesDir without indexing
+     * it would be quietly adopted. Now that every file write goes through the
+     * index there is no such path to heal, so the only thing left to do is the
+     * one-time adoption — and leaving that on the load path would be a way to
+     * resurrect a file the user had deleted by hand.
      *
      * <p><b>Idempotent, by construction.</b> A file is matched by name, not by
-     * id, so a second call finds what the first adopted, keeps that item's id
-     * and adds nothing. That is what makes it safe to call on every load: the
-     * id of an already-indexed file never changes, so a pointer written by an
-     * earlier call is not disturbed by a later one.
+     * id, so a second call finds what the first adopted, keeps that item's id,
+     * and changes nothing. That matters because the upgrade path is not
+     * guaranteed to run exactly once: a crash between adopting and clearing the
+     * old keys leaves it to run again.
      *
-     * <p>An empty config image means the wallpaper is the bundled demo, so
-     * nothing is selected. Items are not removed — a photo the user added stays
-     * in the gallery while the demo happens to be on screen.
+     * <p>With nothing to adopt, the index is returned unchanged rather than
+     * emptied. An index that already has items is authoritative, and must not be
+     * reset just because the legacy keys are absent.
      *
+     * @param files     {@code {image, depth}} from {@link Config#legacyFiles}, or
+     *                  null when there is nothing to adopt
      * @param nowMillis stamped on an adopted item; the caller knows the file and
      *                  can pass its mtime, which is more honest than "now"
      * @param newId     id source for an adopted item, for tests
      */
-    public static Library reconcile(Library current, Config config, long nowMillis,
-                                    Supplier<String> newId) {
+    public static Library adoptLegacy(Library current, String[] files, long nowMillis,
+                                      Supplier<String> newId) {
         if (current == null) current = empty();
-        String image = LibraryItem.normaliseName(config == null ? null : config.imagePath);
-        if (image == null) return current.withSelection(null);
+        if (files == null || files.length < 1) return current;
+        String image = LibraryItem.normaliseName(files[0]);
+        if (image == null) return current;
 
         LibraryItem match = current.findByImage(image);
         if (match != null) return current.withSelection(match.id);
 
-        String id = freshId(current, newId);
-        LibraryItem adopted = LibraryItem.of(id, image,
-                LibraryItem.normaliseName(config.depthPath), nowMillis);
+        String depth = files.length > 1 ? LibraryItem.normaliseName(files[1]) : null;
+        LibraryItem adopted = LibraryItem.of(freshId(current, newId), image, depth, nowMillis);
         return current.withItem(adopted).withSelection(adopted.id);
     }
 
-    /** {@link #reconcile} with a random id source. */
-    public static Library reconcile(Library current, Config config, long nowMillis) {
-        return reconcile(current, config, nowMillis, LibraryItem.NEW_ID);
+    /** {@link #adoptLegacy} with a random id source. */
+    public static Library adoptLegacy(Library current, String[] files, long nowMillis) {
+        return adoptLegacy(current, files, nowMillis, LibraryItem.NEW_ID);
     }
 
     /**
