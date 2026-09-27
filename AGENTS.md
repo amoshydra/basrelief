@@ -132,6 +132,29 @@ Constraints (learned the hard way):
   clamps `intensity` to `0.9*CAM_DIST/scale`, so the Depth slider stops working at
   high zoom without saying so. Treat "matches the web" as an explicit list of
   invariants to check, not a general claim.
+- **The wallpaper must load itself, and the obvious "test" for it is a lie.**
+  `DepthWallpaperService` only ever loaded via its pref-change listener, and the
+  wallpaper never writes prefs (read-only; the studio owns them) — so a genuine
+  cold start loaded nothing, `textureColor` stayed -1, and the wallpaper was
+  solid black. It *looked* fine because the service runs in the SAME process as
+  the studio (no `android:process`), so opening the studio writes a pref and
+  fires the listener by accident. A test that opens the studio before checking
+  the wallpaper therefore cannot detect this. Now fixed with an explicit
+  one-shot `reloadFromPrefs()` in `Engine.onSurfaceChanged`; to actually test it,
+  force-stop the app and reach the wallpaper through Settings → Wallpaper →
+  Live wallpapers, never through the app.
+- **The bundled demo depth map is `res/raw/depth.png` and must be loaded as a
+  pair with `res/raw/image.png`.** It shipped unreferenced from the first commit,
+  so the out-of-the-box demo fell through to a flat depth map and rendered with
+  no relief at all. The status line now distinguishes the two
+  ("bundled demo + depth" vs "bundled demo, FLAT") because when they both said
+  "bundled demo" the failure was invisible.
+- **The build container bakes in its own debug keystore** (`android/Dockerfile`).
+  Without it AGP mints a fresh key in ephemeral storage on every build, every
+  APK gets a different signature, `adb install -r` always fails with
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE, and the only recovery is an uninstall —
+  which silently wipes the user's studio settings each time. If you ever see
+  that error, this is why.
 - **SharedPreferences key `depthwall` is the single source of truth** between the
   studio and the wallpaper (image/depth paths, intensity, motion, zoom, orbit,
   pan). The wallpaper is read-only; the studio edits. (This is the *transport*
