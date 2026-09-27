@@ -259,6 +259,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void setPan(float px, float py) {
         float limit = Math.max(surfaceW, surfaceH);
+        if (limit <= 0f) {
+            // The GL surface does not exist yet, so there is no meaningful bound
+            // on a PIXEL-valued pan. Clamping against limit == 0 here would
+            // silently destroy the stored offset — Math.max(-0f, -135f) is -0f —
+            // and the zero would then be persisted back to prefs on the next
+            // gesture, losing the user's pan across a restart. Accept it
+            // unclamped; onSurfaceChanged re-clamps once the size is known.
+            panX = px;
+            panY = py;
+            return;
+        }
         panX = Math.max(-limit, Math.min(limit, px));
         panY = Math.max(-limit, Math.min(limit, py));
     }
@@ -501,6 +512,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, width, height);
         surfaceW = width;
         surfaceH = height;
+        // Now that a bound exists, apply it: a pan stored on a large screen and
+        // restored on a small one must not be allowed to push the relief
+        // off-screen. Safe to call from the GL thread — panX/panY are only
+        // written here and by setPan, both on this thread.
+        setPan(panX, panY);
         surfaceAspect = (float) width / height;
         recomputeScale();
     }
