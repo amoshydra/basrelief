@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
@@ -59,6 +60,9 @@ public class MainActivity extends Activity {
     private SeekBar zoomBar;
     private TextView zoomLabel;
     private boolean syncingZoom = false;
+
+    /** Last value written to the shared {@code gyro_status} key, to avoid rewriting it per frame. */
+    private String lastGyroStatus = null;
     private final SharedPreferences.OnSharedPreferenceChangeListener statusListener =
             new SharedPreferences.OnSharedPreferenceChangeListener() {
                 @Override
@@ -147,23 +151,27 @@ public class MainActivity extends Activity {
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
         // high zoom because of the z-clamp.
+        //
+        // One read of the versioned blob feeds every slider, so the panel can
+        // never show values that disagree with what the renderer loads.
+        final Config initial = ConfigStore.load(prefs, getFilesDir());
         panel.addView(addSlider("Depth", "intensity",
-                Math.max(0, Math.min(100, prefs.getInt("intensity", 90))), 0, 100));
+                initial.intensity, 0, 100));
         panel.addView(addSlider("Motion", "motion",
-                prefs.getInt("motion", 33), 0, 100));
+                initial.motion, 0, 100));
         panel.addView(addSlider("Zoom", "zoom",
-                prefs.getInt("zoom", 100), 25, 200));
+                initial.zoom, 25, 200));
 
         Button resetView = makeButton("Reset view", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                prefs.edit()
-                        .putInt("zoom", 100)
-                        .remove("orbit_x")
-                        .remove("orbit_y")
-                        .remove("pan_x")
-                        .remove("pan_y")
-                        .apply();
+                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                    @Override
+                    public Config edit(Config c) {
+                        return new Config(c.imagePath, c.depthPath, c.intensity, 100, c.motion,
+                                0f, 0f, 0f, 0f);
+                    }
+                });
                 setZoomSlider(100);
                 glView.queueEvent(new Runnable() {
                     @Override
@@ -198,7 +206,14 @@ public class MainActivity extends Activity {
         buttons.addView(makeButton("Reset", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                prefs.edit().remove("image_path").remove("depth_path").remove("status").apply();
+                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                    @Override
+                    public Config edit(Config c) {
+                        return new Config(null, null, c.intensity, c.zoom, c.motion,
+                                c.orbitX, c.orbitY, c.panX, c.panY);
+                    }
+                });
+                prefs.edit().remove("status").apply();
                 applyFiles();
             }
         }));
@@ -289,6 +304,9 @@ public class MainActivity extends Activity {
             public void onTiltChanged() {
                 renderer.setTilt(tilt.getX(), tilt.getY());
                 glView.requestRender();
+                // fires on the sleep/wake transitions too, so the status line
+                // tracks idle-sleep without polling
+                writeGyroStatus();
             }
         });
         sensorPolicy = new SensorPolicy(getApplicationContext(), new Runnable() {
@@ -299,6 +317,7 @@ public class MainActivity extends Activity {
         });
         sensorPolicy.setBatteryGate(false); // studio is foreground — no battery pause
         sensorPolicy.start();
+        writeGyroStatus(); // publish our own state, not the wallpaper's
         prefs.registerOnSharedPreferenceChangeListener(statusListener);
 
         handleShareIntent(getIntent());
@@ -344,11 +363,15 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                prefs.edit()
-                        .putString("image_path", PrefFiles.store(target))
-                        .remove("depth_path")
-                        .remove("status")
-                        .apply();
+                final String shared = PrefFiles.store(target);
+                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                    @Override
+                    public Config edit(Config c) {
+                        return new Config(shared, null, c.intensity, c.zoom, c.motion,
+                                c.orbitX, c.orbitY, c.panX, c.panY);
+                    }
+                });
+                prefs.edit().remove("status").apply();
                 applyFiles();
                 Toast.makeText(MainActivity.this,
                         "Shared image loaded \u2014 set as wallpaper, or generate depth",
@@ -366,11 +389,15 @@ public class MainActivity extends Activity {
                     new DepthGenDialog.Callback() {
                         @Override
                         public void onGenerated(String packedPath) {
-                            prefs.edit()
-                                    .putString("image_path", new java.io.File(packedPath).getName())
-                                    .remove("depth_path")
-                                    .remove("status")
-                                    .apply();
+                            final String packed = new java.io.File(packedPath).getName();
+                            ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                                @Override
+                                public Config edit(Config c) {
+                                    return new Config(packed, null, c.intensity, c.zoom, c.motion,
+                                            c.orbitX, c.orbitY, c.panX, c.panY);
+                                }
+                            });
+                            prefs.edit().remove("status").apply();
                             applyFiles();
                             Toast.makeText(MainActivity.this,
                                     "Depth loaded — it's now the wallpaper image",
@@ -389,8 +416,8 @@ public class MainActivity extends Activity {
         // thread) only reads them; normalising here keeps pref writes off the
         // GL thread and means a restored legacy absolute path is rewritten as a
         // bare filename on the very next launch.
-        resolveOrClear("image_path");
-        resolveOrClear("depth_path");
+        ConfigStore.load(prefs, getFilesDir());
+        ConfigStore.dropMissingFiles(prefs, getFilesDir(), ConfigStore.load(prefs, getFilesDir()));
         glView.onResume();
         glView.queueEvent(new Runnable() {
             @Override
@@ -526,7 +553,13 @@ public class MainActivity extends Activity {
                         float newZoom = pinchStartZoom * (pointerDistance() / startDist);
                         renderer.setZoom(newZoom);
                         int pct = Math.round(renderer.getZoom() * 100f);
-                        prefs.edit().putInt("zoom", pct).apply();
+                        final int z = pct;
+                        ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                            @Override
+                            public Config edit(Config c) {
+                                return c.withZoom(z);
+                            }
+                        });
                         setZoomSlider(pct);
                     }
                     // pan by midpoint delta
@@ -660,7 +693,17 @@ public class MainActivity extends Activity {
                 int value = progress + min;
                 tv.setText(label + ": " + formatValue(key, value));
                 final int stored = value;
-                prefs.edit().putInt(key, stored).apply();
+                final int v = stored;
+                final String k = key;
+                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                    @Override
+                    public Config edit(Config c) {
+                        if ("intensity".equals(k)) return c.withIntensity(v);
+                        if ("zoom".equals(k)) return c.withZoom(v);
+                        if ("motion".equals(k)) return c.withMotion(v);
+                        return c;
+                    }
+                });
                 glView.queueEvent(new Runnable() {
                     @Override
                     public void run() {
@@ -739,7 +782,6 @@ public class MainActivity extends Activity {
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
-        final String key = requestCode == REQ_IMAGE ? "image_path" : "depth_path";
         final boolean isImage = requestCode == REQ_IMAGE;
         final File target = new File(getFilesDir(),
                 "custom_" + (isImage ? "image" : "depth") + ".png");
@@ -768,7 +810,14 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                prefs.edit().putString(key, PrefFiles.store(target)).apply();
+                final boolean isImg = isImage;
+                final String stored = PrefFiles.store(target);
+                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
+                    @Override
+                    public Config edit(Config c) {
+                        return isImg ? c.withFiles(stored, null) : c.withFiles(c.imagePath, stored);
+                    }
+                });
                 Toast.makeText(MainActivity.this, "Picked \u2014 updating preview\u2026",
                         Toast.LENGTH_SHORT).show();
                 applyFiles();
@@ -780,8 +829,12 @@ public class MainActivity extends Activity {
         // Resolve relative names, and drop any that no longer exist: after a
         // restore onto a different device the file may simply be absent, and a
         // dangling value would otherwise be retried on every load.
-        final String img = resolveOrClear("image_path");
-        final String dep = resolveOrClear("depth_path");
+        Config c = ConfigStore.load(prefs, getFilesDir());
+        c = ConfigStore.dropMissingFiles(prefs, getFilesDir(), c);
+        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), c.imagePath);
+        final java.io.File depF = PrefFiles.resolve(getFilesDir(), c.depthPath);
+        final String img = imgF == null ? null : imgF.getAbsolutePath();
+        final String dep = depF == null ? null : depF.getAbsolutePath();
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -818,10 +871,54 @@ public class MainActivity extends Activity {
 
     private void refreshStatus() {
         if (statusView == null) return;
+        // May be invoked from the sensor thread (gyro_status is written when the
+        // tilt sleeps or wakes), and SharedPreferences fires its change listeners
+        // on whichever thread did the write. Touching a View from there is a
+        // crash waiting to happen, so always hop to the UI thread.
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    refreshStatus();
+                }
+            });
+            return;
+        }
         String s = prefs.getString("status", "loading…");
         String g = prefs.getString("gyro_status", "");
         if (!g.isEmpty()) s += "  |  " + g;
         statusView.setText("Status: " + s);
+    }
+
+    /**
+     * Publish the STUDIO's own gyro state to the shared {@code gyro_status} key.
+     *
+     * <p>This key used to be written only by the wallpaper service, so the studio
+     * displayed the wallpaper's state — which is always "paused (not visible)"
+     * while the studio is in the foreground. The status line therefore reported
+     * that a working preview gyro was dead, which is the opposite of the truth
+     * and precisely the wrong thing to see in the one screen used to check that
+     * tilt works.
+     *
+     * <p>Whichever surface is in front owns the key. The studio's SensorPolicy
+     * runs with the battery gate disabled (it is foreground), so the battery
+     * states the wallpaper reports do not apply here.
+     *
+     * <p>Only writes on change: this is called from the tilt callback, and a
+     * SharedPreferences write per sensor frame would be its own bug.
+     */
+    private void writeGyroStatus() {
+        String s;
+        if (tilt == null) {
+            s = "gyro off";
+        } else if (tilt.isAsleep()) {
+            s = "gyro sleeping (idle)";
+        } else {
+            s = "gyro active";
+        }
+        if (s.equals(lastGyroStatus)) return;
+        lastGyroStatus = s;
+        prefs.edit().putString("gyro_status", s).apply();
     }
 
     // ------------------------------------------------------------------ helpers
