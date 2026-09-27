@@ -1,8 +1,11 @@
 name: build
 
-# Every push and PR runs the JVM unit tests and a real debug APK build.
-# The mesh golden test is the regression net for the depth-banding fix, so a
-# refactor of the blur or the sampling cannot land without a red build.
+# Every push and PR runs three things:
+#   - the JVM unit tests and a real debug APK build. The mesh golden test is
+#     the regression net for the depth-banding fix, so a refactor of the blur or
+#     the sampling cannot land without a red build.
+#   - check-parity: every path AGENTS.md mentions must exist, and the constants
+#     the web and Android ports must share must still agree.
 #
 # Uses the same containerised Gradle path as `android/podman-build.sh` — the
 # host needs nothing but podman, which ubuntu-latest already has.
@@ -14,6 +17,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  guards:
+    name: guards (docs + port parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # No npm install: the script is plain Node with no dependencies, so this
+      # stays fast and cannot break for an unrelated reason.
+      - name: AGENTS.md links + web/Android parity
+        run: node scripts/check-parity.mjs
+
   android:
     name: android (unit tests + debug APK)
     runs-on: ubuntu-latest
