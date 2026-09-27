@@ -46,10 +46,7 @@ cd android
 
 The host needs only **podman** (and `adb` for `install`): `gradlew` and the
 wrapper are committed and run inside the container (Ubuntu 22.04, JDK 17,
-Android SDK 34). No Android Studio required.
-
-There is also a **legacy no-Gradle script** (`android/build.sh`) for building
-directly in Termux on a phone, kept for fast on-device iteration.
+Android SDK 36). No Android Studio required.
 
 Install the APK and set it via **Basrelief → "Set as wallpaper"** (or long-press
 home → Wallpapers → Basrelief).
@@ -126,8 +123,7 @@ src/                web app (Vite + three.js)
 scripts/            web asset generator
 android/
   podman-build.sh   canonical build (containerised Gradle)
-  Dockerfile        Ubuntu 22.04 + JDK 17 + Android SDK 34
-  build.sh setup.sh legacy no-Gradle build pipeline (Termux on a phone)
+  Dockerfile        Ubuntu 22.04 + JDK 17 + Android SDK 36
   app/src/main/java/com/amoshydra/basrelief/
     DepthWallpaperService.java  live wallpaper (getHolder()→wallpaper surface)
     ReliefRenderer.java         GLES2 renderer shell; delegates the maths to :core

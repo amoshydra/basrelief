@@ -24,27 +24,27 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
     mv cmdline-tools latest
 
 # Accept licenses and install exactly what app/build.gradle needs:
-# compileSdk 34 / build-tools 34.0.0 / minSdk 26
+# compileSdk 36 / build-tools 36.0.0 / minSdk 26
 RUN yes | sdkmanager --licenses
-RUN sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+RUN sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
-# Bake a debug signing key into the image.
+# Debug signing key: COPIED, not generated.
 #
-# Without this, AGP generates a fresh debug.keystore inside the container's
-# ephemeral filesystem on every run, so each build gets a DIFFERENT signature.
-# The result is that `adb install -r` always fails with
-# INSTALL_FAILED_UPDATE_INCOMPATIBLE, and the only recovery is an uninstall --
-# which wipes the user's studio settings and chosen image every single time.
+# This used to run `keytool -genkeypair` here, and that was the bug: the key was
+# created at image-build time, so rebuilding the image produced a DIFFERENT one.
+# Every debug build then had a different signature, `adb install -r` always
+# failed with INSTALL_FAILED_UPDATE_INCOMPATIBLE, and the only recovery was an
+# uninstall -- which wipes the user's studio settings and chosen image.
 #
-# This is a well-known throwaway key, not a secret. It exists purely so
-# successive debug builds are mutually upgradeable. It must never be used for
-# release signing (that uses the gitignored keystore.properties).
-RUN mkdir -p /root/.android && \
-    keytool -genkeypair -v -keystore /root/.android/debug.keystore \
-      -storepass android -keypass android -alias androiddebugkey \
-      -keyalg RSA -keysize 2048 -validity 10000 \
-      -dname "CN=Android Debug,O=Android,C=US" && \
-    chmod 644 /root/.android/debug.keystore
+# It looked correct for a long time purely because the image was rarely
+# rebuilt, and the very first rebuild (the SDK 36 bump) reproduced the original
+# failure exactly. Committing the key makes rebuilds a no-op.
+#
+# It is a well-known throwaway key with the published password `android`, not a
+# secret. It must never be used for release signing; that uses the gitignored
+# keystore.properties.
+COPY debug.keystore /root/.android/debug.keystore
+RUN chmod 644 /root/.android/debug.keystore
 
 WORKDIR /workspace
 

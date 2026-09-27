@@ -8,10 +8,16 @@ local.properties
 .idea/
 *.iml
 
-# Release signing — never commit keystores or their properties
+# Release signing — never commit release keystores or their properties
 keystore.properties
 *.keystore
 *.jks
+
+# ...except the throwaway DEBUG key, which must be committed. See the Dockerfile.
+# Generating it per image build changed the signature on every rebuild, so
+# `adb install -r` failed and the only fix was an uninstall, which wipes the
+# user's settings. It has the published password `android` and is never a secret.
+!debug.keystore
 
 # APKs
 *.apk

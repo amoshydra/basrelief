@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The application package/namespace is declared in app/build.gradle
-  (AGP 8 no longer allows a package attribute here). The legacy no-Gradle
-  build.sh passes the same name to aapt2 via its custom-package flag.
+  (AGP 8 no longer allows a package attribute here). That is the only place
+  the package name lives; keep it in sync when renaming.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 

@@ -20,7 +20,7 @@ Android is built with Gradle **inside a Podman container**. The host needs only
 
 ```
 cd android
-./podman-build.sh build-image    # once: builds the SDK image (Ubuntu 22.04 + JDK 17 + SDK 34)
+./podman-build.sh build-image    # once: builds the SDK image (Ubuntu 22.04 + JDK 17 + SDK 36)
 ./podman-build.sh test           # JVM unit tests in :core — no device needed
 ./podman-build.sh build-apk      # also runs :core:test first; cannot skip it
 ./podman-build.sh install        # build + adb install on the connected device
@@ -34,8 +34,8 @@ every build — locally and in CI. Cold build 14 s, warm 4 s with no network.
 
 It is set via the **environment variable**, not `--gradle-user-home`: the
 wrapper script decides where to keep the distribution and downloads it *before*
-Gradle starts, so the flag alone leaves `gradle-8.2-bin.zip` re-fetched on every
-run while everything else stays cached. That is a mistake which looks like it
+Gradle starts, so the flag alone leaves `gradle-<version>-bin.zip` re-fetched on
+every run while everything else stays cached. That is a mistake which looks like it
 worked, because the build still succeeds. Override the location with
 `GRADLE_CACHE_DIR`, or opt out entirely with `GRADLE_NO_CACHE=1`.
 
@@ -44,17 +44,6 @@ every push, plus a `vite` build for the web. It invokes the script from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
 
 Web (reference port, not maintained): `npm install && npm run build`.
-
-Two more, only on a phone with Termux:
-
-```
-bash android/setup.sh     # one-time: aapt2/apksigner/dx/zip, fetch android.jar
-bash android/build.sh     # legacy no-Gradle build, for fast on-device iteration
-```
-
-It compiles the same sources (`core/` + `app/src/main/`) in one `javac`, so
-keep the two build paths in step. It **cannot** run on the desktop: it needs
-Termux's aarch64 `aapt2`.
 
 ## Architecture
 
@@ -152,9 +141,8 @@ already cost real time.
 ### Build constraints
 
 - The manifest has **no `package=` attribute** (AGP 8 rejects it). The package
-  lives in `app/build.gradle` as `namespace` / `applicationId`, and the legacy
-  `build.sh` passes the same name to `aapt2` via its custom-package flag. Keep
-  all three in sync when renaming.
+  lives in `app/build.gradle` as `namespace` / `applicationId`, and that is now
+  the only place it is declared. Keep the two in sync when renaming.
 - `--` is illegal inside an XML comment. Writing `--flag` there fails the build
   with a confusing parse error.
 - Java 8 source/target (`VERSION_1_8`).
@@ -162,15 +150,16 @@ already cost real time.
   in ephemeral storage every build, every APK gets a different signature, and
   `adb install -r` always fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —
   whose only recovery is an uninstall, which wipes the user's settings.
-- Termux only: `android.jar` is API 33 at `$HOME/android-sdk/android.jar`.
 
-### Termux environment quirks
+### Termux notes (host-side, not a build path)
 
 `/tmp` is often not writable — use `$(mktemp -d)`. `#!/usr/bin/env` shebangs
 fail (no `/usr/bin/env` on Android), which is why the npm scripts invoke vite via
 `node node_modules/vite/bin/vite.js`. Shared storage is
 `~/storage/shared/Download/`; copy APKs there and install from the file manager,
 since launching the installer programmatically is unreliable on some devices.
+There is no longer a build script that runs here — everything builds through
+`podman-build.sh`.
 
 ## Verification
 
@@ -196,8 +185,8 @@ it**. 111 tests across nine classes:
   traps are the ones this file already names: a corrupt blob must not throw, a
   restored backup must not resurrect a dangling selection, an absolute path
   must never be stored, and deleting the *active* item has to clear the
-  wallpaper pointer in the same write — otherwise the next reconcile adopts
-  the deleted files straight back and the delete never sticks.
+  wallpaper pointer in the same write — otherwise the next reconcile adopts the
+  deleted files straight back and the delete never sticks.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the

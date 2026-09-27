@@ -14,15 +14,15 @@ if (hasReleaseKeystore) {
 
 android {
     namespace 'com.amoshydra.basrelief'
-    compileSdk 34
+    compileSdk 36
     // pin to what the container image ships, so builds don't silently
     // download a different build-tools version
-    buildToolsVersion '34.0.0'
+    buildToolsVersion '36.0.0'
 
     defaultConfig {
         applicationId "com.amoshydra.basrelief"
         minSdk 26
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName "0.1.0"
     }

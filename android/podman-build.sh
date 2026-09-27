@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_NAME="depthtilt-android-sdk:34"
+IMAGE_NAME="depthtilt-android-sdk:36"
 APK_DEBUG="$SCRIPT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 APK_RELEASE="$SCRIPT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
 
