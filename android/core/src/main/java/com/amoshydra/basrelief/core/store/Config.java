@@ -49,9 +49,9 @@ public final class Config {
     public final int intensity; // 0..100
     public final int zoom;      // 25..200
     public final int motion;    // 0..100
-    public final float orbitX;  // -0.5..0.5
+    public final float orbitX;  // -0.5..0.5, a fraction of the plane
     public final float orbitY;
-    public final float panX;
+    public final float panX;    // PIXELS, not a fraction — see below
     public final float panY;
 
     public Config(String imagePath, String depthPath, int intensity, int zoom, int motion,
@@ -63,6 +63,14 @@ public final class Config {
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
         this.orbitX = clamp(orbitX, -0.5f, 0.5f);
         this.orbitY = clamp(orbitY, -0.5f, 0.5f);
+        // Pan is deliberately NOT clamped here. It is carried in pixels and
+        // consumed as panX / surfaceW, so its valid range is the surface size —
+        // which this class cannot know, and which differs per device and per
+        // orientation. ReliefRenderer.setPan() clamps against the real surface.
+        //
+        // Clamping to the orbit-style +/-0.5 here looked harmless and silently
+        // flattened every pan offset to almost nothing: a stored -135px became
+        // -0.5px. Do not add a range check without knowing the units.
         this.panX = panX;
         this.panY = panY;
     }
@@ -70,6 +78,37 @@ public final class Config {
     public static Config defaults() {
         return new Config(null, null, DEFAULT_INTENSITY, DEFAULT_ZOOM, DEFAULT_MOTION,
                 0f, 0f, 0f, 0f);
+    }
+
+    // ------------------------------------------------- single-field updates
+    //
+    // The studio changes one setting at a time. These exist so a write site
+    // cannot forget to carry the other eight fields along — the failure mode of
+    // read-modify-write on a nine-field value, and one that would silently reset
+    // a user's image every time they nudged the Depth slider.
+
+    public Config withIntensity(int v) {
+        return new Config(imagePath, depthPath, v, zoom, motion, orbitX, orbitY, panX, panY);
+    }
+
+    public Config withZoom(int v) {
+        return new Config(imagePath, depthPath, intensity, v, motion, orbitX, orbitY, panX, panY);
+    }
+
+    public Config withMotion(int v) {
+        return new Config(imagePath, depthPath, intensity, zoom, v, orbitX, orbitY, panX, panY);
+    }
+
+    public Config withOrbit(float x, float y) {
+        return new Config(imagePath, depthPath, intensity, zoom, motion, x, y, panX, panY);
+    }
+
+    public Config withPan(float x, float y) {
+        return new Config(imagePath, depthPath, intensity, zoom, motion, orbitX, orbitY, x, y);
+    }
+
+    public Config withFiles(String image, String depth) {
+        return new Config(image, depth, intensity, zoom, motion, orbitX, orbitY, panX, panY);
     }
 
     // ------------------------------------------------------------- derived

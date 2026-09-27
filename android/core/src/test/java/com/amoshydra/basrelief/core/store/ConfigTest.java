@@ -107,6 +107,25 @@ public class ConfigTest {
     }
 
     /**
+     * Pan is in PIXELS (CameraModel consumes panX / surfaceW), so its range is the
+     * surface size and this class must not clamp it. Clamping it to orbit's
+     * +/-0.5 range silently turned a stored -135px pan into -0.5px, i.e. no pan
+     * at all, and it survived review because the value still round-tripped.
+     */
+    @Test
+    public void panIsPixelsAndMustNotBeClampedToAFraction() {
+        Config c = new Config(null, null, 50, 100, 33, 0f, 0f, -135.25f, -632.5f);
+        assertEquals(-135.25f, c.panX, 0f);
+        assertEquals(-632.5f, c.panY, 0f);
+        // and it must survive a round trip unmangled
+        Config r = Config.parse(c.toJson());
+        assertEquals(-135.25f, r.panX, 1e-3f);
+        assertEquals(-632.5f, r.panY, 1e-3f);
+        // large values pass through too; the renderer clamps to the real surface
+        assertEquals(5000f, new Config(null, null, 50, 100, 33, 0, 0, 5000f, 5000f).panX, 0f);
+    }
+
+    /**
      * The old 0..200 intensity scale. A stored value's meaning is unrecoverable
      * — nothing recorded which build wrote it — so it is clamped once, here,
      * and is unambiguous from v1 onward.

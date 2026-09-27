@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -38,55 +39,42 @@ public class DepthWallpaperService extends WallpaperService {
         private TiltController tilt;
         private SensorPolicy sensorPolicy;
         private boolean tiltRunning = false;
+        /** Last image/depth handed to the renderer, so a Depth nudge does not re-decode. */
+        private String lastImage, lastDepth;
         private SharedPreferences prefs;
         private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
                 new SharedPreferences.OnSharedPreferenceChangeListener() {
                     @Override
                     public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-                        if ("intensity".equals(key) || "zoom".equals(key) || "motion".equals(key)) {
-                            final int inten = Math.max(0, Math.min(100, p.getInt("intensity", 90)));
-                            final int zoomv = p.getInt("zoom", 100);
-                            final int motionv = p.getInt("motion", 33);
-                            glView.queueEvent(new Runnable() {
-                                @Override
-                                public void run() {
-                                    renderer.setDepth(inten / 100f);
-                                    renderer.setZoom(zoomv / 100f);
-                                    renderer.setMotion(motionv / 100f * 3f);
-                                }
-                            });
-                            glView.requestRender();
-                        } else if ("orbit_x".equals(key) || "orbit_y".equals(key)
-                                || "pan_x".equals(key) || "pan_y".equals(key)) {
-                            final float ox = p.getFloat("orbit_x", 0f);
-                            final float oy = p.getFloat("orbit_y", 0f);
-                            final float px = p.getFloat("pan_x", 0f);
-                            final float py = p.getFloat("pan_y", 0f);
-                            glView.queueEvent(new Runnable() {
-                                @Override
-                                public void run() {
-                                    renderer.setOrbit(ox, oy);
-                                    renderer.setPan(px, py);
-                                }
-                            });
-                            glView.requestRender();
-                        } else if ("image_path".equals(key) || "depth_path".equals(key)) {
-                            final String imgS = p.getString("image_path", null);
-                            final String depS = p.getString("depth_path", null);
-                            final java.io.File imgF = PrefFiles.resolve(
-                                    getFilesDir(), imgS);
-                            final java.io.File depF = PrefFiles.resolve(
-                                    getFilesDir(), depS);
-                            final String img = imgF == null ? null : imgF.getAbsolutePath();
-                            final String dep = depF == null ? null : depF.getAbsolutePath();
-                            glView.queueEvent(new Runnable() {
-                                @Override
-                                public void run() {
+                        // The studio writes the whole config as one versioned
+                        // blob, so there is a single key to watch and a single
+                        // consistent snapshot to apply. The old per-key branches
+                        // could observe half of a change.
+                        if (!Config.KEY.equals(key)) return;
+                        final Config c = ConfigStore.load(p, getFilesDir());
+                        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), c.imagePath);
+                        final java.io.File depF = PrefFiles.resolve(getFilesDir(), c.depthPath);
+                        final String img = imgF == null ? null : imgF.getAbsolutePath();
+                        final String dep = depF == null ? null : depF.getAbsolutePath();
+                        glView.queueEvent(new Runnable() {
+                            @Override
+                            public void run() {
+                                renderer.setDepth(c.depthFraction());
+                                renderer.setZoom(c.zoomScale());
+                                renderer.setMotion(c.motionScale());
+                                renderer.setOrbit(c.orbitX, c.orbitY);
+                                renderer.setPan(c.panX, c.panY);
+                                // Only reload the image when the file actually
+                                // changed; re-decoding on every Depth nudge
+                                // would drop a frame for nothing.
+                                if (!img.equals(lastImage) || !dep.equals(lastDepth)) {
+                                    lastImage = img;
+                                    lastDepth = dep;
                                     renderer.loadPair(img, dep);
                                 }
-                            });
-                            glView.requestRender();
-                        }
+                            }
+                        });
+                        glView.requestRender();
                     }
                 };
 

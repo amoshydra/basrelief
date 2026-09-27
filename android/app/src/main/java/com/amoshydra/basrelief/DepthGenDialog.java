@@ -161,9 +161,9 @@ public final class DepthGenDialog {
      * without re-picking it. No-op if there is no current image.
      */
     public void useCurrentImage() {
-        String stored = activity
-                .getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE)
-                .getString("image_path", null);
+        String stored = ConfigStore.load(
+                activity.getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE),
+                activity.getFilesDir()).imagePath;
         // stored as a bare filename; resolve against this install's filesDir
         final File f = PrefFiles.resolve(activity.getFilesDir(), stored);
         if (f == null) return;
