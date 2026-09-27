@@ -1,7 +1,10 @@
 package com.amoshydra.basrelief;
 
 import android.app.Activity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.widget.ImageView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -47,6 +50,131 @@ final class Io {
     }
 
     private Io() {
+    }
+
+    /**
+     * Decode a small preview into a view, off the UI thread, at a fixed size.
+     *
+     * <p>Gallery thumbnails, so the decode is a two-line inSampleSize calculation
+     * rather than a full-size bitmap: a 4000x3000 photo decoded at full size for a
+     * 56px tile is 48MB of heap for something the user will never look at closely,
+     * and the list would stutter while it happened.
+     *
+     * <p>Silently does nothing on failure. A row that cannot show a thumbnail
+     * should still be a usable row, and a decode error is not worth interrupting
+     * browsing to report.
+     */
+    static void decodePreview(final Activity activity, final File file,
+                              final ImageView into, final int sizePx) {
+        decodePreview(activity, file, into, sizePx, null);
+    }
+
+    /**
+     * As above, and also reports whether the PNG carries its own depth map.
+     *
+     * <p>Separate from the thumbnail because the two questions have different
+     * costs and different lifetimes: the picture is wanted now, and the depth
+     * answer only changes the row's subtitle. Both come out of the one read.
+     *
+     * @param onEmbedded may be null
+     */
+    static void decodePreview(final Activity activity, final File file,
+                              final ImageView into, final int sizePx,
+                              final EmbeddedDepthListener onEmbedded) {
+        run(activity, new Callable<Preview>() {
+            @Override
+            public Preview call() {
+                return preview(file, sizePx);
+            }
+        }, new Callback<Preview>() {
+            @Override
+            public void onDone(Preview p, Exception error) {
+                if (p == null) return;
+                if (p.bitmap != null) into.setImageBitmap(p.bitmap);
+                if (onEmbedded != null) onEmbedded.onFound(p.embeddedDepth);
+            }
+        });
+    }
+
+    /** Told whether a PNG carries an embedded depth map. Always on the UI thread. */
+    interface EmbeddedDepthListener {
+        void onFound(boolean embedded);
+    }
+
+    /**
+     * What a gallery row needs to know about one photo, from a single read.
+     *
+     * <p>The thumbnail and the embedded-depth answer come from one pass on
+     * purpose. The embedded depth lives in a PNG ancillary chunk, so answering
+     * it means reading the file, and a gallery row that read it separately would
+     * read every photo twice -- on a list with no view recycling, which is every
+     * photo in the library.
+     */
+    static final class Preview {
+        Bitmap bitmap;
+        /** True when the PNG carries its own depth map in a dEPt/dePH chunk. */
+        boolean embeddedDepth;
+    }
+
+    private static Preview preview(File file, int sizePx) {
+        Preview out = new Preview();
+        try {
+            byte[] bytes = readAll(file);
+            if (bytes == null) return out;
+            out.embeddedDepth = DepthPng.extract(bytes) != null;
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+            int sample = 1;
+            int longest = Math.max(bounds.outWidth, bounds.outHeight);
+            while (longest / (sample * 2) >= sizePx) sample *= 2;
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sample;
+            out.bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+        } catch (Throwable ignored) {
+            // Out of memory, or an unreadable file. Either way the row still
+            // works: no picture, and the depth answer falls back to "no file".
+        }
+        return out;
+    }
+
+    private static byte[] readAll(File file) throws Exception {
+        if (file == null) return null;
+        java.io.FileInputStream in = new java.io.FileInputStream(file);
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } finally {
+            in.close();
+        }
+    }
+
+    /**
+     * Fire and forget: run on the shared thread and drop both the result and any
+     * exception.
+     *
+     * <p>For work whose only effect is on disk, where a failure has nothing to
+     * report to (deleting an already-deleted file) and no UI to change. It
+     * exists so those call sites do not have to write a no-op callback that reads
+     * as though the result were being used.
+     *
+     * <p>Swallows the exception rather than letting it reach the executor's
+     * uncaught handler, which on Android kills the process.
+     */
+    static <T> void run(final Callable<T> work) {
+        exec().execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    work.call();
+                } catch (Exception ignored) {
+                } catch (Throwable ignored) {
+                }
+            }
+        });
     }
 
     static <T> void run(final Activity activity, final Callable<T> work,

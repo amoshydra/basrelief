@@ -1,5 +1,7 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.content.Context;
@@ -19,6 +21,11 @@ public class DepthWallpaperService extends WallpaperService {
     @Override
     public Engine onCreateEngine() {
         return new DepthEngine();
+    }
+
+    /** Null-safe path comparison: both sides are null for the bundled demo. */
+    private static boolean sameFile(String a, String b) {
+        return a == null ? b == null : a.equals(b);
     }
 
     private class DepthEngine extends Engine {
@@ -46,40 +53,77 @@ public class DepthWallpaperService extends WallpaperService {
                 new SharedPreferences.OnSharedPreferenceChangeListener() {
                     @Override
                     public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-                        // The studio writes the whole config as one versioned
-                        // blob, so there is a single key to watch and a single
-                        // consistent snapshot to apply. The old per-key branches
-                        // could observe half of a change.
-                        if (!Config.KEY.equals(key)) return;
-                        final Config c = ConfigStore.load(p, getFilesDir());
-                        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), c.imagePath);
-                        final java.io.File depF = PrefFiles.resolve(getFilesDir(), c.depthPath);
-                        final String img = imgF == null ? null : imgF.getAbsolutePath();
-                        final String dep = depF == null ? null : depF.getAbsolutePath();
-                        glView.queueEvent(new Runnable() {
-                            @Override
-                            public void run() {
-                                renderer.setDepth(c.depthFraction());
-                                renderer.setZoom(c.zoomScale());
-                                renderer.setMotion(c.motionScale());
-                                renderer.setOrbit(c.orbitX, c.orbitY);
-                                renderer.setPan(c.panX, c.panY);
-                                // Only reload the image when the file actually
-                                // changed; re-decoding on every Depth nudge
-                                // would drop a frame for nothing.
-                                if (!img.equals(lastImage) || !dep.equals(lastDepth)) {
-                                    lastImage = img;
-                                    lastDepth = dep;
-                                    // Async: the read/decode/mesh-build must not
-                                    // happen between two frames of the wallpaper,
-                                    // or it visibly freezes for seconds.
-                                    renderer.loadPairAsync(img, dep);
-                                }
-                            }
-                        });
-                        glView.requestRender();
+                        // Two keys now, not one: Motion is in the config, while
+                        // the selection and every per-item setting are in the
+                        // index. Both are single versioned blobs, so each write is
+                        // one consistent snapshot -- the reason the old per-key
+                        // branches could not observe half a change is the same
+                        // reason to keep watching blobs rather than keys.
+                        if (!Config.KEY.equals(key) && !Library.KEY.equals(key)) return;
+                        applyFromPrefs(p);
                     }
                 };
+
+        /**
+         * Read both blobs and put the result on the GL thread.
+         *
+         * <p>Split out of the listener so the engine's own first load and every
+         * later change resolve identically. Having two paths that were meant to
+         * agree is what produced the black-wallpaper bug, where a disagreement
+         * means the wallpaper shows something nobody chose.
+         *
+         * <p>Reads on the calling thread and touches GL only inside the queued
+         * runnable: {@code queueEvent} is the one thread hop the renderer allows
+         * (see the threading table in AGENTS.md).
+         */
+        private void applyFromPrefs(SharedPreferences p) {
+            final AppState state = AppState.load(p, getFilesDir());
+            final LibraryItem active = state.activeItem();
+            final boolean bundled = active == null || active.isBundled();
+            final String img;
+            final String dep;
+            if (bundled) {
+                // The marble bust: no file, so res/raw. Null here is a normal
+                // state and not a missing photo.
+                img = null;
+                dep = null;
+            } else {
+                java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
+                java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
+                img = imgF == null ? null : imgF.getAbsolutePath();
+                dep = depF == null ? null : depF.getAbsolutePath();
+            }
+            final float motion = state.config.motionScale();
+            final float depth = bundled ? LibraryItem.DEFAULT_INTENSITY / 100f : active.depthFraction();
+            final float zoom = bundled ? LibraryItem.DEFAULT_ZOOM / 100f : active.zoomScale();
+            final float ox = bundled ? 0f : active.orbitX;
+            final float oy = bundled ? 0f : active.orbitY;
+            final float px = bundled ? 0f : active.panX;
+            final float py = bundled ? 0f : active.panY;
+            glView.queueEvent(new Runnable() {
+                @Override
+                public void run() {
+                    renderer.setDepth(depth);
+                    renderer.setZoom(zoom);
+                    renderer.setMotion(motion);
+                    renderer.setOrbit(ox, oy);
+                    renderer.setPan(px, py);
+                    // Only reload when the file actually changed; re-decoding on
+                    // every Depth nudge would drop a frame for nothing. Compared
+                    // through a null-safe helper, because both are null for the
+                    // bundled demo and a bare img.equals(last) threw on exactly
+                    // that path.
+                    if (!sameFile(img, lastImage) || !sameFile(dep, lastDepth)) {
+                        lastImage = img;
+                        lastDepth = dep;
+                        // Async: the read/decode/mesh-build must not happen
+                        // between two frames of the wallpaper, or it visibly
+                        // freezes for seconds.
+                        renderer.loadPairAsync(img, dep);
+                    }
+                }
+            });
+        }
 
         @Override
         public void onCreate(SurfaceHolder holder) {
@@ -105,7 +149,7 @@ public class DepthWallpaperService extends WallpaperService {
             glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
             // the wallpaper is read-only: all interaction (orbit, pan, zoom,
             // pickers) happens in the studio; it only tilts with the gyro
-            prefs = getSharedPreferences(ReliefRenderer.PREFS, Context.MODE_PRIVATE);
+            prefs = getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
             prefs.registerOnSharedPreferenceChangeListener(prefListener);
             sensorPolicy = new SensorPolicy(DepthWallpaperService.this, new Runnable() {
                 @Override
@@ -187,7 +231,7 @@ public class DepthWallpaperService extends WallpaperService {
             } else {
                 s = "gyro active";
             }
-            getSharedPreferences(ReliefRenderer.PREFS, Context.MODE_PRIVATE)
+            getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
                     .edit().putString("gyro_status", s).apply();
         }
 

@@ -1,6 +1,8 @@
 package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.store.Config;
+import com.amoshydra.basrelief.core.store.Library;
+import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
@@ -8,6 +10,8 @@ import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.provider.OpenableColumns;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.PointF;
 import android.net.Uri;
@@ -51,7 +55,7 @@ public class MainActivity extends Activity {
     private ReliefRenderer renderer;
     private TiltController tilt;
     private SensorPolicy sensorPolicy;
-    private SharedPreferences prefs;
+    SharedPreferences prefs;
     private TextView statusView;
     private LinearLayout panel;
     private Button expandBtn;
@@ -59,6 +63,30 @@ public class MainActivity extends Activity {
     private DepthGenDialog depthGenDialog;
     private SeekBar zoomBar;
     private TextView zoomLabel;
+
+    /**
+     * The container the gallery overlay is added to.
+     *
+     * <p>A field because the gallery is opened long after {@code onCreate} has
+     * returned, and a local would not survive to be useful. The preview stays
+     * visible behind it, which is the point: picking a framing means watching the
+     * result, not choosing from a list and then finding out.
+     */
+    private FrameLayout rootLayout;
+    private Gallery gallery;
+
+    /** Slider handles by key, so a selection change can repopulate them. */
+    private final java.util.Map<String, SeekBar> bars = new java.util.HashMap<>();
+    private final java.util.Map<String, TextView> barLabels = new java.util.HashMap<>();
+    private final java.util.Map<String, Integer> barMin = new java.util.HashMap<>();
+    /**
+     * The label each slider was built with, by key.
+     *
+     * <p>Kept because the key is a storage name, not something to show. Without
+     * this a refresh relabelled Depth to "intensity", which is the field name
+     * from the blob and means nothing to the person using the app.
+     */
+    private final java.util.Map<String, String> barNames = new java.util.HashMap<>();
     private boolean syncingZoom = false;
 
     /** Last value written to the shared {@code gyro_status} key, to avoid rewriting it per frame. */
@@ -84,9 +112,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences(ReliefRenderer.PREFS, MODE_PRIVATE);
+        prefs = getSharedPreferences(AppState.PREFS, MODE_PRIVATE);
 
         FrameLayout root = new FrameLayout(this);
+        rootLayout = root;
+        gallery = new Gallery(this, root);
 
         // --- fullscreen preview ---
         glView = new GLSurfaceView(this);
@@ -161,26 +191,35 @@ public class MainActivity extends Activity {
         // current zoom. Was 0..200, but the top half was a silent no-op at
         // high zoom because of the z-clamp.
         //
-        // One read of the versioned blob feeds every slider, so the panel can
-        // never show values that disagree with what the renderer loads.
-        final Config initial = ConfigStore.load(prefs, getFilesDir());
+        // One read feeds every slider, so the panel can never show values that
+        // disagree with what the renderer loads. Depth and Zoom come off the
+        // selected item, because they are properties of a photograph; Motion
+        // comes off the config, because it is a property of this device and how
+        // it is held.
+        final AppState initial = AppState.load(prefs, getFilesDir());
+        final LibraryItem initialItem = initial.activeItem();
         panel.addView(addSlider("Depth", "intensity",
-                initial.intensity, 0, 100));
+                initialItem == null ? LibraryItem.DEFAULT_INTENSITY : initialItem.intensity, 0, 100));
         panel.addView(addSlider("Motion", "motion",
-                initial.motion, 0, 100));
+                initial.config.motion, 0, 100));
         panel.addView(addSlider("Zoom", "zoom",
-                initial.zoom, 25, 200));
+                initialItem == null ? LibraryItem.DEFAULT_ZOOM : initialItem.zoom, 25, 200));
 
         Button resetView = makeButton("Reset view", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return new Config(c.imagePath, c.depthPath, c.intensity, 100, c.motion,
-                                0f, 0f, 0f, 0f);
-                    }
-                });
+                // Framing and Zoom belong to the photo, so this resets the photo
+                // and leaves every other one exactly as it was.
+                final String id = AppState.load(prefs, getFilesDir()).activeId();
+                if (id != null) {
+                    LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+                        @Override
+                        public LibraryItem edit(LibraryItem item) {
+                            return item.withZoom(LibraryItem.DEFAULT_ZOOM)
+                                    .withOrbit(0f, 0f).withPan(0f, 0f);
+                        }
+                    });
+                }
                 setZoomSlider(100);
                 glView.queueEvent(new Runnable() {
                     @Override
@@ -212,18 +251,14 @@ public class MainActivity extends Activity {
                 pickFile(REQ_DEPTH);
             }
         }));
-        buttons.addView(makeButton("Reset", new View.OnClickListener() {
+        // Replaces the old Reset button, which cleared the image to fall back to
+        // the bundled demo. The marble bust is a row in the gallery now, so
+        // choosing it is a selection like any other -- and the reset it used to
+        // perform is one tap, in a list that also says what everything else is.
+        buttons.addView(makeButton("Gallery", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return new Config(null, null, c.intensity, c.zoom, c.motion,
-                                c.orbitX, c.orbitY, c.panX, c.panY);
-                    }
-                });
-                prefs.edit().remove("status").apply();
-                applyFiles();
+                gallery.show();
             }
         }));
         buttons.addView(makeButton("Calibrate", new View.OnClickListener() {
@@ -351,6 +386,8 @@ public class MainActivity extends Activity {
         if (!Intent.ACTION_SEND.equals(action)) return;
         final Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         if (uri == null) return;
+        // The name the sending app showed, so the gallery row is recognisable.
+        final String pickedName = displayNameOf(uri);
         // Read + downscale off the UI thread: PNG re-encode of a large photo
         // takes seconds and would be an ANR inline.
         Io.run(this, new Callable<File>() {
@@ -372,15 +409,12 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                final String shared = PrefFiles.store(target);
-                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return new Config(shared, null, c.intensity, c.zoom, c.motion,
-                                c.orbitX, c.orbitY, c.panX, c.panY);
-                    }
-                });
+                // A shared image is a new item, not a replacement: sharing three
+                // photos should leave three rows, and the two already in the
+                // gallery must not lose their depth maps and framing to the third.
+                LibraryItem shared = LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
                 prefs.edit().remove("status").apply();
+                refreshSliders();
                 applyFiles();
                 Toast.makeText(MainActivity.this,
                         "Shared image loaded \u2014 set as wallpaper, or generate depth",
@@ -399,18 +433,23 @@ public class MainActivity extends Activity {
                         @Override
                         public void onGenerated(String packedPath) {
                             final String packed = new java.io.File(packedPath).getName();
-                            ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                                @Override
-                                public Config edit(Config c) {
-                                    return new Config(packed, null, c.intensity, c.zoom, c.motion,
-                                            c.orbitX, c.orbitY, c.panX, c.panY);
-                                }
-                            });
+                            // Attach it to the photo it was generated FOR, not to
+                            // whatever happens to be selected when the request
+                            // comes back -- which may be a different photo by
+                            // then, and would then carry the wrong depth map.
+                            String id = AppState.load(prefs, getFilesDir()).activeId();
+                            if (id != null) {
+                                LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+                                    @Override
+                                    public LibraryItem edit(LibraryItem item) {
+                                        return item.withDepth(packed);
+                                    }
+                                });
+                            }
                             prefs.edit().remove("status").apply();
                             applyFiles();
                             Toast.makeText(MainActivity.this,
-                                    "Depth loaded — it's now the wallpaper image",
-                                    Toast.LENGTH_LONG).show();
+                                    "Depth added to this photo", Toast.LENGTH_LONG).show();
                         }
                     });
         }
@@ -425,8 +464,9 @@ public class MainActivity extends Activity {
         // thread) only reads them; normalising here keeps pref writes off the
         // GL thread and means a restored legacy absolute path is rewritten as a
         // bare filename on the very next launch.
-        ConfigStore.load(prefs, getFilesDir());
-        ConfigStore.dropMissingFiles(prefs, getFilesDir(), ConfigStore.load(prefs, getFilesDir()));
+        // One load covers both migrations and the self-heal, and writes only if
+        // something actually needed changing.
+        AppState.load(prefs, getFilesDir());
         glView.onResume();
         glView.queueEvent(new Runnable() {
             @Override
@@ -563,12 +603,17 @@ public class MainActivity extends Activity {
                         renderer.setZoom(newZoom);
                         int pct = Math.round(renderer.getZoom() * 100f);
                         final int z = pct;
-                        ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                            @Override
-                            public Config edit(Config c) {
-                                return c.withZoom(z);
-                            }
-                        });
+                        // Zoom belongs to the photo, so a pinch frames this one
+                        // and leaves every other photo at its own zoom.
+                        String zoomId = AppState.load(prefs, getFilesDir()).activeId();
+                        if (zoomId != null) {
+                            LibraryStore.editItem(prefs, zoomId, new LibraryStore.Editor() {
+                                @Override
+                                public LibraryItem edit(LibraryItem item) {
+                                    return item.withZoom(z);
+                                }
+                            });
+                        }
                         setZoomSlider(pct);
                     }
                     // pan by midpoint delta
@@ -703,16 +748,12 @@ public class MainActivity extends Activity {
                 tv.setText(label + ": " + formatValue(key, value));
                 final int stored = value;
                 final int v = stored;
-                final String k = key;
-                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        if ("intensity".equals(k)) return c.withIntensity(v);
-                        if ("zoom".equals(k)) return c.withZoom(v);
-                        if ("motion".equals(k)) return c.withMotion(v);
-                        return c;
-                    }
-                });
+                // Preview only. Persisting here would mean a drag writes
+                // synchronously on the UI thread once per pixel of travel, and
+                // each write re-reads and re-validates the whole gallery --
+                // a few hundred stat calls for one gesture. The label and the
+                // renderer still follow the finger, so nothing looks laggy; the
+                // write happens once, on release.
                 glView.queueEvent(new Runnable() {
                     @Override
                     public void run() {
@@ -734,14 +775,82 @@ public class MainActivity extends Activity {
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
+                persist(key, seekBar.getProgress() + min);
             }
         });
         row.addView(bar);
+        bars.put(key, bar);
+        barLabels.put(key, tv);
+        barMin.put(key, min);
+        barNames.put(key, label);
         if (isZoom) {
             zoomBar = bar;
             zoomLabel = tv;
         }
         return row;
+    }
+
+    /**
+     * Write one slider's final value, once, on release.
+     *
+     * <p>Motion goes to the config and Depth/Zoom to the selected item, because
+     * only Motion is a property of this device rather than of a photograph. The
+     * item's id is read here rather than captured when the slider was built, so a
+     * slider left over from a previous selection writes to whatever is on screen
+     * now -- which is what the user was looking at when they let go.
+     */
+    private void persist(final String key, final int value) {
+        if ("motion".equals(key)) {
+            ConfigStore.setMotion(prefs, value);
+            return;
+        }
+        String id = AppState.load(prefs, getFilesDir()).activeId();
+        if (id == null) return; // the bundled demo is not editable
+        final boolean isDepth = "intensity".equals(key);
+        LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem item) {
+                return isDepth ? item.withIntensity(value) : item.withZoom(value);
+            }
+        });
+    }
+
+    /**
+     * Repopulate the sliders from what is actually selected.
+     *
+     * <p>Called after a gallery selection, because Depth and Zoom belong to the
+     * photo: selecting a portrait after a landscape has to show the portrait's
+     * numbers, and leaving the previous ones on screen would invite the user to
+     * drag a slider they thought was still editing the photo they were just
+     * looking at.
+     *
+     * <p>Guarded by {@code syncingZoom} for every bar, not just Zoom. Without it,
+     * {@code setProgress} fires {@code onProgressChanged}, which writes straight
+     * back to storage -- so selecting a photo would silently rewrite the
+     * previously selected one with the values it was already showing.
+     */
+    void refreshSliders() {
+        AppState state = AppState.load(prefs, getFilesDir());
+        LibraryItem item = state.activeItem();
+        syncingZoom = true;
+        try {
+            setBar("intensity", item == null ? LibraryItem.DEFAULT_INTENSITY : item.intensity);
+            setBar("zoom", item == null ? LibraryItem.DEFAULT_ZOOM : item.zoom);
+            setBar("motion", state.config.motion);
+        } finally {
+            syncingZoom = false;
+        }
+    }
+
+    private void setBar(String key, int value) {
+        SeekBar bar = bars.get(key);
+        if (bar == null) return;
+        Integer min = barMin.get(key);
+        int v = Math.max(min == null ? 0 : min, Math.min(bar.getMax() + (min == null ? 0 : min), value));
+        bar.setProgress(v - (min == null ? 0 : min));
+        TextView tv = barLabels.get(key);
+        String name = barNames.get(key);
+        if (tv != null) tv.setText((name == null ? key : name) + ": " + formatValue(key, v));
     }
 
     /** Update the zoom slider + label to match the current renderer zoom. */
@@ -757,15 +866,32 @@ public class MainActivity extends Activity {
         }
     }
 
-    private Button makeButton(String text, View.OnClickListener listener) {
+    /**
+     * A button that fills an equal share of a horizontal row.
+     *
+     * <p>The default everywhere in the studio, because the Actions row is four
+     * commands that deserve equal weight. Gallery rows want {@link
+     * #makeButton(String, View.OnClickListener, int, float)} with WRAP_CONTENT
+     * instead -- a full-width menu button would sit on top of the row's own
+     * label, which is exactly what happened the first time.
+     */
+    Button makeButton(String text, View.OnClickListener listener) {
+        return makeButton(text, listener, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+    }
+
+    /**
+     * @param width  {@code MATCH_PARENT} to share a row equally, or
+     *               {@code WRAP_CONTENT} to hug the label
+     * @param weight 1f to share leftover space, 0f to take only what it needs
+     */
+    Button makeButton(String text, View.OnClickListener listener, int width, float weight) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
         b.setMinimumHeight(dp(36));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.weight = 1f;
+                width, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.weight = weight;
         lp.rightMargin = dp(6);
         b.setLayoutParams(lp);
         b.setOnClickListener(listener);
@@ -792,8 +918,29 @@ public class MainActivity extends Activity {
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         final boolean isImage = requestCode == REQ_IMAGE;
-        final File target = new File(getFilesDir(),
-                "custom_" + (isImage ? "image" : "depth") + ".png");
+        // A picked IMAGE starts a new gallery item, so its filename has to be
+        // derived from an id that does not exist yet; a picked DEPTH belongs to
+        // the photo already on screen, so it reuses that item's id. The old
+        // single pair, custom_image.png, was overwritten by the next import --
+        // which is why two items could never coexist on disk.
+        final String newId = isImage ? LibraryItem.newId() : null;
+        // What the user calls this photo, so a gallery row does not show the UUID
+        // that the on-disk name has to be derived from.
+        final String pickedName = isImage ? displayNameOf(data.getData()) : null;
+        String active = isImage ? null : AppState.load(prefs, getFilesDir()).activeId();
+        if (!isImage && (active == null || Library.BUNDLED_ID.equals(active))) {
+            // The bundled demo ships with its own depth map, and it is not
+            // deletable or editable -- so a depth map picked here would have
+            // nowhere to live. Saying so is better than silently writing a file
+            // no row will ever read.
+            Toast.makeText(this, "Pick a photo from the gallery first",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final String depthForId = active;
+        final File target = new File(getFilesDir(), isImage
+                ? LibraryItem.imageFileName(newId)
+                : LibraryItem.depthFileName(depthForId == null ? "orphan" : depthForId));
         final Uri uri = data.getData();
         // Off the UI thread: huge images (e.g. 3000x4000) are decoded and
         // re-encoded as PNG here, which is slow enough to trip an ANR.
@@ -819,29 +966,77 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                final boolean isImg = isImage;
-                final String stored = PrefFiles.store(target);
-                ConfigStore.update(prefs, getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return isImg ? c.withFiles(stored, null) : c.withFiles(c.imagePath, stored);
-                    }
-                });
-                Toast.makeText(MainActivity.this, "Picked \u2014 updating preview\u2026",
-                        Toast.LENGTH_SHORT).show();
+                if (isImage) {
+                    // A new item, selected immediately: the user picked a photo in
+                    // order to see it, and the studio is the live preview, so
+                    // showing the previous one while the status line claimed
+                    // otherwise would be a lie.
+                    LibraryItem added = LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
+                    Toast.makeText(MainActivity.this,
+                            "Added " + added.displayName(), Toast.LENGTH_SHORT).show();
+                } else if (depthForId != null) {
+                    final String id = depthForId;
+                    LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+                        @Override
+                        public LibraryItem edit(LibraryItem item) {
+                            return item.withDepth(PrefFiles.store(target));
+                        }
+                    });
+                    Toast.makeText(MainActivity.this, "Depth updated", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            "Pick an image first", Toast.LENGTH_SHORT).show();
+                }
+                refreshSliders();
                 applyFiles();
             }
         });
     }
 
-    private void applyFiles() {
-        // Resolve relative names, and drop any that no longer exist: after a
-        // restore onto a different device the file may simply be absent, and a
-        // dangling value would otherwise be retried on every load.
-        Config c = ConfigStore.load(prefs, getFilesDir());
-        c = ConfigStore.dropMissingFiles(prefs, getFilesDir(), c);
-        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), c.imagePath);
-        final java.io.File depF = PrefFiles.resolve(getFilesDir(), c.depthPath);
+    /**
+     * The name a document provider shows for a picked item.
+     *
+     * <p>Best effort: a provider that does not answer gives null and the row falls
+     * back to the on-disk filename. That is a worse label, not a broken one, so
+     * there is nothing here worth failing the import over.
+     */
+    private String displayNameOf(Uri uri) {
+        if (uri == null) return null;
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (i >= 0 && !c.isNull(i)) {
+                    String name = c.getString(i);
+                    if (name != null && !name.trim().isEmpty()) return name.trim();
+                }
+            }
+        } catch (Exception ignored) {
+            // A provider that throws is a provider we cannot name.
+        } finally {
+            if (c != null) c.close();
+        }
+        return null;
+    }
+
+    void applyFiles() {
+        // The index has already dropped rows whose file is absent, so this only
+        // has to resolve names against this install's filesDir -- which is what
+        // makes a restored backup work: the blob holds bare filenames and the
+        // old device's absolute path is never stored.
+        AppState state = AppState.load(prefs, getFilesDir());
+        LibraryItem active = state.activeItem();
+        if (active == null || active.isBundled()) {
+            // The marble bust: no file, so res/raw. Null is a normal state here,
+            // not a missing photo.
+            renderer.loadPairAsync(null, null);
+            glView.requestRender();
+            return;
+        }
+        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
+        final java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
         // Async for the same reason as the wallpaper: a synchronous load stalls
@@ -875,7 +1070,7 @@ public class MainActivity extends Activity {
         return f.getAbsolutePath();
     }
 
-    private void refreshStatus() {
+    void refreshStatus() {
         if (statusView == null) return;
         // May be invoked from the sensor thread (gyro_status is written when the
         // tilt sleeps or wakes), and SharedPreferences fires its change listeners
@@ -929,7 +1124,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ helpers
 
-    private int dp(int value) {
+    int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }

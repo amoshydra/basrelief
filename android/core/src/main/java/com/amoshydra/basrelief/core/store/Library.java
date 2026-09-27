@@ -235,6 +235,26 @@ public final class Library {
     }
 
     /**
+     * Guarantee the bundled item is listed.
+     *
+     * <p>It is the only row that cannot be recreated from files on disk, and it
+     * is the only way back to the default once every photo has been deleted — so
+     * an index without it is a gallery with no exit. That makes it worth
+     * repairing on every load rather than only at first run: a blob that has
+     * lost it, for whatever reason, recovers by itself.
+     *
+     * <p>Where it lands is decided by its zero timestamps, not by where it is
+     * inserted: every time-based order puts it last, which is right, because a
+     * bundled bust is not a photo the user added and leading the newest-first
+     * list with it would read as this being the current one. Name order ignores
+     * timestamps entirely, so it sorts by its label there, like anything else.
+     */
+    public Library withBundled() {
+        if (contains(BUNDLED_ID)) return this;
+        return withItem(LibraryItem.bundled());
+    }
+
+    /**
      * Unlink an item. The pointer to it is cleared if it held one.
      *
      * <p><b>Deleting the active item is allowed.</b> Refusing it would mean the

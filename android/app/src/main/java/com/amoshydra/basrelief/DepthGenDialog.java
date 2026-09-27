@@ -161,9 +161,14 @@ public final class DepthGenDialog {
      * without re-picking it. No-op if there is no current image.
      */
     public void useCurrentImage() {
-        String stored = ConfigStore.load(
-                activity.getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE),
-                activity.getFilesDir()).imagePath;
+        // The selected item's image, not a global: depth is generated FOR a
+        // photograph, so the photo on screen is the only sensible source.
+        AppState state = AppState.load(
+                activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE),
+                activity.getFilesDir());
+        com.amoshydra.basrelief.core.store.LibraryItem active = state.activeItem();
+        if (active == null || active.isBundled()) return; // the demo needs no depth
+        String stored = active.imageName;
         // stored as a bare filename; resolve against this install's filesDir
         final File f = PrefFiles.resolve(activity.getFilesDir(), stored);
         if (f == null) return;
@@ -190,7 +195,7 @@ public final class DepthGenDialog {
 
     private Dialog build() {
         final SharedPreferences prefs =
-                activity.getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE);
+                activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE);
 
         ScrollView scroll = new ScrollView(activity);
         LinearLayout root = new LinearLayout(activity);
@@ -328,7 +333,7 @@ public final class DepthGenDialog {
 
     private void testConnection() {
         comfyBase = hostInput.getText().toString().trim();
-        activity.getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE)
+        activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
                 .edit().putString(KEY_HOST, comfyBase).apply();
         connectStatus.setText("Testing connection...");
         Thread t = new Thread(new Runnable() {
@@ -373,7 +378,7 @@ public final class DepthGenDialog {
                                         activity, android.R.layout.simple_spinner_dropdown_item,
                                         new ArrayList<String>(displayNames)));
                                 String saved = activity
-                                        .getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE)
+                                        .getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
                                         .getString(KEY_MODEL, null);
                                 if (saved != null) {
                                     int idx = depth.indexOf(saved);
@@ -423,7 +428,7 @@ public final class DepthGenDialog {
         final String model = nodes.get(modelSpinner.getSelectedItemPosition());
         final String clientId = "depth-app-" + System.nanoTime();
         final int resolution = res;
-        activity.getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE)
+        activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
                 .edit().putString(KEY_MODEL, model).putInt(KEY_RES, resolution).apply();
 
         busy = true;

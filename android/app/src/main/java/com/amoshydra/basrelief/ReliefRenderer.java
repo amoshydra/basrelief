@@ -20,6 +20,7 @@ import java.nio.FloatBuffer;
 import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
@@ -41,7 +42,6 @@ import javax.microedition.khronos.opengles.GL10;
  */
 public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
-    public static final String PREFS = "depthwall";
 
     // FOV / camera distance / crop margin / tilt range live in CameraModel —
     // do NOT duplicate them here, or the two will drift apart.
@@ -358,27 +358,39 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         panY = Math.max(-limit, Math.min(limit, py));
     }
 
-    /** Persist the view. Goes through the blob so orbit/pan cannot be lost. */
+    /**
+     * Persist the framing onto the item being shown.
+     *
+     * <p>On the item, not on the config, so panning a portrait does not reframe
+     * the next photo. The id is read at save time rather than captured at gesture
+     * start, so a drag that outlives a selection change is written to whatever is
+     * on screen when the finger lifts -- which is what the user was looking at.
+     */
     public void saveViewToPrefs() {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
-        ConfigStore.update(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE),
-                context.getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return c.withOrbit(ox, oy).withPan(px, py);
-                    }
-                });
+        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+        final String id = AppState.load(p, context.getFilesDir()).activeId();
+        if (id == null) return; // the bundled demo keeps its own framing
+        LibraryStore.editItem(p, id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem item) {
+                return item.withOrbit(ox, oy).withPan(px, py);
+            }
+        });
     }
 
+    /** @see #saveViewToPrefs */
     public void savePanToPrefs() {
         final float px = panX, py = panY;
-        ConfigStore.update(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE),
-                context.getFilesDir(), new ConfigStore.Editor() {
-                    @Override
-                    public Config edit(Config c) {
-                        return c.withPan(px, py);
-                    }
-                });
+        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+        final String id = AppState.load(p, context.getFilesDir()).activeId();
+        if (id == null) return;
+        LibraryStore.editItem(p, id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem item) {
+                return item.withPan(px, py);
+            }
+        });
     }
 
     public void resetView() {
@@ -595,7 +607,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     private void writeStatus(String status) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
                 .edit().putString("status", status).apply();
     }
 
@@ -689,21 +701,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     public void reloadFromPrefs() {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        // One versioned blob, not nine loose keys: a stored value must mean the
-        // same thing regardless of which build wrote it. Migrates on first read.
-        Config c = ConfigStore.load(p, context.getFilesDir());
-        c = ConfigStore.dropMissingFiles(p, context.getFilesDir(), c);
-        depth = c.depthFraction();
-        zoom = c.zoomScale();
-        motion = c.motionScale();
-        orbitX = c.orbitX;
-        orbitY = c.orbitY;
-        setPan(c.panX, c.panY);
+        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+        // The index owns the selection, so one dereference gives the files and the
+        // settings together and cannot come back naming a photo that was deleted.
+        AppState state = AppState.load(p, context.getFilesDir());
+        LibraryItem active = state.activeItem();
+        if (active == null || active.isBundled()) {
+            // No file to resolve: the marble bust, read from res/raw. This is a
+            // renderable state and not a failure, and it is where a delete of the
+            // active item lands.
+            motion = state.config.motionScale();
+            loadPairAsync(null, null);
+            return;
+        }
+        depth = active.depthFraction();
+        zoom = active.zoomScale();
+        motion = state.config.motionScale();
+        orbitX = active.orbitX;
+        orbitY = active.orbitY;
+        setPan(active.panX, active.panY);
         // Stored as bare filenames; resolve against this install's filesDir so a
-        // restored backup still finds them. Null means "not present here".
-        java.io.File img = PrefFiles.resolve(context.getFilesDir(), c.imagePath);
-        java.io.File dep = PrefFiles.resolve(context.getFilesDir(), c.depthPath);
+        // restored backup still finds them. Null means it is not present here,
+        // which retainExisting has already pruned from the index.
+        java.io.File img = PrefFiles.resolve(context.getFilesDir(), active.imageName);
+        java.io.File dep = PrefFiles.resolve(context.getFilesDir(), active.depthName);
         // Off the GL thread: the read, decode and mesh build are seconds of work
         // and must not sit between two frames of a live wallpaper. The dispatcher
         // comes from the host (see setGlDispatch), which both surfaces set before
