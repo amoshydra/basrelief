@@ -243,8 +243,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /**
      * Load an image + depth pair (GL thread only). Either path may be null:
-     * image falls back to the bundled demo; depth falls back to the image's
-     * embedded chunk, then to a flat surface.
+     * image falls back to the bundled demo; depth falls back to the bundled
+     * demo depth, then to the image's embedded chunk, then to a flat surface.
      */
     public boolean loadPair(String imagePath, String depthPath) {
         byte[] imageBytes = null;
@@ -286,6 +286,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 }
             }
         }
+        if (depthPath == null && imagePath == null) {
+            // Bundled demo: ship image.png AND depth.png as a pair.
+            // Without this the fallback below fills a flat depth map, so the
+            // demo silently rendered as a flat plane with no relief at all.
+            Bitmap db = decodeRaw(R.raw.depth);
+            if (db != null) {
+                dims[0] = db.getWidth();
+                dims[1] = db.getHeight();
+                grayOut = readGray(db);
+                db.recycle();
+            }
+        }
         if (grayOut == null && imageBytes != null) {
             grayOut = extractDepth(imageBytes, dims);
             embedded = grayOut != null;
@@ -301,7 +313,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         install(colorBmp, grayOut, dims[0], dims[1]);
 
         if (!customImage && !customDepth) {
-            writeStatus("bundled demo");
+            // Say which one it is. These two looked identical from the status
+            // line, which is how a flat "demo" went unnoticed for so long.
+            writeStatus(flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
         } else if (flat) {
             writeStatus("custom image, flat (no depth found)");
         } else if (embedded) {

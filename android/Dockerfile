@@ -28,6 +28,24 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
 RUN yes | sdkmanager --licenses
 RUN sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+# Bake a debug signing key into the image.
+#
+# Without this, AGP generates a fresh debug.keystore inside the container's
+# ephemeral filesystem on every run, so each build gets a DIFFERENT signature.
+# The result is that `adb install -r` always fails with
+# INSTALL_FAILED_UPDATE_INCOMPATIBLE, and the only recovery is an uninstall --
+# which wipes the user's studio settings and chosen image every single time.
+#
+# This is a well-known throwaway key, not a secret. It exists purely so
+# successive debug builds are mutually upgradeable. It must never be used for
+# release signing (that uses the gitignored keystore.properties).
+RUN mkdir -p /root/.android && \
+    keytool -genkeypair -v -keystore /root/.android/debug.keystore \
+      -storepass android -keypass android -alias androiddebugkey \
+      -keyalg RSA -keysize 2048 -validity 10000 \
+      -dname "CN=Android Debug,O=Android,C=US" && \
+    chmod 644 /root/.android/debug.keystore
+
 WORKDIR /workspace
 
 CMD ["/bin/bash"]
