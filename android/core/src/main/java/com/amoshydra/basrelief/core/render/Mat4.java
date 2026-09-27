@@ -41,17 +41,27 @@ public final class Mat4 {
     }
 
     /**
-     * In-place {@code m = m * scale(sx, sy, sz)} — i.e. post-multiply, which
-     * scales the model before the view/projection are applied. This is the
-     * in-place form of the 7-argument {@code Matrix.scaleM(result, ro, lhs, lo, ...)}
-     * overload; call sites copy first and then scale in place.
+     * In-place {@code m = m * S} where {@code S = diag(sx, sy, sz)} — i.e.
+     * POST-multiply, scaling the model before the view and projection are
+     * applied. This is the in-place form of the 7-argument
+     * {@code Matrix.scaleM(result, ro, lhs, lo, ...)} overload.
+     *
+     * <p>In column-major storage {@code m[col * 4 + row]}, right-multiplying by
+     * a diagonal scales COLUMN c by {@code S[c][c]}. So this multiplies
+     * elements 0..3 by sx, 4..7 by sy and 8..11 by sz, and leaves 12..15 (the
+     * translation column) alone.
+     *
+     * <p>Do NOT "simplify" this into a stride-1 loop over rows. That computes
+     * {@code S * m} instead, which scales the camera axes rather than the model
+     * — it looks plausible but leaves {@code clip.w} depending on model z, so
+     * the relief keeps a fisheye bulge even at zero depth and the Depth slider
+     * appears to do nothing except relight. Verified against the real
+     * {@code android.opengl.Matrix.scaleM} on-device.
      */
     public static void scaleM(float[] m, int off, float sx, float sy, float sz) {
-        for (int c = 0; c < 4; c++) {
-            m[off + c * 4] *= sx;
-            m[off + c * 4 + 1] *= sy;
-            m[off + c * 4 + 2] *= sz;
-        }
+        for (int i = 0; i < 4; i++) m[off + i] *= sx;
+        for (int i = 4; i < 8; i++) m[off + i] *= sy;
+        for (int i = 8; i < 12; i++) m[off + i] *= sz;
     }
 
     public static void translateM(float[] m, int off, float x, float y, float z) {

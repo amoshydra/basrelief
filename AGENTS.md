@@ -221,8 +221,20 @@ so those invariants are enforced by a build rather than by prose.
   produce an APK without the tests having passed. `podman-build.sh test` runs
   them alone; they are fast and need no device.
 - `Mat4` is a vendored subset of `android.opengl.Matrix` (Apache-2.0), present
-  only so the camera is testable off-device. Keep the operations in the same
-  order as the Android originals or the goldens/round-trips will drift.
+  only so the camera is testable off-device. **Do not hand-derive its semantics
+  and then "verify" them with a reference you wrote yourself** — that is how the
+  row/column mix-up below got in. `Mat4ScaleTest`'s expected values were captured
+  by running the REAL `android.opengl.Matrix.scaleM` on a device.
+- **`Mat4.scaleM` was wrong for one commit: it computed `S·m` instead of `m·S`.**
+  In column-major storage, right-multiplying by `diag(sx,sy,sz)` scales COLUMN
+  `c` by `S[c][c]` — elements 0..3 by sx, 4..7 by sy, 8..11 by sz, translation
+  column untouched. The buggy version used a stride-1 loop over rows. Symptom:
+  the Depth slider only relit the surface and stopped extruding it, and Depth 0%
+  was not flat, because `clip.w` still varied with model z (a fisheye bulge).
+  Nothing caught it: the camera round-trip test does not use the model scale and
+  the mesh golden test does not touch the projection. The differential harness
+  that "proved 20,005 cases identical" was circular — both sides called the same
+  broken `Mat4.scaleM`. See `Mat4ScaleTest` for the regression net.
 
 ## Verification
 
