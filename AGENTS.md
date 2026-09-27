@@ -44,11 +44,20 @@ npm run gen:assets   # regenerate public/assets demo image+depth pair
 ```
 cd android
 ./podman-build.sh build-image    # once: builds the SDK image (Ubuntu 22.04 + JDK 17 + SDK 34)
+./podman-build.sh test           # JVM unit tests in :core (no device; also runs in build-apk)
 ./podman-build.sh build-apk      # -> app/build/outputs/apk/debug/app-debug.apk
 ./podman-build.sh install        # build + adb install on the connected device
 ./podman-build.sh build-release  # signed only if keystore.properties exists
 ./podman-build.sh clean | shell | help
 ```
+
+CI (`.github/workflows/build.yml`) runs the same three steps on every push and
+PR: `build-image`, `test`, `build-apk`, plus a `vite` build for the web. It
+invokes `./android/podman-build.sh` from the repo root, so the script must stay
+runnable from any working directory.
+
+**If more than one device is attached, pass `adb -s <serial>`.** A second phone
+appearing over WiFi silently sent installs to the wrong target once already.
 No Android SDK, Gradle, or Android Studio is needed on the host — `gradlew` +
 `gradle-wrapper.jar` are committed and run inside the container. The host only
 needs `podman` (and `adb` for `install`).
@@ -128,10 +137,26 @@ Constraints (learned the hard way):
   `ReliefMeshGoldenTest`, but nothing still enforces the web/Android match.
 - **The two ports have already drifted** (verified, not hypothetical): default
   depth intensity is 45 on web vs 90 on Android; the web tilt range scales with
-  zoom while Android's is constant; web has no z-scale clamp but Android silently
-  clamps `intensity` to `0.9*CAM_DIST/scale`, so the Depth slider stops working at
-  high zoom without saying so. Treat "matches the web" as an explicit list of
-  invariants to check, not a general claim.
+  zoom while Android's is constant. Treat "matches the web" as an explicit list
+  of invariants to check, not a general claim. (The old note about Android
+  silently clamping the Depth slider is **fixed** — see the Depth entry below.)
+- **Depth is a FRACTION of the reachable maximum, not an absolute value.**
+  `zScale = depth * maxZScale()` where `maxZScale = 0.9*CAM_DIST/scale`, and the
+  slider is 0..100. It used to be absolute and hard-clamped, so once the clamp
+  bit the rest of the range did nothing — at Zoom 2.0 more than half the slider
+  was a silent no-op. Now every step is live at every zoom. Consequences to keep
+  in mind: absolute depth varies with zoom (a zoomed-out view carries a deeper
+  relief), and the pref key is still `intensity` 0..100, so values written by an
+  older build are clamped on read rather than migrated.
+- **The depth blur runs on the grid-resolution field, not the source depth map.**
+  `ReliefMesh.resample()` then `ReliefMesh.blur()`. The mesh only reads n*n
+  points, so blurring at source resolution wasted ~99% of the work and
+  allocated two full-size float buffers (183 MB on a 24MP depth map, with no
+  `largeHeap`). A source blur of radius `sourceW/78` is exactly `grid/78` in
+  grid cells, so the smoothing is unchanged. **If you change the blur radius,
+  the goldens must be regenerated** (see `RegenerateGoldens`), and the banding
+  re-checked on a real photo — the bundled demo's own depth map has 4-level
+  quantisation that hides some artifacts.
 - **The bundled demo depth map is `res/raw/depth.png` and must be loaded as a
   pair with `res/raw/image.png`.** It shipped unreferenced from the first commit,
   so the out-of-the-box demo fell through to a flat depth map and rendered with
@@ -181,6 +206,8 @@ android/app/src/main/java/com/amoshydra/basrelief/     Android shell (GLES2 + UI
   ReliefRenderer.java         GL state, textures, orbit marker; delegates math to :core
   TiltController.java         tilt + calibration + idle sleep + shake wake
   SensorPolicy.java           gyro pauses (not visible / battery ≤ 20%)
+  PowerSave.java              isPowerSaveMode(), drives the frame budget
+  Io.java                     single background thread for file/bitmap work
   DepthPng.java               embedded-depth chunk parser
   DepthPngPacker.java         packs image+depth into a dEPt PNG
   ImageUtil.java              downscales huge images (>2560px) before use
@@ -216,7 +243,12 @@ so those invariants are enforced by a build rather than by prose.
 - **`CameraModelTest` asserts the tap→unproject→project round-trip.** Re-project
   with the ORIGINAL orbit pivot, not the newly resolved one — adopting the new
   orbit moves the camera, so asserting a round-trip through it would be
-  asserting a bug.
+  asserting a bug. It also pins the two Depth properties that used to be false:
+  every slider step is live at every zoom, and Depth 0% is flat at every zoom.
+- **`RegenerateGoldens` is a `main`, not a test, on purpose** — a test that
+  rewrites its own expectation can never fail. The goldens track the CURRENT
+  geometry; when `meshMatchesGoldenOutput` goes red, read the diff and decide
+  whether the change was intended before regenerating.
 - Every `assemble`/`bundle` task `dependsOn ':core:test'`, so there is no way to
   produce an APK without the tests having passed. `podman-build.sh test` runs
   them alone; they are fast and need no device.
