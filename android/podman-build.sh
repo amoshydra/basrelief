@@ -9,6 +9,19 @@ IMAGE_NAME="depthtilt-android-sdk:34"
 APK_DEBUG="$SCRIPT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 APK_RELEASE="$SCRIPT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
 
+# Gradle cache, bind-mounted out of the throwaway container so dependencies are
+# downloaded once instead of on every single build. Override with
+# GRADLE_CACHE_DIR, or set GRADLE_NO_CACHE=1 to opt out entirely.
+GRADLE_CACHE_DIR="${GRADLE_CACHE_DIR:-$HOME/.cache/depthtilt-gradle}"
+GRADLE_USER_HOME="/cache/gradle"
+if [ -z "${GRADLE_NO_CACHE:-}" ] && mkdir -p "$GRADLE_CACHE_DIR" 2>/dev/null; then
+    GRADLE_CACHE_MOUNT="-v $GRADLE_CACHE_DIR:/cache:Z"
+else
+    GRADLE_CACHE_MOUNT=""
+    GRADLE_USER_HOME=""   # container default: cache is thrown away, as before
+fi
+mkdir -p "$GRADLE_CACHE_DIR" 2>/dev/null || true
+
 show_usage() {
     cat <<EOF
 Usage: $0 <command>
@@ -41,8 +54,15 @@ ensure_image() {
 
 gradle_task() {
     ensure_image
+    # GRADLE_USER_HOME is bind-mounted from the host. Without it the cache lives
+    # in the throwaway container layer, so every build re-downloads the Gradle
+    # distribution, AGP and all transitives — locally and on every CI run.
+    # Falls back to no cache where :Z is unavailable (macOS/Windows), rather
+    # than failing the build.
     podman run --rm \
         -v "$SCRIPT_DIR:/workspace:Z" \
+        ${GRADLE_CACHE_MOUNT:-} \
+        ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
         -w /workspace \
         "$IMAGE_NAME" \
         bash -c "./gradlew $1 --no-daemon"
@@ -88,7 +108,9 @@ install_apk() {
 
 clean() {
     if podman image exists "$IMAGE_NAME"; then
-        podman run --rm -v "$SCRIPT_DIR:/workspace:Z" -w /workspace "$IMAGE_NAME" \
+        podman run --rm -v "$SCRIPT_DIR:/workspace:Z" ${GRADLE_CACHE_MOUNT:-} \
+            ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
+            -w /workspace "$IMAGE_NAME" \
             bash -c "./gradlew clean --no-daemon" || true
     fi
     rm -rf "$SCRIPT_DIR/app/build" "$SCRIPT_DIR/.gradle"
@@ -97,7 +119,9 @@ clean() {
 
 open_shell() {
     ensure_image
-    podman run -it --rm -v "$SCRIPT_DIR:/workspace:Z" -w /workspace "$IMAGE_NAME" bash
+    podman run -it --rm -v "$SCRIPT_DIR:/workspace:Z" ${GRADLE_CACHE_MOUNT:-} \
+        ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
+        -w /workspace "$IMAGE_NAME" bash
 }
 
 run_tests() {

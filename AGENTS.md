@@ -28,6 +28,17 @@ cd android
 ./podman-build.sh clean | shell | help
 ```
 
+The Gradle cache is bind-mounted out of the container (`GRADLE_USER_HOME`), so
+dependencies and the Gradle distribution are downloaded once instead of on
+every build — locally and in CI. Cold build 14 s, warm 4 s with no network.
+
+It is set via the **environment variable**, not `--gradle-user-home`: the
+wrapper script decides where to keep the distribution and downloads it *before*
+Gradle starts, so the flag alone leaves `gradle-8.2-bin.zip` re-fetched on every
+run while everything else stays cached. That is a mistake which looks like it
+worked, because the build still succeeds. Override the location with
+`GRADLE_CACHE_DIR`, or opt out entirely with `GRADLE_NO_CACHE=1`.
+
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
 every push, plus a `vite` build for the web. It invokes the script from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
@@ -165,7 +176,7 @@ since launching the installer programmatically is unreliable on some devices.
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 20 tests across four classes:
+it**. 48 tests across six classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -174,6 +185,17 @@ it**. 20 tests across four classes:
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom".
 - `PrefFilesTest` — the restore case, which silently costs users their image.
+- `ConfigTest` — the settings blob: round-trip, clamping, and that `parse`
+  never throws, because the wallpaper parses it on the GL thread at cold start.
+  It also pins that pan is in **pixels** and must not be clamped to orbit's
+  fraction range.
+- `ComfyWorkflowTest` — the ComfyUI graph wiring, especially that the depth
+  node reads node 1 and `SaveImage` reads node **2**, not 1. An off-by-one
+  there renders the wrong tensor with no error.
+
+The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
+class without updating this list fails the build instead of quietly making the
+file wrong.
 
 If `meshMatchesGoldenOutput` goes red, **read the diff and decide whether the
 geometry change was intended** before regenerating. `RegenerateGoldens` is a
