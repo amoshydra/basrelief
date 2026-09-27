@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.opengl.GLSurfaceView;
@@ -70,8 +71,14 @@ public class DepthWallpaperService extends WallpaperService {
                             });
                             glView.requestRender();
                         } else if ("image_path".equals(key) || "depth_path".equals(key)) {
-                            final String img = p.getString("image_path", null);
-                            final String dep = p.getString("depth_path", null);
+                            final String imgS = p.getString("image_path", null);
+                            final String depS = p.getString("depth_path", null);
+                            final java.io.File imgF = PrefFiles.resolve(
+                                    getFilesDir(), imgS);
+                            final java.io.File depF = PrefFiles.resolve(
+                                    getFilesDir(), depS);
+                            final String img = imgF == null ? null : imgF.getAbsolutePath();
+                            final String dep = depF == null ? null : depF.getAbsolutePath();
                             glView.queueEvent(new Runnable() {
                                 @Override
                                 public void run() {

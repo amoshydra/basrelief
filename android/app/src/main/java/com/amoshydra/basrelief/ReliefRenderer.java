@@ -20,6 +20,7 @@ import java.nio.FloatBuffer;
 import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 
 import javax.microedition.khronos.egl.EGL10;
@@ -434,7 +435,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         orbitX = Math.max(-0.5f, Math.min(0.5f, p.getFloat("orbit_x", 0f)));
         orbitY = Math.max(-0.5f, Math.min(0.5f, p.getFloat("orbit_y", 0f)));
         setPan(p.getFloat("pan_x", 0f), p.getFloat("pan_y", 0f));
-        loadPair(p.getString("image_path", null), p.getString("depth_path", null));
+        // Stored as bare filenames; resolve against this install's filesDir so a
+        // restored backup still finds them. Null means "not present here".
+        java.io.File img = PrefFiles.resolve(context.getFilesDir(), p.getString("image_path", null));
+        java.io.File dep = PrefFiles.resolve(context.getFilesDir(), p.getString("depth_path", null));
+        loadPair(img == null ? null : img.getAbsolutePath(),
+                 dep == null ? null : dep.getAbsolutePath());
     }
 
     @Override

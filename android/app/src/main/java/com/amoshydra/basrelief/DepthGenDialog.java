@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.ContentValues;
@@ -159,12 +160,12 @@ public final class DepthGenDialog {
      * without re-picking it. No-op if there is no current image.
      */
     public void useCurrentImage() {
-        String path = activity
+        String stored = activity
                 .getSharedPreferences(ReliefRenderer.PREFS, Activity.MODE_PRIVATE)
                 .getString("image_path", null);
-        if (path == null) return;
-        final File f = new File(path);
-        if (!f.exists()) return;
+        // stored as a bare filename; resolve against this install's filesDir
+        final File f = PrefFiles.resolve(activity.getFilesDir(), stored);
+        if (f == null) return;
         pickedImage = f;
         final String size = f.length() / 1024 + " KB";
         imageLabel.setText("Image: current studio image (" + size + ") — checking depth…");

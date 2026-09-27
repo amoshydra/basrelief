@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
@@ -344,7 +345,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 prefs.edit()
-                        .putString("image_path", target.getAbsolutePath())
+                        .putString("image_path", PrefFiles.store(target))
                         .remove("depth_path")
                         .remove("status")
                         .apply();
@@ -366,7 +367,7 @@ public class MainActivity extends Activity {
                         @Override
                         public void onGenerated(String packedPath) {
                             prefs.edit()
-                                    .putString("image_path", packedPath)
+                                    .putString("image_path", new java.io.File(packedPath).getName())
                                     .remove("depth_path")
                                     .remove("status")
                                     .apply();
@@ -384,6 +385,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Tidy the stored filenames on the UI thread. reloadFromPrefs() (GL
+        // thread) only reads them; normalising here keeps pref writes off the
+        // GL thread and means a restored legacy absolute path is rewritten as a
+        // bare filename on the very next launch.
+        resolveOrClear("image_path");
+        resolveOrClear("depth_path");
         glView.onResume();
         glView.queueEvent(new Runnable() {
             @Override
@@ -761,7 +768,7 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                prefs.edit().putString(key, target.getAbsolutePath()).apply();
+                prefs.edit().putString(key, PrefFiles.store(target)).apply();
                 Toast.makeText(MainActivity.this, "Picked \u2014 updating preview\u2026",
                         Toast.LENGTH_SHORT).show();
                 applyFiles();
@@ -770,8 +777,11 @@ public class MainActivity extends Activity {
     }
 
     private void applyFiles() {
-        final String img = prefs.getString("image_path", null);
-        final String dep = prefs.getString("depth_path", null);
+        // Resolve relative names, and drop any that no longer exist: after a
+        // restore onto a different device the file may simply be absent, and a
+        // dangling value would otherwise be retried on every load.
+        final String img = resolveOrClear("image_path");
+        final String dep = resolveOrClear("depth_path");
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -780,6 +790,30 @@ public class MainActivity extends Activity {
         });
         glView.requestRender();
         refreshStatus();
+    }
+
+    /**
+     * Resolve a stored image/depth, normalising the pref as a side effect.
+     *
+     * <p>If the stored value is a legacy absolute path that resolved only by
+     * the filesDir fallback, rewrite it as a bare filename so the stale path
+     * does not linger in prefs (and in the next backup). If it cannot be
+     * resolved at all, drop it so we stop retrying a file that is gone.
+     *
+     * @return the absolute path, or null if there is nothing usable
+     */
+    private String resolveOrClear(String key) {
+        String stored = prefs.getString(key, null);
+        java.io.File f = PrefFiles.resolve(getFilesDir(), stored);
+        if (f == null) {
+            if (stored != null) prefs.edit().remove(key).apply();
+            return null;
+        }
+        String canonical = f.getName();
+        if (!canonical.equals(stored)) {
+            prefs.edit().putString(key, canonical).apply();
+        }
+        return f.getAbsolutePath();
     }
 
     private void refreshStatus() {
