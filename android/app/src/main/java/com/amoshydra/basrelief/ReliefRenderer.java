@@ -45,8 +45,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     // FOV / camera distance / crop margin / tilt range live in CameraModel —
     // do NOT duplicate them here, or the two will drift apart.
-    // smoothing time constant (seconds) — display-refresh independent
+    // Smoothing time constant (seconds) — display-refresh independent, so the
+    // feel is the same at 60/90/120 Hz. This is the value used for SMALL errors,
+    // i.e. sensor jitter while the phone is held still; it is what stops the
+    // relief from shimmering when you are not moving.
     private static final float SMOOTHING_TAU = 0.2f;
+
+    // Fast attack / slow release, on top of the above.
+    //
+    // A single time constant cannot tell a deliberate movement from a sensor
+    // wobble, so it treats both identically: with tau=0.2 the filter closes only
+    // ~9.5% of the gap per frame at 50 Hz, and a 30 degree tilt takes ~460 ms to
+    // get 90% of the way there. That reads as "the gyro lags".
+    //
+    // So the fraction followed per frame is raised once the error is large:
+    // below ATTACK_ERROR the exponential applies unchanged (jitter stays
+    // smoothed), above it alpha saturates at 1 and the value snaps in a single
+    // frame. Same idea as a camera autofocus that snaps when swung somewhere
+    // new and glides when nearly there.
+    //
+    // This is a FEEL constant. Lower it if the motion reads as twitchy; raise it
+    // if mid-movement still feels like it lags. Tilt is normalised as
+    // roll/RANGE_DEG with RANGE_DEG = 25, so 0.125 here is about 3 degrees of
+    // phone rotation, not 7.
+    private static final float ATTACK_ERROR = 0.125f;
     /** Depth default: 90% of the maximum the camera allows at this zoom. */
     private static final int DEFAULT_DEPTH = 90;
     private static final int GRID = 256; // relief grid resolution
@@ -501,6 +523,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return applyPending(decodePair(imagePath, depthPath));
     }
 
+    /**
+     * One axis of the tilt smoother: exponential for small errors, instant for
+     * large ones.
+     *
+     * @param alpha the exponential step for this frame, from SMOOTHING_TAU
+     */
+    private static float approach(float smooth, float target, float alpha) {
+        float err = target - smooth;
+        float a = alpha;
+        float mag = Math.abs(err);
+        if (mag > ATTACK_ERROR) {
+            a = 1f;                 // deliberate movement: snap
+        } else if (mag * 8f > a) {
+            a = mag * 8f;           // blend smoothly into the fast regime
+        }
+        return smooth + err * a;
+    }
+
     private void writeStatus(String status) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString("status", status).apply();
@@ -645,8 +685,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
         lastFrameNanos = now;
         float alpha = 1f - (float) Math.exp(-dt / SMOOTHING_TAU);
-        smoothX += (targetX - smoothX) * alpha;
-        smoothY += (targetY - smoothY) * alpha;
+        // Fast attack: a big error means the user is moving, so follow it at once
+        // instead of easing in over ~460 ms. See ATTACK_ERROR.
+        smoothX = approach(smoothX, targetX, alpha);
+        smoothY = approach(smoothY, targetY, alpha);
 
         // Fade up from black after a load, so the first frame does not pop.
         if (fade < 1f) {
