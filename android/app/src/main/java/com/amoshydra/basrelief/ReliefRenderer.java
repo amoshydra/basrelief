@@ -49,18 +49,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final int DEFAULT_DEPTH = 90;
     private static final int GRID = 256; // relief grid resolution
 
-    // --- explicit frame clock ---
-    // The gyro samples at 50Hz, so without a cap the wallpaper redraws as fast
-    // as the sensor fires, forever, for a 1px change. A live wallpaper that
-    // never idles is a battery and thermal problem, so draws are paced
-    // explicitly rather than following whatever rate requestRender arrives at.
-    private static final float FPS_NORMAL = 60f;
-    private static final float FPS_POWER_SAVE = 30f;
+    /**
+     * There is deliberately no frame-rate cap. An earlier version capped draws
+     * at 60/30fps to save battery; it was removed because it could not do that,
+     * and it caused visible tearing:
+     *
+     * - The surface is RENDERMODE_WHEN_DIRTY and only the GYRO asks for a
+     *   frame, at roughly 50Hz. A 60fps cap therefore never fired and saved
+     *   nothing; a 30fps cap silently DISCARDED half the tilt updates, since
+     *   the requestRender() is already consumed by the time onDrawFrame runs.
+     * - Worse, returning early does not cancel the present. GLSurfaceView still
+     *   calls eglSwapBuffers, so a skipped frame re-presents the previous
+     *   buffer mid-scanout, which tears.
+     *
+     * The draw rate is already bounded by the sensor, and the real battery win
+     * is elsewhere: TiltController unregisters the expensive rotation-vector
+     * sensor after 5s of stillness and falls back to a low-power accelerometer
+     * until a shake. See also setPowerSave(), which currently only records the
+     * OS power-save state for a future resolution-scale change.
+     */
     /** Fade up from black once the first real frame after a load is on screen. */
     private static final float FADE_SECONDS = 0.25f;
 
     private long lastDrawNanos = 0L;
-    private float minFrameNanos = 1e9f / FPS_NORMAL;
     private float fade = 0f;               // 0 = black, 1 = fully faded in
     private volatile float powerSave = 0f; // 0..1, written from the UI thread
 
@@ -440,13 +451,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void onDrawFrame(GL10 gl) {
         // --- frame clock: pace draws explicitly ---
         long now = System.nanoTime();
-        if (lastDrawNanos != 0L && now - lastDrawNanos < minFrameNanos) {
-            return; // too soon; the next sensor sample will come round again
-        }
-        lastDrawNanos = now;
-        // Re-derive the budget on the GL thread from the volatile flag, so the
-        // UI thread never touches renderer state beyond a single float.
-        minFrameNanos = 1e9f / (FPS_NORMAL + (FPS_POWER_SAVE - FPS_NORMAL) * powerSave);
+        // NOTE: there is deliberately NO frame-rate gate here. See the note on
+        // FPS_NORMAL below before adding one back.
 
         recomputeScale();
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
