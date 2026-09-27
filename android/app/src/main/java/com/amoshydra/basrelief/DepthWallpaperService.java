@@ -70,7 +70,10 @@ public class DepthWallpaperService extends WallpaperService {
                                 if (!img.equals(lastImage) || !dep.equals(lastDepth)) {
                                     lastImage = img;
                                     lastDepth = dep;
-                                    renderer.loadPair(img, dep);
+                                    // Async: the read/decode/mesh-build must not
+                                    // happen between two frames of the wallpaper,
+                                    // or it visibly freezes for seconds.
+                                    renderer.loadPairAsync(img, dep);
                                 }
                             }
                         });
@@ -86,6 +89,9 @@ public class DepthWallpaperService extends WallpaperService {
             glView.setEGLContextClientVersion(2);
             ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
             glView.setPreserveEGLContextOnPause(true);
+            // The renderer needs a way back onto the GL thread; only the host
+            // has the GLSurfaceView whose queueEvent provides it.
+            renderer.setGlDispatch(ReliefRenderer.glExecutor(glView));
             glView.setRenderer(renderer);
             glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
             // the wallpaper is read-only: all interaction (orbit, pan, zoom,

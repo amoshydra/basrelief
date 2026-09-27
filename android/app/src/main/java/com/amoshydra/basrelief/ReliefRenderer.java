@@ -152,6 +152,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * when this is set.
      */
     private boolean markerClobbersMesh;
+
+    /**
+     * How to get back onto the GL thread. Supplied by the host, which owns the
+     * GLSurfaceView.
+     *
+     * <p>Deliberately NOT {@code new Handler(Looper.myLooper())} taken on the GL
+     * thread: that is null on a real device, because GLSurfaceView's GLThread
+     * does not prepare a Looper, and constructing a Handler from it throws an
+     * NPE inside onSurfaceCreated. The host's {@code queueEvent} is the
+     * supported route and behaves the same on every version.
+     */
+    private volatile java.util.concurrent.Executor glDispatch;
+
     private FloatBuffer ringBuffer;
     private static final int RING_SEGMENTS = 48;
     private final float[] markerMat = new float[16];
@@ -310,7 +323,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * image falls back to the bundled demo; depth falls back to the bundled
      * demo depth, then to the image's embedded chunk, then to a flat surface.
      */
-    public boolean loadPair(String imagePath, String depthPath) {
+    private Pending decodePair(String imagePath, String depthPath) {
         byte[] imageBytes = null;
         Bitmap colorBmp;
         int imgW, imgH;
@@ -324,8 +337,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     : null;
         }
         if (colorBmp == null) {
-            writeStatus("failed to read image");
-            return false;
+            return null;
         }
         imgW = colorBmp.getWidth();
         imgH = colorBmp.getHeight();
@@ -374,22 +386,119 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             flat = true;
         }
 
-        install(colorBmp, grayOut, dims[0], dims[1]);
+        return new Pending(colorBmp, grayOut, dims[0], dims[1],
+                customImage, customDepth, embedded, flat);
+    }
 
-        if (!customImage && !customDepth) {
-            // Say which one it is. These two looked identical from the status
-            // line, which is how a flat "demo" went unnoticed for so long.
-            writeStatus(flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
-        } else if (flat) {
-            writeStatus("custom image, flat (no depth found)");
-        } else if (embedded) {
-            writeStatus("custom image + embedded depth");
-        } else if (customDepth) {
-            writeStatus("custom image + depth map");
-        } else {
-            writeStatus("custom image");
+    /** Everything {@link #decodePair} produces, ready for the GL half. */
+    private static final class Pending {
+        final Bitmap colorBmp;
+        final byte[] gray;
+        final int w, h;
+        final boolean customImage, customDepth, embedded, flat;
+
+        Pending(Bitmap colorBmp, byte[] gray, int w, int h,
+                boolean customImage, boolean customDepth, boolean embedded, boolean flat) {
+            this.colorBmp = colorBmp;
+            this.gray = gray;
+            this.w = w;
+            this.h = h;
+            this.customImage = customImage;
+            this.customDepth = customDepth;
+            this.embedded = embedded;
+            this.flat = flat;
         }
+    }
+
+    /**
+     * Upload the texture and build the mesh. GL thread only.
+     *
+     * @return false if there was nothing to load
+     */
+    private boolean applyPending(Pending p) {
+        if (p == null) {
+            writeStatus("failed to read image");
+            return false;
+        }
+        if (p.customImage && p.customDepth) {
+            writeStatus(p.flat ? "custom image, flat (no depth found)"
+                    : p.embedded ? "custom image + embedded depth"
+                    : "custom image + depth map");
+        } else if (p.customImage) {
+            writeStatus(p.embedded ? "custom image + embedded depth" : "custom image");
+        } else {
+            writeStatus(p.flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
+        }
+        install(p.colorBmp, p.gray, p.w, p.h);
         return true;
+    }
+
+    /**
+     * Read, decode and build the mesh off the GL thread, then apply on it.
+     *
+     * <p>This used to run end to end on the GL thread, so a full-size PNG read, a
+     * bitmap decode and a 393k-vertex mesh build all happened between two frames.
+     * On a live wallpaper that reads as a multi-second freeze every time the
+     * image changes, which is why sharing a photo looked like it had blanked the
+     * wallpaper.
+     *
+     * <p>Safe to call from any thread. Returns immediately: frames drawn before
+     * the result lands simply clear and bail, because there is no texture yet,
+     * and the existing fade-in covers the arrival.
+     *
+     */
+    public void loadPairAsync(final String imagePath, final String depthPath) {
+        final java.util.concurrent.Executor glThread = glDispatch;
+        if (glThread == null) {
+            // No dispatcher yet: we are almost certainly inside onSurfaceCreated
+            // before the host could set one, which cannot happen with the current
+            // wiring, so just do it inline rather than dropping the image.
+            applyPending(decodePair(imagePath, depthPath));
+            return;
+        }
+        Io.run(new java.util.concurrent.Callable<Pending>() {
+            @Override
+            public Pending call() {
+                return decodePair(imagePath, depthPath);
+            }
+        }, new Io.Callback<Pending>() {
+            @Override
+            public void onDone(final Pending pending, Exception error) {
+                final Pending p = error != null ? null : pending;
+                glThread.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        applyPending(p);
+                    }
+                });
+            }
+        }, glThread);
+    }
+
+    /** Wrap a GLSurfaceView's queueEvent as the Executor {@link Io#run} wants. */
+    public static java.util.concurrent.Executor glExecutor(final GLSurfaceView view) {
+        return new java.util.concurrent.Executor() {
+            @Override
+            public void execute(Runnable r) {
+                view.queueEvent(r);
+            }
+        };
+    }
+
+    /**
+     * Supply the GL-thread dispatcher. Both hosts call this once, right after
+     * constructing the renderer and before the surface exists.
+     */
+    public void setGlDispatch(java.util.concurrent.Executor e) {
+        this.glDispatch = e;
+    }
+
+    /**
+     * Synchronous load, for tests and any caller that needs the result before
+     * continuing. Must be called on the GL thread.
+     */
+    public boolean loadPair(String imagePath, String depthPath) {
+        return applyPending(decodePair(imagePath, depthPath));
     }
 
     private void writeStatus(String status) {
@@ -502,8 +611,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // restored backup still finds them. Null means "not present here".
         java.io.File img = PrefFiles.resolve(context.getFilesDir(), c.imagePath);
         java.io.File dep = PrefFiles.resolve(context.getFilesDir(), c.depthPath);
-        loadPair(img == null ? null : img.getAbsolutePath(),
-                 dep == null ? null : dep.getAbsolutePath());
+        // Off the GL thread: the read, decode and mesh build are seconds of work
+        // and must not sit between two frames of a live wallpaper. The dispatcher
+        // comes from the host (see setGlDispatch), which both surfaces set before
+        // this can run.
+        loadPairAsync(img == null ? null : img.getAbsolutePath(),
+                      dep == null ? null : dep.getAbsolutePath());
     }
 
     @Override

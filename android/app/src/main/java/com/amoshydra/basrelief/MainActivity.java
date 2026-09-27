@@ -94,6 +94,9 @@ public class MainActivity extends Activity {
         ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
         renderer = new ReliefRenderer(getApplicationContext());
         renderer.setShowOrbitMarker(true); // crosshair in the studio
+        // The renderer needs a way back onto the GL thread; only the host has
+        // the GLSurfaceView whose queueEvent provides it.
+        renderer.setGlDispatch(ReliefRenderer.glExecutor(glView));
         glView.setRenderer(renderer);
         glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
         root.addView(glView, new FrameLayout.LayoutParams(
@@ -835,12 +838,9 @@ public class MainActivity extends Activity {
         final java.io.File depF = PrefFiles.resolve(getFilesDir(), c.depthPath);
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
-        glView.queueEvent(new Runnable() {
-            @Override
-            public void run() {
-                renderer.loadPair(img, dep);
-            }
-        });
+        // Async for the same reason as the wallpaper: a synchronous load stalls
+        // the GL thread for the length of a full decode plus mesh build.
+        renderer.loadPairAsync(img, dep);
         glView.requestRender();
         refreshStatus();
     }

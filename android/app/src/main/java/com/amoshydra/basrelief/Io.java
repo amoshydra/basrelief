@@ -73,6 +73,39 @@ final class Io {
         });
     }
 
+    /**
+     * Run work on the shared background thread and deliver the result to
+     * {@code deliver} on whichever thread you choose.
+     *
+     * <p>Same executor as {@link #run(Activity, Callable, Callback)}, but for
+     * callers with no Activity to post back to — the wallpaper service. Pass the
+     * GL thread's own dispatcher as {@code deliver} when the result has to be
+     * applied to GL state.
+     */
+    static <T> void run(final Callable<T> work, final Callback<T> callback,
+                        final java.util.concurrent.Executor deliver) {
+        exec().execute(new Runnable() {
+            @Override
+            public void run() {
+                T result = null;
+                Exception error = null;
+                try {
+                    result = work.call();
+                } catch (Exception e) {
+                    error = e;
+                }
+                final T r = result;
+                final Exception e = error;
+                deliver.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onDone(r, e);
+                    }
+                });
+            }
+        });
+    }
+
     /** Called when the activity goes away, so the worker thread does not linger. */
     static void shutdown() {
         synchronized (Io.class) {
