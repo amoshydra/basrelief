@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Optional release signing. keystore.properties + *.keystore are gitignored;
+// without them, `assembleRelease` produces an unsigned APK and `assembleDebug`
+// still works normally.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace 'com.amoshydra.basrelief'
+    compileSdk 34
+    // pin to what the container image ships, so builds don't silently
+    // download a different build-tools version
+    buildToolsVersion '34.0.0'
+
+    defaultConfig {
+        applicationId "com.amoshydra.basrelief"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig hasReleaseKeystore ? signingConfigs.release : null
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // bundled demo assets are already-compiled PNGs; keep them compressed
+    androidResources {
+        noCompress 'png'
+    }
+}
+
+// No dependencies on purpose: this app uses only the Android framework
+// (android.app.Activity, GLSurfaceView, WallpaperService) and deliberately
+// avoids AndroidX / Maven artifacts, matching the original no-Gradle build.
+dependencies {
+}

@@ -1,0 +1,17 @@
+# Gradle / AGP
+.gradle/
+build/
+app/build/
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# Release signing — never commit keystores or their properties
+keystore.properties
+*.keystore
+*.jks
+
+# APKs
+*.apk

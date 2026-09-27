@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Basrelief</string>
+    <string name="wallpaper_desc">Turns a photo and depth map into a real 3D relief. Tilt your phone to see the light move across it.</string>
+</resources>

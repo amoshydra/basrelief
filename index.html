@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Basrelief — gyro 3D photo demo</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; background: #0b0e14; }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        color: #e6e6e6;
+        touch-action: none;
+      }
+      #app, #app canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+      #ui {
+        position: fixed;
+        left: 50%;
+        bottom: max(16px, env(safe-area-inset-bottom));
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+        width: min(92vw, 420px);
+        z-index: 10;
+      }
+      .panel {
+        width: 100%;
+        background: rgba(20, 24, 34, 0.72);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .row { display: flex; align-items: center; gap: 10px; }
+      .row label { font-size: 12px; opacity: 0.8; white-space: nowrap; }
+      input[type="range"] { flex: 1; accent-color: #6ea8fe; }
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #2a3244;
+        color: #e6e6e6;
+      }
+      button:active { transform: scale(0.97); }
+      #enable-motion { background: #3b82f6; color: white; width: 100%; }
+      #enable-motion[hidden] { display: none; }
+      .uploads { display: flex; gap: 10px; }
+      .uploads label {
+        flex: 1;
+        text-align: center;
+        font-size: 12px;
+        padding: 8px;
+        border: 1px dashed rgba(255, 255, 255, 0.25);
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .uploads input { display: none; }
+      #status {
+        position: fixed;
+        top: max(12px, env(safe-area-inset-top));
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(20, 24, 34, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        z-index: 10;
+        white-space: nowrap;
+      }
+      #toggle-ui {
+        position: fixed;
+        right: 14px;
+        bottom: max(14px, env(safe-area-inset-bottom));
+        z-index: 11;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        padding: 0;
+        font-size: 18px;
+        line-height: 1;
+        background: rgba(20, 24, 34, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(10px);
+      }
+      #toggle-fs {
+        position: fixed;
+        right: 14px;
+        bottom: calc(max(14px, env(safe-area-inset-bottom)) + 56px);
+        z-index: 11;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        padding: 0;
+        font-size: 18px;
+        line-height: 1;
+        background: rgba(20, 24, 34, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(10px);
+      }
+      body.ui-hidden #ui { display: none; }
+      body.ui-hidden #status { display: none; }
+      #orbit-marker {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 30px;
+        height: 30px;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 9;
+      }
+      #orbit-marker::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border: 1.5px solid rgba(255, 255, 255, 0.85);
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+      }
+      #orbit-marker::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 4px;
+        height: 4px;
+        margin: -2px;
+        background: rgba(255, 255, 255, 0.9);
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+      }
+      body.ui-hidden #orbit-marker { display: none; }
+      .hint {
+        font-size: 11px;
+        opacity: 0.55;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="orbit-marker"></div>
+    <div id="status">input: mouse / touch</div>
+    <div id="ui">
+      <button id="enable-motion">Enable motion (gyroscope)</button>
+      <div class="panel">
+        <div class="row">
+          <label for="intensity">Depth intensity</label>
+          <input id="intensity" type="range" min="0" max="100" value="45" />
+        </div>
+        <div class="row">
+          <label for="softness">Edge smoothing</label>
+          <input id="softness" type="range" min="0" max="100" value="0" />
+        </div>
+        <div class="row">
+          <label for="motion">Motion amount</label>
+          <input id="motion" type="range" min="0" max="100" value="33" />
+        </div>
+        <div class="row">
+          <label for="zoom">Zoom</label>
+          <input id="zoom" type="range" min="25" max="200" value="100" />
+        </div>
+        <div class="row">
+          <button id="calibrate" style="flex:1">Calibrate neutral pose</button>
+          <button id="reset-orbit" style="flex:1">Reset view</button>
+        </div>
+        <div class="hint">Tap: set orbit center · Two-finger drag: pan</div>
+        <div class="uploads">
+          <label>Image (or PNG w/ depth)<input id="file-image" type="file" accept="image/*" /></label>
+          <label>Depth map<input id="file-depth" type="file" accept="image/*" /></label>
+        </div>
+      </div>
+    </div>
+    <button id="toggle-ui" title="Hide / show controls" aria-label="Hide or show controls">≡</button>
+    <button id="toggle-fs" title="Fullscreen" aria-label="Toggle fullscreen">⛶</button>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

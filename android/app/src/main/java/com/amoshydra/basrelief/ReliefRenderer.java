@@ -1,0 +1,648 @@
+package com.amoshydra.basrelief;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.opengl.GLES20;
+import android.opengl.GLSurfaceView;
+import android.opengl.GLUtils;
+import android.opengl.Matrix;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.util.Arrays;
+
+import javax.microedition.khronos.egl.EGL10;
+import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.egl.EGLDisplay;
+import javax.microedition.khronos.opengles.GL10;
+
+/**
+ * GLES2 renderer for a real displaced relief surface (continuous, no tearing):
+ * the photo is mapped onto a CPU-built triangle mesh with per-vertex normals
+ * so a directional light shades it — genuine geometry cues (silhouette,
+ * parallax, shading) instead of a flat-card texture trick.
+ *
+ * Settings (SharedPreferences "depthwall") are read at startup; live
+ * changes arrive through setIntensity / setZoom / setMotion / loadPair,
+ * always invoked on the GL thread.
+ */
+public final class ReliefRenderer implements GLSurfaceView.Renderer {
+
+    public static final String PREFS = "depthwall";
+
+    private static final float FOV_DEG = 45f;
+    private static final float CAM_DIST = 1.2f;
+    private static final float CROP_MARGIN = 1.08f;
+    private static final float TILT_RANGE = 0.16f;
+    // smoothing time constant (seconds) — display-refresh independent
+    private static final float SMOOTHING_TAU = 0.2f;
+    private static final int DEFAULT_INTENSITY = 90; // percent
+    private static final int GRID = 256; // relief grid resolution
+
+    private static final String VERT =
+            "uniform mat4 uMVP;\n" +
+            "uniform float uModelScale;\n" +
+            "uniform float uIntensity;\n" +
+            "attribute vec3 aPosition;\n" +
+            "attribute vec2 aUV;\n" +
+            "attribute vec3 aNormal;\n" +
+            "varying vec2 vUv;\n" +
+            "varying vec3 vWorldPos;\n" +
+            "varying vec3 vWorldNormal;\n" +
+            "void main() {\n" +
+            "  vUv = aUV;\n" +
+            "  vec3 p = aPosition * uModelScale;\n" +
+            "  p.z *= uIntensity;\n" +
+            "  vWorldPos = p;\n" +
+            "  // inverse-transpose of the non-uniform z scale (model diag(1,1,uIntensity))\n" +
+            "  vWorldNormal = normalize(vec3(aNormal.x, aNormal.y, aNormal.z / max(uIntensity, 1e-3)));\n" +
+            "  gl_Position = uMVP * vec4(aPosition, 1.0);\n" +
+            "}\n";
+
+    private static final String FRAG =
+            "precision highp float;\n" +
+            "varying vec2 vUv;\n" +
+            "varying vec3 vWorldPos;\n" +
+            "varying vec3 vWorldNormal;\n" +
+            "uniform sampler2D uColor;\n" +
+            "uniform vec3 uLightDir;\n" +
+            "uniform vec3 uCamPos;\n" +
+            "void main() {\n" +
+            "  vec3 n = normalize(vWorldNormal);\n" +
+            "  vec3 l = normalize(uLightDir);\n" +
+            "  vec3 v = normalize(uCamPos - vWorldPos);\n" +
+            "  float diff = max(dot(n, l), 0.0);\n" +
+            "  vec3 color = texture2D(uColor, vUv).rgb;\n" +
+            "  color *= 1.0 + 0.25 * diff;\n" +
+            "  gl_FragColor = vec4(color, 1.0);\n" +
+            "}\n";
+
+    private static final String MARKER_VERT =
+            "uniform mat4 uMVP;\n" +
+            "attribute vec2 aPos;\n" +
+            "void main() {\n" +
+            "  gl_PointSize = 7.0;\n" +
+            "  gl_Position = uMVP * vec4(aPos, 0.0, 1.0);\n" +
+            "}\n";
+
+    private static final String MARKER_FRAG =
+            "precision mediump float;\n" +
+            "uniform vec4 uColor;\n" +
+            "void main() {\n" +
+            "  gl_FragColor = uColor;\n" +
+            "}\n";
+
+    private final Context context;
+
+    private int program;
+    private int aPosition, aUV, aNormal, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
+    private FloatBuffer posBuffer, uvBuffer, normalBuffer;
+    private int vertexCount;
+
+    private int textureColor = -1;
+
+    // marker overlay (studio only)
+    private int markerProgram;
+    private int markerAPos, markerUMVP, markerUColor;
+    private FloatBuffer ringBuffer;
+    private static final int RING_SEGMENTS = 48;
+    private final float[] markerMat = new float[16];
+    private final float[] markerMvp = new float[16];
+    private volatile boolean showOrbitMarker = false;
+
+    private float aspect = 1f;   // image w / h, baked into quad x
+    private float scale = 1f;    // model scale (covers viewport with crop margin)
+    private float surfaceAspect = 1f;
+
+    private volatile float targetX = 0f, targetY = 0f;
+    private volatile float orbitX = 0f, orbitY = 0f;
+    private float smoothX = 0f, smoothY = 0f;
+    private long lastFrameNanos = 0L;
+
+    private volatile float panX = 0f, panY = 0f;
+    private volatile float zoom = 1f;
+    private float surfaceW, surfaceH;
+    private volatile float motion = 1f;
+    private volatile float intensity = DEFAULT_INTENSITY / 100f;
+
+    private final float[] proj = new float[16];
+    private final float[] panMat = new float[16];
+    private final float[] projPanned = new float[16];
+    private final float[] view = new float[16];
+    private final float[] mvp = new float[16];
+    private final float[] mvpNoScale = new float[16];
+    private final float[] tmp = new float[16];
+
+    public ReliefRenderer(Context context) {
+        this.context = context;
+    }
+
+    /** Request a 4x-MSAA EGL config (falls back to no MSAA), to smooth polygon edges. */
+    public static void enableMSAA(final GLSurfaceView glView) {
+        glView.setEGLConfigChooser(new GLSurfaceView.EGLConfigChooser() {
+            @Override
+            public EGLConfig chooseConfig(EGL10 egl, EGLDisplay display) {
+                EGLConfig c = tryConfig(egl, display, 4);
+                if (c == null) c = tryConfig(egl, display, 0);
+                return c;
+            }
+
+            private EGLConfig tryConfig(EGL10 egl, EGLDisplay display, int samples) {
+                int[] attribs = new int[] {
+                    EGL10.EGL_RED_SIZE, 8,
+                    EGL10.EGL_GREEN_SIZE, 8,
+                    EGL10.EGL_BLUE_SIZE, 8,
+                    EGL10.EGL_ALPHA_SIZE, 8,
+                    EGL10.EGL_DEPTH_SIZE, 16,
+                    EGL10.EGL_SAMPLE_BUFFERS, samples > 0 ? 1 : 0,
+                    EGL10.EGL_SAMPLES, samples,
+                    EGL10.EGL_NONE
+                };
+                EGLConfig[] configs = new EGLConfig[1];
+                int[] num = new int[1];
+                if (egl.eglChooseConfig(display, attribs, configs, 1, num) && num[0] > 0) {
+                    return configs[0];
+                }
+                return null;
+            }
+        });
+    }
+
+    public void setTilt(float x, float y) {
+        targetX = x;
+        targetY = y;
+    }
+
+    public void setOrbit(float nx, float ny) {
+        orbitX = nx;
+        orbitY = ny;
+    }
+
+    public void setIntensity(float v) {
+        intensity = v;
+    }
+
+    public void setZoom(float v) {
+        zoom = Math.max(0.25f, Math.min(2f, v));
+    }
+
+    public float getZoom() {
+        return zoom;
+    }
+
+    public void setMotion(float v) {
+        motion = Math.max(0f, Math.min(3f, v));
+    }
+
+    public void setShowOrbitMarker(boolean show) {
+        showOrbitMarker = show;
+    }
+
+    public void panBy(float dx, float dy) {
+        float limit = Math.max(surfaceW, surfaceH);
+        panX = Math.max(-limit, Math.min(limit, panX - dx));
+        panY = Math.max(-limit, Math.min(limit, panY - dy));
+    }
+
+    public void setPan(float px, float py) {
+        float limit = Math.max(surfaceW, surfaceH);
+        panX = Math.max(-limit, Math.min(limit, px));
+        panY = Math.max(-limit, Math.min(limit, py));
+    }
+
+    public void saveViewToPrefs() {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat("orbit_x", orbitX)
+                .putFloat("orbit_y", orbitY)
+                .putFloat("pan_x", panX)
+                .putFloat("pan_y", panY)
+                .apply();
+    }
+
+    public void savePanToPrefs() {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat("pan_x", panX)
+                .putFloat("pan_y", panY)
+                .apply();
+    }
+
+    public void resetView() {
+        orbitX = 0f;
+        orbitY = 0f;
+        panX = 0f;
+        panY = 0f;
+        zoom = 1f;
+    }
+
+    /**
+     * Load an image + depth pair (GL thread only). Either path may be null:
+     * image falls back to the bundled demo; depth falls back to the image's
+     * embedded chunk, then to a flat surface.
+     */
+    public boolean loadPair(String imagePath, String depthPath) {
+        byte[] imageBytes = null;
+        Bitmap colorBmp;
+        int imgW, imgH;
+        boolean customImage = imagePath != null;
+        if (imagePath == null) {
+            colorBmp = decodeRaw(R.raw.image);
+        } else {
+            imageBytes = readFile(imagePath);
+            colorBmp = imageBytes != null
+                    ? BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length)
+                    : null;
+        }
+        if (colorBmp == null) {
+            writeStatus("failed to read image");
+            return false;
+        }
+        imgW = colorBmp.getWidth();
+        imgH = colorBmp.getHeight();
+
+        int[] dims = new int[2];
+        byte[] grayOut = null;
+        boolean customDepth = depthPath != null;
+        boolean embedded = false;
+        boolean flat = false;
+        if (depthPath != null) {
+            byte[] depthBytes = readFile(depthPath);
+            if (depthBytes != null) {
+                grayOut = extractDepth(depthBytes, dims);
+                if (grayOut == null) {
+                    Bitmap db = BitmapFactory.decodeByteArray(depthBytes, 0, depthBytes.length);
+                    if (db != null) {
+                        dims[0] = db.getWidth();
+                        dims[1] = db.getHeight();
+                        grayOut = readGray(db);
+                        db.recycle();
+                    }
+                }
+            }
+        }
+        if (grayOut == null && imageBytes != null) {
+            grayOut = extractDepth(imageBytes, dims);
+            embedded = grayOut != null;
+        }
+        if (grayOut == null) {
+            grayOut = new byte[imgW * imgH];
+            Arrays.fill(grayOut, (byte) 128);
+            dims[0] = imgW;
+            dims[1] = imgH;
+            flat = true;
+        }
+
+        install(colorBmp, grayOut, dims[0], dims[1]);
+
+        if (!customImage && !customDepth) {
+            writeStatus("bundled demo");
+        } else if (flat) {
+            writeStatus("custom image, flat (no depth found)");
+        } else if (embedded) {
+            writeStatus("custom image + embedded depth");
+        } else if (customDepth) {
+            writeStatus("custom image + depth map");
+        } else {
+            writeStatus("custom image");
+        }
+        return true;
+    }
+
+    private void writeStatus(String status) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString("status", status).apply();
+    }
+
+    private byte[] extractDepth(byte[] pngBytes, int[] dims) {
+        DepthPng.Result res = DepthPng.extract(pngBytes);
+        if (res == null) return null;
+        if (res.rawGray != null) {
+            dims[0] = res.rawW;
+            dims[1] = res.rawH;
+            return res.rawGray;
+        }
+        Bitmap db = BitmapFactory.decodeByteArray(res.png, 0, res.png.length);
+        if (db == null) return null;
+        dims[0] = db.getWidth();
+        dims[1] = db.getHeight();
+        byte[] g = readGray(db);
+        db.recycle();
+        return g;
+    }
+
+    /** Returns true if the tap landed on the quad and the orbit was set. */
+    public boolean screenToOrbit(float sx, float sy, int w, int h) {
+        if (w == 0 || h == 0 || textureColor < 0) return false;
+        float ndcX = (sx / w) * 2f - 1f;
+        float ndcY = -(sy / h) * 2f + 1f;
+
+        recomputeScale();
+        applyProjection();
+
+        float px = orbitX * aspect * scale;
+        float py = orbitY * scale;
+        float range = TILT_RANGE * motion;
+        float ex = px + smoothX * range;
+        float ey = py - smoothY * range;
+        Matrix.setLookAtM(view, 0, ex, ey, CAM_DIST, px, py, 0f, 0f, 1f, 0f);
+        Matrix.multiplyMM(tmp, 0, projPanned, 0, view, 0);
+        float[] invVP = new float[16];
+        if (Matrix.invertM(invVP, 0, tmp, 0) == false) return false;
+
+        float[] near = { ndcX, ndcY, -1f, 1f };
+        float[] far = { ndcX, ndcY, 1f, 1f };
+        Matrix.multiplyMV(near, 0, invVP, 0, near, 0);
+        Matrix.multiplyMV(far, 0, invVP, 0, far, 0);
+        near[0] /= near[3]; near[1] /= near[3]; near[2] /= near[3];
+        far[0] /= far[3]; far[1] /= far[3]; far[2] /= far[3];
+
+        float dx = far[0] - near[0];
+        float dy = far[1] - near[1];
+        float dz = far[2] - near[2];
+        if (dz == 0f) return false;
+        float t = -near[2] / dz;
+        float wx = near[0] + dx * t;
+        float wy = near[1] + dy * t;
+
+        float nx = wx / (aspect * scale);
+        float ny = wy / scale;
+        if (Math.abs(nx) > 0.5f || Math.abs(ny) > 0.5f) return false;
+        orbitX = nx;
+        orbitY = ny;
+        return true;
+    }
+
+    @Override
+    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        GLES20.glClearColor(0f, 0f, 0f, 1f); // pitch black
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        program = createProgram(VERT, FRAG);
+        aPosition = GLES20.glGetAttribLocation(program, "aPosition");
+        aUV = GLES20.glGetAttribLocation(program, "aUV");
+        aNormal = GLES20.glGetAttribLocation(program, "aNormal");
+        uMVP = GLES20.glGetUniformLocation(program, "uMVP");
+        uModelScale = GLES20.glGetUniformLocation(program, "uModelScale");
+        uIntensity = GLES20.glGetUniformLocation(program, "uIntensity");
+        uColor = GLES20.glGetUniformLocation(program, "uColor");
+        uLightDir = GLES20.glGetUniformLocation(program, "uLightDir");
+        uCamPos = GLES20.glGetUniformLocation(program, "uCamPos");
+
+        markerProgram = createProgram(MARKER_VERT, MARKER_FRAG);
+        markerAPos = GLES20.glGetAttribLocation(markerProgram, "aPos");
+        markerUMVP = GLES20.glGetUniformLocation(markerProgram, "uMVP");
+        markerUColor = GLES20.glGetUniformLocation(markerProgram, "uColor");
+        ringBuffer = buildRing(RING_SEGMENTS);
+
+        reloadFromPrefs();
+    }
+
+    public void reloadFromPrefs() {
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        intensity = p.getInt("intensity", DEFAULT_INTENSITY) / 100f;
+        zoom = Math.max(0.25f, Math.min(2f, p.getInt("zoom", 100) / 100f));
+        motion = Math.max(0f, Math.min(3f, p.getInt("motion", 33) / 100f * 3f));
+        orbitX = Math.max(-0.5f, Math.min(0.5f, p.getFloat("orbit_x", 0f)));
+        orbitY = Math.max(-0.5f, Math.min(0.5f, p.getFloat("orbit_y", 0f)));
+        setPan(p.getFloat("pan_x", 0f), p.getFloat("pan_y", 0f));
+        loadPair(p.getString("image_path", null), p.getString("depth_path", null));
+    }
+
+    @Override
+    public void onSurfaceChanged(GL10 gl, int width, int height) {
+        if (height == 0) height = 1;
+        GLES20.glViewport(0, 0, width, height);
+        surfaceW = width;
+        surfaceH = height;
+        surfaceAspect = (float) width / height;
+        recomputeScale();
+        applyProjection();
+    }
+
+    private void applyProjection() {
+        Matrix.perspectiveM(proj, 0, FOV_DEG, surfaceAspect, 0.1f, 10f);
+        Matrix.setIdentityM(panMat, 0);
+        if (surfaceW > 0 && surfaceH > 0 && (panX != 0f || panY != 0f)) {
+            Matrix.translateM(panMat, 0, -2f * panX / surfaceW, 2f * panY / surfaceH, 0f);
+        }
+        Matrix.multiplyMM(projPanned, 0, panMat, 0, proj, 0);
+    }
+
+    @Override
+    public void onDrawFrame(GL10 gl) {
+        recomputeScale();
+        applyProjection();
+
+        long now = System.nanoTime();
+        float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
+        lastFrameNanos = now;
+        float alpha = 1f - (float) Math.exp(-dt / SMOOTHING_TAU);
+        smoothX += (targetX - smoothX) * alpha;
+        smoothY += (targetY - smoothY) * alpha;
+
+        float px = orbitX * aspect * scale;
+        float py = orbitY * scale;
+        float range = TILT_RANGE * motion;
+        float ex = px + smoothX * range;
+        float ey = py - smoothY * range;
+        Matrix.setLookAtM(view, 0, ex, ey, CAM_DIST, px, py, 0f, 0f, 1f, 0f);
+        Matrix.multiplyMM(mvpNoScale, 0, projPanned, 0, view, 0);
+        // z-scale so the camera can never sit inside the relief
+        float zScale = Math.min(intensity, (0.9f * CAM_DIST) / scale);
+        System.arraycopy(mvpNoScale, 0, tmp, 0, 16);
+        Matrix.scaleM(mvp, 0, tmp, 0, scale, scale, scale * zScale);
+
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+        if (textureColor < 0) return;
+
+        GLES20.glUseProgram(program);
+        GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0);
+        GLES20.glUniform1f(uModelScale, scale);
+        GLES20.glUniform1f(uIntensity, zScale);
+        GLES20.glUniform3f(uCamPos, ex, ey, CAM_DIST);
+        GLES20.glUniform3f(uLightDir, -0.35f, 0.5f, 0.75f);
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureColor);
+        GLES20.glUniform1i(uColor, 0);
+
+        posBuffer.position(0);
+        uvBuffer.position(0);
+        normalBuffer.position(0);
+        GLES20.glEnableVertexAttribArray(aPosition);
+        GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, posBuffer);
+        GLES20.glEnableVertexAttribArray(aUV);
+        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 0, uvBuffer);
+        GLES20.glEnableVertexAttribArray(aNormal);
+        GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, 0, normalBuffer);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount);
+        GLES20.glDisableVertexAttribArray(aPosition);
+        GLES20.glDisableVertexAttribArray(aUV);
+        GLES20.glDisableVertexAttribArray(aNormal);
+
+        if (showOrbitMarker) drawOrbitMarker();
+    }
+
+    private void drawOrbitMarker() {
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glUseProgram(markerProgram);
+
+        float cx = orbitX * aspect * scale;
+        float cy = orbitY * scale;
+        float r = 0.035f * scale;
+        Matrix.setIdentityM(markerMat, 0);
+        Matrix.translateM(markerMat, 0, cx, cy, 0f);
+        Matrix.scaleM(markerMat, 0, r, r, 1f);
+        Matrix.multiplyMM(markerMvp, 0, mvpNoScale, 0, markerMat, 0);
+        GLES20.glUniformMatrix4fv(markerUMVP, 1, false, markerMvp, 0);
+
+        ringBuffer.position(0);
+        GLES20.glEnableVertexAttribArray(markerAPos);
+        GLES20.glVertexAttribPointer(markerAPos, 2, GLES20.GL_FLOAT, false, 0, ringBuffer);
+
+        GLES20.glUniform4f(markerUColor, 0.20f, 0.80f, 1f, 0.95f);
+        GLES20.glLineWidth(2f);
+        GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, RING_SEGMENTS);
+
+        GLES20.glUniform4f(markerUColor, 1f, 1f, 1f, 1f);
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1);
+
+        GLES20.glDisableVertexAttribArray(markerAPos);
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+    }
+
+    // ------------------------------------------------------------------ internals
+
+    private void install(Bitmap colorBmp, byte[] grayOut, int w, int h) {
+        if (colorBmp == null) return;
+        Bitmap upright = flipVertically(colorBmp);
+        if (upright != colorBmp) colorBmp.recycle();
+        colorBmp = upright;
+
+        aspect = (float) colorBmp.getWidth() / colorBmp.getHeight();
+        if (textureColor >= 0) GLES20.glDeleteTextures(1, new int[] { textureColor }, 0);
+        textureColor = upload(colorBmp);
+        colorBmp.recycle();
+
+        ReliefSurface surf = ReliefSurface.build(grayOut, w, h, GRID, aspect);
+        vertexCount = surf.vertexCount;
+        posBuffer = toBuffer(surf.positions);
+        uvBuffer = toBuffer(surf.uvs);
+        normalBuffer = toBuffer(surf.normals);
+        recomputeScale();
+    }
+
+    private static Bitmap flipVertically(Bitmap src) {
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.preScale(1f, -1f);
+        return Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, false);
+    }
+
+    private void recomputeScale() {
+        if (aspect <= 0f) return;
+        float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2));
+        float visW = visH * surfaceAspect;
+        scale = Math.max(visH, visW / aspect) * CROP_MARGIN * zoom;
+    }
+
+    private Bitmap decodeRaw(int resId) {
+        try {
+            return BitmapFactory.decodeStream(context.getResources().openRawResource(resId));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private byte[] readFile(String path) {
+        try {
+            InputStream in = new FileInputStream(new File(path));
+            try {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                return out.toByteArray();
+            } finally {
+                in.close();
+            }
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private byte[] readGray(Bitmap bmp) {
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        int[] argb = new int[w * h];
+        bmp.getPixels(argb, 0, w, 0, 0, w, h);
+        byte[] gray = new byte[w * h];
+        for (int i = 0; i < gray.length; i++) {
+            gray[i] = (byte) (argb[i] >> 16 & 0xff);
+        }
+        return gray;
+    }
+
+    private static FloatBuffer toBuffer(float[] data) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(data.length * 4).order(ByteOrder.nativeOrder());
+        FloatBuffer fb = bb.asFloatBuffer();
+        fb.put(data);
+        return fb;
+    }
+
+    private static FloatBuffer buildRing(int segments) {
+        float[] pts = new float[segments * 2];
+        for (int i = 0; i < segments; i++) {
+            double a = Math.PI * 2 * i / segments;
+            pts[i * 2] = (float) Math.cos(a);
+            pts[i * 2 + 1] = (float) Math.sin(a);
+        }
+        return toBuffer(pts);
+    }
+
+    private static int upload(Bitmap bmp) {
+        int[] tex = new int[1];
+        GLES20.glGenTextures(1, tex, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        return tex[0];
+    }
+
+    private static int createProgram(String vertexSrc, String fragmentSrc) {
+        int vs = compile(GLES20.GL_VERTEX_SHADER, vertexSrc);
+        int fs = compile(GLES20.GL_FRAGMENT_SHADER, fragmentSrc);
+        int program = GLES20.glCreateProgram();
+        GLES20.glAttachShader(program, vs);
+        GLES20.glAttachShader(program, fs);
+        GLES20.glLinkProgram(program);
+        int[] status = new int[1];
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0);
+        if (status[0] == 0) {
+            throw new RuntimeException("program link failed: " + GLES20.glGetProgramInfoLog(program));
+        }
+        return program;
+    }
+
+    private static int compile(int type, String src) {
+        int shader = GLES20.glCreateShader(type);
+        GLES20.glShaderSource(shader, src);
+        GLES20.glCompileShader(shader);
+        int[] status = new int[1];
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0);
+        if (status[0] == 0) {
+            throw new RuntimeException("shader compile failed: " + GLES20.glGetShaderInfoLog(shader));
+        }
+        return shader;
+    }
+}

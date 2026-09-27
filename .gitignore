@@ -1,0 +1,35 @@
+# --- secrets / env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- gradle / android (defence in depth; android/.gitignore also covers these) ---
+.gradle/
+build/
+local.properties
+*.keystore
+*.jks
+*.apk
+*.aab
+
+# --- node / web ---
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+
+# --- os / misc ---
+.DS_Store
+Thumbs.db
+captures/
+.externalNativeBuild/
+.cxx/

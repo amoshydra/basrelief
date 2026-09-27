@@ -1,0 +1,6 @@
+// Top-level build file for the Android (live wallpaper + studio) app.
+// NOTE: builds are containerised — see podman-build.sh / Dockerfile.
+// The host is not required to have Gradle, the Android SDK, or Android Studio.
+plugins {
+    id 'com.android.application' version '8.1.4' apply false
+}
