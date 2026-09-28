@@ -98,9 +98,19 @@ final class WallpaperRefresh {
                     ComponentName.class);
             m.invoke(wm, ours);
             Log.i(TAG, "wallpaper: re-bound so the system re-snapshots the surface");
-            note(context, "rebind: OK");
+            note(context, "rebind: OK (direct)");
             return true;
-        } catch (Throwable t) {
+        } catch (Throwable direct) {
+            // Second route. The direct call is a non-SDK method on a framework
+            // class, which is exactly what hidden-API enforcement targets. Going
+            // through the binder is a different mechanism rather than the same one
+            // retried, so it gets one attempt, and it is strictly additive: if it
+            // also fails, behaviour is unchanged.
+            if (rebindViaBinder(ours)) {
+                note(context, "rebind: OK (binder)");
+                return true;
+            }
+            Throwable t = direct;
             // Throwable, not Exception: a hidden-API refusal surfaces as
             // NoSuchMethodException, an InvocationTargetException wrapping a
             // SecurityException, or on some builds an Error. All of them mean
@@ -127,6 +137,44 @@ final class WallpaperRefresh {
         String cls = active.getClassName();
         return ours.getPackageName().equals(active.getPackageName())
                 && (cls.equals(ours.getClassName()) || cls.endsWith("." + ours.getClassName()));
+    }
+
+    /**
+     * Re-bind through the wallpaper binder, if the service exposes it.
+     *
+     * <p>All reflection, all guarded, and it reports which route worked so the
+     * studio can say so. Worth exactly one try: two independent routes failing
+     * means the platform is refusing this outright, and a third attempt would be
+     * superstition rather than engineering.
+     */
+    private static boolean rebindViaBinder(ComponentName ours) {
+        try {
+            Object binder = Class.forName("android.os.ServiceManager")
+                    .getMethod("getService", String.class).invoke(null, "wallpaper");
+            if (binder == null) return false;
+            Object proxy = Class.forName("android.service.wallpaper.IWallpaperManager$Stub")
+                    .getMethod("asInterface", Class.forName("android.os.IBinder"))
+                    .invoke(null, binder);
+            if (proxy == null) return false;
+            // setWallpaperComponent has several overloads; the extras are what open
+            // a picker, so pass nothing and take the direct one.
+            for (Method candidate : proxy.getClass().getMethods()) {
+                if (!candidate.getName().startsWith("setWallpaperComponent")) continue;
+                Class<?>[] types = candidate.getParameterTypes();
+                if (types.length < 1 || !types[0].isAssignableFrom(ComponentName.class)) continue;
+                Object[] args = new Object[types.length];
+                args[0] = ours;
+                for (int i = 1; i < types.length; i++) {
+                    args[i] = types[i] == int.class ? Integer.valueOf(0)
+                            : types[i] == boolean.class ? Boolean.FALSE : null;
+                }
+                candidate.invoke(proxy, args);
+                return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static void note(Context context, String what) {
