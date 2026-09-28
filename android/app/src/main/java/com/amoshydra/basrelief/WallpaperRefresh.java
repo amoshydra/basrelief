@@ -61,6 +61,19 @@ final class WallpaperRefresh {
      * @return true if a re-bind was requested
      */
     static boolean ifOursIsActive(Context context) {
+        try {
+            return rebind(context);
+        } finally {
+            // Whether or not it worked, the studio shows the result, so this is
+            // never another silent no-op.
+            android.content.SharedPreferences sp = context.getSharedPreferences(
+                    AppState.PREFS, Context.MODE_PRIVATE);
+            sp.edit().putString("wallpaper_rebind", sp.getString("wallpaper_rebind", "not tried"))
+                    .commit();
+        }
+    }
+
+    private static boolean rebind(Context context) {
         WallpaperManager wm = WallpaperManager.getInstance(context);
         WallpaperInfo info;
         try {
@@ -80,6 +93,7 @@ final class WallpaperRefresh {
                     ComponentName.class);
             m.invoke(wm, ours);
             Log.i(TAG, "wallpaper: re-bound so the system re-snapshots the surface");
+            note(context, "rebind: OK");
             return true;
         } catch (Throwable t) {
             // Throwable, not Exception: a hidden-API refusal surfaces as
@@ -88,6 +102,7 @@ final class WallpaperRefresh {
             // "could not", and none of them should reach the user as a crash.
             Log.w(TAG, "wallpaper: re-bind unavailable on this device; "
                     + "Set as wallpaper still works", t);
+            note(context, "rebind: REFUSED (" + t.getClass().getSimpleName() + ")");
             return false;
         }
     }
@@ -107,6 +122,12 @@ final class WallpaperRefresh {
         String cls = active.getClassName();
         return ours.getPackageName().equals(active.getPackageName())
                 && (cls.equals(ours.getClassName()) || cls.endsWith("." + ours.getClassName()));
+    }
+
+    private static void note(Context context, String what) {
+        android.util.Log.i(TAG, what);
+        context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
+                .edit().putString("wallpaper_rebind", what).commit();
     }
 
     /** The component users select, for the Set as wallpaper button. */

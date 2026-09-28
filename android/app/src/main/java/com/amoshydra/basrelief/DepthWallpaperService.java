@@ -87,6 +87,23 @@ public class DepthWallpaperService extends WallpaperService {
          * <p>Not in the render path: this runs on transitions only, and
          * {@code onDrawFrame} must stay free of per-frame work.
          */
+        /**
+         * Record what the engine just did, where the studio will display it.
+         *
+         * <p>Every path that resolves state goes through here, including the cold
+         * load from {@code onSurfaceCreated}. That one matters: the live-update
+         * path alone produced no output at all on a device where the wallpaper
+         * would not follow the gallery, which is consistent with the engine cold
+         * loading and then never being told anything -- so a diagnostic that only
+         * covers the path you are debugging tells you nothing.
+         */
+        private void note(String what) {
+            android.util.Log.i("Basrelief", "wallpaper: " + what);
+            if (prefs != null) {
+                prefs.edit().putString("wallpaper_debug", what).commit();
+            }
+        }
+
         private void applyFromPrefs(SharedPreferences p) {
             final AppState state = AppState.load(p, getFilesDir());
             final LibraryItem active = state.activeItem();
@@ -107,13 +124,19 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
-            android.util.Log.i("Basrelief",
-                    "wallpaper: visible=" + visible + " surfaceValid="
-                            + (glView.getHolder() != null
-                                    && glView.getHolder().getSurface().isValid())
-                            + " showing=" + (active == null ? "bundled" : active.displayName())
-                            + " want=" + (img == null ? "res/raw" : new java.io.File(img).getName())
-                            + " onScreen=" + renderer.showingSamePair(img, dep));
+            String diagnostic = "visible=" + visible
+                    + " surface=" + (glView.getHolder() != null
+                            && glView.getHolder().getSurface().isValid())
+                    + " item=" + (active == null ? "bundled" : active.displayName())
+                    + " want=" + (img == null ? "res/raw" : new java.io.File(img).getName())
+                    + " onScreen=" + renderer.showingSamePair(img, dep)
+                    + " at=" + (System.currentTimeMillis() % 1000000L);
+            android.util.Log.i("Basrelief", "wallpaper: " + diagnostic);
+            // Also into prefs, because the studio shows this on screen. Logcat
+            // needs a cable and a filter; this needs only opening the app, which
+            // is the difference between a diagnostic that gets read and one that
+            // gets forgotten.
+            prefs.edit().putString("wallpaper_debug", diagnostic).commit();
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
@@ -138,6 +161,8 @@ public class DepthWallpaperService extends WallpaperService {
         @Override
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
+            note("engine created, surface=" + (holder != null && holder.getSurface() != null
+                    && holder.getSurface().isValid()));
             renderer = new ReliefRenderer(DepthWallpaperService.this);
             glView = new WallpaperGLSurfaceView(DepthWallpaperService.this);
             glView.setEGLContextClientVersion(2);
@@ -172,6 +197,8 @@ public class DepthWallpaperService extends WallpaperService {
 
         @Override
         public void onSurfaceCreated(SurfaceHolder h) {
+            note("surface created, valid=" + (h != null && h.getSurface() != null
+                    && h.getSurface().isValid()) + " -- cold load follows");
         }
 
         @Override
@@ -180,6 +207,7 @@ public class DepthWallpaperService extends WallpaperService {
 
         @Override
         public void onSurfaceDestroyed(SurfaceHolder h) {
+            note("surface destroyed");
         }
 
         @Override

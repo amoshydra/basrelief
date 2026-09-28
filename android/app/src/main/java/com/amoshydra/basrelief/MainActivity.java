@@ -96,7 +96,11 @@ public class MainActivity extends Activity {
             new SharedPreferences.OnSharedPreferenceChangeListener() {
                 @Override
                 public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-                    if ("status".equals(key) || "gyro_status".equals(key)) refreshStatus();
+                    if ("status".equals(key) || "gyro_status".equals(key)
+                            || "wallpaper_debug".equals(key)
+                            || "wallpaper_rebind".equals(key)) {
+                        refreshStatus();
+                    }
                 }
             };
 
@@ -1134,6 +1138,15 @@ public class MainActivity extends Activity {
         String s = prefs.getString("status", "loading…");
         String g = prefs.getString("gyro_status", "");
         if (!g.isEmpty()) s += "  |  " + g;
+        // The wallpaper engine's own view of itself, if it has ever run. A live
+        // wallpaper is a separate surface with its own lifecycle, so "the studio
+        // looks right" says nothing about whether the home screen is showing what
+        // is selected -- and the two being different is the whole class of bug
+        // this line exists to make visible without a cable.
+        String w = prefs.getString("wallpaper_debug", "");
+        if (!w.isEmpty()) s += "\nEngine: " + w;
+        String r = prefs.getString("wallpaper_rebind", "");
+        if (!r.isEmpty()) s += "\nRebind: " + r;
         statusView.setText("Status: " + s);
     }
 
