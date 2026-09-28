@@ -515,6 +515,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return result;
     }
 
+    /**
+     * Whether a decoded pair is still usable, for {@link PairCache}.
+     *
+     * <p>Defence in depth. Nothing recycles these any more, so this should always
+     * be true; but a stale cache entry that is somehow unusable should cost one
+     * re-decode, not a crash on someone's home screen. That trade is obvious in
+     * one direction and not the other, so it is made explicit here.
+     */
+    static boolean isUsable(Object pending) {
+        if (!(pending instanceof Pending)) return false;
+        Bitmap b = ((Pending) pending).colorBmp;
+        return b == null || !b.isRecycled();
+    }
+
     /** Everything {@link #decodePair} produces, ready for the GL half. */
     private static final class Pending {
         final Bitmap colorBmp;
@@ -917,14 +931,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     private void install(Bitmap colorBmp, byte[] grayOut, int w, int h) {
         if (colorBmp == null) return;
+        // Nothing here recycles a bitmap, and that is load-bearing rather than
+        // tidiness.
+        //
+        // A decoded pair is not owned by whoever decoded it. PairCache hands the
+        // same one to the other surface in the process precisely so the
+        // wallpaper's first frame can be correct without decoding twice, so the
+        // studio uploads this bitmap and the engine then tries to use it -- and
+        // this used to recycle it on the way out, which made the engine throw
+        // "cannot use a recycled source in createBitmap" out of flipVertically
+        // and killed the app on load.
+        //
+        // Recycling buys nothing here anyway. upload() copies the pixels into a
+        // GL texture, after which the bitmap is unreachable garbage that the
+        // collector reclaims on its own. Bitmap.recycle() is a pre-Honeycomb
+        // idiom for a bitmap heap that no longer exists, and its only remaining
+        // effect is to make the bitmap impossible to share -- which is the
+        // opposite of what this app now needs.
         Bitmap upright = flipVertically(colorBmp);
-        if (upright != colorBmp) colorBmp.recycle();
         colorBmp = upright;
 
         aspect = (float) colorBmp.getWidth() / colorBmp.getHeight();
         if (textureColor >= 0) GLES20.glDeleteTextures(1, new int[] { textureColor }, 0);
         textureColor = upload(colorBmp);
-        colorBmp.recycle();
 
         fade = 0f; // new content: fade up from black rather than popping
         ReliefMesh surf = ReliefMesh.build(grayOut, w, h, GRID, aspect);

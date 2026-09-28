@@ -64,7 +64,8 @@ final class PairCache {
     static Object get(String image, String depth) {
         if (image == null) return null;
         synchronized (LOCK) {
-            if (cached != null && eq(imagePath, image) && eq(depthPath, depth)) {
+            if (cached != null && eq(imagePath, image) && eq(depthPath, depth)
+                    && ReliefRenderer.isUsable(cached)) {
                 return cached;
             }
             return null;
