@@ -93,11 +93,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * until a shake. See also setPowerSave(), which currently only records the
      * OS power-save state for a future resolution-scale change.
      */
-    /** Fade up from black once the first real frame after a load is on screen. */
-    private static final float FADE_SECONDS = 0.25f;
-
     private long lastDrawNanos = 0L;
-    private float fade = 0f;               // 0 = black, 1 = fully faded in
+
+    /**
+     * Opacity, pinned to 1. It was a 0.25s fade up from black, which cannot work
+     * here: the system snapshots the surface about 100 ms after it appears, so the
+     * black first frame was what got snapshotted. Kept as a uniform because a
+     * cross-fade between photos is the obvious next thing to want, and it has to be
+     * timed to fit inside that snapshot window. See the note where it is set.
+     */
+    private float fade = 1f;
     private volatile float powerSave = 0f; // 0..1, written from the UI thread
 
     private static final String VERT =
@@ -246,6 +251,26 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile String loadedImagePath;
     private volatile String loadedDepthPath;
+    /**
+     * Whether anything has ever been installed into the current GL context.
+     *
+     * <p>Load-bearing, and it exists because of a coincidence of representation.
+     * The bundled demo is the pair (null, null) because it has no file, and a
+     * renderer that has installed <i>nothing</i> is also (null, null), because that
+     * is the initial value of both fields above. So without this flag a fresh
+     * engine asked to show the demo was told it already was and skipped the load
+     * entirely: the surface stayed empty, the wallpaper was black, and the status
+     * line cheerfully reported the demo as loaded. Photos were unaffected, which
+     * is what made it look like the bundled item specifically was broken.
+     */
+    private volatile boolean hasInstalled = false;
+
+    /**
+     * Monotonic tag for the most recently issued load. Incremented on the GL
+     * thread (where every load is requested) and read on it (where results are
+     * applied), so no synchronisation is needed.
+     */
+    private int loadSeq = 0;
 
     /**
      * Whether the given pair is already on screen.
@@ -254,6 +279,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * on either side is a crash on exactly that path.
      */
     public boolean showingSamePair(String imagePath, String depthPath) {
+        if (!hasInstalled) return false; // see hasInstalled
         return samePath(imagePath, loadedImagePath) && samePath(depthPath, loadedDepthPath);
     }
 
@@ -568,13 +594,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             writeStatus("failed to read image");
             return false;
         }
-        // Recorded HERE, where the swap actually happens, and not where the load
-        // was requested. The engine used to keep its own copy, updated at request
-        // time, which meant a load that never completed still counted as done --
-        // and the next comparison then said "already showing that", so the
-        // wallpaper stayed on the old photo with nothing to retry it.
-        loadedImagePath = p.requestedImage;
-        loadedDepthPath = p.requestedDepth;
         if (p.customImage && p.customDepth) {
             writeStatus(p.flat ? "custom image, flat (no depth found)"
                     : p.embedded ? "custom image + embedded depth"
@@ -584,7 +603,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         } else {
             writeStatus(p.flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
         }
-        install(p.colorBmp, p.gray, p.w, p.h);
+        if (!install(p.colorBmp, p.gray, p.w, p.h)) {
+            // Nothing was installed, so nothing may be recorded as installed.
+            //
+            // Recorded here, at the swap, and only once the swap has actually
+            // happened: the engine used to keep its own copy updated at request
+            // time, so a load that never completed still counted as done and the
+            // next comparison said "already showing that", leaving the wallpaper
+            // on the old photo with nothing to retry it. Recording a failed
+            // install is the same mistake one level deeper, and it is sticky --
+            // a texture that never existed is still texture 0 at the next
+            // visibility change, so the black would survive being made visible
+            // again.
+            return false;
+        }
+        // Recorded HERE, where the swap actually happens, and not where the load
+        // was requested.
+        loadedImagePath = p.requestedImage;
+        loadedDepthPath = p.requestedDepth;
+        hasInstalled = true;
         // The frame that revealed the empty texture has already been drawn;
         // without this request the uploaded texture is never presented.
         Runnable r = renderRequester;
@@ -607,6 +644,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *
      */
     public void loadPairAsync(final String imagePath, final String depthPath) {
+        // Tag the request so a result can be recognised as out of date.
+        //
+        // Decodes run off the GL thread and finish whenever they finish, so an
+        // older request can and does complete after a newer one. Without this,
+        // the slower older decode installs second and quietly replaces the newer
+        // selection with the previous photo -- observed on device, not merely
+        // possible. The fix is a monotonic tag rather than a timestamp: two
+        // requests can share a millisecond, and only the order of issue matters.
+        final int seq = ++loadSeq;
         final java.util.concurrent.Executor glThread = glDispatch;
         if (glThread == null) {
             // No dispatcher yet: we are almost certainly inside onSurfaceCreated
@@ -627,6 +673,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 glThread.execute(new Runnable() {
                     @Override
                     public void run() {
+                        // A newer request was issued while this one decoded, so
+                        // this result is stale and installing it would show the
+                        // previous selection. Dropping it is safe: the newer
+                        // request is already in flight and will install itself.
+                        if (seq != loadSeq) return;
                         applyPending(p);
                     }
                 });
@@ -748,6 +799,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     + " collides with a mesh attribute; re-binding after each marker draw");
         }
 
+        // A new surface means a new EGL context, and everything this renderer
+        // believed about the old one is now false: every texture and buffer name
+        // cached from it is meaningless here, and the surface is empty again.
+        //
+        // All four fields therefore reset together, and each one is a way this has
+        // already gone wrong. textureColor and vertexCount: reloadFromPrefs finds
+        // the pair it wants is "already showing" and returns without uploading,
+        // into a context holding no texture, so the wallpaper is black. loadedOnce:
+        // it gates the one blocking decode whose entire purpose is to stop the
+        // system snapshotting an empty surface, and a new surface is empty, so
+        // keeping it set skips exactly the guarantee that is needed. The result in
+        // both cases is a black wallpaper beside a diagnostic reporting the
+        // correct photo loaded.
+        //
+        // This is the same failure as hasInstalled, one level up: there an unset
+        // field read as "the demo is loaded", here state belonging to a destroyed
+        // context read as still valid. Losing the context is routine for a live
+        // wallpaper, because the system tears the engine down and rebuilds it, so
+        // this is a normal event and not an error path.
+        textureColor = -1;
+        vertexCount = 0;
+        hasInstalled = false;
+        loadedOnce = false;
+
         reloadFromPrefs();
     }
 
@@ -802,7 +877,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // No file to resolve: the marble bust, read from res/raw. This is a
             // renderable state and not a failure, and it is where a delete of the
             // active item lands.
-            loadPairAsync(null, null);
+            load(null, null);
             return;
         }
         // Stored as bare filenames; resolve against this install's filesDir so a
@@ -810,12 +885,28 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // which retainExisting has already pruned from the index.
         java.io.File img = PrefFiles.resolve(context.getFilesDir(), active.imageName);
         java.io.File dep = PrefFiles.resolve(context.getFilesDir(), active.depthName);
+        load(img == null ? null : img.getAbsolutePath(),
+                dep == null ? null : dep.getAbsolutePath());
+    }
+
+    /**
+     * Load a pair, inlining the very first one when the surface must not be empty.
+     *
+     * <p>Both callers go through here, and the bundled demo going through here is
+     * the point. It used to take the async path unconditionally, which for a live
+     * wallpaper means the system snapshots the surface roughly 100 ms after it
+     * appears and the decode has not finished, so the snapshot is of an empty
+     * surface and the home screen is black -- while the engine went on to install
+     * the photo a second later and reported it loaded. The symptom appeared
+     * intermittent, because a warm PairCache could make the async load land inside
+     * the window, which is a far worse bug than a consistent one: it looks like a
+     * rendering fault rather than a missing guarantee.
+     */
+    private void load(String imgAbs, String depAbs) {
         // Off the GL thread: the read, decode and mesh build are seconds of work
         // and must not sit between two frames of a live wallpaper. The dispatcher
         // comes from the host (see setGlDispatch), which both surfaces set before
         // this can run.
-        final String imgAbs = img == null ? null : img.getAbsolutePath();
-        final String depAbs = dep == null ? null : dep.getAbsolutePath();
         if (syncFirstLoad && !loadedOnce) {
             loadedOnce = true;
             // Inline on purpose: see syncFirstLoad. Blocks this thread for one
@@ -861,11 +952,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // instead of easing in over ~460 ms. See ATTACK_ERROR.
         smoothX = approach(smoothX, targetX, alpha);
         smoothY = approach(smoothY, targetY, alpha);
-
-        // Fade up from black after a load, so the first frame does not pop.
-        if (fade < 1f) {
-            fade = Math.min(1f, fade + dt / FADE_SECONDS);
-        }
 
         // Projection, view, z-clamp and the model scale all live in the
         // pure-JVM CameraModel (unit-tested). One call fills a reusable Frame,
@@ -929,8 +1015,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     // ------------------------------------------------------------------ internals
 
-    private void install(Bitmap colorBmp, byte[] grayOut, int w, int h) {
-        if (colorBmp == null) return;
+    /**
+     * Put a decoded pair on screen. Returns false if nothing was installed, so the
+     * caller does not record a pair as loaded that never made it into a texture.
+     */
+    private boolean install(Bitmap colorBmp, byte[] grayOut, int w, int h) {
+        if (colorBmp == null) return false;
         // Nothing here recycles a bitmap, and that is load-bearing rather than
         // tidiness.
         //
@@ -954,8 +1044,32 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         aspect = (float) colorBmp.getWidth() / colorBmp.getHeight();
         if (textureColor >= 0) GLES20.glDeleteTextures(1, new int[] { textureColor }, 0);
         textureColor = upload(colorBmp);
+        // TEMPORARY TRACING: a texture name of 0 is never a success, it is the
+        // default texture, which has no image and samples pure black. Cheap to
+        // assert here and impossible to infer from outside.
+        if (textureColor == 0) {
+            // The upload happened with no usable current context, so there is no
+            // texture and nothing to draw. Report it as a failed install so the
+            // pair is not recorded as loaded and the next visibility change
+            // retries, rather than leaving a black wallpaper that the renderer
+            // believes is correct.
+            textureColor = -1;
+            return false;
+        }
 
-        fade = 0f; // new content: fade up from black rather than popping
+        // Drawn at full opacity, deliberately: there is no fade-in.
+        //
+        // There used to be a 0.25s fade up from black, and it is incompatible with
+        // a live wallpaper. The system snapshots the surface roughly 100 ms after
+        // it appears, so the first frame, drawn at fade = 0 and therefore black, was
+        // what got snapshotted, and the engine was gone before the fade could
+        // finish. The wallpaper was black while the engine reported the correct
+        // photo uploaded, which is the most confusing way this could have failed.
+        //
+        // A cosmetic transition is not worth a broken wallpaper. The uniform is
+        // kept so a future cross-fade has somewhere to go, but it is pinned to 1,
+        // and any reintroduced fade has to fit inside the snapshot window.
+        fade = 1f;
         ReliefMesh surf = ReliefMesh.build(grayOut, w, h, GRID, aspect);
         vertexCount = surf.vertexCount;
         posBuffer = toBuffer(surf.positions);
@@ -964,6 +1078,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         recomputeScale();
         // New buffers: (re)bind the pointers now, once, rather than every frame.
         bindMeshAttribs();
+        return true;
     }
 
     private static Bitmap flipVertically(Bitmap src) {

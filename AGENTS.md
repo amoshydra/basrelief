@@ -156,6 +156,51 @@ already cost real time.
   reflection, guarded, and logs whether it worked. That is best-effort by
   nature: if the device refuses the non-SDK call, the behaviour is exactly what
   it was before, which is why the log line matters.
+- **No third-party app can re-bind its own live wallpaper. Stop trying.**
+  Measured, not assumed: `setWallpaperComponent` is refused by
+  `WallpaperManagerService` with `SecurityException: Access denied ... must have
+  permission android.permission.SET_WALLPAPER_COMPONENT`, and that permission is
+  `signature|privileged`, so declaring it changes nothing — `dumpsys package`
+  shows it requested and never granted. The system picker is the only route,
+  which is what makes "Set as wallpaper" the apply gesture rather than an
+  optional convenience.
+- **`am force-stop` on a package that *is* the active wallpaper makes Android
+  revert the wallpaper to the default static image.** This is a sharper form of
+  the trap above, and it cost a long session: every screenshot afterwards is a
+  static image (usually black), the engine never runs at all, and the app looks
+  broken when it is not. Force-stopping "for a clean test" is what silently
+  uninstalled the wallpaper under a dozen consecutive experiments. For a cold
+  start, launch the activity and press HOME; never stop the package.
+- **A new `onSurfaceCreated` means a new EGL context, so the renderer must forget
+  every GL name it cached.** The wallpaper loses its context routinely, because
+  the system tears the engine down and rebuilds it. `ReliefRenderer` keeps
+  `hasInstalled` for this, cleared alongside `textureColor` in
+  `onSurfaceCreated`: without it `reloadFromPrefs` sees the pair it wants is
+  already showing and returns without uploading, into a context that holds no
+  texture. Symptom: a black wallpaper beside a diagnostic reporting the correct
+  photo loaded. `glGenTextures` returning **0** is the tell — name 0 is the
+  default texture, which has no image and samples pure black, so it is what a
+  call made with no current context leaves behind. A texture name of 0 is never
+  a success.
+- **A load can land while the GL thread is parked, and a texture name of 0 means
+  the install did not happen.** The studio writes the index while the wallpaper
+  is hidden, and the engine's pref listener queues the reload; `queueEvent` then
+  runs it *before* `onResume`, so `upload()` executes with no current context
+  and returns 0. The frame that follows is black. What made this permanent rather
+  than transient is that the renderer recorded the pair as installed anyway, so
+  the next `onVisibilityChanged(true)` found `showingSamePair` true and declined
+  to retry — the black outlived the condition that caused it. `install()` now
+  returns false for texture 0 and nothing is recorded, so the next visibility
+  change retries and succeeds. This is the same mistake as `hasInstalled` and
+  `onSurfaceCreated` one level deeper, and the pattern is the lesson: **any state
+  that records "this is on screen" must only be written when the GL calls that
+  put it there actually succeeded.**
+- **Decodes run off the GL thread and finish out of order, so the newest request
+  must win by sequence, not by arrival.** A runnable queued while the engine was
+  hidden replays the *previous* selection, and a large PNG decode can complete
+  after a newer small one, installing the old photo last. Observed on device
+  (`STALE` in a temporary trace), not merely possible. `loadSeq` tags each
+  request and a result whose tag is not the newest is dropped.
 - **Matrix order.** `clip = proj * view * model`. Any unprojection must invert
   `proj * view` in that same order; `view * proj` is a real bug.
 - **Never hand-derive vendored matrix semantics and verify them against a
