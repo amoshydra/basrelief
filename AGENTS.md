@@ -75,8 +75,18 @@ single resolution of that state into numbers, because the two surfaces computing
 it themselves is how they came to disagree about the bundled item.
 
 Because they share a process, one shares the other's `SharedPreferences`
-instance — which is why "does it work cold?" can only be answered by
-force-stopping the app and reaching the wallpaper *without* opening the studio.
+instance — which is why "does it work cold?" can only be answered without opening
+the studio first.
+
+**Do not use `am force-stop` for that test.** It puts the package in the stopped
+state, and a stopped package's wallpaper component is never instantiated, so the
+engine does not come back. SurfaceFlinger keeps serving the last frame it was
+given, so the home screen shows a *plausible, correct-looking, stale* wallpaper
+and nothing re-renders. Measured: after a force-stop the process was gone, the
+engine wrote no prefs at all, and two consecutive frames were byte-identical —
+which reads exactly like "the renderer resolved the wrong item" and cost a
+detailed false-positive hunt. A reboot is the honest cold test; a live process
+plus a selection change is the honest update test.
 
 ### Threading
 
