@@ -437,6 +437,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * demo depth, then to the image's embedded chunk, then to a flat surface.
      */
     private Pending decodePair(String imagePath, String depthPath) {
+        // Already decoded by the other surface in this process? Then uploading it
+        // is the only work left, which is what makes the wallpaper's very first
+        // frame correct: the system snapshots the surface ~100ms after it appears
+        // and a decode takes ~1s, so anything decoded after that point is too late
+        // to be in the snapshot no matter how it is scheduled.
+        Object warm = PairCache.get(imagePath, depthPath);
+        if (warm instanceof Pending) return (Pending) warm;
+
         byte[] imageBytes = null;
         Bitmap colorBmp;
         int imgW, imgH;
@@ -499,8 +507,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             flat = true;
         }
 
-        return new Pending(colorBmp, grayOut, dims[0], dims[1],
+        Pending result = new Pending(colorBmp, grayOut, dims[0], dims[1],
                 customImage, customDepth, embedded, flat, imagePath, depthPath);
+        // Offer it to the other surface. Only the selected pair is worth keeping,
+        // and the studio is always the one that decodes first.
+        PairCache.put(imagePath, depthPath, result);
+        return result;
     }
 
     /** Everything {@link #decodePair} produces, ready for the GL half. */

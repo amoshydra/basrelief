@@ -409,6 +409,12 @@ final class Gallery {
                         // between leaves orphan files, which are invisible, rather
                         // than an index that points at files that are gone.
                         LibraryStore.remove(activity.prefs, item.id);
+                        // Drop the cached decode too. Nothing would look up these
+                        // paths again, but holding several megabytes of a deleted
+                        // photo because the cache forgets that photos get deleted
+                        // is the kind of leak that only shows up as an OOM much
+                        // later, on someone else's device.
+                        PairCache.clear();
                         deleteFiles(item);
                         if (isActive) {
                             activity.refreshSliders();

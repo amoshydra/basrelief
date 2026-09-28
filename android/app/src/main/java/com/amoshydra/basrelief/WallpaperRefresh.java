@@ -20,12 +20,17 @@ import java.lang.reflect.Method;
  * time, which is the clue: that button tells the engine nothing. It <i>re-binds
  * the component</i>, and the re-bind is what refreshes the snapshot.
  *
- * <p>So the app has to do the re-bind itself, which needs
- * {@code android.permission.SET_WALLPAPER}. This app had only INTERNET, so it
- * could not, and the only thing that worked was the system picker " + "-" + " a UI
- * interruption the user has to confirm, for something that should just work.
- * Every engine-side fix in this area is still correct and still needed; this is
- * the piece that makes them visible on the home screen.
+ * <p><b>This is a fallback, not the mechanism.</b> {@link PairCache} is the
+ * mechanism: it hands the engine an already-decoded photo, so the engine's first
+ * frame is correct and the snapshot is right. A re-bind was the earlier answer,
+ * and it was the wrong shape " + "-" + " it papers over a timing problem rather than removing
+ * it, and it needs a hidden API to do.
+ *
+ * <p>So this exists for the case the cache cannot cover: a change made while no
+ * surface of ours existed anywhere, so nothing was ever decoded and there is
+ * nothing warm to hand over. That needs {@code SET_WALLPAPER}, which this app
+ * did not declare, so it could not, and the only thing that worked was the system
+ * picker " + "-" + " a UI interruption to confirm, for something that should just work.
  *
  * <p>Deliberately silent and deliberately conditional. It acts only when this
  * app's live wallpaper is <i>already</i> the active one, because activating a
