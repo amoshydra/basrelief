@@ -19,6 +19,29 @@ import android.view.SurfaceHolder;
  */
 public class DepthWallpaperService extends WallpaperService {
 
+    /**
+     * The component a user selects, i.e. what the studio hands to the system
+     * picker.
+     *
+     * <p>It lives here rather than in a helper class because it names this
+     * service, and a class called something like "WallpaperRefresh" outliving
+     * the refresh it was named for is the sort of thing that reads as working.
+     * <p>
+     * This is also the whole of the "re-bind" story now, and it is worth
+     * knowing why there is nothing more: an app cannot ask the system to
+     * re-bind its own live wallpaper. {@code setWallpaperComponent} is hidden
+     * and needs {@code SET_WALLPAPER_COMPONENT}, which is
+     * {@code signature|privileged}, so the platform refuses it for every
+     * ordinary app -- verified on a Pixel 7 Pro, not assumed. {@code
+     * WallpaperManager} offers no public equivalent, and setBitmap/setResource/
+     * setStream all replace a live wallpaper with a static image. The picker is
+     * the only route, which is why "Set as wallpaper" is the apply gesture and
+     * not a convenience.
+     */
+    static android.content.ComponentName wallpaperComponent(android.content.Context context) {
+        return new android.content.ComponentName(context, DepthWallpaperService.class);
+    }
+
     @Override
     public Engine onCreateEngine() {
         return new DepthEngine();

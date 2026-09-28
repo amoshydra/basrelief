@@ -97,8 +97,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void onSharedPreferenceChanged(SharedPreferences p, String key) {
                     if ("status".equals(key) || "gyro_status".equals(key)
-                            || "wallpaper_debug".equals(key)
-                            || "wallpaper_rebind".equals(key)) {
+                            || "wallpaper_debug".equals(key)) {
                         refreshStatus();
                     }
                 }
@@ -294,7 +293,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) {
                 Intent intent = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
                 intent.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                        WallpaperRefresh.component(MainActivity.this));
+                        DepthWallpaperService.wallpaperComponent(MainActivity.this));
                 try {
                     startActivity(intent);
                 } catch (ActivityNotFoundException e) {
@@ -1145,8 +1144,6 @@ public class MainActivity extends Activity {
         // this line exists to make visible without a cable.
         String w = prefs.getString("wallpaper_debug", "");
         if (!w.isEmpty()) s += "\nEngine: " + w;
-        String r = prefs.getString("wallpaper_rebind", "");
-        if (!r.isEmpty()) s += "\nRebind: " + r;
         statusView.setText("Status: " + s);
     }
 

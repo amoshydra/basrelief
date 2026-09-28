@@ -266,12 +266,12 @@ final class Gallery {
 
     private void select(String id) {
         LibraryStore.select(activity.prefs, id);
-        // The engine will pick this up on its own, but the home screen may be
-        // showing the system's snapshot of the surface rather than the live
-        // engine, and a re-bind is the only thing that refreshes that. See
-        // WallpaperRefresh for the whole story. Conditional, so it never
-        // activates a wallpaper the user has not already chosen.
-        WallpaperRefresh.ifOursIsActive(activity);
+        // Nothing more to do here. This used to also ask the system to re-bind
+        // the live wallpaper, on the theory that the home screen might be
+        // showing a stale snapshot. That call cannot work: setWallpaperComponent
+        // needs SET_WALLPAPER_COMPONENT, which is signature|privileged, so the
+        // platform refuses it for every ordinary app. The engine follows the
+        // index on its own now, and "Set as wallpaper" is the apply gesture.
         // Mark it used, so "recently used" means recently looked at.
         activity.refreshStatus();
         activity.refreshSliders();

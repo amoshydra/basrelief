@@ -146,24 +146,26 @@ already cost real time.
   whole session once already, and the fix was in a commit message rather than
   in this file, which is the same as not writing it down. Note the corollary:
   **an engine that is correct can still be invisible**, because the home screen
-  may be showing the system's snapshot rather than the engine. That is why a
-  gallery selection appeared to do nothing until Set as wallpaper was pressed
-  again: that button does not tell the engine anything, it re-binds the
-  component, and the re-bind is what refreshes the snapshot. There
-  is **no public API to re-bind a live wallpaper** (`setBitmap`, `setResource`
-  and `setStream` all replace it with a static image), and
-  `setWallpaperComponent` is hidden, so `WallpaperRefresh` reaches it by
-  reflection, guarded, and logs whether it worked. That is best-effort by
-  nature: if the device refuses the non-SDK call, the behaviour is exactly what
-  it was before, which is why the log line matters.
+  may be showing the system's snapshot rather than the engine. That is what made
+  a gallery selection appear to do nothing until Set as wallpaper was pressed
+  again. It is no longer the mechanism, because it never could be — see below.
 - **No third-party app can re-bind its own live wallpaper. Stop trying.**
   Measured, not assumed: `setWallpaperComponent` is refused by
   `WallpaperManagerService` with `SecurityException: Access denied ... must have
   permission android.permission.SET_WALLPAPER_COMPONENT`, and that permission is
   `signature|privileged`, so declaring it changes nothing — `dumpsys package`
-  shows it requested and never granted. The system picker is the only route,
-  which is what makes "Set as wallpaper" the apply gesture rather than an
-  optional convenience.
+  shows it requested and never granted. `WallpaperManager` has no public
+  equivalent (`setBitmap`, `setResource` and `setStream` all replace a live
+  wallpaper with a static image), so the system picker is the only route, which
+  is what makes "Set as wallpaper" the apply gesture rather than a convenience.
+  There was a `WallpaperRefresh` class that tried it by reflection, down to a
+  second route through the binder; both were refused, always, so it has been
+  deleted rather than left as a reflection path that can only fail and a status
+  line telling users `rebind: REFUSED` as though their device were at fault.
+  Its one surviving fact — the component users select — now lives on
+  `DepthWallpaperService` as `wallpaperComponent`, beside the service it names.
+  **The engine follows the index by itself**; see the "state that records this
+  is on screen" invariant for how that was made true rather than papered over.
 - **`am force-stop` on a package that *is* the active wallpaper makes Android
   revert the wallpaper to the default static image.** This is a sharper form of
   the trap above, and it cost a long session: every screenshot afterwards is a
