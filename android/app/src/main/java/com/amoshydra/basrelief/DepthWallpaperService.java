@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Config;
@@ -23,11 +24,6 @@ public class DepthWallpaperService extends WallpaperService {
         return new DepthEngine();
     }
 
-    /** Null-safe path comparison: both sides are null for the bundled demo. */
-    private static boolean sameFile(String a, String b) {
-        return a == null ? b == null : a.equals(b);
-    }
-
     private class DepthEngine extends Engine {
 
         private class WallpaperGLSurfaceView extends GLSurfaceView {
@@ -47,7 +43,6 @@ public class DepthWallpaperService extends WallpaperService {
         private SensorPolicy sensorPolicy;
         private boolean tiltRunning = false;
         /** Last image/depth handed to the renderer, so a Depth nudge does not re-decode. */
-        private String lastImage, lastDepth;
         private SharedPreferences prefs;
         private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
                 new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -95,19 +90,19 @@ public class DepthWallpaperService extends WallpaperService {
             // Resolved once, on the calling thread, and applied on the GL thread.
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
-            final Framing framing = Framing.of(state);
+            final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
                     renderer.apply(framing);
-                    // Only reload when the file actually changed; re-decoding on
-                    // every Depth nudge would drop a frame for nothing. Compared
-                    // through a null-safe helper, because both are null for the
-                    // bundled demo and a bare img.equals(last) threw on exactly
-                    // that path.
-                    if (!sameFile(img, lastImage) || !sameFile(dep, lastDepth)) {
-                        lastImage = img;
-                        lastDepth = dep;
+                    // Only reload when what is ON SCREEN differs from what should
+                    // be. The renderer knows that; this class used to keep its own
+                    // copy updated at request time, so a load that never landed
+                    // still counted as done and the wallpaper stayed on the old
+                    // photo until the process died. Re-decoding on every Depth
+                    // nudge would drop a frame for nothing, so the check earns
+                    // its keep.
+                    if (!renderer.showingSamePair(img, dep)) {
                         // Async: the read/decode/mesh-build must not happen
                         // between two frames of the wallpaper, or it visibly
                         // freezes for seconds.
@@ -169,6 +164,14 @@ public class DepthWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             if (visible) {
                 glView.onResume();
+                // Re-read the selection now, not only when a pref change happens
+                // to arrive while the engine is alive. While hidden the GL thread
+                // is paused and does not drain the event queue, so an update
+                // posted from the studio could sit there undelivered -- and if it
+                // was dropped, only the renderer knew the wallpaper was stale.
+                // Becoming visible is the one moment at which the answer cannot
+                // be a cached guess, so it is the moment to ask.
+                if (renderer != null && prefs != null) applyFromPrefs(prefs);
             } else {
                 glView.onPause();
             }

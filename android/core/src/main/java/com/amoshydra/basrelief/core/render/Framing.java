@@ -1,4 +1,4 @@
-package com.amoshydra.basrelief;
+package com.amoshydra.basrelief.core.render;
 
 import com.amoshydra.basrelief.core.store.LibraryItem;
 
@@ -13,24 +13,25 @@ import com.amoshydra.basrelief.core.store.LibraryItem;
  * panning a photo therefore showed the bust through that photo's framing, in one
  * surface and not the other, with nothing in the log.
  *
- * <p>Resolving it once is cheaper than the alternative. There is no unit test
- * here because there is no Android in {@code :core} -- but this is exactly the
- * kind of value that is testable precisely <i>because</i> it has no Android in
- * it, so if this ever grows a dependency it should move to {@code :core} rather
- * than stay.
+ * <p>It lives in :core, not :app, and that is the point rather than an
+ * accident of packaging: it has no Android in it, so it can be unit tested, and
+ * it is the value most likely to be quietly wrong. A version of this class sat
+ * in :app for the length of one commit, where the bug it now guards -- the
+ * renderer keeping the previous item's pan and zoom -- could not have been
+ * caught at all.
  */
-final class Framing {
+public final class Framing {
 
-    final float depth;
-    final float zoom;
-    final float motion;
-    final float orbitX;
-    final float orbitY;
-    final float panX;
-    final float panY;
+    public final float depth;
+    public final float zoom;
+    public final float motion;
+    public final float orbitX;
+    public final float orbitY;
+    public final float panX;
+    public final float panY;
 
     /** True when the marble bust is showing, and the files are in res/raw. */
-    final boolean bundled;
+    public final boolean bundled;
 
     private Framing(LibraryItem item, float motion) {
         this.bundled = item == null || item.isBundled();
@@ -56,7 +57,19 @@ final class Framing {
         this.motion = motion;
     }
 
-    static Framing of(AppState state) {
-        return new Framing(state.activeItem(), state.config.motionScale());
+    /**
+     * The framing for a selected item.
+     *
+     * <p>Takes the item and the motion separately rather than an {@code AppState},
+     * because {@code AppState} is in :app and this class has moved to :core
+     * precisely so it can be tested. The two values it needs are the whole
+     * contract, and a test that cannot construct one is a test that does not
+     * exist.
+     *
+     * @param item   the selected item, or null for the bundled demo
+     * @param motion the resolved motion scale, 0..3
+     */
+    public static Framing of(LibraryItem item, float motion) {
+        return new Framing(item, motion);
     }
 }

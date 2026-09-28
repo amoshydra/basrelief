@@ -98,8 +98,13 @@ function checkTestCounts() {
 
   // AGENTS.md spells small numbers out ("six classes"), so compare words for the
   // class count and digits for the test count.
+  // Spelled out, because that is how the sentence reads. Past ten the list has
+  // to keep going or the check breaks on the eleventh class -- and a guard that
+  // breaks when the thing it guards grows is a guard that gets disabled, which is
+  // how a hand-maintained count comes back.
   const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
-    'eight', 'nine', 'ten'];
+    'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+    'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
   if (+claimed[1] !== methods) {
     failures.push(
       `AGENTS.md says ${claimed[1]} tests but the tree has ${methods} @Test methods`

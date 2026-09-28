@@ -192,7 +192,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 133 tests across ten classes:
+it**. 140 tests across eleven classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -208,6 +208,15 @@ it**. 133 tests across ten classes:
 - `ComfyWorkflowTest` — the ComfyUI graph wiring, especially that the depth
   node reads node 1 and `SaveImage` reads node **2**, not 1. An off-by-one
   there renders the wrong tensor with no error.
+- `FramingTest` — the one resolution of what should be on screen. It
+  is in `:core` rather than `:app` for a reason: it lived in `:app` for one
+  commit, and in that window the studio loaded a newly selected photo's
+  files without its framing, so every photo arrived through the previous
+  photo's pan, zoom and depth. A value that cannot be unit tested is a
+  value that cannot be checked, and this is the one most likely to be
+  quietly wrong. It also pins that the bundled demo renders at the
+  defaults *whatever the index says*, because a Zoom stored on it is a
+  number a slider will display and the renderer will never use.
 - `PerItemSettingsTest` — per-item settings, and the one reserved id. The traps
   are the ones this file already names: pan is in **pixels** and must not be
   clamped to orbit's fraction range (delta exactly 0, so a partial clamp cannot

@@ -20,6 +20,7 @@ import java.nio.FloatBuffer;
 import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
@@ -230,6 +231,35 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile boolean syncFirstLoad = false;
     private boolean loadedOnce = false;
+
+    /**
+     * The pair currently on screen; null for the bundled demo.
+     *
+     * <p>Written on the GL thread inside {@link #applyPending} and read by the
+     * host to decide whether a reload is needed, so both are volatile: the studio
+     * asks from the UI thread and the wallpaper from its pref listener.
+     *
+     * <p>This is the renderer's own knowledge rather than the host's bookkeeping
+     * because the host cannot know whether a load it asked for survived. A
+     * request handed to a paused GLSurfaceView can be dropped, and a host that
+     * assumed otherwise skips the retry forever.
+     */
+    private volatile String loadedImagePath;
+    private volatile String loadedDepthPath;
+
+    /**
+     * Whether the given pair is already on screen.
+     *
+     * <p>Null-safe, because the bundled demo is (null, null) and calling equals
+     * on either side is a crash on exactly that path.
+     */
+    public boolean showingSamePair(String imagePath, String depthPath) {
+        return samePath(imagePath, loadedImagePath) && samePath(depthPath, loadedDepthPath);
+    }
+
+    private static boolean samePath(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
 
     /** Wire this to GLSurfaceView.requestRender(). */
     public void setRenderRequester(Runnable r) {
@@ -470,7 +500,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
 
         return new Pending(colorBmp, grayOut, dims[0], dims[1],
-                customImage, customDepth, embedded, flat);
+                customImage, customDepth, embedded, flat, imagePath, depthPath);
     }
 
     /** Everything {@link #decodePair} produces, ready for the GL half. */
@@ -479,9 +509,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final byte[] gray;
         final int w, h;
         final boolean customImage, customDepth, embedded, flat;
+        /**
+         * The paths this was decoded from, so the renderer can record what is
+         * genuinely on screen rather than what was last asked for. See
+         * {@link #loadedImagePath}.
+         */
+        final String requestedImage, requestedDepth;
 
         Pending(Bitmap colorBmp, byte[] gray, int w, int h,
-                boolean customImage, boolean customDepth, boolean embedded, boolean flat) {
+                boolean customImage, boolean customDepth, boolean embedded, boolean flat,
+                String requestedImage, String requestedDepth) {
             this.colorBmp = colorBmp;
             this.gray = gray;
             this.w = w;
@@ -489,6 +526,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             this.customImage = customImage;
             this.customDepth = customDepth;
             this.embedded = embedded;
+            this.requestedImage = requestedImage;
+            this.requestedDepth = requestedDepth;
             this.flat = flat;
         }
     }
@@ -503,6 +542,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             writeStatus("failed to read image");
             return false;
         }
+        // Recorded HERE, where the swap actually happens, and not where the load
+        // was requested. The engine used to keep its own copy, updated at request
+        // time, which meant a load that never completed still counted as done --
+        // and the next comparison then said "already showing that", so the
+        // wallpaper stayed on the old photo with nothing to retry it.
+        loadedImagePath = p.requestedImage;
+        loadedDepthPath = p.requestedDepth;
         if (p.customImage && p.customDepth) {
             writeStatus(p.flat ? "custom image, flat (no depth found)"
                     : p.embedded ? "custom image + embedded depth"
@@ -725,7 +771,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final LibraryItem active = state.activeItem();
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
-        apply(Framing.of(state));
+        apply(Framing.of(state.activeItem(), state.config.motionScale()));
         if (active == null || active.isBundled()) {
             // No file to resolve: the marble bust, read from res/raw. This is a
             // renderable state and not a failure, and it is where a delete of the

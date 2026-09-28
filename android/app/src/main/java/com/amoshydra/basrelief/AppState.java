@@ -69,6 +69,21 @@ final class AppState {
         return active == null ? null : active.id;
     }
 
+    /**
+     * Whether the selected item's Depth, Zoom and framing can be edited.
+     *
+     * <p>False for the bundled demo, which is the "back to the default"
+     * affordance rather than a photograph: it has no settings of its own to
+     * edit, and {@link Framing} renders it at the defaults whatever the index
+     * says. Note that {@link #activeId()} is <i>not</i> the test for this " + chr(0x2014) + " it
+     * returns the reserved id for the demo, which is what let a null check
+     * through and stored a Zoom the renderer then ignored.
+     */
+    boolean isEditableItem() {
+        LibraryItem active = activeItem();
+        return active != null && !active.isBundled();
+    }
+
     /** True when the wallpaper is the bundled demo. */
     boolean isBundled() {
         LibraryItem active = activeItem();

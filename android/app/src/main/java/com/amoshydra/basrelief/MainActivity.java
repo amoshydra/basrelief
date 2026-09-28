@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
@@ -804,10 +805,16 @@ public class MainActivity extends Activity {
             ConfigStore.setMotion(prefs, value);
             return;
         }
-        String id = AppState.load(prefs, getFilesDir()).activeId();
-        if (id == null) return; // the bundled demo is not editable
+        // activeId() is NOT null for the bundled item -- it returns the reserved
+        // id -- so a null check here let every slider write to it. Those values
+        // were then stored, displayed, and ignored by Framing, which renders the
+        // demo at the defaults. A control that shows a number the renderer never
+        // uses is worse than a control that is visibly switched off, so the
+        // sliders are disabled for this item in refreshSliders.
+        AppState state = AppState.load(prefs, getFilesDir());
+        if (!state.isEditableItem()) return;
         final boolean isDepth = "intensity".equals(key);
-        LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+        LibraryStore.editItem(prefs, state.activeId(), new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
                 return isDepth ? item.withIntensity(value) : item.withZoom(value);
@@ -832,19 +839,29 @@ public class MainActivity extends Activity {
     void refreshSliders() {
         AppState state = AppState.load(prefs, getFilesDir());
         LibraryItem item = state.activeItem();
+        // Motion is always editable -- it is not a property of a photograph.
+        // Depth and Zoom are not, when the bundled demo is showing, because the
+        // renderer draws it at the defaults regardless of what the index holds.
+        // Leaving the sliders live would show a number that does nothing, which
+        // is the same class of lie as a status line claiming content that is not
+        // there, and much easier to hit by accident.
+        boolean editable = state.isEditableItem();
         syncingZoom = true;
         try {
-            setBar("intensity", item == null ? LibraryItem.DEFAULT_INTENSITY : item.intensity);
-            setBar("zoom", item == null ? LibraryItem.DEFAULT_ZOOM : item.zoom);
-            setBar("motion", state.config.motion);
+            setBar("intensity", item == null ? LibraryItem.DEFAULT_INTENSITY : item.intensity,
+                    editable);
+            setBar("zoom", item == null ? LibraryItem.DEFAULT_ZOOM : item.zoom, editable);
+            setBar("motion", state.config.motion, true);
         } finally {
             syncingZoom = false;
         }
     }
 
-    private void setBar(String key, int value) {
+    private void setBar(String key, int value, boolean enabled) {
         SeekBar bar = bars.get(key);
         if (bar == null) return;
+        bar.setEnabled(enabled);
+        bar.setAlpha(enabled ? 1f : 0.4f);
         Integer min = barMin.get(key);
         int v = Math.max(min == null ? 0 : min, Math.min(bar.getMax() + (min == null ? 0 : min), value));
         bar.setProgress(v - (min == null ? 0 : min));
@@ -1021,6 +1038,26 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /**
+     * Put the selected item on screen: its framing <i>and</i> its files.
+     *
+     * <p>Both, and the framing is the half that was missing. Loading only the
+     * files left the renderer holding the previously selected item's orbit, pan
+     * and zoom, so picking a photo in the gallery showed it through the last
+     * photo's framing and it looked like per-item settings were not working at
+     * all. The stored values had been correct the whole time; nothing had told
+     * the renderer to use them.
+     *
+     * <p>This is the same resolution the wallpaper does, through the same
+     * {@link Framing}, because a third path that computes it slightly
+     * differently is precisely how the two surfaces came to disagree about the
+     * bundled item earlier. There is now one resolution and every caller applies
+     * both halves.
+     *
+     * <p>Reads here, applies on the GL thread: {@code queueEvent} is the one hop
+     * the renderer allows, and {@code setPan} clamps against the real surface
+     * size so it has to run there.
+     */
     void applyFiles() {
         // The index has already dropped rows whose file is absent, so this only
         // has to resolve names against this install's filesDir -- which is what
@@ -1028,17 +1065,26 @@ public class MainActivity extends Activity {
         // old device's absolute path is never stored.
         AppState state = AppState.load(prefs, getFilesDir());
         LibraryItem active = state.activeItem();
+        final String img;
+        final String dep;
         if (active == null || active.isBundled()) {
             // The marble bust: no file, so res/raw. Null is a normal state here,
             // not a missing photo.
-            renderer.loadPairAsync(null, null);
-            glView.requestRender();
-            return;
+            img = null;
+            dep = null;
+        } else {
+            java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
+            java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
+            img = imgF == null ? null : imgF.getAbsolutePath();
+            dep = depF == null ? null : depF.getAbsolutePath();
         }
-        final java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
-        final java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
-        final String img = imgF == null ? null : imgF.getAbsolutePath();
-        final String dep = depF == null ? null : depF.getAbsolutePath();
+        final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
+        glView.queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                renderer.apply(framing);
+            }
+        });
         // Async for the same reason as the wallpaper: a synchronous load stalls
         // the GL thread for the length of a full decode plus mesh build.
         renderer.loadPairAsync(img, dep);
