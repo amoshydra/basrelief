@@ -132,6 +132,19 @@ already cost real time.
   `ReliefMesh` resamples to the grid before blurring. Change the radius and you
   must regenerate the goldens (`RegenerateGoldens`) and re-check banding on a
   real photo; the bundled demo map is only 4-level quantised and hides artifacts.
+- **The system snapshots the wallpaper surface ~100 ms after it appears,
+  then destroys the engine and keeps the snapshot.** So the first load per
+  engine must be synchronous (`setSyncFirstLoad(true)`) or the snapshot is
+  captured empty and nothing is alive to repaint it. The engine is also
+  short-lived, which is why nothing may be cached across its lifetime: a
+  wallpaper showing the wrong photo is usually a *live* engine reading stale
+  bookkeeping, or a snapshot outliving the engine that drew it, and those two
+  look identical from the home screen. `DepthWallpaperService` logs one line
+  per resolution under the `Basrelief` tag with the visible flag, whether the
+  surface is still valid, the item it resolved, and what the renderer believes
+  is on screen. Grep that before theorising — three wrong theories cost a
+  whole session once already, and the fix was in a commit message rather than
+  in this file, which is the same as not writing it down.
 - **Matrix order.** `clip = proj * view * model`. Any unprojection must invert
   `proj * view` in that same order; `view * proj` is a real bug.
 - **Never hand-derive vendored matrix semantics and verify them against a

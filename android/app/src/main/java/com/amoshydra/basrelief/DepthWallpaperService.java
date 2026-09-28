@@ -41,6 +41,8 @@ public class DepthWallpaperService extends WallpaperService {
         private ReliefRenderer renderer;
         private TiltController tilt;
         private SensorPolicy sensorPolicy;
+        /** Last value onVisibilityChanged gave us, for the diagnostic line only. */
+        private volatile boolean visible = true;
         private boolean tiltRunning = false;
         /** Last image/depth handed to the renderer, so a Depth nudge does not re-decode. */
         private SharedPreferences prefs;
@@ -71,6 +73,20 @@ public class DepthWallpaperService extends WallpaperService {
          * runnable: {@code queueEvent} is the one thread hop the renderer allows
          * (see the threading table in AGENTS.md).
          */
+        /**
+         * The one line that makes this diagnosable.
+         *
+         * <p>The engine is otherwise completely silent, and that has now cost two
+         * investigations: a black wallpaper that took three wrong theories before log
+         * timestamps settled it, and a stale wallpaper that could not be told apart from
+         * a dead engine, because both look like a correct picture of the wrong thing.
+         * The three facts needed to separate those are the resolved item, whether the
+         * surface is still valid, and what the renderer believes is on screen. One
+         * line, so the next occurrence is a grep rather than an argument.
+         *
+         * <p>Not in the render path: this runs on transitions only, and
+         * {@code onDrawFrame} must stay free of per-frame work.
+         */
         private void applyFromPrefs(SharedPreferences p) {
             final AppState state = AppState.load(p, getFilesDir());
             final LibraryItem active = state.activeItem();
@@ -91,6 +107,13 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
+            android.util.Log.i("Basrelief",
+                    "wallpaper: visible=" + visible + " surfaceValid="
+                            + (glView.getHolder() != null
+                                    && glView.getHolder().getSurface().isValid())
+                            + " showing=" + (active == null ? "bundled" : active.displayName())
+                            + " want=" + (img == null ? "res/raw" : new java.io.File(img).getName())
+                            + " onScreen=" + renderer.showingSamePair(img, dep));
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
@@ -162,6 +185,7 @@ public class DepthWallpaperService extends WallpaperService {
         @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
+            this.visible = visible;
             if (visible) {
                 glView.onResume();
                 // Re-read the selection now, not only when a pref change happens
