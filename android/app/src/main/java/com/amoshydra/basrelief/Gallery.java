@@ -266,6 +266,12 @@ final class Gallery {
 
     private void select(String id) {
         LibraryStore.select(activity.prefs, id);
+        // The engine will pick this up on its own, but the home screen may be
+        // showing the system's snapshot of the surface rather than the live
+        // engine, and a re-bind is the only thing that refreshes that. See
+        // WallpaperRefresh for the whole story. Conditional, so it never
+        // activates a wallpaper the user has not already chosen.
+        WallpaperRefresh.ifOursIsActive(activity);
         // Mark it used, so "recently used" means recently looked at.
         activity.refreshStatus();
         activity.refreshSliders();

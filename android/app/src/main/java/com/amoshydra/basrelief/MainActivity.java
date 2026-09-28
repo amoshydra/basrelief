@@ -290,7 +290,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) {
                 Intent intent = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
                 intent.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                        new ComponentName(MainActivity.this, DepthWallpaperService.class));
+                        WallpaperRefresh.component(MainActivity.this));
                 try {
                     startActivity(intent);
                 } catch (ActivityNotFoundException e) {

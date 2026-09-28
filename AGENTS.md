@@ -144,7 +144,18 @@ already cost real time.
   surface is still valid, the item it resolved, and what the renderer believes
   is on screen. Grep that before theorising — three wrong theories cost a
   whole session once already, and the fix was in a commit message rather than
-  in this file, which is the same as not writing it down.
+  in this file, which is the same as not writing it down. Note the corollary:
+  **an engine that is correct can still be invisible**, because the home screen
+  may be showing the system's snapshot rather than the engine. That is why a
+  gallery selection appeared to do nothing until Set as wallpaper was pressed
+  again: that button does not tell the engine anything, it re-binds the
+  component, and the re-bind is what refreshes the snapshot. There
+  is **no public API to re-bind a live wallpaper** (`setBitmap`, `setResource`
+  and `setStream` all replace it with a static image), and
+  `setWallpaperComponent` is hidden, so `WallpaperRefresh` reaches it by
+  reflection, guarded, and logs whether it worked. That is best-effort by
+  nature: if the device refuses the non-SDK call, the behaviour is exactly what
+  it was before, which is why the log line matters.
 - **Matrix order.** `clip = proj * view * model`. Any unprojection must invert
   `proj * view` in that same order; `view * proj` is a real bug.
 - **Never hand-derive vendored matrix semantics and verify them against a
