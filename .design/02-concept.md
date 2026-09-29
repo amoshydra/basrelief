@@ -53,6 +53,13 @@ accent reads as "Android"; amber reads as "lamp". It is also used sparingly —
 only on the primary action and the active state — so it competes with nothing
 in the photograph it sits over.
 
+Worth being honest that this is a **choice, not a constraint**. Dynamic colour
+is available framework-only on API 31+ and this app already inherits it, because
+`Theme.DeviceDefault`'s accent is wired to `system_accent1_*` in AOSP. The reason
+to pin the accent anyway is that the whole panel is a dark instrument surface
+where a wallpaper-derived hue would arrive without a guaranteed contrast ratio
+against it — not that we could not have taken one.
+
 **The sheet is 92% opaque, not 100%.** You should be able to see the edge of the
 photo continuing underneath the panel. It is the difference between a console
 and a lid.
@@ -190,8 +197,11 @@ alternation so their combined target is comfortable even if each is not 48.
 - The slider rows collapse to one accessibility node: *"Depth, 54 percent"*,
   with the SeekBar as the adjustable action, so a screen reader does not read
   the label, the value and the track as three separate stops.
-- Collapsing and expanding the sheet announce themselves
-  (`announceForAccessibility`), because the change is otherwise entirely visual.
+- Collapsing and expanding the sheet must **not** use `announceForAccessibility`,
+  which is deprecated at API 36 and which TalkBack is entitled to ignore. Instead:
+  `setAccessibilityPaneTitle()` (28) names the sheet, `setStateDescription()` (30)
+  carries on/off/selected state, and `setAccessibilityLiveRegion(POLITE)` (19)
+  covers a value that changes while dragging. See `03-android-capabilities.md` §6.
 - Contrast, measured against the **worst case** — the sheet is only 92% opaque,
   so over a near-white highlight the background composites to `#1F2127`, which is
   lighter than the surface colour and therefore the harder case:
@@ -223,13 +233,29 @@ alternation so their combined target is comfortable even if each is not 48.
 ## A note on motion, honestly
 
 The obvious way to animate the sheet is with `translationY`, and that is exactly
-what broke it — see `AGENTS.md`. A transform did not reliably repaint the panel's
-region on this device, so the sheet is positioned by **layout height** and the
-expand is instant, because animating a layout property is what makes the
-animation feel like the wait the user objected to in the first place.
+what broke it — see `AGENTS.md` and `b/7179570`. A transform did not reliably
+repaint the panel's region on this device, so the sheet is positioned by **layout
+height** and the `＋` expand is instant, because animating a layout property is
+what makes the animation feel like the wait the user objected to in the first
+place.
 
 That trade is real and it is the reason this concept is quieter than it would
 otherwise be. A spring-feel sheet needs transforms, and transforms need the
-repaint bug fixed first. **Fixing that bug is the highest-value UI work this app
-could do next**, because it would unlock motion on the only surface where motion
-matters.
+repaint bug fixed first. **Fixing or routing around that limitation is the
+highest-value UI work this app could do next**, because it would unlock motion on
+the only surface where motion matters. The options are `setZOrderOnTop(true)` on
+the `GLSurfaceView`, which stops the hole being punched at all so nothing can
+desync, or animating the sheet through `LayoutParams` and eating the cost.
+
+## A shape constraint that shows up in the drawing above
+
+The sheet has **only its top two corners rounded**, and that is the awkward case
+in the framework. AOSP's `GradientDrawable.getOutline()` branches on which radius
+API you use: a uniform `setCornerRadius` produces a round-rect outline, which
+clips and casts a rounded shadow, while a per-corner `setCornerRadii` produces a
+path outline, which is `canClip() == false` and casts a **square** shadow.
+
+So the top-rounded sheet gets a rounded fill and no rounded shadow. On a dark
+translucent panel over a photograph the shadow is close to invisible anyway,
+which makes this a cheap thing to accept — but it should be a decision, not a
+surprise at implementation time. See `03-android-capabilities.md` §3.
