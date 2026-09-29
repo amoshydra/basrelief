@@ -33,3 +33,9 @@ Thumbs.db
 captures/
 .externalNativeBuild/
 .cxx/
+
+# --- design working material (local only, never published) ---
+# Audit, concept, the framework-capability research and the HTML prototype.
+# Kept on disk and out of the repo: it is exploration, not the product, and a
+# published app should not ship a 1292-line prototype and its design debates.
+.design/
