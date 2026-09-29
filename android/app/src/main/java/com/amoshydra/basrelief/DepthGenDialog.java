@@ -78,6 +78,17 @@ public final class DepthGenDialog {
     private File lastPacked;
 
     private String comfyBase;
+    /**
+     * The depth model restored from prefs, shown in the spinner before any
+     * connection test has run.
+     *
+     * <p>This existed only as a prefs key that nothing read back, which is why
+     * the dialog looked like it had forgotten everything. The spinner cannot be
+     * restored by index, because the index is only meaningful once the node list
+     * has been fetched from the server, so the saved name is shown on its own and
+     * {@link #currentModel()} prefers the fetched list when there is one.
+     */
+    private String savedModel;
     private final List<String> nodes = new ArrayList<String>();
     private final List<String> displayNames = new ArrayList<String>();
     private File pickedImage;
@@ -254,10 +265,16 @@ public final class DepthGenDialog {
 
         // --- model + resolution ---
         modelSpinner = new Spinner(activity);
-        List<String> placeholder = new ArrayList<String>();
-        placeholder.add("(test connection first)");
+        // Show the model that was actually chosen last time, rather than a
+        // placeholder that reads like nothing was saved. The node list is only
+        // known after a connection test, so the saved name stands alone until
+        // then; Testing the connection replaces it with the discovered list and
+        // re-selects this entry if it is still there.
+        savedModel = prefs.getString(KEY_MODEL, null);
+        List<String> shown = new ArrayList<String>();
+        shown.add(savedModel != null ? savedModel : "(test connection first)");
         modelSpinner.setAdapter(new ArrayAdapter<String>(
-                activity, android.R.layout.simple_spinner_dropdown_item, placeholder));
+                activity, android.R.layout.simple_spinner_dropdown_item, shown));
         root.addView(modelSpinner);
 
         resInput = new EditText(activity);
@@ -323,10 +340,46 @@ public final class DepthGenDialog {
         d.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(android.content.DialogInterface di) {
+                // Save whatever was typed, on the way out.
+                //
+                // The endpoint and resolution used to be written only by the
+                // connection test and by generate, so typing an endpoint and then
+                // closing the dialog threw it away. Worse, the dialog instance is
+                // reused, so the typed text stayed on screen looking saved right
+                // up until the activity was recreated - which made this look
+                // intermittent rather than like the plain data loss it was. A
+                // field the user typed into should survive being dismissed.
+                persistTyped();
                 stopWs();
             }
         });
         return d;
+    }
+
+    /**
+     * Write the endpoint and resolution from the fields, if they hold something
+     * usable. Called when the dialog is dismissed, so nothing typed is lost.
+     *
+     * <p>Deliberately does not touch the model. The spinner is only populated from
+     * a connection test, so on dismissal its contents may be the placeholder or a
+     * name that was never confirmed against the server, and a wrong model saved
+     * here would silently become the default on the next visit. The model is saved
+     * where it is actually chosen, in {@link #generate()}.
+     */
+    private void persistTyped() {
+        if (hostInput == null || resInput == null) return;
+        String host = hostInput.getText().toString().trim();
+        int res;
+        try {
+            res = Integer.parseInt(resInput.getText().toString().trim());
+        } catch (Exception e) {
+            return; // left blank or half-typed: keep what is already stored
+        }
+        android.content.SharedPreferences.Editor e = activity
+                .getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE).edit();
+        if (host.length() > 0) e.putString(KEY_HOST, host);
+        e.putInt(KEY_RES, Math.max(64, res));
+        e.apply();
     }
 
     // ------------------------------------------------------------------ connection
@@ -377,11 +430,14 @@ public final class DepthGenDialog {
                                 modelSpinner.setAdapter(new ArrayAdapter<String>(
                                         activity, android.R.layout.simple_spinner_dropdown_item,
                                         new ArrayList<String>(displayNames)));
-                                String saved = activity
-                                        .getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
-                                        .getString(KEY_MODEL, null);
-                                if (saved != null) {
-                                    int idx = depth.indexOf(saved);
+                                // Re-select the restored model if the server still
+                                // offers it. Read from the field rather than from
+                                // prefs so there is one source of truth: generate()
+                                // updates savedModel as soon as a different model is
+                                // used, and a second prefs read would be a second
+                                // answer to a question already answered.
+                                if (savedModel != null) {
+                                    int idx = depth.indexOf(savedModel);
                                     if (idx >= 0) modelSpinner.setSelection(idx);
                                 }
                             }
@@ -403,18 +459,49 @@ public final class DepthGenDialog {
 
     // ------------------------------------------------------------------ generate
 
+    /**
+     * The depth model to generate with, or null if there is none.
+     *
+     * <p>Prefers the node list fetched from the server, because after a connection
+     * test the spinner holds discovered nodes indexed against it. Before any test
+     * the list is empty and the spinner holds only the name restored from prefs,
+     * which is still a valid model to ask for.
+     */
+    private String currentModel() {
+        int pos = modelSpinner.getSelectedItemPosition();
+        if (!nodes.isEmpty() && pos >= 0 && pos < nodes.size()) {
+            return nodes.get(pos);
+        }
+        if (savedModel != null && savedModel.length() > 0) return savedModel;
+        Object sel = modelSpinner.getSelectedItem();
+        if (sel != null && pos >= 0) {
+            String s = sel.toString();
+            if (s.length() > 0 && !s.startsWith("(")) return s;
+        }
+        return null;
+    }
+
     private void generate() {
         if (busy) return;
-        if (comfyBase == null) {
-            Toast.makeText(activity, "Test the connection first", Toast.LENGTH_SHORT).show();
+        // Take the endpoint from the field rather than from a test that may never
+        // have run in this session. comfyBase used to be assigned only inside
+        // testConnection(), which made the connection test mandatory on every
+        // visit even though the endpoint was saved and sitting in the field: the
+        // dialog remembered the value and then refused to use it. Persist it here
+        // too, so an endpoint typed and generated-with is remembered even if the
+        // user never pressed Test.
+        comfyBase = hostInput.getText().toString().trim();
+        if (comfyBase == null || comfyBase.length() == 0) {
+            Toast.makeText(activity, "Set the ComfyUI endpoint first", Toast.LENGTH_SHORT).show();
             return;
         }
         if (pickedImage == null) {
             Toast.makeText(activity, "Pick an image first", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (nodes.isEmpty() || modelSpinner.getSelectedItem() == null) {
-            Toast.makeText(activity, "No depth model available", Toast.LENGTH_SHORT).show();
+        final String model = currentModel();
+        if (model == null) {
+            Toast.makeText(activity, "No depth model selected", Toast.LENGTH_SHORT).show();
             return;
         }
         int res;
@@ -425,11 +512,14 @@ public final class DepthGenDialog {
         }
         if (res < 64) res = 64;
 
-        final String model = nodes.get(modelSpinner.getSelectedItemPosition());
         final String clientId = "depth-app-" + System.nanoTime();
         final int resolution = res;
         activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
-                .edit().putString(KEY_MODEL, model).putInt(KEY_RES, resolution).apply();
+                .edit().putString(KEY_HOST, comfyBase)
+                .putString(KEY_MODEL, model)
+                .putInt(KEY_RES, resolution)
+                .apply();
+        savedModel = model;
 
         busy = true;
         generateBtn.setEnabled(false);
