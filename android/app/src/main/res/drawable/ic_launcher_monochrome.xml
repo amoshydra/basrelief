@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The monochrome layer, for Android's themed icons.
+
+    Worth having rather than omitting, and the reason is no longer stylistic.
+    Android 16 QPR2 auto-themes any app that does not ship this layer, applying a
+    colour filter to the existing icon; the Play Developer Distribution Agreement
+    reserves the right to recolour app icons too. Shipping a deliberate silhouette
+    means a themed-icon user sees something designed. Omitting it means they see
+    whatever the platform decided your icon looked like.
+
+    The system tints this layer and preserves alpha, so only the shape survives.
+    It is therefore the same geometry as the foreground, counters and all: a
+    themed icon that differed in silhouette from the real one would be a different
+    mark wearing the same name.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M40,25 L58,25 C71,25 78,31 78,40 C78,47 74,51 68,53 C76,55 80,60 80,68 C80,79 71,83 58,83 L40,83 C34,83 30,79 30,73 L30,35 C30,29 34,25 40,25 Z M48,36 L66,36 A3,3 0 0 1 69,39 A3,3 0 0 1 66,42 L48,42 A3,3 0 0 1 45,39 A3,3 0 0 1 48,36 Z M48,61 L68,61 A3,3 0 0 1 71,64 A3,3 0 0 1 68,67 L48,67 A3,3 0 0 1 45,64 A3,3 0 0 1 48,61 Z" />
+</vector>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The adaptive icon. Both layers are 108dp and the launcher masks them; the
+    mark itself only occupies the centred 66dp safe circle.
+
+    The <monochrome> tag lives in this -v26 file, which is correct: the official
+    docs do it, Image Asset Studio generates it here, and the platform's layer
+    parser skips tags it does not recognise, so a device older than the feature
+    ignores it rather than failing. No separate -v33 qualifier is needed.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

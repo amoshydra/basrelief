@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Identical to ic_launcher.xml, for android:roundIcon.
+
+    The mark has no circular background of its own, so this adds nothing today.
+    It exists because the resource is cheap and some launchers and third-party
+    shortcut code look for the round variant by name, and a missing one can render
+    as nothing at all. If the manifest ever stops declaring android:roundIcon,
+    this file can go with it.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

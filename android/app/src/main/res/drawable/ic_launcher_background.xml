@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The background layer: a solid black field, full-bleed at 108dp.
+
+    Solid rather than a gradient or a texture, and that is load-bearing. Google
+    Play warns that a transparent listing icon shows Play's own background, and a
+    field that varies would fail on an unknown home screen wallpaper. A solid
+    field is the only version that is predictable everywhere.
+
+    Black rather than white because the mark is white, which is a deliberate
+    choice rather than a default: the live-wallpaper category is saturated with
+    purple and teal gradients, and target-to-distractor colour similarity is the
+    largest measured effect in icon research, so the cheapest way to be findable in
+    a grid of twenty is to be the one icon that is not purple.
+
+    The field extends under the mask edge on purpose. It is what the launcher
+    slides during the parallax effect, and it is why the mark is sized to the 66dp
+    safe circle rather than to 108.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#000000"
+        android:pathData="M0,0 H108 V108 H0 Z" />
+</vector>
