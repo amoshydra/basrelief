@@ -43,10 +43,32 @@
                 android:resource="@xml/wallpaper" />
         </service>
 
+        <!--
+          singleTask, not singleTop, and not the default.
+
+          This activity is two things at once: the launcher entry, and a share
+          target for ACTION_SEND. singleTop only reuses an instance that is
+          already at the top of the *current* task, so a share arriving from
+          another app started a fresh instance every time and the recents list
+          filled with copies of the studio. singleTask guarantees one instance
+          system-wide and brings the existing task forward instead.
+
+          The cost of singleTask is that a second intent arrives at onNewIntent
+          rather than onCreate, so onNewIntent has to do the work - including
+          setIntent, or the activity would keep reporting the first share as its
+          intent. It does. Do not "simplify" this to singleTop: the symptom is
+          several identical studio windows, not a crash, so it reads as cosmetic
+          until the recents list is unusable.
+
+          No taskAffinity override. An empty affinity is the convention for a
+          share target that wants a task of its own, but this app is a single
+          activity that is also the launcher entry, so separating the two would
+          give the user two tasks for one screen - the problem being fixed.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
