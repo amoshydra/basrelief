@@ -10,6 +10,8 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.provider.OpenableColumns;
+import android.text.Editable;
+import android.text.InputType;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.PointF;
@@ -25,8 +27,10 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -56,6 +60,116 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private LinearLayout panel;
     private Button expandBtn;
+
+    // ------------------------------------------------------------ bottom sheet
+    // Three snap states instead of the old visible/hidden pair, because the
+    // panel is taller than the preview it is there to frame and two states were
+    // not enough: either the controls covered the picture or they were all gone.
+    private static final String KEY_SHEET = "sheet_pos";
+    /**
+     * How far down the panel sits, as a fraction of its own height: 0 is fully
+     * open, 1 is entirely off the bottom.
+     *
+     * <p>A fraction rather than pixels, because the panel's height changes with the
+     * screen, with the keyboard, and when the Framing grid expands. A pixel offset
+     * saved today would be a different position tomorrow.
+     *
+     * <p>There are no snap points, deliberately. The first version had three and
+     * every one was wrong: the panel is not a menu, and a position you cannot leave
+     * is a position you have to argue with.
+     */
+    private float sheetFraction = 0f;
+    /**
+     * A restored position is clamped to this, so launching never opens the app with
+     * no controls at all, which reads as a broken launch rather than as a
+     * remembered position.
+     */
+    private static final float MAX_RESTORED_FRACTION = 0.85f;
+    /** A vertical move past this claims the gesture, so a tap on the strip is a no-op. */
+    private static final int DRAG_SLOP_DP = 8;
+    /** How long the panel takes to slide, in ms. */
+    private static final int SHEET_SLIDE_MS = 180;
+    /**
+     * How far down the sheet must be dragged before it counts as collapsed.
+     *
+     * <p>The only threshold in an otherwise snap-free sheet. Without it, a drag to
+     * the bottom leaves a sliver of panel too short to grab, and the way back is a
+     * plus button sitting under the finger that just let go.
+     *
+     * <p><b>This cannot be 1.0, and that is not a matter of taste.</b> The handle
+     * sits about 76px below the panel's top edge, and a finger cannot leave the
+     * screen. So the furthest a drag can ever travel is the panel's visible height
+     * minus that 76px, which puts the ceiling on the reachable fraction at about
+     * 1 - 76/1623 = 0.95 no matter where the drag started. A threshold above that is
+     * dead code: it reads as a feature that was implemented and quietly does
+     * nothing, which is the worst of both. 0.9 leaves room under the ceiling.
+     */
+    private static final float SHEET_COLLAPSE_FRACTION = 0.9f;
+    /** True between the handle's DOWN and UP, so a slide cannot fight a live drag. */
+    private boolean sheetDragging = false;
+    private View sheetHandle;
+
+    /**
+     * The panel's own LayoutParams, kept so its height can be changed at runtime.
+     *
+     * <p>Position is expressed as a layout height rather than as {@code translationY},
+     * and that is not a stylistic choice - it is the difference between working and
+     * not. See {@link #applySheetHeight}.
+     */
+    private FrameLayout.LayoutParams panelLp;
+    /**
+     * The panel's scrolling content.
+     *
+     * <p>Everything except the drag handle lives in here. The sheet can be pulled
+     * down to any height, so at small heights the controls below the fold would
+     * otherwise be unreachable - there would be no way to get at them and no way to
+     * know they were there. The handle stays outside so it is always reachable, which
+     * is what makes the sheet draggable in the first place.
+     */
+    private LinearLayout sheetContent;
+    /**
+     * The panel's height when fully open, captured once.
+     *
+     * <p>Needed because {@code getHeight()} reports the height currently imposed,
+     * which is the very thing being animated. Captured before any height is set,
+     * while the panel is still unconstrained and therefore natural.
+     */
+    private int panelNaturalHeight = 0;
+
+    // ---------------------------------------------------------- framing fields
+    // Nudge steps. Origin is a stored fraction; pan is pixels. Deliberately
+    // different magnitudes, because they are different units and a shared step
+    // would make one of them unusable.
+    private static final float ORBIT_STEP = 0.01f;
+    private static final float PAN_STEP = 1f;
+    private LinearLayout framingGrid;
+    private TextView framingReadout;
+    private EditText orbitXField, orbitYField, panXField, panYField;
+    private boolean framingExpanded = false;
+    /**
+     * Set while a field is written programmatically, so the watcher's own
+     * write-back does not fight the formatter.
+     */
+    private boolean suppressFramingWatcher = false;
+    /**
+     * One watcher for all four fields: they all want the same thing, and four
+     * identical instances would be four places to keep in step.
+     */
+    private final android.text.TextWatcher framingWatcher = new android.text.TextWatcher() {
+        @Override
+        public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+        }
+
+        @Override
+        public void onTextChanged(CharSequence s, int a, int b, int c) {
+        }
+
+        @Override
+        public void afterTextChanged(Editable s) {
+            if (suppressFramingWatcher) return;
+            applyFramingFields(false);
+        }
+    };
     private TextView hintView;
     private DepthGenDialog depthGenDialog;
     private SeekBar zoomBar;
@@ -155,7 +269,11 @@ public class MainActivity extends Activity {
         int pad = dp(12);
         panel.setPadding(dp(16), pad, dp(16), pad + dp(6));
 
-        // header: title + minimise button
+        // header: just the title. The minimise button used to live here, and it is gone
+        // because sliding the sheet down now does it - a control that duplicates a
+        // gesture sitting next to it is a second thing to learn and a second thing to
+        // break. The handle above it is the affordance, and the plus button that
+        // appears afterwards is the way back.
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         TextView title = new TextView(this);
@@ -164,18 +282,27 @@ public class MainActivity extends Activity {
         title.setTextSize(14);
         header.addView(title, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        Button minBtn = new Button(this);
-        minBtn.setText("—");
-        minBtn.setAllCaps(false);
-        minBtn.setMinimumHeight(dp(32));
-        minBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                collapseUi();
-            }
-        });
-        header.addView(minBtn);
-        panel.addView(header);
+
+        // Handle first, so it is the topmost child and sits above the title.
+        panel.addView(buildSheetHandle(), 0);
+
+        // Scrolling content. Built here, before anything is added to it, because
+        // every section below goes into sheetContent rather than onto the panel, so
+        // the handle stays pinned and reachable and the rest can be scrolled.
+        ScrollView sheetScroll = new ScrollView(this);
+        sheetScroll.setFillViewport(true);
+        sheetScroll.setClipToPadding(false);
+        sheetContent = new LinearLayout(this);
+        sheetContent.setOrientation(LinearLayout.VERTICAL);
+        sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
+        // Weight 1 so the scroll area takes whatever the panel's current height
+        // leaves after the handle, and the content scrolls within it.
+        panel.addView(sheetScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        sheetContent.addView(header);
 
         // gesture hint (hidden once the user minimises the panel)
         hintView = new TextView(this);
@@ -183,7 +310,7 @@ public class MainActivity extends Activity {
         hintView.setTextColor(0x99FFFFFF);
         hintView.setTextSize(11);
         if (prefs.getBoolean("hint_dismissed", false)) hintView.setVisibility(View.GONE);
-        panel.addView(hintView);
+        sheetContent.addView(hintView);
 
         sectionLabel("Adjust");
 
@@ -198,12 +325,14 @@ public class MainActivity extends Activity {
         // it is held.
         final AppState initial = AppState.load(prefs, getFilesDir());
         final LibraryItem initialItem = initial.activeItem();
-        panel.addView(addSlider("Depth", "intensity",
+        sheetContent.addView(addSlider("Depth", "intensity",
                 initialItem == null ? LibraryItem.DEFAULT_INTENSITY : initialItem.intensity, 0, 100));
-        panel.addView(addSlider("Motion", "motion",
+        sheetContent.addView(addSlider("Motion", "motion",
                 initial.config.motion, 0, 100));
-        panel.addView(addSlider("Zoom", "zoom",
+        sheetContent.addView(addSlider("Zoom", "zoom",
                 initialItem == null ? LibraryItem.DEFAULT_ZOOM : initialItem.zoom, 25, 200));
+
+        sheetContent.addView(buildFramingSection(initial.isEditableItem()));
 
         Button resetView = makeButton("Reset view", new View.OnClickListener() {
             @Override
@@ -233,7 +362,7 @@ public class MainActivity extends Activity {
         resetView.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        panel.addView(resetView);
+        sheetContent.addView(resetView);
 
         sectionLabel("Actions");
 
@@ -268,7 +397,7 @@ public class MainActivity extends Activity {
                 glView.requestRender();
             }
         }));
-        panel.addView(buttons);
+        sheetContent.addView(buttons);
 
         // Depth AI: generate a depth map on a LAN ComfyUI instance, then pack
         // it into a self-contained PNG and load it into the studio + wallpaper
@@ -281,7 +410,7 @@ public class MainActivity extends Activity {
         depthAiBtn.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        panel.addView(depthAiBtn);
+        sheetContent.addView(depthAiBtn);
 
         // reliable way to reach the live-wallpaper picker on any launcher
         Button setWallpaper = makeButton("Set as wallpaper", new View.OnClickListener() {
@@ -306,15 +435,15 @@ public class MainActivity extends Activity {
         setWallpaper.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        panel.addView(setWallpaper);
+        sheetContent.addView(setWallpaper);
 
         statusView = new TextView(this);
         statusView.setTextColor(Color.WHITE);
         statusView.setTextSize(12);
         statusView.setPadding(0, dp(8), 0, 0);
-        panel.addView(statusView);
+        sheetContent.addView(statusView);
 
-        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
+        panelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
@@ -341,6 +470,17 @@ public class MainActivity extends Activity {
         root.addView(expandBtn, expandLp);
 
         setContentView(root);
+
+        // Restore the panel position, but only after layout: the half and hidden
+        // translations are a fraction of the panel's own measured height, which
+        // is zero until the first layout pass has run.
+        final float savedPos = prefs.getFloat(KEY_SHEET, 0f);
+        panel.post(new Runnable() {
+            @Override
+            public void run() {
+                setSheetPosition(Math.min(savedPos, MAX_RESTORED_FRACTION), false);
+            }
+        });
         applySystemUi(); // decor view exists only after setContentView
 
         tilt = new TiltController(getApplicationContext(), new TiltController.Listener() {
@@ -541,18 +681,596 @@ public class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
     }
 
-    private void collapseUi() {
+    /**
+     * Retire the gesture hint, once, the first time the sheet is put away.
+     *
+     * <p>Called from {@link #setSheetPosition} rather than from a control, because
+     * the sheet is now collapsed by dragging the handle and there is no button left
+     * to hang it on. Tying it to the control would mean the hint survived a drag.
+     */
+    private void dismissHintIfShown() {
         if (hintView != null && hintView.getVisibility() == View.VISIBLE) {
             prefs.edit().putBoolean("hint_dismissed", true).apply();
             hintView.setVisibility(View.GONE);
         }
-        panel.setVisibility(View.GONE);
-        expandBtn.setVisibility(View.VISIBLE);
     }
 
     private void expandUi() {
-        expandBtn.setVisibility(View.GONE);
-        panel.setVisibility(View.VISIBLE);
+        // Back to where it was, which is the useful answer: someone who works with
+        // the sheet most of the way down should not have to open it fully every
+        // time. Falls back to fully open if the stored position is the hidden one.
+        //
+        // Deliberately not animated. The plus button means "I want the controls back",
+        // and by the time the sheet has finished sliding they are there and usable -
+        // the wait is the app appearing to think about it. Snapping to the position
+        // costs one layout pass. The collapse still slides, because that is the user
+        // finishing with the panel and a short motion there costs nothing.
+        setSheetPosition(sheetFraction >= 1f ? 0f : sheetFraction, false);
+    }
+
+    // ------------------------------------------------------------ framing fields
+
+    /**
+     * Exact numeric control of the origin and the pan.
+     *
+     * <p>Collapsed to a single readout line, because the panel is already taller
+     * than the preview it exists to frame. The collapsed row is not just a
+     * disclosure: it shows the values, so most visits never need to open it.
+     *
+     * <p>Disabled wholesale for the bundled demo, and that is not tidiness.
+     * {@code Framing.of} returns zeroed orbit and pan for the bundled item, so
+     * anything typed here would be discarded on the next resolve. Live fields
+     * that silently do nothing are the same lie as a live Depth slider that the
+     * renderer ignores, which is why Depth and Zoom are already disabled for it.
+     */
+    private View buildFramingSection(final boolean editable) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        TextView toggle = new TextView(this);
+        toggle.setTextSize(14);
+        toggle.setPadding(dp(4), dp(8), dp(4), dp(4));
+        toggle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!editable) return;
+                setFramingExpanded(!framingExpanded);
+            }
+        });
+        framingReadout = toggle;
+        box.addView(toggle);
+
+        // Two columns rather than four stacked rows: same information in half the
+        // height, which is the whole reason the section is worth opening.
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.HORIZONTAL);
+        grid.setVisibility(View.GONE);
+        LinearLayout originCol = new LinearLayout(this);
+        originCol.setOrientation(LinearLayout.VERTICAL);
+        originCol.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout panCol = new LinearLayout(this);
+        panCol.setOrientation(LinearLayout.VERTICAL);
+        panCol.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        originCol.addView(fieldCaption("Origin (fraction)"));
+        orbitXField = addFramingField(originCol, "X", editable, true, 0);
+        orbitYField = addFramingField(originCol, "Y", editable, true, 1);
+        panCol.addView(fieldCaption("Pan (px)"));
+        panXField = addFramingField(panCol, "X", editable, false, 2);
+        panYField = addFramingField(panCol, "Y", editable, false, 3);
+
+        grid.addView(originCol);
+        grid.addView(panCol);
+        framingGrid = grid;
+        box.addView(grid);
+
+        refreshFramingFields();
+        return box;
+    }
+
+    private TextView fieldCaption(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(12);
+        t.setPadding(dp(4), dp(4), dp(4), 0);
+        return t;
+    }
+
+    /**
+     * One framing row: label, minus, field, plus.
+     *
+     * @param which 0..3 selecting which of orbitX/orbitY/panX/panY this edits
+     */
+    private EditText addFramingField(LinearLayout col, String label, boolean editable,
+            boolean fraction, final int which) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(14);
+        l.setLayoutParams(new LinearLayout.LayoutParams(dp(18),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(l);
+
+        Button minus = nudgeButton("−", editable, fraction, which, -1);
+        Button plus = nudgeButton("+", editable, fraction, which, +1);
+        row.addView(minus);
+
+        EditText field = new EditText(this);
+        field.setSingleLine(true);
+        field.setTextSize(14);
+        // A signed decimal, with the fraction side keeping its digits. Pan is
+        // whole pixels because a fractional pixel offset is not a thing anyone
+        // can aim at.
+        field.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        if (!fraction) {
+            field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        }
+        field.setEnabled(editable);
+        field.setEms(fraction ? 7 : 6);
+        field.setContentDescription(label + (fraction ? " origin fraction" : " pan pixels"));
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        flp.setMargins(dp(2), 0, dp(2), 0);
+        field.setLayoutParams(flp);
+        // Live: the relief moves as you type, which is the only reason to type a
+        // number instead of dragging. The WRITE is deferred to focus loss or the
+        // IME action, because a prefs commit per keystroke is a disk write per
+        // keystroke and the sliders already learned that the expensive part is
+        // the write, not the preview.
+        field.addTextChangedListener(framingWatcher);
+        field.setOnEditorActionListener(new android.widget.TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(android.widget.TextView v, int actionId,
+                    android.view.KeyEvent event) {
+                applyFramingFields(true);
+                return true;
+            }
+        });
+        row.addView(field);
+        // After the field, not before it, so the pair reads - value +.
+        row.addView(plus);
+        col.addView(row);
+
+        return field;
+    }
+
+    private Button nudgeButton(String glyph, boolean editable, boolean fraction,
+            final int which, final int direction) {
+        Button b = new Button(this);
+        b.setText(glyph);
+        b.setAllCaps(false);
+        b.setTextSize(14);
+        b.setPadding(0, 0, 0, 0);
+        // A fixed width, not setMinWidth. minWidth is only a floor, so the button
+        // still laid itself out from its text and squeezed the "+" off the end of
+        // the row -- which is exactly the control you want most.
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
+        b.setEnabled(editable);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                nudge(which, direction);
+            }
+        });
+        return b;
+    }
+
+    private float currentFramingValue(int which) {
+        switch (which) {
+            case 0: return renderer.getOrbitX();
+            case 1: return renderer.getOrbitY();
+            case 2: return renderer.getPanX();
+            default: return renderer.getPanY();
+        }
+    }
+
+    private void nudge(int which, int direction) {
+        float step = which < 2 ? ORBIT_STEP : PAN_STEP;
+        // Rounded to the precision the field shows, so a nudged value and a typed
+        // value are the same number. Rounding only for display would let the
+        // stored value and the visible value drift apart by a rounding error,
+        // which is the sort of small disagreement that becomes a real one.
+        float next = roundFramingValue(
+                currentFramingValue(which) + step * direction, which < 2);
+        writeFramingField(which, next);
+        applyFramingFields(true);
+    }
+
+    /**
+     * Round to the precision the field displays.
+     *
+     * <p>Applied to the value, not just to its text, so what is stored and what is
+     * shown are the same number. A nudge of 0.01 added to a value already rounded
+     * to four places can otherwise leave the fifth place set, and the field would
+     * then read back something that was never stored.
+     */
+    private float roundFramingValue(float v, boolean fraction) {
+        if (fraction) {
+            // 10000f here and "%.4f" in formatFramingValue below are the same
+            // precision stated twice. A constant for it was tried and removed: it
+            // cannot be used by a format string, so it would have looked like the
+            // single source of truth while the two could still disagree.
+            return Math.round(v * 10000f) / 10000f;
+        }
+        return Math.round(v);
+    }
+
+    private String formatFramingValue(float v, boolean fraction) {
+        float r = roundFramingValue(v, fraction);
+        if (fraction) {
+            return String.format(java.util.Locale.US, "%.4f", r);
+        }
+        return String.valueOf((long) r);
+    }
+
+    /**
+     * Push the four fields into the renderer.
+     *
+     * @param persist true to also write them to the index
+     */
+    private void applyFramingFields(boolean persist) {
+        float ox = parseField(orbitXField, renderer.getOrbitX());
+        float oy = parseField(orbitYField, renderer.getOrbitY());
+        float px = parseField(panXField, renderer.getPanX());
+        float py = parseField(panYField, renderer.getPanY());
+        renderer.setOrbit(ox, oy);
+        renderer.setPan(px, py);
+        if (persist) {
+            renderer.saveViewToPrefs();
+            refreshSliders();
+        }
+        glView.requestRender();
+    }
+
+    /** A field mid-edit is allowed to be unparseable; keep the old value then. */
+    private float parseField(EditText f, float fallback) {
+        if (f == null) return fallback;
+        try {
+            return Float.parseFloat(f.getText().toString().trim());
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    /** Pull the four values out of the renderer into the fields and the readout. */
+    private void refreshFramingFields() {
+        float ox = renderer.getOrbitX(), oy = renderer.getOrbitY();
+        float px = renderer.getPanX(), py = renderer.getPanY();
+        writeFramingField(0, ox);
+        writeFramingField(1, oy);
+        writeFramingField(2, px);
+        writeFramingField(3, py);
+        if (framingReadout != null) {
+            framingReadout.setText(String.format(java.util.Locale.US,
+                    "Framing   %.3f, %.3f  ·  %d, %d px%s",
+                    ox, oy, Math.round(px), Math.round(py),
+                    framingExpanded ? "   ▲" : "   ▾"));
+        }
+    }
+
+    private void writeFramingField(int which, float value) {
+        EditText f = which == 0 ? orbitXField : which == 1 ? orbitYField
+                : which == 2 ? panXField : panYField;
+        if (f == null) return;
+        String s = formatFramingValue(value, which < 2);
+        if (s.contentEquals(f.getText())) return;
+        // Writing the field re-enters the watcher, which would read back a value
+        // that is mid-format. Suppressed rather than detached, so there is no way
+        // to leave a field with no watcher attached.
+        suppressFramingWatcher = true;
+        try {
+            f.setText(s);
+        } finally {
+            suppressFramingWatcher = false;
+        }
+    }
+
+    private void setFramingExpanded(boolean expanded) {
+        framingExpanded = expanded;
+        if (framingGrid != null) framingGrid.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        refreshFramingFields();
+        // The panel just changed height, so the half and hidden positions have
+        // moved with it.
+        reapplySheetAfterResize();
+    }
+
+    // ---------------------------------------------------------------- bottom sheet
+
+    /**
+     * The drag strip, added as the panel's FIRST child so it sits above the title.
+     *
+     * <p>Only this strip drags. The rest of the panel is sliders, buttons and text
+     * fields, and a sheet that claimed a drag anywhere on itself would break every
+     * one of them.
+     */
+    private View buildSheetHandle() {
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        strip.setGravity(android.view.Gravity.CENTER);
+        strip.setBackgroundColor(Color.argb(90, 255, 255, 255));
+        strip.setContentDescription("Drag to move the panel");
+        strip.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
+
+        // A short centred bar inside the strip: the strip is the touch target, the
+        // bar is the thing that reads as a handle.
+        View grip = new View(this);
+        LinearLayout.LayoutParams gripLp = new LinearLayout.LayoutParams(dp(40), dp(4));
+        gripLp.setMargins(0, dp(6), 0, dp(6));
+        grip.setBackgroundColor(Color.argb(150, 255, 255, 255));
+        grip.setLayoutParams(gripLp);
+        strip.addView(grip);
+
+        sheetHandle = strip;
+        strip.setOnTouchListener(new View.OnTouchListener() {
+            private float downRawY, downFraction;
+            private boolean dragging;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawY = e.getRawY();
+                        downFraction = sheetFraction;
+                        dragging = false;
+                        sheetDragging = true;
+                        // Cancel any half-finished animation, or the panel leaps to
+                        // wherever the animator happened to be when the finger landed.
+                        panel.animate().cancel();
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dy = e.getRawY() - downRawY;
+                        // Claim the gesture only once it is clearly vertical, so a
+                        // tap on the strip stays a no-op instead of a jump.
+                        if (!dragging && Math.abs(dy) > dp(DRAG_SLOP_DP)) dragging = true;
+                        if (dragging) {
+                            float h = panelHeight();
+                            if (h > 0f) {
+                                // Positive dy is a downward drag, and sheetFraction
+                                // measures how far DOWN the sheet is, so the two add.
+                                // Subtracting here is what made the handle run
+                                // backwards: pull down and it opened further.
+                                float next = downFraction + dy / h;
+                                if (next < 0f) next = 0f;
+                                if (next > 1f) next = 1f;
+                                sheetFraction = next;
+                                if (sheetFraction >= SHEET_COLLAPSE_FRACTION) {
+                                    // Close enough to the bottom to count as gone.
+                                    // Collapsing here rather than on release means the
+                                    // sheet never rests as a useless sliver with the
+                                    // handle barely reachable, and the plus button
+                                    // appears under the finger rather than after it
+                                    // lifts. The drag ends with it.
+                                    dragging = false;
+                                    setSheetPosition(1f, false);
+                                } else {
+                                    // Live and unsnapped: the panel goes exactly where
+                                    // the finger is and stays there on release.
+                                    // A layout height, not a translation - the same
+                                    // reason applySheetHeight exists.
+                                    applySheetHeight(1f - sheetFraction);
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        if (dragging) {
+                            // Only updates the saved position and the handle. No
+                            // snapping: where you let go is where it rests.
+                            setSheetPosition(sheetFraction, false);
+                        }
+                        dragging = false;
+                        sheetDragging = false;
+                        return true;
+                    default:
+                        return true;
+                }
+            }
+        });
+        return strip;
+    }
+
+    /**
+     * The panel's full height, captured once and then owned by this class.
+     *
+     * <p>{@code getHeight()} cannot be used for this, because it reports the height
+     * currently imposed - which is the thing being animated. Before any height is
+     * set the panel is unconstrained, so the first measurement is its natural height.
+     */
+    private float panelHeight() {
+        if (panelNaturalHeight > 0) return panelNaturalHeight;
+        int h = panel.getHeight();
+        return h > 0 ? h : 0f;
+    }
+
+    /**
+     * Give the panel a height, and so place it on screen.
+     *
+     * <p>The argument is how much of the panel is <i>showing</i>: 0 is hidden, 1 is
+     * fully open. That is the complement of {@code sheetFraction}, which measures
+     * how far <i>down</i> the sheet is, and the two must not be confused - doing so
+     * collapses the sheet to nothing height the moment it opens.
+     *
+     * <p><b>Positioning by layout height rather than by {@code translationY} is a
+     * regression repair, not a new idea.</b> The panel used to be hidden and shown
+     * with nothing but {@code setVisibility(GONE)} and {@code setVisibility(VISIBLE)},
+     * and that worked. Replacing it with a transform broke it, and the symptom was
+     * maddening because every readable property stayed correct: visibility VISIBLE,
+     * {@code isShown()} true, {@code translationY} 0.0, {@code alpha} 1.0, sized and
+     * attached, in a window that had drawn 904 frames - operable to the touch and
+     * absent from the display, confirmed on a screenshot taken on the phone.
+     *
+     * <p>So the difference is layout versus transform. Changing visibility changes
+     * layout, and the platform re-lays-out and repaints the region. Changing a
+     * transform did not reliably repaint that region here: the panel kept the pixels
+     * it had while hidden while still accepting every tap.
+     *
+     * <p>Because the panel is anchored to the bottom, a smaller height shows its top
+     * portion, which is the direction a bottom sheet should collapse.
+     */
+    private void applySheetHeight(float showing) {
+        if (panelNaturalHeight <= 0) {
+            // First time through, the panel is still unconstrained, so this is its
+            // real height and the only chance to learn it.
+            panelNaturalHeight = panel.getHeight();
+            if (panelNaturalHeight <= 0) return;  // not measured yet; caller defers
+        }
+        int target = Math.round(Math.max(0f, Math.min(1f, showing)) * panelNaturalHeight);
+        if (panelLp.height == target) return;
+        panelLp.height = target;
+        // setLayoutParams requests a layout, which is the repaint this needs.
+        panel.setLayoutParams(panelLp);
+    }
+
+    /**
+     * Put the panel at a fraction of its height, and update everything that follows
+     * from that: the plus button, and the remembered position.
+     *
+     * <p>Position is a layout height, not a transform - see {@link #applySheetHeight}
+     * for why, and for the measurement that forced it.
+     */
+    private void setSheetPosition(float fraction, boolean animate) {
+        if (panelHeight() <= 0f) {
+            // Not laid out yet. Defer rather than derive a position from a height of
+            // zero, which would park the panel somewhere arbitrary.
+            final float f = fraction;
+            final boolean a = animate;
+            panel.post(new Runnable() {
+                @Override
+                public void run() {
+                    setSheetPosition(f, a);
+                }
+            });
+            return;
+        }
+        sheetFraction = Math.max(0f, Math.min(1f, fraction));
+        // A little past the very bottom still counts as hidden, so dragging hard to
+        // the end does not leave a sliver of panel on screen.
+        // The same threshold the drag uses, so "far enough down to be gone" means one
+        // thing rather than two literals that can drift apart. This one was 0.98,
+        // which the drag could never reach - see SHEET_COLLAPSE_FRACTION.
+        boolean hidden = sheetFraction >= SHEET_COLLAPSE_FRACTION;
+
+        panel.animate().cancel();
+        expandBtn.setVisibility(hidden ? View.VISIBLE : View.GONE);
+        // sheetFraction is "how far DOWN the sheet is": 0 is fully open, 1 closed.
+        // The height is its complement - how much of the panel is showing - and
+        // confusing the two collapses the sheet to nothing the instant it opens.
+        float showing = 1f - sheetFraction;
+        if (hidden) {
+            // Zero height: laid out, so painted, and showing nothing.
+            applySheetHeight(0f);
+            // The sheet has been put away, which is the moment the gesture hint has
+            // served its purpose. It used to hang off the minimise button, and that
+            // button is gone now that the drag does the job.
+            dismissHintIfShown();
+        } else if (animate) {
+            slideTo(showing);
+        } else {
+            applySheetHeight(showing);
+        }
+        if (!hidden) {
+            // Never remembered as hidden: launching with no controls reads as a
+            // broken launch, not as a remembered position.
+            prefs.edit().putFloat(KEY_SHEET, Math.min(sheetFraction, MAX_RESTORED_FRACTION))
+                    .apply();
+        }
+    }
+
+    /**
+     * Why the panel is moved rather than hidden, since the obvious implementation
+     * is wrong and fails in a way that looks like nothing at all happened.
+     *
+     * <p>This was measured on a Pixel 7 Pro, not reasoned about. Every part of the
+     * restore ran correctly and the panel still did not appear: {@code visibility}
+     * was {@code VISIBLE}, {@code translationY} was {@code 0.0}, {@code alpha} was
+     * {@code 1.0}, the panel was 1440x1588 and attached to a window that was
+     * actively producing frames. It was operable but not on the glass.
+     *
+     * <p>Two facts pinned it down. Dragging the sheet worked, because a drag writes
+     * {@code translationY} on every frame and each write invalidates the panel's
+     * region. And the panel reappeared the moment the user switched apps or pulled
+     * the notification shade down and back - both of which force a full window
+     * redraw. So the panel's pixels on screen were left over from the hidden frame,
+     * and nothing in the restore path ever marked that region dirty.
+     *
+     * <p>The cause was using {@code setVisibility(INVISIBLE)} to hide the panel.
+     * Making a view visible again does not reliably repaint the area it used to
+     * occupy, and nothing else in the restore touched that region, so the window
+     * went on showing the hidden frame. Translation has no such gap: it is a
+     * transform of a view that is always drawn, so restoring is just another
+     * position and the region is invalidated like any other change.
+     *
+     * <p>So the panel is always VISIBLE and "hidden" means translated off the bottom.
+     * It keeps its layout either way, which also means its measured height survives
+     * to be restored - the reason the earlier version used INVISIBLE rather than
+     * GONE no longer needs defending.
+     */
+
+    /**
+     * Slide the panel open by animating its height.
+     *
+     * <p>Animating layout rather than a transform is deliberate and is the whole
+     * fix; {@link #applySheetHeight} explains why, and the measurement that forced
+     * it. The animator is driven explicitly and calls applySheetHeight on every
+     * frame, so the panel is re-laid-out continuously rather than being moved by a
+     * transform the display may not repaint.
+     */
+    private void slideTo(final float showing) {
+        panel.animate().cancel();
+        applySheetHeight(0f);
+        android.animation.ValueAnimator slide =
+                android.animation.ValueAnimator.ofFloat(0f, showing);
+        slide.setDuration(SHEET_SLIDE_MS);
+        slide.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(android.animation.ValueAnimator a) {
+                applySheetHeight((Float) a.getAnimatedValue());
+            }
+        });
+        slide.addListener(new android.animation.AnimatorListenerAdapter() {
+            private boolean cancelled;
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator a) {
+                // onAnimationEnd also fires for a cancel; isRunning() cannot tell them
+                // apart, so the distinction has to be recorded here.
+                cancelled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(android.animation.Animator a) {
+                // Skipped while a drag has taken over, which has already placed the
+                // panel where the finger wants it.
+                if (cancelled || sheetDragging) return;
+                applySheetHeight(showing);
+            }
+        });
+        slide.start();
+    }
+
+    /**
+     * Re-place the panel after its height changes.
+     *
+     * <p>Expanding the Framing section makes the panel taller, so the stored
+     * fraction has to be re-applied or the panel silently jumps position.
+     */
+    private void reapplySheetAfterResize() {
+        panel.post(new Runnable() {
+            @Override
+            public void run() {
+                setSheetPosition(sheetFraction, false);
+            }
+        });
     }
 
     // ------------------------------------------------------------------ gestures
@@ -711,7 +1429,7 @@ public class MainActivity extends Activity {
         tv.setTextSize(11);
         tv.setLetterSpacing(0.15f);
         tv.setPadding(0, dp(10), 0, dp(2));
-        panel.addView(tv);
+        sheetContent.addView(tv);
     }
 
     private String formatValue(String key, int value) {

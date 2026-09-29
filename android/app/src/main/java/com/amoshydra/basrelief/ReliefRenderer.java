@@ -375,6 +375,42 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         targetY = y;
     }
 
+    // ---------------------------------------------------------------- framing
+    // Read-back for the studio's numeric framing fields. The orbit centre and the
+    // pan offset are written from the touch handler and from the framing fields,
+    // all on the UI thread, so reading them there gets a consistent pair. They are
+    // deliberately NOT funnelled through a Framing: the studio is showing a live
+    // value the user is editing, and a resolved object per keystroke would be a
+    // second answer to a question the renderer already holds the answer to.
+    //
+    // Orbit is a plain stored fraction, not "fraction of the image". It reaches
+    // the camera as orbitX * aspect * scale, so its on-screen meaning moves with
+    // Zoom and Depth. Displaying a prettier derived number would mean a second
+    // representation of this state and a conversion on the way in and out, which
+    // is how this app's two surfaces came to disagree in the first place. The
+    // field shows what is stored, so it round-trips exactly and matches the
+    // value in the prefs JSON.
+
+    /** @return the stored orbit-centre x, as a fraction. */
+    public float getOrbitX() {
+        return orbitX;
+    }
+
+    /** @return the stored orbit-centre y, as a fraction. */
+    public float getOrbitY() {
+        return orbitY;
+    }
+
+    /** @return the stored pan offset x, in pixels. */
+    public float getPanX() {
+        return panX;
+    }
+
+    /** @return the stored pan offset y, in pixels. */
+    public float getPanY() {
+        return panY;
+    }
+
     public void setOrbit(float nx, float ny) {
         orbitX = nx;
         orbitY = ny;
