@@ -9,7 +9,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.opengl.GLSurfaceView;
 import android.service.wallpaper.WallpaperService;
-import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 
 /**

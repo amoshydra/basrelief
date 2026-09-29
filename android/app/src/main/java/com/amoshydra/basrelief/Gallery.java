@@ -67,10 +67,6 @@ final class Gallery {
         if (panel != null) root.removeView(panel);
     }
 
-    private boolean isOpen() {
-        return root.findViewWithTag("gallery") != null;
-    }
-
     // ------------------------------------------------------------------ build
 
     private LinearLayout build() {

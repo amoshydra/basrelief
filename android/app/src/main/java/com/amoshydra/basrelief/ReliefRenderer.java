@@ -22,7 +22,6 @@ import java.util.Arrays;
 import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
-import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 
@@ -93,7 +92,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * until a shake. See also setPowerSave(), which currently only records the
      * OS power-save state for a future resolution-scale change.
      */
-    private long lastDrawNanos = 0L;
 
     /**
      * Opacity, pinned to 1. It was a 0.25s fade up from black, which cannot work
@@ -306,6 +304,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float targetX = 0f, targetY = 0f;
     private volatile float orbitX = 0f, orbitY = 0f;
     private float smoothX = 0f, smoothY = 0f;
+    /**
+     * The frame clock. There is deliberately no frame-rate cap. An earlier version
+     * capped draws at 60/30fps to save battery; it was removed because it could
+     * not do that, and it caused visible tearing:
+     *
+     * - The surface is RENDERMODE_WHEN_DIRTY and only the GYRO asks for a frame,
+     *   at roughly 50Hz. A 60fps cap therefore never fired and saved nothing; a
+     *   30fps cap silently DISCARDED half the tilt updates, since the
+     *   requestRender() is already consumed by the time onDrawFrame runs.
+     * - Worse, returning early does not cancel the present. GLSurfaceView still
+     *   calls eglSwapBuffers, so a skipped frame re-presents the previous buffer
+     *   mid-scanout, which tears.
+     *
+     * The draw rate is already bounded by the sensor, and the real battery win is
+     * elsewhere: TiltController unregisters the expensive rotation-vector sensor
+     * after 5s of stillness and falls back to a low-power accelerometer until a
+     * shake. See also setPowerSave(), which currently only records the OS
+     * power-save state for a future resolution-scale change.
+     */
     private long lastFrameNanos = 0L;
 
     private volatile float panX = 0f, panY = 0f;

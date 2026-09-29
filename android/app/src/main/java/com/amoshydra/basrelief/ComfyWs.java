@@ -8,7 +8,6 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 
 /**
@@ -22,8 +21,6 @@ public final class ComfyWs {
         void onError(Exception e);
         void onClose();
     }
-
-    private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     private final String url;
     private final Listener listener;

@@ -1,14 +1,12 @@
 package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.render.Framing;
-import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.provider.OpenableColumns;
@@ -34,8 +32,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
@@ -1093,30 +1089,6 @@ public class MainActivity extends Activity {
         renderer.loadPairAsync(img, dep);
         glView.requestRender();
         refreshStatus();
-    }
-
-    /**
-     * Resolve a stored image/depth, normalising the pref as a side effect.
-     *
-     * <p>If the stored value is a legacy absolute path that resolved only by
-     * the filesDir fallback, rewrite it as a bare filename so the stale path
-     * does not linger in prefs (and in the next backup). If it cannot be
-     * resolved at all, drop it so we stop retrying a file that is gone.
-     *
-     * @return the absolute path, or null if there is nothing usable
-     */
-    private String resolveOrClear(String key) {
-        String stored = prefs.getString(key, null);
-        java.io.File f = PrefFiles.resolve(getFilesDir(), stored);
-        if (f == null) {
-            if (stored != null) prefs.edit().remove(key).apply();
-            return null;
-        }
-        String canonical = f.getName();
-        if (!canonical.equals(stored)) {
-            prefs.edit().putString(key, canonical).apply();
-        }
-        return f.getAbsolutePath();
     }
 
     void refreshStatus() {
