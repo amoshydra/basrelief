@@ -132,12 +132,23 @@ already cost real time.
   `ReliefMesh` resamples to the grid before blurring. Change the radius and you
   must regenerate the goldens (`RegenerateGoldens`) and re-check banding on a
   real photo; the bundled demo map is only 4-level quantised and hides artifacts.
-- **The system snapshots the wallpaper surface ~100 ms after it appears,
-  then destroys the engine and keeps the snapshot.** So the first load per
-  engine must be synchronous (`setSyncFirstLoad(true)`) or the snapshot is
-  captured empty and nothing is alive to repaint it. The engine is also
-  short-lived, which is why nothing may be cached across its lifetime: a
-  wallpaper showing the wrong photo is usually a *live* engine reading stale
+- **The system replaces the live wallpaper surface with a frozen snapshot, and
+  it is not a timing quirk.** `WallpaperService.Engine.freeze()` (AOSP
+  `frameworks/base`, `core/java/android/service/wallpaper/WallpaperService.java`)
+  captures the current surface into a `HardwareBuffer`, parents it to the engine
+  at `setLayer(Integer.MAX_VALUE)`, **and then hides the engine's live BLAST
+  surface**. What stays on the home screen is that frozen buffer, by design,
+  not a frame the engine is still painting. `Engine.isFrozen` is simply
+  `mScreenshotSurfaceControl != null`, so a frozen engine reports a state that
+  is not the truth. This is why the first load per engine must be synchronous —
+  `ReliefRenderer.setSyncFirstLoad(true)`, which is **our own method, not a
+  platform API**, despite reading like one — or the snapshot is captured empty
+  and nothing is alive to repaint it. The platform hook for this is
+  `Engine.shouldWaitForEngineShown()`, which returns `false` by default; it is
+  `@hide`, so it is not in `android.jar` and cannot be called without
+  reflection, which is why we do the work ourselves.
+  The engine is also short-lived, which is why nothing may be cached across its
+  lifetime: a wallpaper showing the wrong photo is usually a *live* engine reading stale
   bookkeeping, or a snapshot outliving the engine that drew it, and those two
   look identical from the home screen. `DepthWallpaperService` logs one line
   per resolution under the `Basrelief` tag with the visible flag, whether the
@@ -149,6 +160,35 @@ already cost real time.
   may be showing the system's snapshot rather than the engine. That is what made
   a gallery selection appear to do nothing until Set as wallpaper was pressed
   again. It is no longer the mechanism, because it never could be — see below.
+- **A view on top of a `GLSurfaceView` must not be positioned with a
+  post-layout transform. This is a documented platform limitation, b/7179570,
+  and it is the whole explanation for the invisible-sheet bug.** `SurfaceView`'s
+  own class javadoc says it: *"The transparent region that makes the surface
+  visible is based on the **layout positions** in the view hierarchy. If the
+  **post-layout transform** properties are used to draw a **sibling view** on top
+  of the SurfaceView, the view may not be properly composited with the surface."*
+  AOSP recorded the limitation in 2012 (commit `c9f345ff7bc5`) rather than
+  fixing it, and it is still in the API 27 SDK sources, so it has never been
+  fixed. The mechanism is visible in `SurfaceView.setVisibility`, which
+  deliberately calls `requestLayout()` with the comment *"the transparent region
+  is computed as part of the layout phase, and it changes (obviously) when the
+  visibility changes."* `ViewRootImpl.performTraversals` recomputes the region
+  and, on a change, sets `mFullRedrawNeeded = true`. `setTranslationX/Y` runs
+  no layout pass at all. So: **visibility and layout changes reliably repaint
+  the overlay; transforms do not.**
+  Measured on the Pixel 7 Pro, the failure looks like a view that is placed
+  correctly, opaque, attached, `isShown()`, in a window that has drawn 904
+  frames — receiving every tap and absent from the display. Input keeps working
+  because touches are dispatched from the view hierarchy, not from the window
+  buffer. The sheet therefore positions itself by **layout height** and the
+  `＋` expand is instant; see `applySheetHeight`. If you ever want to animate
+  the sheet, do it with `LayoutParams` or margins, or call `requestLayout()`
+  on the `GLSurfaceView` after the change — do not reach for `translationY`.
+  A structural alternative is `setZOrderOnTop(true)` on the `GLSurfaceView`,
+  which sets `subLayer = +1`, makes `isAboveParent()` true and therefore skips
+  `clearSurfaceViewPort()` and the transparent region entirely — nothing can
+  desync because no hole is punched. The cost is that nothing in the window
+  composites over the GL content.
 - **No third-party app can re-bind its own live wallpaper. Stop trying.**
   Measured, not assumed: `setWallpaperComponent` is refused by
   `WallpaperManagerService` with `SecurityException: Access denied ... must have

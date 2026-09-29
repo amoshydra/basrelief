@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Basrelief — studio redesign concept</title>
+<style>
+/* ============================================================================
+   TOKENS — the concept's design system, literal.
+   The app currently has none of these; res/values/ holds only strings.xml.
+   ========================================================================= */
+:root{
+  --surface:        #0B0E14;
+  --surface-raised: #161B26;
+  --surface-sunken: #05070B;
+  --stroke:         rgba(255,255,255,.10);
+  --stroke-strong:  rgba(255,255,255,.18);
+  --accent:         #F0B429;
+  --accent-dim:     rgba(240,180,41,.22);
+  --text-primary:   #F2F4F8;
+  --text-secondary: #98A2B3;
+  --text-tertiary:  #5D6675;
+  --ok:             #3DD68C;
+  --warn:           #F0B429;
+  --error:          #F97066;
+
+  --r-sm: 6px; --r-md: 10px; --r-lg: 16px; --r-pill: 999px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+
+  --t-display:28px; --t-title:16px; --t-label:14px; --t-body:13px; --t-cap:11px; --t-mono:11px;
+}
+
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{background:#07090D; color:var(--text-primary);
+  font:400 14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  -webkit-font-smoothing:antialiased;}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
+
+/* ── page chrome ─────────────────────────────────────────────────────────── */
+.page{max-width:1180px;margin:0 auto;padding:40px 24px 96px;}
+.page-head{margin-bottom:8px;}
+.page-head h1{font-size:26px;font-weight:650;letter-spacing:-.015em;}
+.page-head p{color:var(--text-secondary);max-width:66ch;margin-top:8px;font-size:14px;}
+.rule{height:1px;background:var(--stroke);margin:32px 0 40px;}
+
+/* ── the two phones ──────────────────────────────────────────────────────── */
+.stage{display:grid;grid-template-columns:1fr 1fr;gap:40px;}
+@media (max-width:900px){.stage{grid-template-columns:1fr;justify-items:center;}}
+.variant-head{margin-bottom:14px;}
+.variant-head h2{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--text-tertiary);}
+.variant-head p{color:var(--text-secondary);font-size:12.5px;margin-top:5px;max-width:44ch;}
+
+.phone{position:relative;width:400px;height:867px;border-radius:38px;overflow:hidden;
+  background:#000;border:1px solid var(--stroke);margin:0 auto;
+  box-shadow:0 24px 70px rgba(0,0,0,.6);}
+.stage-note{max-width:400px;margin:16px auto 0;color:var(--text-tertiary);font-size:12px;
+  text-align:center;line-height:1.6;}
+.stage-note kbd{background:var(--surface-raised);border:1px solid var(--stroke);
+  border-radius:4px;padding:1px 5px;font-size:11px;color:var(--text-secondary);}
+
+/* the photo: raking light, so the panel has something to sit on */
+.preview{position:absolute;inset:0;
+  background:
+    radial-gradient(120% 78% at 22% 26%, rgba(255,214,170,.30), transparent 62%),
+    radial-gradient(96% 64% at 78% 74%, rgba(90,140,255,.20), transparent 60%),
+    linear-gradient(168deg,#3b3026 0%,#241d1c 38%,#0d0f14 72%,#07080b 100%);}
+.preview::after{content:"";position:absolute;inset:0;
+  background:radial-gradient(closest-side at 50% 42%,transparent 42%,rgba(0,0,0,.55) 100%);}
+
+/* the orbit marker the app already draws — the origin, made visible */
+.orbit{position:absolute;left:50%;top:42%;width:74px;height:74px;margin:-37px 0 0 -37px;
+  border:1.5px solid var(--accent);border-radius:50%;opacity:.92;}
+.orbit::after{content:"";position:absolute;right:-2px;top:50%;width:5px;height:5px;margin-top:-2.5px;
+  border-radius:50%;background:var(--accent);}
+
+/* status bar */
+.sysbar{position:absolute;top:0;left:0;right:0;height:40px;display:flex;align-items:center;
+  justify-content:space-between;padding:0 22px;font-size:11.5px;color:rgba(255,255,255,.86);
+  z-index:5;pointer-events:none;letter-spacing:.02em;}
+
+/* ── THE SHEET (shared mechanics) ────────────────────────────────────────── */
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:3;
+  display:flex;flex-direction:column;border-radius:var(--r-lg) var(--r-lg) 0 0;
+  transition:transform .18s cubic-bezier(.2,.8,.3,1), height .18s cubic-bezier(.2,.8,.3,1);}
+.sheet.dragging{transition:none;}
+.grip{flex:0 0 auto;height:30px;display:flex;align-items:center;justify-content:center;cursor:grab;
+  touch-action:none;}
+.grip i{display:block;width:44px;height:4px;border-radius:2px;}
+.scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;}
+.scroll::-webkit-scrollbar{width:0;}
+
+/* floating restore pill */
+.restore{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:4;
+  display:none;align-items:center;gap:9px;height:56px;padding:0 20px;border-radius:var(--r-pill);
+  border:none;font:650 15px/1 inherit;cursor:pointer;letter-spacing:.01em;}
+.restore.on{display:flex;}
+
+/* ── CURRENT (as it is today) ────────────────────────────────────────────── */
+.cur .sheet{background:rgba(11,14,20,.90);border-radius:0;}
+.cur .grip{background:rgba(255,255,255,.09);height:34px;}
+.cur .grip i{background:rgba(255,255,255,.59);width:40px;height:4px;}
+.cur .inner{padding:0 16px 18px;}
+.cur h1.t{font-size:14px;font-weight:400;color:#fff;}
+.cur .headrow{display:flex;align-items:center;justify-content:space-between;padding:2px 0 6px;}
+.cur .minbtn{background:#4a4f57;border:none;color:#fff;border-radius:2px;
+  font:400 15px/1 inherit;padding:9px 15px;cursor:pointer;}
+.cur .sec{font-size:11px;font-weight:400;color:rgba(255,255,255,.53);letter-spacing:.15em;
+  padding:14px 0 3px;}
+.cur .slider{margin-top:12px;}
+.cur .slider .lab{font-size:13px;color:#fff;margin-bottom:5px;}
+.cur .track{height:4px;background:#5b6068;border-radius:2px;position:relative;cursor:pointer;
+  touch-action:none;}
+.cur .track i{position:absolute;left:0;top:0;bottom:0;background:#c8ccd2;border-radius:2px;}
+.cur .track b{position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;
+  background:#dfe2e6;}
+.cur .disc{margin-top:14px;font-size:14px;color:rgba(255,255,255,.72);padding:4px 0;cursor:pointer;
+  display:flex;gap:6px;align-items:center;}
+.cur .disc:hover{color:#fff;}
+.cur .btn{background:#4a4f57;border:none;color:#fff;border-radius:2px;font:400 13px/1 inherit;
+  padding:11px 8px;cursor:pointer;min-height:36px;}
+.cur .btn.full{width:100%;margin-top:10px;font-size:13px;}
+.cur .row{display:flex;gap:6px;margin-top:10px;}
+.cur .row .btn{flex:1;}
+.cur .status{font-size:12px;color:#fff;margin-top:16px;line-height:1.5;white-space:pre-line;}
+.cur .grid{margin-top:8px;display:none;}
+.cur .grid.on{display:block;}
+.cur .frow{display:flex;align-items:center;gap:2px;margin-top:6px;}
+.cur .frow span{font-size:14px;width:14px;color:rgba(255,255,255,.72);}
+.cur .nudge{background:#4a4f57;border:none;color:#fff;width:40px;height:40px;border-radius:2px;
+  font:400 14px/1 inherit;cursor:pointer;flex:0 0 40px;}
+.cur .fld{background:#2a2e34;border:1px solid #4a4f57;color:#fff;font:400 13px/1 inherit;
+  padding:9px 6px;border-radius:2px;text-align:center;flex:1 1 auto;min-width:0;}
+
+/* ── CONCEPT ─────────────────────────────────────────────────────────────── */
+.con .sheet{background:rgba(11,14,20,.92);border:1px solid var(--stroke);
+  border-bottom:none;box-shadow:0 -1px 0 rgba(255,255,255,.05);}
+.con .grip{height:26px;}
+.con .grip i{background:rgba(255,255,255,.34);}
+.con .inner{padding:0 16px 20px;}
+
+.con .photo-id{padding:2px 0 14px;}
+.con .cap{font-size:var(--t-cap);font-weight:600;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--text-tertiary);}
+.con .photo-name{font-size:var(--t-title);font-weight:600;letter-spacing:-.01em;margin-top:5px;
+  display:flex;align-items:baseline;gap:9px;}
+.con .photo-name em{font-style:normal;font-size:var(--t-body);font-weight:400;
+  color:var(--text-secondary);}
+.con .hair{height:1px;background:var(--stroke);margin:0 -16px 4px;}
+
+/* value-on-the-label-line control */
+.ctl{padding:13px 0 3px;}
+.ctl .top{display:flex;align-items:baseline;justify-content:space-between;}
+.ctl .name{font-size:var(--t-label);font-weight:500;}
+.ctl .val{font-size:var(--t-display);font-weight:300;letter-spacing:-.02em;line-height:1;}
+.ctl .val u{text-decoration:none;font-size:var(--t-label);font-weight:500;
+  color:var(--text-secondary);margin-left:3px;}
+.ctl .track{margin-top:11px;height:26px;position:relative;cursor:pointer;touch-action:none;}
+.ctl .track::before{content:"";position:absolute;left:0;right:0;top:11px;height:4px;border-radius:2px;
+  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+.ctl .track i{position:absolute;left:0;top:11px;height:4px;border-radius:2px;
+  background:var(--accent);opacity:.9;}
+.ctl .track b{position:absolute;top:12px;width:2px;height:14px;margin-left:-1px;border-radius:1px;
+  background:var(--accent);box-shadow:0 0 0 4px rgba(240,180,41,.16);}
+
+/* framing, promoted */
+.frame{display:flex;gap:var(--s2);margin-top:var(--s4);}
+.frame > div{flex:1;background:var(--surface-raised);border:1px solid var(--stroke);
+  border-radius:var(--r-md);padding:11px 12px;}
+.frame .cap{font-size:10px;}
+.frame .coord{font-size:var(--t-label);font-weight:500;margin-top:6px;}
+.frame .nudge-row{display:flex;gap:6px;margin-top:9px;}
+.con .nudge{flex:1;height:40px;border-radius:var(--r-sm);border:1px solid var(--stroke-strong);
+  background:var(--surface-raised);color:var(--text-primary);font:500 13px/1 inherit;cursor:pointer;
+  transition:background .12s;}
+.con .nudge:active{background:var(--accent-dim);}
+.frame .centre{text-align:center;display:flex;flex-direction:column;justify-content:center;
+  cursor:pointer;transition:border-color .12s;}
+.frame .centre:hover{border-color:var(--stroke-strong);}
+.frame .centre .ring{width:34px;height:34px;margin:2px auto 0;border:1.5px solid var(--accent);
+  border-radius:50%;position:relative;}
+.frame .centre .ring::after{content:"";position:absolute;right:-2px;top:50%;width:5px;height:5px;
+  margin-top:-2.5px;border-radius:50%;background:var(--accent);}
+.frame .centre p{font-size:11.5px;color:var(--text-secondary);margin-top:8px;}
+
+/* actions */
+.con .actions{display:flex;gap:6px;margin-top:var(--s5);}
+.con .act{flex:1;height:48px;border-radius:var(--r-md);border:1px solid var(--stroke-strong);
+  background:var(--surface-raised);color:var(--text-primary);font:500 12px/1 inherit;cursor:pointer;
+  letter-spacing:.01em;transition:background .12s,transform .12s;}
+.con .act:active{background:var(--accent-dim);transform:scale(.985);}
+.con .cta{width:100%;height:52px;margin-top:var(--s3);border-radius:var(--r-md);border:none;
+  background:var(--accent);color:#1A1405;font:650 15px/1 inherit;cursor:pointer;
+  letter-spacing:.005em;transition:filter .12s,transform .12s;}
+.con .cta:active{filter:brightness(.92);transform:scale(.99);}
+.con .sec-btn{width:100%;height:48px;margin-top:var(--s2);border-radius:var(--r-md);
+  border:1px solid var(--stroke);background:transparent;color:var(--text-primary);
+  font:500 13px/1 inherit;cursor:pointer;}
+.con .sec-btn:active{background:rgba(255,255,255,.05);}
+.con .stack{display:flex;flex-direction:column;gap:var(--s2);margin-top:var(--s5);}
+
+/* diagnostics */
+.diag{margin-top:var(--s3);}
+.diag .bar{display:flex;align-items:center;gap:8px;padding:11px 0;cursor:pointer;
+  color:var(--text-secondary);font-size:var(--t-body);}
+.diag .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 7px;
+  box-shadow:0 0 0 3px rgba(61,214,140,.16);}
+.diag .bar .t{flex:1;}
+.diag .caret{transition:transform .16s;font-size:10px;color:var(--text-tertiary);}
+.diag.open .caret{transform:rotate(180deg);}
+.diag pre{display:none;background:var(--surface-sunken);border:1px solid var(--stroke);
+  border-radius:var(--r-md);padding:12px;margin:2px 0 4px;
+  font-size:var(--t-mono);line-height:1.65;color:var(--text-secondary);white-space:pre-wrap;
+  word-break:break-all;}
+.diag.open pre{display:block;}
+
+/* restore pill */
+.con .restore{background:var(--accent);color:#1A1405;box-shadow:0 8px 24px rgba(0,0,0,.45);}
+.con .restore .thumb{width:24px;height:24px;border-radius:var(--r-sm);
+  background:linear-gradient(150deg,#6b533a,#2a2118);}
+
+/* coach marks on the preview */
+.coach{position:absolute;left:50%;bottom:calc(100% + 18px);transform:translateX(-50%);
+  display:flex;gap:var(--s3);white-space:nowrap;z-index:6;}
+.con .coach{position:absolute;left:50%;top:52px;bottom:auto;transform:translateX(-50%);
+  background:rgba(5,7,11,.86);border:1px solid var(--stroke);border-radius:var(--r-pill);
+  padding:8px 14px;font-size:11.5px;color:var(--text-secondary);backdrop-filter:blur(8px);}
+
+.legend{margin-top:48px;}
+.legend h3{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--text-tertiary);margin-bottom:14px;}
+.legend ul{list-style:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px 26px;}
+.legend li{font-size:12.5px;color:var(--text-secondary);padding-left:16px;position:relative;line-height:1.55;}
+.legend li::before{content:"";position:absolute;left:0;top:7px;width:6px;height:6px;border-radius:2px;
+  background:var(--accent);opacity:.7;}
+.legend li b{color:var(--text-primary);font-weight:600;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-head">
+    <h1>Basrelief — studio redesign</h1>
+    <p>Left: what the studio is today, rebuilt faithfully from the code. Right: the
+       concept. Both are live — drag the sheet, drag the sliders, open Framing and
+       diagnostics. The point of the comparison is not that the right one is
+       prettier; it is that the right one has <em>decisions</em>.</p>
+  </header>
+
+  <div class="stage">
+
+    <!-- ══════════════════ CURRENT ══════════════════ -->
+    <div>
+      <div class="variant-head">
+        <h2>Today</h2>
+        <p>Inherits <code>Theme.DeviceDefault</code>. No styles, no colours, no drawables.
+           Stock <code>Button</code> and <code>SeekBar</code>; values sit above their
+           tracks; Framing hides behind a disclosure.</p>
+      </div>
+      <div class="phone cur" id="ph-cur">
+        <div class="preview"></div>
+        <div class="orbit"></div>
+        <div class="sysbar"><span>2:41</span><span>◐ ▮▮▮ ▰</span></div>
+        <div class="coach">Tap · two-finger · pinch</div>
+
+        <div class="sheet" id="sheet-cur">
+          <div class="grip" data-handle><i></i></div>
+          <div class="scroll"><div class="inner">
+            <div class="headrow"><h1 class="t">Basrelief — live preview</h1>
+              <button class="minbtn" data-collapse>—</button></div>
+
+            <div class="sec">Adjust</div>
+            <div class="slider"><div class="lab" data-lab>Depth: 90%</div>
+              <div class="track" data-track><i style="width:90%"></i><b style="left:90%"></b></div></div>
+            <div class="slider"><div class="lab" data-lab>Motion: 45%</div>
+              <div class="track" data-track><i style="width:45%"></i><b style="left:45%"></b></div></div>
+            <div class="slider"><div class="lab" data-lab>Zoom: 1.0×</div>
+              <div class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></div></div>
+
+            <div class="disc" data-framing>Framing <span class="num">0.000,0.000 · 0, 0 px</span> ▾</div>
+            <div class="grid" data-grid>
+              <div style="display:flex;gap:10px">
+                <div style="flex:1">
+                  <div class="sec" style="padding-top:8px">Origin</div>
+                  <div class="frow"><span>X</span><button class="nudge">−</button>
+                    <input class="fld num" value="0.000"><button class="nudge">+</button></div>
+                  <div class="frow"><span>Y</span><button class="nudge">−</button>
+                    <input class="fld num" value="0.000"><button class="nudge">+</button></div>
+                </div>
+                <div style="flex:1">
+                  <div class="sec" style="padding-top:8px">Pan</div>
+                  <div class="frow"><span>X</span><button class="nudge">−</button>
+                    <input class="fld num" value="0"><button class="nudge">+</button></div>
+                  <div class="frow"><span>Y</span><button class="nudge">−</button>
+                    <input class="fld num" value="0"><button class="nudge">+</button></div>
+                </div>
+              </div>
+            </div>
+
+            <button class="btn full" style="margin-top:14px">Reset view</button>
+
+            <div class="sec">Actions</div>
+            <div class="row">
+              <button class="btn">Image</button><button class="btn">Depth</button>
+              <button class="btn">Gallery</button><button class="btn">Calibrate</button>
+            </div>
+            <button class="btn full">Depth AI (ComfyUI)</button>
+            <button class="btn full">Set as wallpaper</button>
+
+            <div class="status">Status: custom image + depth map  |  gyro active
+Engine: visible=true surface=true item=share_image.png want=shared_image.png onScreen=true
+at=767804</div>
+          </div></div>
+        </div>
+        <button class="restore" data-restore>＋</button>
+      </div>
+      <p class="stage-note">Drag the <kbd>grip</kbd> up and down. On the sheet, note that
+        <b>Depth: 90%</b> sits on its own line above the track, and the debug output is
+        permanent surface.</p>
+    </div>
+
+    <!-- ══════════════════ CONCEPT ══════════════════ -->
+    <div>
+      <div class="variant-head">
+        <h2>Concept</h2>
+        <p>An instrument panel: owned palette, tabular values on the label line,
+           Framing promoted beside a live <b>Centre</b> target, one filled primary
+           action, diagnostics collapsed.</p>
+      </div>
+      <div class="phone con" id="ph-con">
+        <div class="preview"></div>
+        <div class="orbit"></div>
+        <div class="sysbar"><span>2:41</span><span>◐ ▮▮▮ ▰</span></div>
+        <div class="coach">Tap to recentre · two-finger to pan · pinch to zoom</div>
+
+        <div class="sheet" id="sheet-con">
+          <div class="grip" data-handle><i></i></div>
+          <div class="scroll"><div class="inner">
+
+            <div class="photo-id">
+              <div class="cap">Photo</div>
+              <div class="photo-name">Share image <em>· custom + depth map</em></div>
+            </div>
+            <div class="hair"></div>
+
+            <div class="ctl">
+              <div class="top"><span class="name">Depth</span>
+                <span class="val num" data-val>54<u>%</u></span></div>
+              <div class="track" data-track><i style="width:54%"></i><b style="left:54%"></b></div>
+            </div>
+            <div class="ctl">
+              <div class="top"><span class="name">Motion</span>
+                <span class="val num" data-val>45<u>%</u></span></div>
+              <div class="track" data-track><i style="width:45%"></i><b style="left:45%"></b></div>
+            </div>
+            <div class="ctl">
+              <div class="top"><span class="name">Zoom</span>
+                <span class="val num" data-val>1.0<u>×</u></span></div>
+              <div class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></div>
+            </div>
+
+            <div class="frame">
+              <div>
+                <div class="cap">Origin</div>
+                <div class="coord num" data-coord>0.000, 0.000</div>
+                <div class="nudge-row">
+                  <button class="nudge" data-nudge="1">−</button>
+                  <button class="nudge" data-nudge="1">+</button>
+                  <button class="nudge" data-nudge="1">−</button>
+                  <button class="nudge" data-nudge="1">+</button>
+                </div>
+              </div>
+              <div class="centre" data-centre>
+                <div class="ring"></div>
+                <p>Tap the preview<br>to recentre</p>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="act">Image</button><button class="act">Depth</button>
+              <button class="act">Gallery</button><button class="act">Calibrate</button>
+            </div>
+
+            <div class="stack">
+              <button class="cta">Set as wallpaper</button>
+              <button class="sec-btn">Depth AI (ComfyUI)</button>
+            </div>
+
+            <div class="diag" data-diag>
+              <div class="bar" data-diagbar><span class="dot"></span>
+                <span class="t">Diagnostics</span><span class="caret">▲</span></div>
+              <pre>Status  custom image + depth map | gyro active
+Engine  visible=true surface=true
+       item=share_image.png want=shared_image.png
+       onScreen=true at=767804
+Depth   blur=1/78 grid, float precision
+GLS     context alive, one texture pair</pre>
+            </div>
+          </div></div>
+        </div>
+        <button class="restore" data-restore><span class="thumb"></span>Controls</button>
+      </div>
+      <p class="stage-note">Drag the <kbd>grip</kbd> down far enough and it collapses — the
+        <b>Controls</b> pill returns with the thumbnail. Everything below the fold
+        scrolls. Tap <b>Diagnostics</b>.</p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <div class="legend">
+    <h3>What changed, and why it is not taste</h3>
+    <ul>
+      <li><b>A theme that exists.</b> Today the app has no styles at all, so its appearance is the OEM's. Every other item here depends on this one.</li>
+      <li><b>Values on the label line.</b> Halves the vertical budget and puts the number next to the control it belongs to.</li>
+      <li><b>Tabular figures.</b> Proportional digits make a live value jitter sideways as it counts. One theme attribute.</li>
+      <li><b>Framing promoted.</b> Exact origin is the substance of a basrelief, and the one thing a gesture cannot express.</li>
+      <li><b>Centre ties control to preview.</b> The app already draws an orbit marker; that marker <em>is</em> the origin.</li>
+      <li><b>One filled primary action.</b> Setting the wallpaper is the point of the app; ComfyUI is a power-user path.</li>
+      <li><b>Diagnostics collapsed.</b> It found a real invisible-rendering bug, so it stays — just not in the user's way.</li>
+      <li><b>48dp targets, 16px radii, 4dp spacing.</b> There is currently no shape language and one touch target at dp(36).</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+/* ── sheet: free drag, collapse when dragged most of the way down ───────── */
+function wireSheet(phone, opts){
+  const sheet = phone.querySelector('.sheet'), grip = phone.querySelector('[data-handle]'),
+        restore = phone.querySelector('[data-restore]');
+  let natural = 0, fraction = 0, dragging = false, startY = 0, startF = 0;
+
+  const measure = () => { natural = sheet.scrollHeight; };
+  const apply = f => {
+    fraction = Math.max(0, Math.min(1, f));
+    const h = Math.max(1, natural * fraction);
+    sheet.style.height = h + 'px';
+    const hidden = fraction >= .9;
+    sheet.style.display = hidden ? 'none' : 'flex';
+    restore.classList.toggle('on', hidden);
+  };
+  setTimeout(() => { measure(); apply(1); }, 60);
+  window.addEventListener('resize', () => { measure(); apply(fraction); });
+
+  grip.addEventListener('pointerdown', e => {
+    measure(); dragging = true; startY = e.clientY; startF = fraction;
+    sheet.classList.add('dragging'); grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) < 6) return;                     // slop, so a tap is not a jump
+    apply(startF + dy / natural);
+    if (fraction >= .9){ dragging = false; sheet.classList.remove('dragging'); }
+  });
+  const end = () => { dragging = false; sheet.classList.remove('dragging'); };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+
+  // restore is instant, by design — see the concept doc
+  restore.addEventListener('click', () => { measure(); apply(Math.min(1, (1-fraction)||1)); });
+  phone.querySelector('[data-collapse]')?.addEventListener('click', () => apply(1));
+}
+
+/* ── current: label above the track ─────────────────────────────────────── */
+(function currentSide(){
+  const phone = document.getElementById('ph-cur');
+  wireSheet(phone);
+  phone.querySelector('[data-framing]').addEventListener('click', e => {
+    const g = phone.querySelector('[data-grid]');
+    g.classList.toggle('on');
+    e.currentTarget.innerHTML = 'Framing <span class="num">0.000,0.000 · 0, 0 px</span> '
+      + (g.classList.contains('on') ? '▴' : '▾');
+    setTimeout(() => wireSheet(phone), 0);
+  });
+  phone.querySelectorAll('[data-track]').forEach(tr => {
+    const fill = tr.querySelector('i'), knob = tr.querySelector('b'),
+          lab = tr.parentElement.querySelector('[data-lab]'),
+          name = lab.textContent.split(':')[0];
+    let unit = lab.textContent.includes('%') ? '%' : '×';
+    const set = e => {
+      const r = tr.getBoundingClientRect(), p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      fill.style.width = (p*100) + '%'; knob.style.left = (p*100) + '%';
+      lab.textContent = name + ': ' + (unit === '%' ? Math.round(p*100) : (0.4 + p*1.6).toFixed(1)) + unit;
+    };
+    tr.addEventListener('pointerdown', e => { tr.setPointerCapture(e.pointerId); set(e); });
+    tr.addEventListener('pointermove', e => { if (e.buttons) set(e); });
+  });
+})();
+
+/* ── concept: value on the label line, per-control formatting ───────────── */
+(function conceptSide(){
+  const phone = document.getElementById('ph-con');
+  wireSheet(phone);
+
+  const fmt = [ v => Math.round(v*100) + '<u>%</u>',
+                v => Math.round(v*100) + '<u>%</u>',
+                v => (0.4 + v*1.6).toFixed(1) + '<u>×</u>' ];
+
+  phone.querySelectorAll('.ctl').forEach((ctl, i) => {
+    const tr = ctl.querySelector('[data-track]'), fill = tr.querySelector('i'),
+          knob = tr.querySelector('b'), out = ctl.querySelector('[data-val]');
+    const set = e => {
+      const r = tr.getBoundingClientRect(), p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      fill.style.width = (p*100) + '%'; knob.style.left = (p*100) + '%';
+      out.innerHTML = fmt[i](p);
+    };
+    tr.addEventListener('pointerdown', e => { tr.setPointerCapture(e.pointerId); set(e); });
+    tr.addEventListener('pointermove', e => { if (e.buttons) set(e); });
+  });
+
+  let ox = 0, oy = 0;
+  const coord = () => phone.querySelector('[data-coord]');
+  coord().textContent = '0.000, 0.000';
+  phone.querySelectorAll('[data-nudge]').forEach((b, i) => {
+    b.addEventListener('click', () => {
+      const d = (i % 2 === 0 ? -1 : 1) * .005;
+      if (i < 2) oy = Math.max(-1, Math.min(1, oy + d));
+      else ox = Math.max(-1, Math.min(1, ox + d));
+      coord().textContent = ox.toFixed(3) + ', ' + oy.toFixed(3);
+    });
+  });
+
+  phone.querySelector('[data-centre]').addEventListener('click', () => {
+    ox = oy = 0; coord().textContent = '0.000, 0.000';
+  });
+
+  const diag = phone.querySelector('[data-diag]');
+  phone.querySelector('[data-diagbar]').addEventListener('click', () => diag.classList.toggle('open'));
+})();
+</script>
+</body>
+</html>

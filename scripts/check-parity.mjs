@@ -17,7 +17,7 @@
  * Exits non-zero on failure so CI goes red. No dependencies — plain Node, so it
  * runs in the web job with no install step.
  */
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,14 +40,40 @@ function checkDocLinks() {
   const spans = [...readFileSync(doc, 'utf8').matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
   const pathish = spans.filter((s) => s.includes('/'));
   const seen = new Set();
-  let skipped = 0;
+  let hostPaths = 0;
+  let platform = 0;
+
+  // Directories at the top of an Android/AOSP tree. AGENTS.md cites platform
+  // sources when it explains a platform limitation, and those paths are not
+  // supposed to exist in this repository — checking them would be checking that
+  // someone cloned AOSP.
+  const AOSP_ROOTS = /^(core|frameworks|services|packages|libs|cmds|apex|art|base|tests)\//;
 
   for (const span of pathish) {
     // Not repo paths: absolute host/device locations (/tmp, /usr/bin/env),
     // ~ and $VAR expansions, and shebangs. Their absence here says nothing.
     if (/^[~$#/]/.test(span) || span.includes('$')) {
-      skipped++;
+      hostPaths++;
       continue;
+    }
+    if (AOSP_ROOTS.test(span)) {
+      platform++;
+      continue;
+    }
+    // API family shorthand: `setTranslationX/Y`, `width/height`. Two bare
+    // identifiers, and the first is not a directory in this tree, so it is a
+    // method pair and not a path.
+    const asPair = span.split('/');
+    if (asPair.length === 2 && asPair.every((p) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(p))) {
+      const bases = [root, join(root, 'android')];
+      const firstIsDir = bases.some((b) => {
+        const s = join(b, asPair[0]);
+        return existsSync(s) && statSync(s).isDirectory();
+      });
+      if (!firstIsDir) {
+        platform++;
+        continue;
+      }
     }
     // `a/{b,c}.png` -> `a/`; a trailing `()` or comma is prose, not path.
     const probe = span.replace(/[{}]/g, '').split(/[,)]/)[0].trim();
@@ -63,7 +89,10 @@ function checkDocLinks() {
       );
     }
   }
-  console.log(`doc links: ${seen.size} repo paths checked, ${skipped} host paths skipped`);
+  console.log(
+    `doc links: ${seen.size} repo paths checked, ` +
+      `${hostPaths} host paths skipped, ${platform} platform references skipped`
+  );
 }
 
 // --------------------------------------------------------------- test counts
