@@ -341,7 +341,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 140 tests across eleven classes:
+it**. 148 tests across twelve classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -350,6 +350,11 @@ it**. 140 tests across eleven classes:
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom".
 - `PrefFilesTest` — the restore case, which silently costs users their image.
+- `PrefFilesContentTest` — that two files are the same image, which is what stops
+  a re-share from adding another identical gallery row. The traps it pins are the
+  two ways the check can be made too eager: two different photos sharing a byte
+  count must **not** collapse, and a missing file must never count as a match or
+  an import gets swallowed by a row that has lost its image.
 - `ConfigTest` — the settings blob: round-trip, clamping, and that `parse`
   never throws, because the wallpaper parses it on the GL thread at cold start.
   It also pins that pan is in **pixels** and must not be clamped to orbit's

@@ -157,12 +157,16 @@ html,body{background:#07090D; color:var(--text-primary);
 .ctl .val u{text-decoration:none;font-size:var(--t-label);font-weight:500;
   color:var(--text-secondary);margin-left:3px;}
 .ctl .track{margin-top:11px;height:26px;position:relative;cursor:pointer;touch-action:none;}
-.ctl .track::before{content:"";position:absolute;left:0;right:0;top:11px;height:4px;border-radius:2px;
-  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+/* The empty part of the track needs to be VISIBLE. --surface-sunken on the
+   sheet is almost no contrast, which made the slider read as a broken bracket
+   rather than a track. Picked explicitly rather than via a token, because the
+   token was designed for a well behind a sunken well, not for a 4px rail. */
+.ctl .track::before{content:"";position:absolute;left:0;right:0;top:11px;height:4px;
+  border-radius:2px;background:#1A2130;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);}
 .ctl .track i{position:absolute;left:0;top:11px;height:4px;border-radius:2px;
   background:var(--accent);opacity:.9;}
-.ctl .track b{position:absolute;top:12px;width:2px;height:14px;margin-left:-1px;border-radius:1px;
-  background:var(--accent);box-shadow:0 0 0 4px rgba(240,180,41,.16);}
+.ctl .track b{position:absolute;top:5px;width:3px;height:16px;margin-left:-1.5px;border-radius:2px;
+  background:var(--accent);box-shadow:0 0 0 4px rgba(240,180,41,.14);}
 
 /* ── COMPACT: one row — label, track, value ────────────────────────────────
    Reclaims the vertical budget of the two-row version without shortening the
@@ -173,6 +177,36 @@ html,body{background:#07090D; color:var(--text-primary);
 .ctl.one .val{flex:0 0 auto;width:52px;text-align:right;font-size:17px;font-weight:400;
   letter-spacing:-.01em;}
 .ctl.one .val u{font-size:12px;}
+
+
+/* ── the chosen slider: label left, value INSIDE the fill ───────────────────
+   Variant A, with the label resolved. The value lives in the filled part of the
+   track, so there is no value column and the track can be short without losing
+   the readout. The label takes a fixed-width column on the left, which keeps it
+   one row — the height saving survives, and the horizontal saving comes from
+   not needing a value column.
+
+   Below roughly 20% the fill has no room for the number, so it moves just
+   outside the fill in the secondary colour. Two states is the cost of this
+   variant and it is the reason the comparison notes it. */
+.ctl.meter{display:flex;align-items:center;gap:var(--s3);padding:8px 0;}
+.ctl.meter .name{flex:0 0 auto;width:48px;font-size:var(--t-label);font-weight:500;}
+.ctl.meter .track{flex:1 1 auto;margin-top:0;height:32px;border-radius:var(--r-sm);
+  background:#1A2130;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);
+  overflow:hidden;cursor:pointer;touch-action:none;}
+.ctl.meter .track::before{display:none;}
+.ctl.meter .track i{position:absolute;left:0;top:0;bottom:0;height:auto;border-radius:0;
+  background:var(--accent);opacity:.95;}
+.ctl.meter .track b{top:0;height:32px;width:3px;margin-left:-1.5px;border-radius:2px;
+  box-shadow:none;background:var(--accent);}
+.ctl.meter .in{position:absolute;left:9px;top:0;bottom:0;display:flex;align-items:center;
+  font-size:12.5px;font-weight:650;color:#1A1405;font-variant-numeric:tabular-nums;
+  white-space:nowrap;pointer-events:none;}
+.ctl.meter .out{position:absolute;top:0;bottom:0;display:flex;align-items:center;
+  margin-left:8px;font-size:12.5px;font-weight:600;color:var(--text-secondary);
+  font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none;
+  opacity:0;transition:opacity .1s;}
+.ctl.meter .track u{text-decoration:none;}
 
 /* ── variant gallery: alternative slider designs, drawn at 2x for judging ── */
 .variants{margin-top:44px;}
@@ -187,7 +221,7 @@ html,body{background:#07090D; color:var(--text-primary);
 .vcard p{font-size:12px;color:var(--text-secondary);line-height:1.55;margin-top:12px;}
 
 /* A — value inside the fill, overflowing gracefully to the right */
-.vA{position:relative;height:30px;border-radius:var(--r-sm);background:var(--surface-sunken);
+.vA{position:relative;height:30px;border-radius:var(--r-sm);background:#1A2130;
   box-shadow:inset 0 0 0 1px var(--stroke);overflow:hidden;cursor:pointer;}
 .vA i{position:absolute;left:0;top:0;bottom:0;width:54%;background:var(--accent);opacity:.92;}
 .vA b{position:absolute;left:0;top:0;bottom:0;display:flex;align-items:center;
@@ -199,7 +233,7 @@ html,body{background:#07090D; color:var(--text-primary);
 /* B — thumb-carried value, clamped inside the track */
 .vB{position:relative;height:30px;cursor:pointer;}
 .vB::before{content:"";position:absolute;left:0;right:0;top:13px;height:4px;border-radius:2px;
-  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+  background:#1A2130;box-shadow:inset 0 0 0 1px var(--stroke);}
 .vB i{position:absolute;left:0;top:13px;height:4px;border-radius:2px;width:54%;
   background:var(--accent);opacity:.9;}
 .vB b{position:absolute;left:54%;top:0;transform:translateX(-50%);height:30px;
@@ -210,18 +244,18 @@ html,body{background:#07090D; color:var(--text-primary);
 /* C — detented, with the value at rest only */
 .vC{position:relative;height:34px;cursor:pointer;}
 .vC::before{content:"";position:absolute;left:0;right:0;top:15px;height:4px;border-radius:2px;
-  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+  background:#1A2130;box-shadow:inset 0 0 0 1px var(--stroke);}
 .vC i{position:absolute;left:0;top:15px;height:4px;border-radius:2px;width:50%;
   background:var(--accent);opacity:.9;}
 .vC u{position:absolute;top:0;font-size:10px;color:var(--text-tertiary);transform:translateX(-50%);}
-.vC u:nth-of-type(1){left:0;transform:none;}  .V-tick{position:absolute;top:11px;width:1px;height:12px;
+.vC u:last-of-type{transform:translateX(-100%);}  .V-tick{position:absolute;top:11px;width:1px;height:12px;
   background:var(--stroke-strong);}
 .vC b{position:absolute;left:50%;top:12px;width:2px;height:10px;margin-left:-1px;border-radius:1px;
   background:var(--accent);box-shadow:0 0 0 3px rgba(240,180,41,.18);}
 
 /* D — the two-row original, for comparison */
 .vD .lab{font-size:14px;font-weight:500;}
-.vD .tr{margin-top:9px;height:4px;border-radius:2px;background:var(--surface-sunken);position:relative;}
+.vD .tr{margin-top:9px;height:4px;border-radius:2px;background:#1A2130;position:relative;}
 .vD .tr i{position:absolute;left:0;top:0;bottom:0;width:54%;border-radius:2px;background:var(--accent);}
 .vD .tr b{position:absolute;left:54%;top:-4px;width:2px;height:12px;margin-left:-1px;
   background:var(--accent);}
@@ -242,7 +276,7 @@ html,body{background:#07090D; color:var(--text-primary);
 .axis{display:flex;align-items:center;gap:4px;margin-top:8px;}
 .axis .ax{font-size:11px;font-weight:600;color:var(--text-tertiary);width:10px;flex:0 0 10px;}
 .axis .v{flex:1 1 auto;min-width:0;text-align:center;font-size:12.5px;font-weight:500;
-  font-variant-numeric:tabular-nums;background:var(--surface-sunken);
+  font-variant-numeric:tabular-nums;background:#11161F;
   border:1px solid var(--stroke);border-radius:var(--r-sm);height:34px;line-height:34px;
   overflow:hidden;text-overflow:ellipsis;}
 .con .nudge{flex:0 0 30px;height:34px;border-radius:var(--r-sm);
@@ -296,11 +330,14 @@ html,body{background:#07090D; color:var(--text-primary);
   background:linear-gradient(150deg,#6b533a,#2a2118);}
 
 /* coach marks on the preview */
-.coach{position:absolute;left:50%;bottom:calc(100% + 18px);transform:translateX(-50%);
-  display:flex;gap:var(--s3);white-space:nowrap;z-index:6;}
-.con .coach{position:absolute;left:50%;top:52px;bottom:auto;transform:translateX(-50%);
-  background:rgba(5,7,11,.86);border:1px solid var(--stroke);border-radius:var(--r-pill);
-  padding:8px 14px;font-size:11.5px;color:var(--text-secondary);backdrop-filter:blur(8px);}
+/* Both coach lines sit just under the status bar, pinned to the top of the
+   phone. The original used bottom:calc(100% + 18px), which resolved off-canvas
+   and rendered halfway down the preview. */
+.coach{position:absolute;left:50%;top:48px;transform:translateX(-50%);
+  white-space:nowrap;z-index:6;font-size:11.5px;color:var(--text-secondary);
+  background:rgba(5,7,11,.78);border:1px solid var(--stroke);border-radius:var(--r-pill);
+  padding:7px 13px;backdrop-filter:blur(6px);}
+
 
 /* ── PEEK: the sheet goes fully transparent while a control is held ─────────
    Every one of these controls changes the render behind the panel, so the panel
@@ -321,6 +358,126 @@ html,body{background:#07090D; color:var(--text-primary);
 .con .sheet{ transition:opacity .16s cubic-bezier(.2,.8,.3,1);}
 .con .sheet.peeking{ opacity:0;}
 
+
+/* ══════════════════════════ GALLERY ═══════════════════════════════════════ */
+
+/* Today's gallery, rebuilt faithfully: full-screen takeover, Sort and Close in
+   the header, 56dp thumbnails, the active row marked with a "▸ " prefix. */
+.gal{position:absolute;inset:0;background:#0E1116;display:flex;flex-direction:column;
+  padding:14px 14px 16px;z-index:7;}
+.gal .ghead{display:flex;align-items:center;gap:8px;}
+.gal .gtitle{font-size:20px;font-weight:400;color:#fff;flex:1 1 auto;}
+.gal .gbtn{background:#4a4f57;border:none;color:#fff;border-radius:2px;
+  font:400 12px/1 inherit;padding:8px 10px;cursor:pointer;}
+.gal .grows{flex:1 1 auto;overflow-y:auto;margin-top:8px;}
+.gal .grow{display:flex;align-items:center;padding:8px 0;cursor:pointer;}
+.gal .gthumb{width:56px;height:56px;flex:0 0 56px;border-radius:2px;
+  background:linear-gradient(150deg,#5d5145,#2a2118);}
+.gal .gthumb.bare{background:#22262c;}
+.gal .glabels{padding:0 8px;min-width:0;flex:1 1 auto;}
+.gal .gname{font-size:16px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.gal .gsub{font-size:12px;color:rgba(255,255,255,.62);margin-top:2px;}
+.gal .gmore{background:#4a4f57;border:none;color:#fff;width:34px;height:34px;
+  border-radius:2px;font:400 15px/1 inherit;cursor:pointer;}
+.gal .gempty{font-size:14px;color:rgba(255,255,255,.8);padding-top:24px;}
+
+/* Concept gallery: a sheet over the preview, so picking a photo updates the
+   render behind it instead of replacing everything with a list. */
+.gsheet{position:absolute;left:0;right:0;top:0;bottom:0;z-index:7;display:flex;
+  flex-direction:column;background:rgba(11,14,20,.96);
+  transform:translateY(100%);transition:transform .22s cubic-bezier(.2,.8,.3,1);}
+.gsheet.on{transform:translateY(0);}
+.gsheet .gshead{display:flex;align-items:center;gap:10px;padding:16px 16px 12px;
+  border-bottom:1px solid var(--stroke);}
+.gsheet .gshead h3{font-size:var(--t-title);font-weight:600;flex:1 1 auto;}
+.gsheet .gshead .cnt{font-size:var(--t-cap);font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--text-tertiary);}
+.gsheet .x{width:34px;height:34px;border-radius:var(--r-sm);border:1px solid var(--stroke);
+  background:transparent;color:var(--text-secondary);font:400 17px/1 inherit;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
+
+.ggrid{flex:1 1 auto;overflow-y:auto;display:grid;grid-template-columns:1fr 1fr;
+  gap:var(--s3);padding:var(--s4) var(--s4) var(--s2);align-content:start;}
+.cell{border-radius:var(--r-md);overflow:hidden;cursor:pointer;position:relative;
+  background:var(--surface-raised);border:1px solid var(--stroke);
+  transition:border-color .12s,transform .12s;}
+.cell:active{transform:scale(.985);}
+.cell.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+.cell .thumb{aspect-ratio:1/1;position:relative;
+  background:linear-gradient(150deg,#6b533a,#241d1c);}
+.cell .thumb.t2{background:linear-gradient(150deg,#3b4a63,#1b2029);}
+.cell .thumb.t3{background:linear-gradient(150deg,#5a4a5e,#241d29);}
+.cell .thumb.bare{background:#1B2028;display:flex;align-items:center;justify-content:center;}
+.cell .thumb.bare i{width:34px;height:34px;border:1.5px solid var(--text-tertiary);
+  border-radius:50%;position:relative;}
+.cell .thumb.bare i::after{content:"";position:absolute;right:-2px;top:50%;width:5px;height:5px;
+  margin-top:-2.5px;border-radius:50%;background:var(--text-tertiary);}
+.cell .meta{padding:9px 10px 10px;}
+.cell .nm{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;}
+.cell .chips{display:flex;gap:5px;margin-top:6px;align-items:center;min-height:16px;}
+.chip{font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 6px;
+  border-radius:var(--r-pill);background:rgba(255,255,255,.07);color:var(--text-secondary);}
+.chip.flat{background:rgba(249,112,102,.16);color:var(--error);}
+.chip.demo{background:rgba(240,180,41,.14);color:var(--accent);}
+.cell .tick{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;
+  background:var(--accent);display:none;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;color:#1A1405;}
+.cell.on .tick{display:flex;}
+
+.gbar{flex:0 0 auto;display:flex;gap:var(--s2);padding:var(--s3) var(--s4) var(--s4);
+  border-top:1px solid var(--stroke);}
+.gbar .add{flex:1 1 auto;height:50px;border-radius:var(--r-md);border:none;
+  background:var(--accent);color:#1A1405;font:650 14px/1 inherit;cursor:pointer;}
+.gbar .sort{flex:0 0 auto;height:50px;padding:0 16px;border-radius:var(--r-md);
+  border:1px solid var(--stroke-strong);background:var(--surface-raised);
+  color:var(--text-primary);font:500 13px/1 inherit;cursor:pointer;}
+
+
+/* ══════════ GALLERY LAYOUTS: keeping the preview visible ═══════════════════ */
+
+/* Every layout below puts the selected item's thumbnail in the sheet header.
+   Not decoration: if the sheet covers the part of the photo you are judging,
+   the header is the only thing telling you what you have selected. */
+
+.gl-item{background:linear-gradient(150deg,#6b533a,#241d1c);}
+.gl-item.t2{background:linear-gradient(150deg,#3b4a63,#1b2029);}
+.gl-item.t3{background:linear-gradient(150deg,#5a4a5e,#241d29);}
+.gl-item.bare{background:#1B2028;}
+
+.gl-head{display:flex;align-items:center;gap:10px;padding:12px 14px;
+  border-bottom:1px solid var(--stroke);flex:0 0 auto;}
+.gl-head .now{width:34px;height:34px;border-radius:var(--r-sm);flex:0 0 34px;
+  box-shadow:0 0 0 1px var(--accent);}
+.gl-head h3{font-size:var(--t-title);font-weight:600;flex:1 1 auto;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* A — edge-anchored sheet, drag to resize */
+.gl-a{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;
+  background:rgba(11,14,20,.93);border-top:1px solid var(--stroke);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;height:62%;}
+/* B — filmstrip rail, collapsed */
+.gl-b{position:absolute;left:0;right:0;bottom:0;}
+.gl-b .rail{display:flex;gap:8px;padding:12px 14px 16px;overflow-x:auto;
+  background:rgba(11,14,20,.90);border-top:1px solid var(--stroke);}
+.gl-b .shot{flex:0 0 76px;height:76px;border-radius:var(--r-md);border:1px solid var(--stroke);
+  position:relative;cursor:pointer;}
+.gl-b .shot.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+.gl-b .shot .tick{position:absolute;top:5px;right:5px;width:19px;height:19px;border-radius:50%;
+  background:var(--accent);color:#1A1405;font-size:10px;font-weight:700;
+  display:none;align-items:center;justify-content:center;}
+.gl-b .shot.on .tick{display:flex;}
+.gl-b .bar{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:rgba(11,14,20,.94);border-top:1px solid var(--stroke);}
+.gl-b .bar .exp{flex:1 1 auto;height:40px;border-radius:var(--r-md);
+  border:1px solid var(--stroke);background:var(--surface-raised);color:var(--text-secondary);
+  font:500 12.5px/1 inherit;cursor:pointer;}
+/* C — floating card, preview visible on every side */
+.gl-c{position:absolute;left:10px;right:10px;top:58px;bottom:74px;display:flex;
+  flex-direction:column;background:rgba(11,14,20,.90);border:1px solid var(--stroke);
+  border-radius:var(--r-lg);overflow:hidden;}
+.gl-tag{position:absolute;left:0;right:0;text-align:center;font-size:10.5px;
+  color:var(--text-tertiary);pointer-events:none;}
 
 .legend{margin-top:48px;}
 .legend h3{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
@@ -419,9 +576,9 @@ at=767804</div>
     <div>
       <div class="variant-head">
         <h2>Concept</h2>
-        <p>An instrument panel: owned palette, tabular values on the label line,
-           Framing promoted beside a live <b>Centre</b> target, one filled primary
-           action, diagnostics collapsed.</p>
+        <p>An instrument panel: owned palette, one-row sliders with tabular
+           values, Framing promoted beside Pan, one filled primary action, diagnostics
+           collapsed, and the whole sheet going transparent while you adjust.</p>
       </div>
       <div class="phone con" id="ph-con">
         <div class="preview"></div>
@@ -439,20 +596,23 @@ at=767804</div>
             </div>
             <div class="hair"></div>
 
-            <div class="ctl one">
+            <div class="ctl meter">
               <span class="name">Depth</span>
-              <span class="track" data-track><i style="width:54%"></i><b style="left:54%"></b></span>
-              <span class="val num" data-val>54<u>%</u></span>
+              <span class="track" data-track><i style="width:54%"></i><b style="left:54%"></b>
+                <span class="in" data-in>54<u>%</u></span>
+                <span class="out" data-out>54<u>%</u></span></span>
             </div>
-            <div class="ctl one">
+            <div class="ctl meter">
               <span class="name">Motion</span>
-              <span class="track" data-track><i style="width:45%"></i><b style="left:45%"></b></span>
-              <span class="val num" data-val>45<u>%</u></span>
+              <span class="track" data-track><i style="width:45%"></i><b style="left:45%"></b>
+                <span class="in" data-in>45<u>%</u></span>
+                <span class="out" data-out>45<u>%</u></span></span>
             </div>
-            <div class="ctl one">
+            <div class="ctl meter">
               <span class="name">Zoom</span>
-              <span class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></span>
-              <span class="val num" data-val>1.0<u>×</u></span>
+              <span class="track" data-track><i style="width:30%"></i><b style="left:30%"></b>
+                <span class="in" data-in>0.9<u>×</u></span>
+                <span class="out" data-out>0.9<u>×</u></span></span>
             </div>
 
             <div class="frame-head">
@@ -533,12 +693,18 @@ GLS     context alive, one texture pair</pre>
        all of them: <b>a shorter track costs precision</b>. At 54%, a 300&#8239;px track
        is ~1.6&#8239;px per percent and a 150&#8239;px track is ~3.2&#8239;px. For Depth, where
        five percent is visible in the relief, that is not nothing.</p>
+    <p style="margin-top:-6px"><b style="color:var(--accent)">A is what the phone uses.</b>
+       The label question it raised is answered in the same row: the label takes a
+       fixed-width column on the left, so the control stays one row tall and the
+       saving is horizontal rather than vertical. Below about 12% the fill has no
+       room for the number and it moves just outside, in the secondary colour —
+       measured each frame, not a guessed breakpoint.</p>
 
     <div class="vgrid">
 
       <div class="vcard">
-        <div class="vh">A — value inside the fill</div>
-        <div class="vs">most compact; degrades to outside the fill</div>
+        <div class="vh">A — value inside the fill <span style="color:var(--accent)">· in use</span></div>
+        <div class="vs">label in a fixed column on the left</div>
         <div class="vA"><i></i><b>54%</b><u>54%</u></div>
         <p>The number lives in the filled region, so the track can be short without
            losing the readout. Below roughly 20% there is no room for it and it
@@ -560,7 +726,8 @@ GLS     context alive, one texture pair</pre>
         <div class="vh">C — detented, value at rest</div>
         <div class="vs">shortest; trades fine control for stops</div>
         <div class="vC">
-          <u>0</u><u>25</u><u>50</u><u>75</u><u>100</u>
+          <u style="left:0">0</u><u style="left:25%">25</u><u style="left:50%">50</u>
+          <u style="left:75%">75</u><u style="left:100%">100</u>
           <i></i><b></b>
           <span class="V-tick" style="left:0"></span><span class="V-tick" style="left:25%"></span>
           <span class="V-tick" style="left:50%"></span><span class="V-tick" style="left:75%"></span>
@@ -574,7 +741,7 @@ GLS     context alive, one texture pair</pre>
 
       <div class="vcard">
         <div class="vh">D — one row, value in its own column</div>
-        <div class="vs">what the phone uses; full track, no states</div>
+        <div class="vs">not used; keeps a value column open</div>
         <div class="ctl one" style="padding:0">
           <span class="name">Depth</span>
           <span class="track"><i style="width:54%"></i><b style="left:54%"></b></span>
@@ -596,10 +763,10 @@ GLS     context alive, one texture pair</pre>
     <h3>What changed, and why it is not taste</h3>
     <ul>
       <li><b>A theme that exists.</b> Today the app has no styles at all, so its appearance is the OEM's. Every other item here depends on this one.</li>
-      <li><b>Values on the label line.</b> Halves the vertical budget and puts the number next to the control it belongs to.</li>
+      <li><b>One row per slider.</b> Label, full-width track and value on a single line. Halves the vertical budget and keeps the whole track, so precision per pixel is untouched.</li>
       <li><b>Tabular figures.</b> Proportional digits make a live value jitter sideways as it counts. One theme attribute.</li>
-      <li><b>Framing promoted.</b> Exact origin is the substance of a basrelief, and the one thing a gesture cannot express.</li>
-      <li><b>Centre ties control to preview.</b> The app already draws an orbit marker; that marker <em>is</em> the origin.</li>
+      <li><b>Framing promoted, Pan beside Origin.</b> Exact origin is the substance of a basrelief, and the one thing a gesture cannot express. Pan goes next to it because they are the same kind of control.</li>
+      <li><b>The sheet goes transparent while you adjust.</b> Every slider and nudge changes the render behind the panel, so the panel gets out of the way while your finger is down.</li>
       <li><b>One filled primary action.</b> Setting the wallpaper is the point of the app; ComfyUI is a power-user path.</li>
       <li><b>Diagnostics collapsed.</b> It found a real invisible-rendering bug, so it stays — just not in the user's way.</li>
       <li><b>48dp targets, 16px radii, 4dp spacing.</b> There is currently no shape language and one touch target at dp(36).</li>
@@ -619,9 +786,18 @@ function wireSheet(phone){
   // confusing the two is exactly the bug that shipped to the Android app.
   let fraction = 0, natural = 0, lastVisible = 0, dragging = false, startY = 0, startF = 0;
 
-  // Measure the scroller's content, not the sheet: once an explicit height is set
-  // on the sheet, sheet.scrollHeight reports that height rather than the content.
-  const measure = () => { natural = scroller.scrollHeight; };
+  // Measure the SHEET, with any explicit height temporarily cleared — reading
+  // the scroller instead omits the grip and the sheet's own padding, which made
+  // the sheet taller than the phone and clipped its last row. Clamped, because a
+  // sheet that covers the whole screen leaves nothing of the preview to look at.
+  const MIN_PREVIEW = 132;
+  const measure = () => {
+    const prev = sheet.style.height;
+    sheet.style.height = 'auto';
+    natural = Math.min(sheet.offsetHeight || scroller.scrollHeight,
+                       phone.clientHeight - MIN_PREVIEW);
+    sheet.style.height = prev;
+  };
 
   const apply = f => {
     fraction = Math.max(0, Math.min(1, f));
@@ -709,10 +885,23 @@ function wireSheet(phone){
 
   const sliders = [...phone.querySelectorAll('.ctl')].map((ctl, i) => {
     const tr = ctl.querySelector('[data-track]'), fill = tr.querySelector('i'),
-          knob = tr.querySelector('b'), out = ctl.querySelector('[data-val]');
-    const at = p => { p = Math.max(0, Math.min(1, p));
-      fill.style.width = (p*100) + '%'; knob.style.left = (p*100) + '%';
-      out.innerHTML = fmt[i](p); };
+          knob = tr.querySelector('b'),
+          inside = ctl.querySelector('[data-in]'),
+          outside = ctl.querySelector('[data-out]');
+    const at = p => {
+      p = Math.max(0, Math.min(1, p));
+      fill.style.width = (p*100) + '%';
+      knob.style.left = (p*100) + '%';
+      const label = fmt[i](p);
+      inside.innerHTML = label; outside.innerHTML = label;
+      // Does the fill have room for the number? If not it moves just outside the
+      // fill, in the secondary colour. Measured rather than a guessed threshold.
+      const need = inside.offsetWidth + 18;
+      const fits = tr.getBoundingClientRect().width * p >= need;
+      inside.style.opacity = fits ? '1' : '0';
+      outside.style.opacity = fits ? '0' : '1';
+      outside.style.left = (p*100) + '%';
+    };
     const fromEvent = e => {
       const r = tr.getBoundingClientRect(); return (e.clientX - r.left) / r.width; };
     const hold = peek();

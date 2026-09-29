@@ -157,10 +157,26 @@ rule and two class toggles.
 
 ### The changes that matter
 
-**Values move onto the label line.** Today every slider burns two rows — a text
-line above, then the track — so the number you are changing is never adjacent to
-the thing you are changing. Putting `Depth  54%` on one line with the track
-beneath removes half the vertical budget and makes the relationship obvious.
+**One row per slider, with the value inside the fill.** Today every slider burns
+two rows — a text line above, then the track — so the number you are changing is
+never adjacent to the thing you are changing.
+
+The chosen design puts the **label in a fixed-width column on the left** and the
+**value inside the filled part of the track**:
+
+```
+Depth  ▓▓▓▓▓▓ 54% ──────────
+```
+
+One row, so the vertical saving survives, and the horizontal saving comes from not
+needing a value column. Below roughly 12% the fill has no room for the number and
+it moves just outside the fill in the secondary colour — measured each frame
+rather than at a guessed breakpoint. Two states is the honest cost of this
+variant, and it is why all four options were drawn side by side before choosing.
+
+The trade the other variants accept and this one does not: the track keeps its
+full width, so precision per pixel is unchanged. At 54% a 300 px track is
+~1.6 px per percent, and 5% is visible in the relief.
 
 **Framing is promoted out of the disclosure, and Origin sits beside Pan.** For a
 tool called Basrelief, exact origin is the substance, and it is the one thing a

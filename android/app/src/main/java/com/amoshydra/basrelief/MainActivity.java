@@ -535,24 +535,42 @@ public class MainActivity extends Activity {
             public File call() throws Exception {
                 byte[] bytes = ImageUtil.downscale(Io.readAll(MainActivity.this, uri),
                         ImageUtil.MAX_SIDE);
-                File target = new File(getFilesDir(), "shared_image.png");
+                // Already in the gallery? Then this is the same photo sent again,
+                // not a new one, and the row that owns it keeps its depth map and
+                // framing. Sharing the same picture repeatedly used to add a row
+                // every time, all of them reading the one file below.
+                if (findByContent(bytes) != null) return null;
+                // A unique name per import, the same as the picker's path. The
+                // fixed name this replaced overwrote the previous share, so every
+                // item pointed at the same bytes and the earlier photos were lost.
+                File target = new File(getFilesDir(),
+                        LibraryItem.imageFileName(LibraryItem.newId()));
                 Io.writeFile(target, bytes);
                 return target;
             }
         }, new Io.Callback<File>() {
             @Override
             public void onDone(File target, Exception error) {
-                if (error != null || target == null) {
+                if (error != null) {
                     Toast.makeText(MainActivity.this,
-                            "Failed to load shared image: "
-                                    + (error == null ? "unknown" : error.getMessage()),
+                            "Failed to load shared image: " + error.getMessage(),
                             Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (target == null) {
+                    // A null return means identical bytes are already in the
+                    // gallery, and findByContent has already marked which row.
+                    applyFiles();
+                    refreshSliders();
+                    Toast.makeText(MainActivity.this,
+                            "Already in the gallery \u2014 selected it",
+                            Toast.LENGTH_SHORT).show();
                     return;
                 }
                 // A shared image is a new item, not a replacement: sharing three
                 // photos should leave three rows, and the two already in the
                 // gallery must not lose their depth maps and framing to the third.
-                LibraryItem shared = LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
+                LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
                 prefs.edit().remove("status").apply();
                 refreshSliders();
                 applyFiles();
@@ -563,6 +581,24 @@ public class MainActivity extends Activity {
                 openDepthGen();
             }
         });
+    }
+
+    /**
+     * The gallery row already holding these exact bytes, or null.
+     *
+     * <p>Selects it as a side effect, so a re-share leaves the user on the item
+     * they just sent rather than on whatever was active before. Called from the
+     * IO thread, and {@link LibraryStore} is the only thing it touches.
+     */
+    private LibraryItem findByContent(byte[] bytes) {
+        for (LibraryItem item : LibraryStore.rows(prefs)) {
+            if (item.isBundled()) continue;      // no file, so nothing to match
+            File f = PrefFiles.resolve(getFilesDir(), item.imageName);
+            if (f == null || !PrefFiles.sameContent(bytes, f)) continue;
+            LibraryStore.select(prefs, item.id);
+            return item;
+        }
+        return null;
     }
 
     /** Show the Depth AI dialog, pre-loaded with the current studio image. */
