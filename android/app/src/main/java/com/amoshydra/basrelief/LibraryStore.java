@@ -6,6 +6,8 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.SortOrder;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -94,6 +96,41 @@ final class LibraryStore {
         Library next = load(prefs).remove(id).withBundled();
         saveNow(prefs, next);
         return next;
+    }
+
+    /**
+     * Drop rows that share an image file with another row, and report what went.
+     *
+     * <p>Repairs the index in place when an older build's share path wrote every
+     * import to one fixed filename. Each drop goes through {@link #remove}, so the
+     * selection pointer is handled by the same code that handles a user deletion
+     * rather than by a second rule that has to agree with it.
+     *
+     * <p><b>Files are deliberately not deleted.</b> The rows are the defect, and
+     * the depth maps those rows referenced are real work the user may still want.
+     * Reclaiming them is a separate, explicit decision rather than a side effect
+     * of opening the app.
+     *
+     * <p>Cheap enough to run on every launch: it groups in memory and never
+     * touches the disk, so there is no flag to get wrong and no migration to
+     * re-run after a crash.
+     *
+     * @return the labels of the dropped rows, for a message the user can read
+     */
+    static List<String> repairDuplicateImages(SharedPreferences prefs) {
+        Library lib = load(prefs);
+        List<String> doomed = lib.itemsSharingAnImageName();
+        if (doomed.isEmpty()) return Collections.emptyList();
+        List<String> labels = new ArrayList<String>();
+        for (String id : doomed) {
+            LibraryItem item = lib.find(id);
+            labels.add(item == null ? id : item.displayName());
+            lib = lib.remove(id);
+        }
+        // One write for the whole repair, and withBundled so the bundled row
+        // cannot be the thing that went missing.
+        saveNow(prefs, lib.withBundled());
+        return labels;
     }
 
     /** Apply a per-item edit to the item with this id, leaving the rest alone. */

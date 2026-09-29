@@ -341,7 +341,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 148 tests across twelve classes:
+it**. 155 tests across thirteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -376,6 +376,13 @@ it**. 148 tests across twelve classes:
   clamped to orbit's fraction range (delta exactly 0, so a partial clamp cannot
   hide), and the bundled item is the one entry with no file on disk, so a cleanup
   pass or a parse must not drop it — it cannot be recreated from filesDir.
+- `LibraryDuplicateImageTest` — which row survives when several share an image
+  file, which is the repair for a share path that wrote every import to one fixed
+  name. The trap it exists to pin is *which* survivor: the active row is kept even
+  when it is the oldest, because keeping "the newest" instead would drop the row
+  the selection names and leave the wallpaper pointer pointing at nothing. The
+  last test asserts the end-to-end property — after the repair, the selection still
+  resolves to a row that exists.
 - `LibraryTest` / `LibraryItemTest` / `SortOrderTest` — the gallery index. The
   traps are the ones this file already names: a corrupt blob must not throw, a
   restored backup must not resurrect a dangling selection, an absolute path

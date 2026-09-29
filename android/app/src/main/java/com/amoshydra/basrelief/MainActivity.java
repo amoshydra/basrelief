@@ -36,6 +36,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
@@ -227,6 +228,19 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(AppState.PREFS, MODE_PRIVATE);
+
+        // Before anything reads the index. An older build's share path wrote every
+        // import to one fixed filename, so the gallery could hold many rows all
+        // reading a single file - the same photo under every row, and each earlier
+        // photo overwritten. Repaired here rather than in a migration so there is
+        // no flag to forget; the check is in-memory and costs nothing per launch.
+        final List<String> dropped = LibraryStore.repairDuplicateImages(prefs);
+        if (!dropped.isEmpty()) {
+            // Only the index is fixed. The depth maps those rows referenced are the
+            // user's own work, so they are left on disk to reclaim deliberately.
+            android.util.Log.i("Basrelief", "gallery repair: dropped " + dropped.size()
+                    + " row(s) sharing one image file");
+        }
 
         FrameLayout root = new FrameLayout(this);
         rootLayout = root;

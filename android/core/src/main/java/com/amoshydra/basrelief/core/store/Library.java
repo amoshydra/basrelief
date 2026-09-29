@@ -7,7 +7,9 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -289,6 +291,68 @@ public final class Library {
             if (!item.id.equals(id)) next.add(item);
         }
         return of(next, isActive(id) ? null : activeId, sort);
+    }
+
+    /**
+     * The ids of items that share an image FILE NAME with another item.
+     *
+     * <p>This exists because one code path did not uphold the rule every other
+     * path follows. An item's file is named from its own id precisely so that
+     * "two items must never share one" cannot happen — and the share path wrote
+     * every import to a fixed {@code shared_image.png} instead. Nine rows then
+     * pointed at one file, every row showed the same photo, and each of the eight
+     * earlier photos was overwritten and lost. The gallery's own {@code add} note
+     * says two items must never share a file; this is what enforcing it costs
+     * when a caller forgets.
+     *
+     * <p><b>Matching on the NAME rather than on the bytes is deliberate.</b> Two
+     * different photos can be byte-identical, and collapsing those would silently
+     * delete a row the user made on purpose. A shared name, by contrast, is
+     * impossible under the fixed write path, so it is a fingerprint of this bug
+     * and nothing else — which makes the repair exact and free of file I/O.
+     *
+     * <p>The bundled item is never in a group: it has no image name at all, and it
+     * is the one row that cannot be recreated from filesDir.
+     *
+     * @return the ids to drop, empty when the index is already consistent
+     */
+    public List<String> itemsSharingAnImageName() {
+        // Group first, then decide once per group, so "which one survives" is a
+        // single question answered in one place rather than a rule applied
+        // per-item that has to be careful about its own side effects.
+        Map<String, List<LibraryItem>> groups = new LinkedHashMap<String, List<LibraryItem>>();
+        for (LibraryItem item : items) {
+            String image = item.imageName;
+            if (image == null || image.length() == 0) continue;   // the bundled item
+            List<LibraryItem> group = groups.get(image);
+            if (group == null) {
+                group = new ArrayList<LibraryItem>();
+                groups.put(image, group);
+            }
+            group.add(item);
+        }
+        List<String> doomed = new ArrayList<String>();
+        for (Map.Entry<String, List<LibraryItem>> e : groups.entrySet()) {
+            List<LibraryItem> group = e.getValue();
+            if (group.size() < 2) continue;                       // already consistent
+            // The active one is kept, so the selection never has to be re-pointed
+            // and the wallpaper pointer cannot be left naming a dropped row. If
+            // the active is not in the group, the most recently added is kept: of
+            // several rows showing one picture, that is the one last worked on.
+            LibraryItem keep = null;
+            for (LibraryItem item : group) {
+                if (item.id.equals(activeId)) keep = item;
+            }
+            if (keep == null) {
+                for (LibraryItem item : group) {
+                    if (keep == null || item.addedAt > keep.addedAt) keep = item;
+                }
+            }
+            for (LibraryItem item : group) {
+                if (item != keep) doomed.add(item.id);
+            }
+        }
+        return doomed;
     }
 
     // ------------------------------------------------------------- migration

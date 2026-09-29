@@ -31,6 +31,10 @@
 }
 
 *{box-sizing:border-box; margin:0; padding:0;}
+/* The UA's [hidden]{display:none} is a type-less rule, so any class that sets
+   display beats it. .gl-a{display:flex} therefore made `hidden` a no-op and both
+   gallery layouts drew at once. */
+[hidden]{display:none !important;}
 html,body{background:#07090D; color:var(--text-primary);
   font:400 14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   -webkit-font-smoothing:antialiased;}
@@ -325,16 +329,38 @@ html,body{background:#07090D; color:var(--text-primary);
 .con .ghost.armed{color:var(--accent);border-color:var(--accent-dim);}
 
 /* restore pill */
-.con .restore{background:var(--accent);color:#1A1405;box-shadow:0 8px 24px rgba(0,0,0,.45);}
-.con .restore .thumb{width:24px;height:24px;border-radius:var(--r-sm);
-  background:linear-gradient(150deg,#6b533a,#2a2118);}
+/* Glass, not a solid. The pill sits on the photograph, and an opaque bar across
+   the bottom of a picture you are trying to look at is the thing the peek state
+   exists to avoid. 16px of blur is enough to separate it from a busy image
+   without turning it into a smudge. */
+.con .restore{bottom:14px;height:34px;padding:0 13px 0 8px;gap:7px;border-radius:var(--r-pill);
+  color:var(--text-primary);font:600 11.5px/1 inherit;
+  background:rgba(26,32,44,.40);border:1px solid rgba(255,255,255,.15);
+  box-shadow:0 4px 14px rgba(0,0,0,.34);
+  -webkit-backdrop-filter:blur(16px) saturate(1.7);
+  backdrop-filter:blur(16px) saturate(1.7);}
+/* Without blur support the glass is just a dark tint, which is not readable over
+   a bright photograph — so the fallback is opaque, not the same rgba. */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .con .restore{background:rgba(20,25,35,.88);}
+}
+.con .restore .thumb{width:20px;height:20px;border-radius:var(--r-sm);
+  background:linear-gradient(150deg,#6b533a,#2a2118);
+  box-shadow:0 0 0 1px rgba(255,255,255,.14);}
 
 /* coach marks on the preview */
 /* Both coach lines sit just under the status bar, pinned to the top of the
    phone. The original used bottom:calc(100% + 18px), which resolved off-canvas
    and rendered halfway down the preview. */
+.coach.gone{opacity:0;pointer-events:none;}
 .coach{position:absolute;left:50%;top:48px;transform:translateX(-50%);
   white-space:nowrap;z-index:6;font-size:11.5px;color:var(--text-secondary);
+  /* Opacity ONLY, no translateY. A hint that slides out looks better and is the
+     exact shape of the b/7179570 hazard: a post-layout transform on a sibling of
+     the GLSurfaceView may simply not composite. Fading changes no layout, so the
+     transparent region cannot desync. There is nothing to gain here that is worth
+     that risk. */
+  transition:opacity .5s ease-out;
   background:rgba(5,7,11,.78);border:1px solid var(--stroke);border-radius:var(--r-pill);
   padding:7px 13px;backdrop-filter:blur(6px);}
 
@@ -383,55 +409,12 @@ html,body{background:#07090D; color:var(--text-primary);
 
 /* Concept gallery: a sheet over the preview, so picking a photo updates the
    render behind it instead of replacing everything with a list. */
-.gsheet{position:absolute;left:0;right:0;top:0;bottom:0;z-index:7;display:flex;
-  flex-direction:column;background:rgba(11,14,20,.96);
-  transform:translateY(100%);transition:transform .22s cubic-bezier(.2,.8,.3,1);}
-.gsheet.on{transform:translateY(0);}
-.gsheet .gshead{display:flex;align-items:center;gap:10px;padding:16px 16px 12px;
-  border-bottom:1px solid var(--stroke);}
-.gsheet .gshead h3{font-size:var(--t-title);font-weight:600;flex:1 1 auto;}
-.gsheet .gshead .cnt{font-size:var(--t-cap);font-weight:600;letter-spacing:.08em;
-  text-transform:uppercase;color:var(--text-tertiary);}
-.gsheet .x{width:34px;height:34px;border-radius:var(--r-sm);border:1px solid var(--stroke);
-  background:transparent;color:var(--text-secondary);font:400 17px/1 inherit;
-  cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
-
-.ggrid{flex:1 1 auto;overflow-y:auto;display:grid;grid-template-columns:1fr 1fr;
-  gap:var(--s3);padding:var(--s4) var(--s4) var(--s2);align-content:start;}
-.cell{border-radius:var(--r-md);overflow:hidden;cursor:pointer;position:relative;
-  background:var(--surface-raised);border:1px solid var(--stroke);
-  transition:border-color .12s,transform .12s;}
-.cell:active{transform:scale(.985);}
-.cell.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
-.cell .thumb{aspect-ratio:1/1;position:relative;
-  background:linear-gradient(150deg,#6b533a,#241d1c);}
-.cell .thumb.t2{background:linear-gradient(150deg,#3b4a63,#1b2029);}
-.cell .thumb.t3{background:linear-gradient(150deg,#5a4a5e,#241d29);}
-.cell .thumb.bare{background:#1B2028;display:flex;align-items:center;justify-content:center;}
-.cell .thumb.bare i{width:34px;height:34px;border:1.5px solid var(--text-tertiary);
-  border-radius:50%;position:relative;}
-.cell .thumb.bare i::after{content:"";position:absolute;right:-2px;top:50%;width:5px;height:5px;
-  margin-top:-2.5px;border-radius:50%;background:var(--text-tertiary);}
-.cell .meta{padding:9px 10px 10px;}
-.cell .nm{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis;}
-.cell .chips{display:flex;gap:5px;margin-top:6px;align-items:center;min-height:16px;}
-.chip{font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 6px;
-  border-radius:var(--r-pill);background:rgba(255,255,255,.07);color:var(--text-secondary);}
-.chip.flat{background:rgba(249,112,102,.16);color:var(--error);}
-.chip.demo{background:rgba(240,180,41,.14);color:var(--accent);}
-.cell .tick{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;
-  background:var(--accent);display:none;align-items:center;justify-content:center;
-  font-size:11px;font-weight:700;color:#1A1405;}
-.cell.on .tick{display:flex;}
-
-.gbar{flex:0 0 auto;display:flex;gap:var(--s2);padding:var(--s3) var(--s4) var(--s4);
-  border-top:1px solid var(--stroke);}
-.gbar .add{flex:1 1 auto;height:50px;border-radius:var(--r-md);border:none;
-  background:var(--accent);color:#1A1405;font:650 14px/1 inherit;cursor:pointer;}
-.gbar .sort{flex:0 0 auto;height:50px;padding:0 16px;border-radius:var(--r-md);
-  border:1px solid var(--stroke-strong);background:var(--surface-raised);
-  color:var(--text-primary);font:500 13px/1 inherit;cursor:pointer;}
+/* The first gallery CSS — a full-screen .gsheet, two-column square cells, and
+   .ggrid/.gbar of its own — is gone. It had no markup left: .gsheet never
+   appears in the page, and the grid it styled is now scoped under .ggrid
+   below. It survived a round of edits as a SECOND set of .cell rules, which
+   were still winning the specificity fight and ringing the whole cell
+   instead of the thumbnail. Two rules for one class is how that happens. */
 
 
 /* ══════════ GALLERY LAYOUTS: keeping the preview visible ═══════════════════ */
@@ -444,6 +427,10 @@ html,body{background:#07090D; color:var(--text-primary);
 .gl-item.t2{background:linear-gradient(150deg,#3b4a63,#1b2029);}
 .gl-item.t3{background:linear-gradient(150deg,#5a4a5e,#241d29);}
 .gl-item.bare{background:#1B2028;}
+.gl-item.t4{background:linear-gradient(150deg,#4a6350,#1b231e);}
+/* the tile fills its frame; without a box of its own it is invisible and the
+   frame reads as an empty box rather than a photograph */
+.gl-b .shot .gl-item{width:100%;height:100%;border-radius:9px;}
 
 .gl-head{display:flex;align-items:center;gap:10px;padding:12px 14px;
   border-bottom:1px solid var(--stroke);flex:0 0 auto;}
@@ -455,7 +442,11 @@ html,body{background:#07090D; color:var(--text-primary);
 /* A — edge-anchored sheet, drag to resize */
 .gl-a{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;
   background:rgba(11,14,20,.93);border-top:1px solid var(--stroke);
-  border-radius:var(--r-lg) var(--r-lg) 0 0;height:62%;}
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+  /* Sized to its content and capped, rather than a fixed 62%. A fixed height left
+     127px of empty panel under a short gallery, and every pixel of panel is a
+     pixel of the photograph this layout exists to keep visible. */
+  max-height:62%;}
 /* B — filmstrip rail, collapsed */
 .gl-b{position:absolute;left:0;right:0;bottom:0;}
 .gl-b .rail{display:flex;gap:8px;padding:12px 14px 16px;overflow-x:auto;
@@ -469,9 +460,73 @@ html,body{background:#07090D; color:var(--text-primary);
 .gl-b .shot.on .tick{display:flex;}
 .gl-b .bar{display:flex;align-items:center;gap:10px;padding:10px 14px;
   background:rgba(11,14,20,.94);border-top:1px solid var(--stroke);}
-.gl-b .bar .exp{flex:1 1 auto;height:40px;border-radius:var(--r-md);
-  border:1px solid var(--stroke);background:var(--surface-raised);color:var(--text-secondary);
-  font:500 12.5px/1 inherit;cursor:pointer;}
+.gl-b .bar .now{width:30px;height:30px;border-radius:var(--r-sm);flex:0 0 30px;
+  box-shadow:0 0 0 1.5px var(--accent);}
+.gl-b .bar .t{flex:1 1 auto;min-width:0;font-size:12.5px;font-weight:600;
+  color:var(--text-primary);}
+.gl-b .bar .t em{font-style:normal;font-weight:400;color:var(--text-tertiary);}
+.gl-b .bar .done{flex:0 0 auto;height:34px;padding:0 14px;border-radius:var(--r-md);
+  border:none;background:var(--accent);color:#1A1405;font:650 12.5px/1 inherit;cursor:pointer;}
+.gl-b .bar .more{flex:0 0 auto;height:34px;padding:0 12px;border-radius:var(--r-md);
+  border:1px solid var(--stroke);background:var(--surface-raised);
+  color:var(--text-secondary);font:500 12px/1 inherit;cursor:pointer;}
+.gl-b .rail::-webkit-scrollbar{height:0;}
+
+/* the grid the rail expands into — same model, more room to judge */
+.ggrid{flex:1 1 auto;min-height:0;overflow-y:auto;display:grid;
+  grid-template-columns:repeat(3,1fr);gap:11px 10px;padding:12px 14px;}
+.ggrid .cell{cursor:pointer;transition:transform .12s;}
+.ggrid .cell:active{transform:scale(.975);}
+.ggrid .thumb{position:relative;aspect-ratio:4/3;border-radius:var(--r-md);
+  border:1px solid var(--stroke);}
+.ggrid .thumb i{position:absolute;inset:0;margin:auto;width:22px;height:22px;
+  border-radius:50%;border:2px solid var(--text-tertiary);}
+.ggrid .cell.on .thumb{border-color:var(--accent);box-shadow:0 0 0 1.5px var(--accent);}
+.ggrid .thumb .tick{position:absolute;top:6px;right:6px;width:20px;height:20px;
+  border-radius:50%;background:var(--accent);color:#1A1405;font-size:11px;font-weight:700;
+  display:none;align-items:center;justify-content:center;}
+.ggrid .cell.on .thumb .tick{display:flex;}
+.ggrid .meta{margin-top:6px;}
+.ggrid .nm{font-size:11.5px;color:var(--text-primary);font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.chips{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;}
+.chip{font-size:9.5px;font-weight:600;padding:2px 6px;
+  border-radius:99px;background:rgba(255,255,255,.07);color:var(--text-secondary);}
+.chip.flat{background:rgba(226,110,90,.16);color:#E28B72;}   /* no relief at all */
+.chip.demo{background:rgba(240,180,41,.14);color:var(--accent);}
+.chip.emb{background:rgba(120,190,220,.14);color:#8FC6DE;}
+.gbar{flex:0 0 auto;display:flex;gap:10px;padding:12px 14px;
+  border-top:1px solid var(--stroke);}
+.gbar .add{flex:1 1 auto;height:42px;border-radius:var(--r-md);border:none;
+  background:var(--accent);color:#1A1405;font:650 13px/1 inherit;cursor:pointer;}
+.gbar .sort{flex:0 0 auto;height:42px;padding:0 14px;border-radius:var(--r-md);
+  border:1px solid var(--stroke);background:var(--surface-raised);
+  color:var(--text-secondary);font:500 12.5px/1 inherit;cursor:pointer;}
+.gl-head .x{flex:0 0 auto;width:30px;height:30px;border-radius:50%;
+  border:1px solid var(--stroke);background:var(--surface-raised);
+  color:var(--text-secondary);font-size:13px;line-height:1;cursor:pointer;}
+
+/* A photo with no depth map has no depth to set. Refusing is the honest response
+   to a slider that would do nothing. */
+.ctl.meter.off .name{color:var(--text-tertiary);}
+.ctl.meter.off .track{opacity:.30;pointer-events:none;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);}
+.ctl.meter.off::after{content:"no depth map";font-size:10.5px;
+  color:var(--error);flex:0 0 auto;}
+
+/* ── the end-to-end walkthrough, under the phone ── */
+.flowwrap .variant-head{max-width:660px;}
+.flow{margin-top:34px;counter-reset:step;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:18px 24px;
+  list-style:none;max-width:1180px;}
+.flow li{position:relative;padding-left:34px;}
+.flow li::before{counter-increment:step;content:counter(step);
+  position:absolute;left:0;top:0;width:22px;height:22px;border-radius:50%;
+  background:rgba(240,180,41,.14);color:var(--accent);font-size:11px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;}
+.flow li b{display:block;font-size:13px;color:var(--text-primary);
+  font-weight:650;margin-bottom:3px;}
+.flow li span{font-size:12.5px;line-height:1.55;color:var(--text-secondary);}
 /* C — floating card, preview visible on every side */
 .gl-c{position:absolute;left:10px;right:10px;top:58px;bottom:74px;display:flex;
   flex-direction:column;background:rgba(11,14,20,.90);border:1px solid var(--stroke);
@@ -652,8 +707,10 @@ at=767804</div>
             </div>
 
             <div class="actions">
-              <button class="act">Image</button><button class="act">Depth</button>
-              <button class="act">Gallery</button><button class="act">Calibrate</button>
+              <button class="act" title="unchanged in this prototype">Image</button>
+              <button class="act" title="unchanged in this prototype">Depth</button>
+              <button class="act act-go" data-open-gallery>Gallery</button>
+              <button class="act" title="unchanged in this prototype">Calibrate</button>
             </div>
 
             <div class="stack">
@@ -675,11 +732,101 @@ GLS     context alive, one texture pair</pre>
             <button class="ghost" data-reset>Reset view</button>
           </div></div>
         </div>
+        <!-- The gallery is a MODE of this phone, not a screen. The sheet collapses
+             and the rail takes the space it was in, so the render being judged
+             stays on screen. Nothing here is committed until Set as wallpaper. -->
+        <div class="gl-b" data-glb hidden>
+          <div class="bar">
+            <span class="now gl-item" data-gnow></span>
+            <span class="t">Gallery <em data-gtally>· 5 photos</em></span>
+            <button class="more" data-gexpand>Browse all</button>
+            <button class="done" data-gdone>Done</button>
+          </div>
+          <div class="rail" data-grail></div>
+        </div>
+
+        <div class="gl-a" data-ga hidden>
+          <div class="gl-head">
+            <span class="now gl-item" data-gnow2></span>
+            <h3>Gallery</h3>
+            <button class="x" data-gclose>✕</button>
+          </div>
+          <div class="ggrid" data-ggrid></div>
+          <div class="gbar">
+            <button class="add" data-gadd>Add photo</button>
+            <button class="sort">Recent ⇅</button>
+          </div>
+        </div>
+
         <button class="restore" data-restore><span class="thumb"></span>Controls</button>
       </div>
       <p class="stage-note">Drag the <kbd>grip</kbd> down far enough and it collapses — the
         <b>Controls</b> pill returns with the thumbnail. Everything below the fold
         scrolls. Tap <b>Diagnostics</b>.</p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <div class="flowwrap">
+    <div class="variant-head">
+      <h2>The gallery, end to end</h2>
+      <p>Not a screen you travel to — a <b>mode of the studio</b>. Tap
+         <b>Gallery</b> in the actions row of the phone above and walk the five
+         steps below on it. Each one is live; the walkthrough only names what you
+         are already looking at.</p>
+    </div>
+    <ol class="flow">
+      <li><b>Gallery collapses the sheet</b><span>The rail slides into the space the
+        sheet was in. Height changes, not a transform — which is the whole of
+        b/7179570 and the reason the sheet can be trusted at all.</span></li>
+      <li><b>Tap a frame; the render behind changes</b><span>Selection is immediate
+        and reversible. Nothing is committed, and the studio is one tap behind you,
+        so a mis-tap costs nothing.</span></li>
+      <li><b>Depth and Zoom follow the photo</b><span>Both are per-item, so selecting
+        loads that photograph's own values — a hard-won bug, once a new photo
+        arrived wearing the previous photo's framing. <b>Motion does not follow</b>:
+        it describes the device, not the image.</span></li>
+      <li><b>A photo with no depth map greys its Depth slider out</b><span>Not
+        disabled-and-silent. It says why, because a slider that would do nothing is
+        worse than one that admits it.</span></li>
+      <li><b>Browse all expands to a grid</b><span>76&#8239;dp frames are enough to
+        pick a photo by, not to judge relief by. The grid is one tap away, and still
+        over the preview. <b>Done</b> brings the sheet back with the new selection.</span></li>
+    </ol>
+
+    <div class="vgrid" style="grid-template-columns:repeat(auto-fit,minmax(255px,1fr));margin-top:34px">
+      <div class="vcard">
+        <div class="vh">B — filmstrip <span style="color:var(--accent)">· chosen</span></div>
+        <div class="vs">least preview covered; smallest frames</div>
+        <p>Least preview covered and one tap to switch. The cost is honest: you
+           cannot judge relief from a frame that size, so the depth chip has to
+           carry it and the grid is one tap away.</p>
+      </div>
+      <div class="vcard">
+        <div class="vh">A — edge sheet, resizable</div>
+        <div class="vs">biggest frames; covers the lower preview</div>
+        <p>Big enough to judge, and the top of the preview stays live. Best when the
+           subject sits in the upper half. One more gesture to learn, and resizing
+           costs a layout pass per frame — which is why its drag is short-damped.</p>
+      </div>
+      <div class="vcard">
+        <div class="vh">C — floating card</div>
+        <div class="vs">preview on all four sides; fewest photos per screen</div>
+        <p>Most elegant and the least efficient. The margins that let the preview
+           show around the card are the same margins that cost you grid cells.</p>
+      </div>
+      <div class="vcard" style="border-color:var(--stroke-strong)">
+        <div class="vh">What every layout fixes</div>
+        <div class="vs">whichever one you pick</div>
+        <p><b>Selected is structural</b> — an accent ring and a tick, not a marker
+           typed into a label. <b>Depth is a chip</b>, and
+           <span style="color:var(--error)">flat</span> is a warning colour, because a
+           photo with no map renders without relief. <b>The bundled demo looks
+           different</b>, being a sample rather than your photograph.
+           <b>Embedded depth is its own state</b>, not flat until an async probe
+           corrects it. <b>Add photo is primary</b>; Sort lives in the bottom bar.</p>
+      </div>
     </div>
   </div>
 
@@ -778,13 +925,21 @@ GLS     context alive, one texture pair</pre>
 /* ── sheet: free drag, collapse when dragged most of the way down ───────── */
 const COLLAPSE_AT = 0.9;   // fraction past which the sheet is considered gone
 
-function wireSheet(phone){
+// `launch` is the fraction of the PHONE the sheet occupies on mount, so the
+// opening gesture is identical whatever the sheet happens to contain. 0 means
+// fully open, which is what the app does today and the Today phone still shows.
+//
+// The default is load-bearing, not decoration: `undefined <= 0` is false, so
+// without it a one-argument call fell through to the arithmetic and set every
+// height to NaN. The sheet harness caught that one.
+function wireSheet(phone, launch = 0){
   const sheet = phone.querySelector('.sheet'), grip = phone.querySelector('[data-handle]'),
         scroller = phone.querySelector('.scroll'), restore = phone.querySelector('[data-restore]');
 
   // fraction: 0 = fully open, 1 = fully collapsed. Height is its COMPLEMENT —
   // confusing the two is exactly the bug that shipped to the Android app.
   let fraction = 0, natural = 0, lastVisible = 0, dragging = false, startY = 0, startF = 0;
+  let muted = false;
 
   // Measure the SHEET, with any explicit height temporarily cleared — reading
   // the scroller instead omits the grip and the sheet's own padding, which made
@@ -804,11 +959,20 @@ function wireSheet(phone){
     sheet.style.height = Math.max(1, natural * (1 - fraction)) + 'px';
     const hidden = fraction >= COLLAPSE_AT;
     sheet.style.display = hidden ? 'none' : 'flex';
-    restore.classList.toggle('on', hidden);
+    // muted while the gallery owns the bottom of the screen, or the pill and the
+    // gallery's own Done are two affordances for one job
+    restore.classList.toggle('on', hidden && !muted);
     if (!hidden) lastVisible = fraction;
   };
 
-  const settle = () => { measure(); apply(0); };          // fully open on mount
+  const settle = () => {
+    measure();
+    if (launch <= 0 || !natural) { apply(0); return; }
+    // Never taller than the content needs: a short sheet stretched to 40% of the
+    // screen would be a sheet padded with nothing, which is worse than either.
+    const peek = Math.min(phone.clientHeight * launch, natural);
+    apply(1 - peek / natural);
+  };
   setTimeout(settle, 60);
   window.addEventListener('resize', settle);
 
@@ -831,6 +995,14 @@ function wireSheet(phone){
   // visible position rather than all the way open.
   restore.addEventListener('click', () => { measure(); apply(lastVisible); });
   phone.querySelector('[data-collapse]')?.addEventListener('click', () => { measure(); apply(1); });
+
+  // The gallery is a mode of this sheet, not a screen, so it needs to be able to
+  // put the sheet away and bring it back. Height is a LAYOUT property — changing
+  // it runs a layout pass, which is also what repaints the SurfaceView hole.
+  // Never a transform, for the reason b/7179570 is written down.
+  return { open(){ measure(); apply(0); },
+           close(){ measure(); apply(1); },
+           mute(on){ muted = on; apply(fraction); } };
 }
 
 /* ── current: label above the track ─────────────────────────────────────── */
@@ -860,9 +1032,11 @@ function wireSheet(phone){
 })();
 
 /* ── concept: value on the label line, per-control formatting ───────────── */
-(function conceptSide(){
+const studio = (function conceptSide(){
   const phone = document.getElementById('ph-con');
-  wireSheet(phone);
+  // 0.4: the launch state is a peek. The photograph is the point, and a sheet
+  // that opens to cover it makes the first thing on screen a control panel.
+  const sheetCtl = wireSheet(phone, 0.4);
 
   const sheet = phone.querySelector('.sheet');
 
@@ -967,9 +1141,152 @@ function wireSheet(phone){
     sliders[2].at(START[2]);                        // Zoom back to default
   });
 
+  // The hint has done its job once it has been read. Two seconds is long enough to
+  // land and short enough not to be furniture. Opacity only — see the note on
+  // .coach, because a slide-out here is the b/7179570 shape.
+  const coach = phone.querySelector('.coach');
+  if (coach) setTimeout(() => coach.classList.add('gone'), 2000);
+
   const diag = phone.querySelector('[data-diag]');
   phone.querySelector('[data-diagbar]').addEventListener('click', () => diag.classList.toggle('open'));
+
+  // Everything a photo selection has to change, in one place. Depth and Zoom are
+  // per-item because they describe the photograph; Motion is not, because it
+  // describes the device. The bundled demo is the exception to both: it has no
+  // file, so it renders at the defaults whatever is stored against it.
+  const DEFAULTS = { depth: 0.90, zoom: 0.30 };
+  return {
+    sheetCtl, sliders, state, paintAxis,
+    setDepth: p => sliders[0].at(p),
+    setZoom:  p => sliders[2].at(p),
+    setPhoto(name, sub) {
+      phone.querySelector('.photo-name').innerHTML = name + ' <em>· ' + sub + '</em>';
+    },
+    setDepthEnabled(on) {
+      phone.querySelectorAll('.ctl.meter')[0].classList.toggle('off', !on);
+    },
+    previewStyle(id, tile) {
+      const prev = phone.querySelector('.preview');
+      const g = { '': 'linear-gradient(150deg,#6b533a,#241d1c)',
+                  t2: 'linear-gradient(150deg,#3b4a63,#1b2029)',
+                  t3: 'linear-gradient(150deg,#5a4a5e,#241d29)',
+                  t4: 'linear-gradient(150deg,#4a6350,#1b231e)',
+                  bare: '#1B2028' }[tile];
+      prev.style.background = g;
+      prev.style.filter = tile === 'bare' ? 'saturate(.25) brightness(.85)' : 'none';
+    },
+    DEFAULTS
+  };
 })();
+
+/* ══════════════════ GALLERY: a mode of the studio, not a screen ═════════════
+   Opened from the actions row. The sheet collapses, the rail takes its place, and
+   the render being judged never leaves the screen — which is the entire premise,
+   since today's gallery is a full-screen takeover and the picture you are choosing
+   between disappears for as long as you are choosing.
+
+   One model, three surfaces. The rail and the grid are the same five items, and a
+   selection in either moves the preview, the photo name, and the two per-item
+   sliders. Motion is left alone on purpose: it describes the device. */
+(function galleryFlow(){
+  const phone = document.getElementById('ph-con');
+  if (!phone || !studio) return;
+
+  const ITEMS = [
+    { id:'bust', name:'Marble bust',     tile:'bare', sub:'bundled demo · always at defaults',
+      chips:[['demo','demo']], chipLabel:'bundled', depth:null, zoom:0.30, flat:false },
+    { id:'share', name:'Share image',    tile:'',     sub:'custom image + depth map',
+      chips:[['54%','']],          chipLabel:'54%',  depth:0.54, zoom:0.30, flat:false },
+    { id:'p02', name:'portrait-02.png', tile:'t2',   sub:'depth embedded in the file',
+      chips:[['embedded','emb']],   chipLabel:'embedded', depth:0.72, zoom:0.44, flat:false },
+    { id:'img417', name:'IMG_0417.jpg', tile:'t3',   sub:'no depth map — renders flat',
+      chips:[['flat','flat']],     chipLabel:'flat', depth:0.54, zoom:0.18, flat:true },
+    { id:'cliff', name:'cliff.jpg',     tile:'t4',   sub:'custom image + depth map',
+      chips:[['72%','']],          chipLabel:'72%',  depth:0.81, zoom:0.30, flat:false }
+  ];
+
+  let active = 'share', browsing = false, galleryOpen = false;
+  const cur = () => ITEMS.find(i => i.id === active);
+  const chipHtml = cs => cs.map(([t,c]) => `<span class="chip ${c}">${t}</span>`).join('');
+
+  const overlay = {
+    rail: phone.querySelector('[data-glb]'),
+    grid: phone.querySelector('[data-ga]')
+  };
+  const expBtn = phone.querySelector('[data-gexpand]');
+
+  function paint(){
+    const it = cur();
+
+    // the render behind. If this does not change, the layout is pointless.
+    studio.previewStyle(it.id, it.tile);
+
+    // the selected photograph's own values. The bundled demo is the exception: it
+    // has no file, so it renders at the defaults whatever is stored against it,
+    // and its Depth is not editable at all.
+    const d = it.depth === null ? studio.DEFAULTS.depth : it.depth;
+    studio.setDepth(d);
+    studio.setZoom(it.zoom);
+    studio.setDepthEnabled(!it.flat && it.depth !== null);
+    studio.setPhoto(it.name, it.sub);
+
+    phone.querySelector('[data-gnow]').className  = 'now gl-item ' + it.tile;
+    phone.querySelector('[data-gnow2]').className = 'now gl-item ' + it.tile;
+
+    overlay.rail.querySelector('.t em').textContent = '· ' + ITEMS.length + ' photos';
+
+    overlay.rail.querySelector('[data-grail]').innerHTML = ITEMS.map(i => `
+      <div class="shot${i.id===active?' on':''}" data-id="${i.id}"
+           title="${i.name} — ${i.chipLabel}"><div class="gl-item ${i.tile}"></div>
+        <span class="tick">✓</span></div>`).join('');
+
+    overlay.grid.querySelector('[data-ggrid]').innerHTML = ITEMS.map(i => `
+      <div class="cell${i.id===active?' on':''}" data-id="${i.id}">
+        <div class="thumb gl-item ${i.tile}">${i.tile==='bare'?'<i></i>':''}
+          <span class="tick">✓</span></div>
+        <div class="meta"><div class="nm">${i.name}</div>
+          <div class="chips">${chipHtml(i.chips)}</div></div></div>`).join('');
+  }
+
+  function setBrowsing(on){
+    browsing = on;
+    overlay.grid.hidden = !on;
+    overlay.rail.hidden  = on;
+    expBtn.setAttribute('aria-expanded', String(on));
+  }
+
+  function setGallery(on){
+    galleryOpen = on;
+    setBrowsing(false);
+    overlay.rail.hidden = !on;
+    // Height, not a transform: the sheet is a sibling of a GLSurfaceView, and its
+    // transparent region is computed from LAYOUT positions (b/7179570).
+    studio.sheetCtl.mute(on);
+    on ? studio.sheetCtl.close() : studio.sheetCtl.open();
+    paint();
+  }
+
+  phone.addEventListener('click', e => {
+    const hit = e.target.closest('[data-id]');
+    if (hit && galleryOpen){ active = hit.dataset.id; paint(); return; }
+    if (e.target.closest('[data-open-gallery]')) setGallery(true);
+    else if (e.target.closest('[data-gexpand]')) setBrowsing(true);
+    else if (e.target.closest('[data-gclose]')) setBrowsing(false);
+    else if (e.target.closest('[data-gdone]')) setGallery(false);
+    else if (e.target.closest('[data-gadd]')){
+      // A real import, so the flow's last step is not a dead button. It arrives
+      // flat, because importing a photo is not the same as giving it depth.
+      const id = 'new' + ITEMS.length;
+      ITEMS.push({ id, name:'IMG_' + (4200 + ITEMS.length) + '.jpg', tile:'t2',
+        sub:'just imported · no depth map yet', chips:[['flat','flat']],
+        chipLabel:'flat', depth:0.54, zoom:0.30, flat:true });
+      active = id; paint();
+    }
+  });
+
+  paint();
+})();
+
 </script>
 </body>
 </html>
