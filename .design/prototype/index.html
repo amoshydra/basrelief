@@ -164,6 +164,69 @@ html,body{background:#07090D; color:var(--text-primary);
 .ctl .track b{position:absolute;top:12px;width:2px;height:14px;margin-left:-1px;border-radius:1px;
   background:var(--accent);box-shadow:0 0 0 4px rgba(240,180,41,.16);}
 
+/* ── COMPACT: one row — label, track, value ────────────────────────────────
+   Reclaims the vertical budget of the two-row version without shortening the
+   track, so precision per pixel is untouched. This is the default in the phone. */
+.ctl.one{display:flex;align-items:center;gap:var(--s3);padding:7px 0;}
+.ctl.one .name{flex:0 0 auto;width:46px;}
+.ctl.one .track{flex:1 1 auto;margin-top:0;height:30px;}
+.ctl.one .val{flex:0 0 auto;width:52px;text-align:right;font-size:17px;font-weight:400;
+  letter-spacing:-.01em;}
+.ctl.one .val u{font-size:12px;}
+
+/* ── variant gallery: alternative slider designs, drawn at 2x for judging ── */
+.variants{margin-top:44px;}
+.variants h3{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--text-tertiary);margin-bottom:6px;}
+.variants>p{color:var(--text-secondary);font-size:13px;max-width:70ch;margin-bottom:20px;}
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:18px;}
+.vcard{background:var(--surface);border:1px solid var(--stroke);border-radius:var(--r-md);
+  padding:16px;}
+.vcard .vh{font-size:13px;font-weight:600;margin-bottom:2px;}
+.vcard .vs{font-size:11.5px;color:var(--text-tertiary);margin-bottom:14px;}
+.vcard p{font-size:12px;color:var(--text-secondary);line-height:1.55;margin-top:12px;}
+
+/* A — value inside the fill, overflowing gracefully to the right */
+.vA{position:relative;height:30px;border-radius:var(--r-sm);background:var(--surface-sunken);
+  box-shadow:inset 0 0 0 1px var(--stroke);overflow:hidden;cursor:pointer;}
+.vA i{position:absolute;left:0;top:0;bottom:0;width:54%;background:var(--accent);opacity:.92;}
+.vA b{position:absolute;left:0;top:0;bottom:0;display:flex;align-items:center;
+  padding-left:10px;font-size:12.5px;font-weight:650;color:#1A1405;
+  font-variant-numeric:tabular-nums;white-space:nowrap;}
+.vA u{position:absolute;left:calc(54% + 9px);top:0;bottom:0;display:flex;align-items:center;
+  font-size:12.5px;font-weight:600;color:var(--text-secondary);white-space:nowrap;opacity:0;}
+
+/* B — thumb-carried value, clamped inside the track */
+.vB{position:relative;height:30px;cursor:pointer;}
+.vB::before{content:"";position:absolute;left:0;right:0;top:13px;height:4px;border-radius:2px;
+  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+.vB i{position:absolute;left:0;top:13px;height:4px;border-radius:2px;width:54%;
+  background:var(--accent);opacity:.9;}
+.vB b{position:absolute;left:54%;top:0;transform:translateX(-50%);height:30px;
+  display:flex;align-items:center;padding:0 8px;border-radius:var(--r-sm);
+  background:var(--accent);color:#1A1405;font-size:12px;font-weight:650;
+  font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+/* C — detented, with the value at rest only */
+.vC{position:relative;height:34px;cursor:pointer;}
+.vC::before{content:"";position:absolute;left:0;right:0;top:15px;height:4px;border-radius:2px;
+  background:var(--surface-sunken);box-shadow:inset 0 0 0 1px var(--stroke);}
+.vC i{position:absolute;left:0;top:15px;height:4px;border-radius:2px;width:50%;
+  background:var(--accent);opacity:.9;}
+.vC u{position:absolute;top:0;font-size:10px;color:var(--text-tertiary);transform:translateX(-50%);}
+.vC u:nth-of-type(1){left:0;transform:none;}  .V-tick{position:absolute;top:11px;width:1px;height:12px;
+  background:var(--stroke-strong);}
+.vC b{position:absolute;left:50%;top:12px;width:2px;height:10px;margin-left:-1px;border-radius:1px;
+  background:var(--accent);box-shadow:0 0 0 3px rgba(240,180,41,.18);}
+
+/* D — the two-row original, for comparison */
+.vD .lab{font-size:14px;font-weight:500;}
+.vD .tr{margin-top:9px;height:4px;border-radius:2px;background:var(--surface-sunken);position:relative;}
+.vD .tr i{position:absolute;left:0;top:0;bottom:0;width:54%;border-radius:2px;background:var(--accent);}
+.vD .tr b{position:absolute;left:54%;top:-4px;width:2px;height:12px;margin-left:-1px;
+  background:var(--accent);}
+.vD{display:none;}
+
 /* framing, promoted: Origin and Pan side by side. No "recentre" control —
    it would be Reset minus zoom, and the per-axis nudges already make setting
    a value to zero one tap while remaining visible. See the concept doc. */
@@ -239,23 +302,25 @@ html,body{background:#07090D; color:var(--text-primary);
   background:rgba(5,7,11,.86);border:1px solid var(--stroke);border-radius:var(--r-pill);
   padding:8px 14px;font-size:11.5px;color:var(--text-secondary);backdrop-filter:blur(8px);}
 
-/* ── PEEK: the sheet recedes while a slider is being dragged ───────────────
-   Every one of these sliders changes the render behind the panel, so the panel
-   is covering the very thing being adjusted. Opacity rather than a blur,
-   because the point is to see through, and the dragged row keeps full opacity
-   so the value stays readable while the finger is still down.
+/* ── PEEK: the sheet goes fully transparent while a control is held ─────────
+   Every one of these controls changes the render behind the panel, so the panel
+   is covering the very thing being adjusted.
 
-   The faded selector is the sheet's *children*, not the sheet: a child cannot
-   exceed its parent's opacity, so dimming the sheet would take the active row
-   down with it. */
-.con .inner > *{ transition:opacity .18s cubic-bezier(.2,.8,.3,1);}
-.con .inner.peeking > *{ opacity:.13;}
-.con .inner.peeking > .ctl.active{ opacity:1;}
-.con .ctl.active .name{ color:var(--text-secondary);}
-.con .ctl.active .val{ color:var(--accent);}
-.con .ctl.active .track::before{ box-shadow:inset 0 0 0 1px var(--stroke-strong);}
-.con .sheet .grip{ transition:opacity .18s cubic-bezier(.2,.8,.3,1);}
-.con .sheet.peeking .grip{ opacity:.35;}
+   The fade is on the SHEET, not on its children. An earlier version faded
+   .inner > * instead, reasoning that a child cannot exceed its parent's
+   opacity - which is true, and is exactly why it was wrong: the sheet's own
+   background stayed at 92% while its contents faded, leaving a dark veil over
+   the photo. That veil is the one thing the peek exists to remove. Fading the
+   sheet takes the background and the contents together.
+
+   Nothing is held back. Keeping the dragged row at full opacity sounds
+   considerate and is not: the finger is on the track, so the value was never
+   readable mid-drag anyway, and the point of the gesture is to watch the
+   render. Opacity does not affect hit-testing, so the drag continues normally
+   at zero opacity. */
+.con .sheet{ transition:opacity .16s cubic-bezier(.2,.8,.3,1);}
+.con .sheet.peeking{ opacity:0;}
+
 
 .legend{margin-top:48px;}
 .legend h3{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
@@ -374,20 +439,20 @@ at=767804</div>
             </div>
             <div class="hair"></div>
 
-            <div class="ctl">
-              <div class="top"><span class="name">Depth</span>
-                <span class="val num" data-val>54<u>%</u></span></div>
-              <div class="track" data-track><i style="width:54%"></i><b style="left:54%"></b></div>
+            <div class="ctl one">
+              <span class="name">Depth</span>
+              <span class="track" data-track><i style="width:54%"></i><b style="left:54%"></b></span>
+              <span class="val num" data-val>54<u>%</u></span>
             </div>
-            <div class="ctl">
-              <div class="top"><span class="name">Motion</span>
-                <span class="val num" data-val>45<u>%</u></span></div>
-              <div class="track" data-track><i style="width:45%"></i><b style="left:45%"></b></div>
+            <div class="ctl one">
+              <span class="name">Motion</span>
+              <span class="track" data-track><i style="width:45%"></i><b style="left:45%"></b></span>
+              <span class="val num" data-val>45<u>%</u></span>
             </div>
-            <div class="ctl">
-              <div class="top"><span class="name">Zoom</span>
-                <span class="val num" data-val>1.0<u>×</u></span></div>
-              <div class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></div>
+            <div class="ctl one">
+              <span class="name">Zoom</span>
+              <span class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></span>
+              <span class="val num" data-val>1.0<u>×</u></span>
             </div>
 
             <div class="frame-head">
@@ -455,6 +520,73 @@ GLS     context alive, one texture pair</pre>
       <p class="stage-note">Drag the <kbd>grip</kbd> down far enough and it collapses — the
         <b>Controls</b> pill returns with the thumbnail. Everything below the fold
         scrolls. Tap <b>Diagnostics</b>.</p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <div class="variants">
+    <h3>Slider designs, compared</h3>
+    <p>The brief was “put the text and the percentage inside the slider, and stop
+       the track eating the width”. The four ways to do it are below, drawn at
+       roughly twice the size they appear in the phone. The trade is the same in
+       all of them: <b>a shorter track costs precision</b>. At 54%, a 300&#8239;px track
+       is ~1.6&#8239;px per percent and a 150&#8239;px track is ~3.2&#8239;px. For Depth, where
+       five percent is visible in the relief, that is not nothing.</p>
+
+    <div class="vgrid">
+
+      <div class="vcard">
+        <div class="vh">A — value inside the fill</div>
+        <div class="vs">most compact; degrades to outside the fill</div>
+        <div class="vA"><i></i><b>54%</b><u>54%</u></div>
+        <p>The number lives in the filled region, so the track can be short without
+           losing the readout. Below roughly 20% there is no room for it and it
+           moves outside the fill in a secondary colour — graceful, but two states
+           to design and a colour change mid-drag.</p>
+      </div>
+
+      <div class="vcard">
+        <div class="vh">B — value rides the thumb</div>
+        <div class="vs">compact; a bubble that follows your finger</div>
+        <div class="vB"><i></i><b>54%</b></div>
+        <p>What Lightroom does. Precise and legible, and the bubble is where you
+           are looking anyway. Costs vertical headroom for the bubble, and it is
+           the one variant that fights the peek: the bubble would be invisible
+           exactly when the finger is on it.</p>
+      </div>
+
+      <div class="vcard">
+        <div class="vh">C — detented, value at rest</div>
+        <div class="vs">shortest; trades fine control for stops</div>
+        <div class="vC">
+          <u>0</u><u>25</u><u>50</u><u>75</u><u>100</u>
+          <i></i><b></b>
+          <span class="V-tick" style="left:0"></span><span class="V-tick" style="left:25%"></span>
+          <span class="V-tick" style="left:50%"></span><span class="V-tick" style="left:75%"></span>
+          <span class="V-tick" style="left:calc(100% - 1px)"></span>
+        </div>
+        <p>Tiny, and stops beat a long track for finding “about right”. But Depth
+           is a smooth 0–100 in the renderer and the mesh is continuous, so
+           detents would be a lie about what the app can do. Fine for Motion,
+           wrong for Depth.</p>
+      </div>
+
+      <div class="vcard">
+        <div class="vh">D — one row, value in its own column</div>
+        <div class="vs">what the phone uses; full track, no states</div>
+        <div class="ctl one" style="padding:0">
+          <span class="name">Depth</span>
+          <span class="track"><i style="width:54%"></i><b style="left:54%"></b></span>
+          <span class="val num">54<u>%</u></span>
+        </div>
+        <p>Not fully inside the slider, so: no overflow states, no second colour,
+           nothing to get wrong. Reclaims the row above the track — which is where
+           the height actually was — and keeps the full track, so precision is
+           untouched. My pick, on the grounds that the thing you asked for is
+           really <i>less height</i>, not fewer pixels of travel.</p>
+      </div>
+
     </div>
   </div>
 
@@ -556,22 +688,16 @@ function wireSheet(phone){
   const phone = document.getElementById('ph-con');
   wireSheet(phone);
 
-  const inner = phone.querySelector('.inner');
   const sheet = phone.querySelector('.sheet');
 
-  // Peek: fade the sheet while a control is held, because every one of these
-  // controls changes the render the sheet is covering. The fade goes on the
-  // sheet's CHILDREN, not the sheet — a child cannot exceed its parent's
-  // opacity, so dimming the sheet would take the held row down with it.
-  function peek(target){
+  // Peek: the sheet goes fully transparent while a control is held, because
+  // every one of them changes the render it is covering. Opacity does not
+  // affect hit-testing, so the drag carries on normally at zero opacity.
+  function peek(){
     let on = false;
     return {
-      start(){ if (on) return; on = true;
-        inner.classList.add('peeking'); sheet.classList.add('peeking');
-        if (target) target.classList.add('active'); },
-      end(){ if (!on) return; on = false;
-        inner.classList.remove('peeking'); sheet.classList.remove('peeking');
-        if (target) target.classList.remove('active'); }
+      start(){ if (on) return; on = true; sheet.classList.add('peeking'); },
+      end(){ if (!on) return; on = false; sheet.classList.remove('peeking'); }
     };
   }
 
@@ -589,7 +715,7 @@ function wireSheet(phone){
       out.innerHTML = fmt[i](p); };
     const fromEvent = e => {
       const r = tr.getBoundingClientRect(); return (e.clientX - r.left) / r.width; };
-    const hold = peek(ctl);
+    const hold = peek();
     tr.addEventListener('pointerdown', e => { tr.setPointerCapture(e.pointerId);
       hold.start(); at(fromEvent(e)); });
     tr.addEventListener('pointermove', e => { if (e.buttons) at(fromEvent(e)); });
@@ -620,7 +746,7 @@ function wireSheet(phone){
     paintAxis();
   };
 
-  const frameHold = peek(null);
+  const frameHold = peek();
   phone.querySelectorAll('[data-nudge]').forEach(btn => {
     const key = btn.getAttribute('data-nudge');
     const axis = key.slice(0, -1), dir = key.endsWith('-') ? -1 : 1;
