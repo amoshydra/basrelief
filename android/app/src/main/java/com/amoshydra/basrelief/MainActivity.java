@@ -496,12 +496,10 @@ public class MainActivity extends Activity {
 
     /** Start/stop the preview gyro based on visibility and battery. */
     private void updateTilt() {
-        glView.queueEvent(new Runnable() {
-            @Override
-            public void run() {
-                renderer.setPowerSave(PowerSave.isOn(MainActivity.this));
-            }
-        });
+        // Only the sensor acts on battery-save, and it is not GL-thread state, so
+        // this needs no hop. It used to also poke the renderer, which had no frame
+        // rate to give up and a field that nothing read.
+        if (tilt != null) tilt.setPowerSave(PowerSave.isOn(MainActivity.this));
         boolean run = sensorPolicy != null && sensorPolicy.shouldRunSensor()
                 && tilt != null && tilt.isSupported();
         if (run) {
@@ -853,6 +851,13 @@ public class MainActivity extends Activity {
             setBar("motion", state.config.motion, true);
         } finally {
             syncingZoom = false;
+        }
+        // Motion decides whether the sensor can change a pixel at all, so it
+        // decides whether the sensor should be running. Set here because this is
+        // the one place the studio reads the stored Motion value, and it runs on
+        // every framing change.
+        if (sensorPolicy != null) {
+            sensorPolicy.setMotionActive(state.config.motionScale() > 0f);
         }
     }
 

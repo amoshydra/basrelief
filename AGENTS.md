@@ -231,10 +231,48 @@ already cost real time.
   handles both forms; see its test for the restore case.
 - **Gyro:** `TYPE_ROTATION_VECTOR`; re-calibrate on every visibility change
   (average ~8 samples, never a cached reading); time-based exponential smoothing
-  (`tau = 0.2s`) so the feel is identical at 60/90/120 Hz. After 5 s of stillness
+  (`tau = 0.2s`) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
   it unregisters the rotation-vector sensor and falls back to a low-power
   accelerometer until a shake — **that idle-sleep is the app's real battery win**,
   not anything in the draw path.
+- **Sensor power, and what is deliberately *not* done to it.** Three rules, each
+  of which cost something to learn:
+  - **The idle accelerometer is the only thing still polling once the phone is put
+    down**, so it is the only safe target. It runs at 2 Hz with a 1 s batching
+    window (`ACCEL_IDLE_PERIOD_US` / `ACCEL_IDLE_MAX_LATENCY_US`). Do not raise the
+    window to save more: the window is also the worst-case latency before a shake
+    is noticed, and a wallpaper that takes a second to wake feels broken. The
+    saving is real but modest — the accelerometer is the cheapest sensor there is,
+    and the rotation vector is the expensive one, which is why the idle-sleep
+    above matters more than any of this.
+  - **Never batch the rotation vector.** Batching is invisible on the idle path and
+    ruinous on the live one: a batched delivery arrives late and unevenly, which is
+    precisely the jitter the smoothing exists to hide. One code path, one policy:
+    `registerRotationVector()` picks the period, and batching is a decision made
+    only by the idle branch.
+  - **Never slow the live sensor to save power**, and never add a frame-rate cap.
+    The parallax feel is the entire product; the draw rate is already bounded by
+    the sensor, and a cap tears the screen (see the frame-pacing invariant). The one
+    deliberate exception is OS battery-save, which cuts the rotation-vector rate
+    from 50 Hz to 20 Hz — reduced smoothness, still responsive, and only when the
+    user has already told us they want less.
+- **A state field that nothing reads is a bug, not a placeholder.**
+  `ReliefRenderer.powerSave` was written by three call sites that all queried
+  `PowerSave.isOn()` and read by none, so the app detected battery saver and did
+  nothing — at the one moment the answer is worth having. The field is now gone
+  rather than kept "for a future resolution-scale change": the renderer has no
+  frame rate to give up, so it could never act, and speculative state is the same
+  bug one commit later. The response lives in `TiltController.setPowerSave`. Note
+  the audit gap this exposed: a dead-code sweep that counts *occurrences* misses a
+  field that is assigned and never read, which is a different and quieter failure.
+- **A sensor that cannot change a pixel should not be running.** At Motion 0 the
+  renderer draws the same frame however the phone is held, so
+  `SensorPolicy.shouldRunSensor()` includes `motionActive`. Both hosts feed it from
+  the value they have already resolved — `Framing.motion` in the service, the
+  config in the studio — rather than asking the renderer, because that value is on
+  the calling thread and a getter would have cost a hop to the GL thread to learn
+  something already in hand. Default is `true`, not false, so a caller that never
+  mentions Motion still gets the parallax rather than silently losing it.
 
 ### Build constraints
 

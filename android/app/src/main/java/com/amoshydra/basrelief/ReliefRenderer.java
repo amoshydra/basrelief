@@ -88,9 +88,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *
      * The draw rate is already bounded by the sensor, and the real battery win
      * is elsewhere: TiltController unregisters the expensive rotation-vector
-     * sensor after 5s of stillness and falls back to a low-power accelerometer
-     * until a shake. See also setPowerSave(), which currently only records the
-     * OS power-save state for a future resolution-scale change.
+     * sensor after 10s of stillness and falls back to a low-power accelerometer
+     * until a shake. OS battery-save is handled there too, by widening the
+     * sensor period; there is deliberately nothing for the renderer to do about
+     * it, because the one lever it has - the frame rate - is the wrong one.
      */
 
     /**
@@ -101,7 +102,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * timed to fit inside that snapshot window. See the note where it is set.
      */
     private float fade = 1f;
-    private volatile float powerSave = 0f; // 0..1, written from the UI thread
 
     private static final String VERT =
             "uniform mat4 uMVP;\n" +
@@ -319,9 +319,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *
      * The draw rate is already bounded by the sensor, and the real battery win is
      * elsewhere: TiltController unregisters the expensive rotation-vector sensor
-     * after 5s of stillness and falls back to a low-power accelerometer until a
-     * shake. See also setPowerSave(), which currently only records the OS
-     * power-save state for a future resolution-scale change.
+     * after 10s of stillness and falls back to a low-power accelerometer until a
+     * shake. OS battery-save is handled there too, by widening the sensor period;
+     * there is deliberately nothing for the renderer to do about it, because the
+     * one lever it has - the frame rate - is the wrong one.
      */
     private long lastFrameNanos = 0L;
 
@@ -377,14 +378,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void setOrbit(float nx, float ny) {
         orbitX = nx;
         orbitY = ny;
-    }
-
-    /**
-     * Drop to the power-saving frame rate. Called from the UI thread; the
-     * derived interval is recomputed on the GL thread.
-     */
-    public void setPowerSave(boolean on) {
-        powerSave = on ? 1f : 0f;
     }
 
     /** @param v Depth as a 0..1 fraction of the maximum safe z-scale. */

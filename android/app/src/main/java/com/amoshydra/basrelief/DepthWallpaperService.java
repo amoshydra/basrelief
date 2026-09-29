@@ -146,6 +146,13 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
+            // At Motion 0 the tilt cannot change a pixel, so the sensor is pure
+            // waste. Read from the resolved framing rather than from the renderer
+            // so this stays on the calling thread and needs no hop to the GL
+            // thread to find out.
+            if (sensorPolicy != null) {
+                sensorPolicy.setMotionActive(framing.motion > 0f);
+            }
             String diagnostic = "visible=" + visible
                     + " surface=" + (glView.getHolder() != null
                             && glView.getHolder().getSurface().isValid())
@@ -252,16 +259,27 @@ public class DepthWallpaperService extends WallpaperService {
             sensorPolicy.setVisible(visible); // screen off / other app on top
             // Re-check on every show/hide: the user can flip battery saver
             // while the wallpaper is running.
-            if (renderer != null) {
-                renderer.setPowerSave(PowerSave.isOn(DepthWallpaperService.this));
-            }
+            applyPowerSave();
+        }
+
+        /**
+         * Hand the OS battery-save state to the sensor, which is the only thing
+         * that can act on it.
+         *
+         * <p>This used to call a renderer setter that three call sites fed and
+         * nothing read, so the app noticed battery saver and did nothing about it,
+         * at the one moment the answer is worth having. The renderer was the wrong
+         * home for it: the draw rate is bounded by the sensor, so there is no frame
+         * rate to give up, and a cap would tear the screen. The sensor widens its
+         * period instead - see {@link TiltController#setPowerSave(boolean)}.
+         */
+        private void applyPowerSave() {
+            if (tilt != null) tilt.setPowerSave(PowerSave.isOn(DepthWallpaperService.this));
         }
 
         /** Start/stop the gyro based on visibility and battery, then report. */
         private void updateSensor() {
-            if (renderer != null) {
-                renderer.setPowerSave(PowerSave.isOn(DepthWallpaperService.this));
-            }
+            applyPowerSave();
             boolean run = sensorPolicy != null && sensorPolicy.shouldRunSensor();
             if (run) {
                 if (tilt == null) {

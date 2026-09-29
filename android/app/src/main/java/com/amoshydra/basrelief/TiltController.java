@@ -35,7 +35,43 @@ public final class TiltController implements SensorEventListener {
     private static final long IDLE_SLEEP_MS = 10000; // still for this long -> sleep
     private static final float IDLE_EPS = 0.04f; // ~1° of tilt counts as activity
     private static final float SHAKE_MPS2 = 1.2f; // accel deviation from gravity to wake
-    private static final int ACCEL_DELAY = SensorManager.SENSOR_DELAY_NORMAL;
+
+    /**
+     * The idle sensor's reporting period, in microseconds.
+     *
+     * <p>Was {@code SENSOR_DELAY_NORMAL}, which the device reported as a 200 ms
+     * period (5 Hz). That exists only to notice a shake, and a shake is
+     * large-amplitude and lasts far longer than the reporting period, so 2 Hz
+     * catches it. The accelerometer is the cheapest sensor on the device, so this
+     * is a modest saving rather than a headline one - but it is the only thing
+     * still polling once the phone has been put down.
+     */
+    private static final int ACCEL_IDLE_PERIOD_US = 500_000;
+
+    /**
+     * Batching window for the idle sensor, in microseconds.
+     *
+     * <p>Nothing in this app used batching before, so the hub delivered every
+     * sample and the AP woke for each one. Batching lets the hub accumulate
+     * samples and wake the AP once per window.
+     *
+     * <p>Bounded at 1 s on purpose: the window is also the worst-case latency
+     * before a shake is noticed, and a wallpaper that takes a second to come back
+     * to life feels broken. Two samples per wake is the trade. Do not raise this
+     * to save more power - the accelerometer is not what drains the battery here.
+     */
+    private static final int ACCEL_IDLE_MAX_LATENCY_US = 1_000_000;
+
+    /**
+     * Rotation-vector period while the OS is in battery-save mode, in
+     * microseconds. The normal period is {@link SensorManager#SENSOR_DELAY_GAME},
+     * which the device reports as 20 ms.
+     *
+     * <p>Halved rather than disabled: in battery-save the wallpaper should still
+     * respond, just less smoothly. This is the setting the app used to read and
+     * throw away.
+     */
+    private static final int ROTATION_POWER_SAVE_PERIOD_US = 50_000;
 
     // Re-centre glide. See beginGlide() for why it lives here and not in the
     // renderer. RECENTRE_RATE is a RATE, not a duration, so the glide is
@@ -78,6 +114,14 @@ public final class TiltController implements SensorEventListener {
     private long lastMoveNanos;
     /** True while a sensor listener is actually registered. */
     private boolean registered;
+    /**
+     * Whether the OS is in battery-save mode. Written from the UI thread via
+     * {@link #setPowerSave(boolean)} and read when a sensor is (re)registered,
+     * so it is deliberately not volatile: registration always happens on the
+     * sensor thread and is ordered by the sensor manager's own lock, and making
+     * it volatile would only suggest a stronger guarantee than exists.
+     */
+    private boolean powerSave;
     private float idleBaseX, idleBaseY;
 
     /**
@@ -136,7 +180,7 @@ public final class TiltController implements SensorEventListener {
         sensorManager.unregisterListener(this);
         asleep = false;
         recalibrate();
-        sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        registerRotationVector();
         registered = true;
     }
 
@@ -350,7 +394,8 @@ public final class TiltController implements SensorEventListener {
         registered = false;
         sensorManager.unregisterListener(this);
         if (accelerometer != null) {
-            sensorManager.registerListener(this, accelerometer, ACCEL_DELAY);
+            sensorManager.registerListener(this, accelerometer,
+                    ACCEL_IDLE_PERIOD_US, ACCEL_IDLE_MAX_LATENCY_US);
         }
     }
 
@@ -359,10 +404,51 @@ public final class TiltController implements SensorEventListener {
         sensorManager.unregisterListener(this);
         if (rotationSensor != null) {
             recalibrate(); // neutral matches the (shaken) current pose
-            sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            registerRotationVector();
             registered = true;
         }
         listener.onTiltChanged(); // trigger a fresh render
+    }
+
+    /**
+     * Register the rotation vector at whichever period policy calls for.
+     *
+     * <p>Batching is deliberately NOT used on this path even when batching is
+     * available, because the whole point of this sensor is the feel of the
+     * parallax: a batched delivery arrives late and unevenly, which is exactly
+     * what the smoothing exists to hide. The idle path is the only one where
+     * latency is invisible, so it is the only one that batches.
+     */
+    private void registerRotationVector() {
+        if (rotationSensor == null) return;
+        if (powerSave) {
+            sensorManager.registerListener(this, rotationSensor, ROTATION_POWER_SAVE_PERIOD_US);
+        } else {
+            sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        }
+    }
+
+    /**
+     * Respond to the OS entering or leaving battery-save mode.
+     *
+     * <p>Re-registers only when a sensor is actually running, so this is safe to
+     * call at any time, including before {@link #start()} and while asleep. The
+     * previous period takes effect on the next wake from idle.
+     */
+    public void setPowerSave(boolean on) {
+        if (powerSave == on) return;
+        powerSave = on;
+        if (registered && !asleep) {
+            // Restart the listener so the new period applies immediately. The
+            // neutral is re-captured by start(), which is right: the phone may
+            // have been picked up since the last capture.
+            start();
+        }
+    }
+
+    /** Whether the OS is currently in battery-save mode. */
+    public boolean isPowerSave() {
+        return powerSave;
     }
 
     @Override
