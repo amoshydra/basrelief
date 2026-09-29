@@ -354,6 +354,30 @@ rendering and performance, and OEM immersive behaviour.
 Gotcha for adb: **if more than one device is attached, pass `adb -s <serial>`.**
 A second phone appearing over WiFi has silently redirected installs.
 
+- **`adb exec-out screencap` cannot be trusted to show what is on the display,
+  and using it to verify a drawing bug manufactures a pass.** Measured on the
+  Pixel 7 Pro while the studio's bottom sheet was invisible-but-operable: two
+  captures three seconds apart were byte-identical, `screencap` returned a
+  different buffer each time it was invoked, and it showed a panel that was
+  demonstrably not on the phone. Taking a capture appears to force the very
+  redraw under test, so the screenshot confirms the fix you just made. It
+  produced three consecutive false confirmations in one session, each
+  announced with a table of measurements, none of which could have failed.
+  **Ask the user for a screenshot taken on the device** (Power + Volume Down)
+  and pull it with `adb pull` — that path goes through the display and shows
+  what is actually there. `dumpsys activity top` is fine for existence
+  questions (is this view in the hierarchy, what are its bounds) and useless
+  for appearance: child bounds are **parent-relative**, not screen-absolute,
+  so a swipe aimed at y=36 can land on the photo rather than on a control 36px
+  below the panel's top edge.
+- **A view that is placed correctly, opaque, attached, `isShown()`, and still
+  not on screen has had its pixels discarded, not never drawn.** That symptom
+  — operable to the touch, absent from the glass — is a stale window region,
+  and the fix is to change **layout**, not a transform. The sheet used to hide
+  and show with `setVisibility(GONE)`/`VISIBLE` and worked; rewriting it to
+  position with `translationY` broke it, because a visibility change re-lays-out
+  and repaints while a transform did not reliably repaint that region here.
+
 ## Known drift (not bugs to fix blindly)
 
 - Default Depth is 90 on Android vs 45 on the web port; the web tilt range
