@@ -63,10 +63,12 @@ handle strip, the grip, every button and field is a hard rectangle. This is the
 single most visible tell that no design system exists, and it is also the
 cheapest to fix at framework level (`GradientDrawable` with a corner radius).
 
-**4. An accidental and fragile type scale.** 11sp labels, 12sp status, 13sp
-slider labels, 14sp title and nudge buttons, 11sp hint. Five sizes, no scale,
-no line-height decisions. Two of them are the same nominal size used for
-things that should differ.
+**4. An accidental and fragile type scale.** Ten `setTextSize` calls resolve to
+**four distinct sizes** — 11, 12, 13, 14 — with no scale and no line-height
+decisions, and several roles share a size that should differ: the gesture hint
+and the section labels are both 11sp, while the status line and the Framing
+toggle are both 12sp. Nothing in the app decides what type means; each call site
+picks a number.
 
 **5. The debug diagnostics live in the shipping surface.** The status line
 reads:

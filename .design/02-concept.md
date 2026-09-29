@@ -41,7 +41,7 @@ first ones it will have.
 | `accent-dim` | `#F0B429` @ 22% | ripple, selected track fill |
 | `text-primary` | `#F2F4F8` | values, labels |
 | `text-secondary` | `#98A2B3` | units, supporting text |
-| `text-tertiary` | `#5D6675` | disabled, hints |
+| `text-tertiary` | `#828C99` | captions, non-essential hints |
 | `ok` | `#3DD68C` | engine healthy |
 | `warn` | `#F0B429` | degraded, needs attention |
 | `error` | `#F97066` | failed |
@@ -192,8 +192,21 @@ alternation so their combined target is comfortable even if each is not 48.
   the label, the value and the track as three separate stops.
 - Collapsing and expanding the sheet announce themselves
   (`announceForAccessibility`), because the change is otherwise entirely visual.
-- `text-tertiary` on `surface` is 4.9:1 — above the 4.5:1 requirement for
-  body text but below 7:1, so it is only ever used for non-essential hints.
+- Contrast, measured against the **worst case** — the sheet is only 92% opaque,
+  so over a near-white highlight the background composites to `#1F2127`, which is
+  lighter than the surface colour and therefore the harder case:
+
+  | Token | vs `#0B0E14` | vs composited worst case | AA body (4.5:1) |
+  |---|---|---|---|
+  | `text-primary` `#F2F4F8` | 17.5:1 | 14.6:1 | pass |
+  | `text-secondary` `#98A2B3` | 7.5:1 | 6.3:1 | pass |
+  | `text-tertiary` `#828C99` | 5.7:1 | 4.7:1 | pass |
+
+  The first draft of this palette used `#5D6675` for `text-tertiary` and the
+  document claimed 4.9:1 for it. Measured, it is **3.33:1 — a fail**, and 2.78:1
+  in the worst case. The number in the prose was invented; the token was wrong.
+  Both are corrected above. Check contrast with the alpha in the composited
+  case, not just against the nominal surface.
 
 ## What is deliberately not changing
 
