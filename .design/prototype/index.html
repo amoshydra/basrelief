@@ -164,25 +164,28 @@ html,body{background:#07090D; color:var(--text-primary);
 .ctl .track b{position:absolute;top:12px;width:2px;height:14px;margin-left:-1px;border-radius:1px;
   background:var(--accent);box-shadow:0 0 0 4px rgba(240,180,41,.16);}
 
-/* framing, promoted */
-.frame{display:flex;gap:var(--s2);margin-top:var(--s4);}
-.frame > div{flex:1;background:var(--surface-raised);border:1px solid var(--stroke);
-  border-radius:var(--r-md);padding:11px 12px;}
-.frame .cap{font-size:10px;}
-.frame .coord{font-size:var(--t-label);font-weight:500;margin-top:6px;}
-.frame .nudge-row{display:flex;gap:6px;margin-top:9px;}
-.con .nudge{flex:1;height:40px;border-radius:var(--r-sm);border:1px solid var(--stroke-strong);
-  background:var(--surface-raised);color:var(--text-primary);font:500 13px/1 inherit;cursor:pointer;
-  transition:background .12s;}
+/* framing, promoted: Origin and Pan side by side. No "recentre" control —
+   it would be Reset minus zoom, and the per-axis nudges already make setting
+   a value to zero one tap while remaining visible. See the concept doc. */
+.frame-head{margin-top:var(--s5);}
+.frame-head .cap{margin:0;}
+
+.frame{display:flex;gap:var(--s2);margin-top:var(--s2);}
+.frame > div{flex:1;min-width:0;background:var(--surface-raised);border:1px solid var(--stroke);
+  border-radius:var(--r-md);padding:11px 11px 12px;}
+.frame .cap{font-size:10px;display:block;}
+
+/* one axis: label, minus, value, plus */
+.axis{display:flex;align-items:center;gap:4px;margin-top:8px;}
+.axis .ax{font-size:11px;font-weight:600;color:var(--text-tertiary);width:10px;flex:0 0 10px;}
+.axis .v{flex:1 1 auto;min-width:0;text-align:center;font-size:12.5px;font-weight:500;
+  font-variant-numeric:tabular-nums;background:var(--surface-sunken);
+  border:1px solid var(--stroke);border-radius:var(--r-sm);height:34px;line-height:34px;
+  overflow:hidden;text-overflow:ellipsis;}
+.con .nudge{flex:0 0 30px;height:34px;border-radius:var(--r-sm);
+  border:1px solid var(--stroke-strong);background:transparent;color:var(--text-primary);
+  font:500 14px/1 inherit;cursor:pointer;transition:background .12s;}
 .con .nudge:active{background:var(--accent-dim);}
-.frame .centre{text-align:center;display:flex;flex-direction:column;justify-content:center;
-  cursor:pointer;transition:border-color .12s;}
-.frame .centre:hover{border-color:var(--stroke-strong);}
-.frame .centre .ring{width:34px;height:34px;margin:2px auto 0;border:1.5px solid var(--accent);
-  border-radius:50%;position:relative;}
-.frame .centre .ring::after{content:"";position:absolute;right:-2px;top:50%;width:5px;height:5px;
-  margin-top:-2.5px;border-radius:50%;background:var(--accent);}
-.frame .centre p{font-size:11.5px;color:var(--text-secondary);margin-top:8px;}
 
 /* actions */
 .con .actions{display:flex;gap:6px;margin-top:var(--s5);}
@@ -215,6 +218,15 @@ html,body{background:#07090D; color:var(--text-primary);
   word-break:break-all;}
 .diag.open pre{display:block;}
 
+/* Reset: a recovery action, not an adjustment. It sits at the very bottom,
+   away from the sliders it would otherwise interrupt. */
+.con .ghost{width:100%;height:48px;margin-top:var(--s5);border-radius:var(--r-md);
+  border:1px solid var(--stroke);background:transparent;color:var(--text-tertiary);
+  font:500 13px/1 inherit;cursor:pointer;letter-spacing:.01em;
+  transition:color .12s,border-color .12s;}
+.con .ghost:hover{color:var(--text-secondary);border-color:var(--stroke-strong);}
+.con .ghost.armed{color:var(--accent);border-color:var(--accent-dim);}
+
 /* restore pill */
 .con .restore{background:var(--accent);color:#1A1405;box-shadow:0 8px 24px rgba(0,0,0,.45);}
 .con .restore .thumb{width:24px;height:24px;border-radius:var(--r-sm);
@@ -226,6 +238,24 @@ html,body{background:#07090D; color:var(--text-primary);
 .con .coach{position:absolute;left:50%;top:52px;bottom:auto;transform:translateX(-50%);
   background:rgba(5,7,11,.86);border:1px solid var(--stroke);border-radius:var(--r-pill);
   padding:8px 14px;font-size:11.5px;color:var(--text-secondary);backdrop-filter:blur(8px);}
+
+/* ── PEEK: the sheet recedes while a slider is being dragged ───────────────
+   Every one of these sliders changes the render behind the panel, so the panel
+   is covering the very thing being adjusted. Opacity rather than a blur,
+   because the point is to see through, and the dragged row keeps full opacity
+   so the value stays readable while the finger is still down.
+
+   The faded selector is the sheet's *children*, not the sheet: a child cannot
+   exceed its parent's opacity, so dimming the sheet would take the active row
+   down with it. */
+.con .inner > *{ transition:opacity .18s cubic-bezier(.2,.8,.3,1);}
+.con .inner.peeking > *{ opacity:.13;}
+.con .inner.peeking > .ctl.active{ opacity:1;}
+.con .ctl.active .name{ color:var(--text-secondary);}
+.con .ctl.active .val{ color:var(--accent);}
+.con .ctl.active .track::before{ box-shadow:inset 0 0 0 1px var(--stroke-strong);}
+.con .sheet .grip{ transition:opacity .18s cubic-bezier(.2,.8,.3,1);}
+.con .sheet.peeking .grip{ opacity:.35;}
 
 .legend{margin-top:48px;}
 .legend h3{font-size:12px;font-weight:650;letter-spacing:.10em;text-transform:uppercase;
@@ -332,7 +362,7 @@ at=767804</div>
         <div class="preview"></div>
         <div class="orbit"></div>
         <div class="sysbar"><span>2:41</span><span>◐ ▮▮▮ ▰</span></div>
-        <div class="coach">Tap to recentre · two-finger to pan · pinch to zoom</div>
+        <div class="coach">Tap to set the centre · two-finger to pan · pinch to zoom</div>
 
         <div class="sheet" id="sheet-con">
           <div class="grip" data-handle><i></i></div>
@@ -360,20 +390,39 @@ at=767804</div>
               <div class="track" data-track><i style="width:30%"></i><b style="left:30%"></b></div>
             </div>
 
+            <div class="frame-head">
+              <span class="cap">Framing</span>
+            </div>
             <div class="frame">
               <div>
-                <div class="cap">Origin</div>
-                <div class="coord num" data-coord>0.000, 0.000</div>
-                <div class="nudge-row">
-                  <button class="nudge" data-nudge="1">−</button>
-                  <button class="nudge" data-nudge="1">+</button>
-                  <button class="nudge" data-nudge="1">−</button>
-                  <button class="nudge" data-nudge="1">+</button>
+                <span class="cap">Origin</span>
+                <div class="axis">
+                  <span class="ax">X</span>
+                  <button class="nudge" data-nudge="ox-">−</button>
+                  <span class="v" data-v="ox">0.000</span>
+                  <button class="nudge" data-nudge="ox+">+</button>
+                </div>
+                <div class="axis">
+                  <span class="ax">Y</span>
+                  <button class="nudge" data-nudge="oy-">−</button>
+                  <span class="v" data-v="oy">0.000</span>
+                  <button class="nudge" data-nudge="oy+">+</button>
                 </div>
               </div>
-              <div class="centre" data-centre>
-                <div class="ring"></div>
-                <p>Tap the preview<br>to recentre</p>
+              <div>
+                <span class="cap">Pan</span>
+                <div class="axis">
+                  <span class="ax">X</span>
+                  <button class="nudge" data-nudge="px-">−</button>
+                  <span class="v" data-v="px">0</span>
+                  <button class="nudge" data-nudge="px+">+</button>
+                </div>
+                <div class="axis">
+                  <span class="ax">Y</span>
+                  <button class="nudge" data-nudge="py-">−</button>
+                  <span class="v" data-v="py">0</span>
+                  <button class="nudge" data-nudge="py+">+</button>
+                </div>
               </div>
             </div>
 
@@ -397,6 +446,8 @@ Engine  visible=true surface=true
 Depth   blur=1/78 grid, float precision
 GLS     context alive, one texture pair</pre>
             </div>
+
+            <button class="ghost" data-reset>Reset view</button>
           </div></div>
         </div>
         <button class="restore" data-restore><span class="thumb"></span>Controls</button>
@@ -426,22 +477,32 @@ GLS     context alive, one texture pair</pre>
 
 <script>
 /* ── sheet: free drag, collapse when dragged most of the way down ───────── */
-function wireSheet(phone, opts){
-  const sheet = phone.querySelector('.sheet'), grip = phone.querySelector('[data-handle]'),
-        restore = phone.querySelector('[data-restore]');
-  let natural = 0, fraction = 0, dragging = false, startY = 0, startF = 0;
+const COLLAPSE_AT = 0.9;   // fraction past which the sheet is considered gone
 
-  const measure = () => { natural = sheet.scrollHeight; };
+function wireSheet(phone){
+  const sheet = phone.querySelector('.sheet'), grip = phone.querySelector('[data-handle]'),
+        scroller = phone.querySelector('.scroll'), restore = phone.querySelector('[data-restore]');
+
+  // fraction: 0 = fully open, 1 = fully collapsed. Height is its COMPLEMENT —
+  // confusing the two is exactly the bug that shipped to the Android app.
+  let fraction = 0, natural = 0, lastVisible = 0, dragging = false, startY = 0, startF = 0;
+
+  // Measure the scroller's content, not the sheet: once an explicit height is set
+  // on the sheet, sheet.scrollHeight reports that height rather than the content.
+  const measure = () => { natural = scroller.scrollHeight; };
+
   const apply = f => {
     fraction = Math.max(0, Math.min(1, f));
-    const h = Math.max(1, natural * fraction);
-    sheet.style.height = h + 'px';
-    const hidden = fraction >= .9;
+    sheet.style.height = Math.max(1, natural * (1 - fraction)) + 'px';
+    const hidden = fraction >= COLLAPSE_AT;
     sheet.style.display = hidden ? 'none' : 'flex';
     restore.classList.toggle('on', hidden);
+    if (!hidden) lastVisible = fraction;
   };
-  setTimeout(() => { measure(); apply(1); }, 60);
-  window.addEventListener('resize', () => { measure(); apply(fraction); });
+
+  const settle = () => { measure(); apply(0); };          // fully open on mount
+  setTimeout(settle, 60);
+  window.addEventListener('resize', settle);
 
   grip.addEventListener('pointerdown', e => {
     measure(); dragging = true; startY = e.clientY; startF = fraction;
@@ -450,17 +511,18 @@ function wireSheet(phone, opts){
   grip.addEventListener('pointermove', e => {
     if (!dragging) return;
     const dy = e.clientY - startY;
-    if (Math.abs(dy) < 6) return;                     // slop, so a tap is not a jump
+    if (Math.abs(dy) < 6) return;                 // slop, so a tap is not a jump
     apply(startF + dy / natural);
-    if (fraction >= .9){ dragging = false; sheet.classList.remove('dragging'); }
+    if (fraction >= COLLAPSE_AT){ dragging = false; sheet.classList.remove('dragging'); }
   });
   const end = () => { dragging = false; sheet.classList.remove('dragging'); };
   grip.addEventListener('pointerup', end);
   grip.addEventListener('pointercancel', end);
 
-  // restore is instant, by design — see the concept doc
-  restore.addEventListener('click', () => { measure(); apply(Math.min(1, (1-fraction)||1)); });
-  phone.querySelector('[data-collapse]')?.addEventListener('click', () => apply(1));
+  // Restore is instant, by design — see the concept doc. Goes back to the last
+  // visible position rather than all the way open.
+  restore.addEventListener('click', () => { measure(); apply(lastVisible); });
+  phone.querySelector('[data-collapse]')?.addEventListener('click', () => { measure(); apply(1); });
 }
 
 /* ── current: label above the track ─────────────────────────────────────── */
@@ -494,36 +556,100 @@ function wireSheet(phone, opts){
   const phone = document.getElementById('ph-con');
   wireSheet(phone);
 
+  const inner = phone.querySelector('.inner');
+  const sheet = phone.querySelector('.sheet');
+
+  // Peek: fade the sheet while a control is held, because every one of these
+  // controls changes the render the sheet is covering. The fade goes on the
+  // sheet's CHILDREN, not the sheet — a child cannot exceed its parent's
+  // opacity, so dimming the sheet would take the held row down with it.
+  function peek(target){
+    let on = false;
+    return {
+      start(){ if (on) return; on = true;
+        inner.classList.add('peeking'); sheet.classList.add('peeking');
+        if (target) target.classList.add('active'); },
+      end(){ if (!on) return; on = false;
+        inner.classList.remove('peeking'); sheet.classList.remove('peeking');
+        if (target) target.classList.remove('active'); }
+    };
+  }
+
+  // ---- Depth / Motion / Zoom ------------------------------------------------
   const fmt = [ v => Math.round(v*100) + '<u>%</u>',
                 v => Math.round(v*100) + '<u>%</u>',
                 v => (0.4 + v*1.6).toFixed(1) + '<u>×</u>' ];
+  const START = [0.54, 0.45, 0.30];      // Depth, Motion, Zoom
 
-  phone.querySelectorAll('.ctl').forEach((ctl, i) => {
+  const sliders = [...phone.querySelectorAll('.ctl')].map((ctl, i) => {
     const tr = ctl.querySelector('[data-track]'), fill = tr.querySelector('i'),
           knob = tr.querySelector('b'), out = ctl.querySelector('[data-val]');
-    const set = e => {
-      const r = tr.getBoundingClientRect(), p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    const at = p => { p = Math.max(0, Math.min(1, p));
       fill.style.width = (p*100) + '%'; knob.style.left = (p*100) + '%';
-      out.innerHTML = fmt[i](p);
-    };
-    tr.addEventListener('pointerdown', e => { tr.setPointerCapture(e.pointerId); set(e); });
-    tr.addEventListener('pointermove', e => { if (e.buttons) set(e); });
+      out.innerHTML = fmt[i](p); };
+    const fromEvent = e => {
+      const r = tr.getBoundingClientRect(); return (e.clientX - r.left) / r.width; };
+    const hold = peek(ctl);
+    tr.addEventListener('pointerdown', e => { tr.setPointerCapture(e.pointerId);
+      hold.start(); at(fromEvent(e)); });
+    tr.addEventListener('pointermove', e => { if (e.buttons) at(fromEvent(e)); });
+    ['pointerup','pointercancel'].forEach(t => tr.addEventListener(t, hold.end));
+    at(START[i]);
+    return { at };
   });
 
-  let ox = 0, oy = 0;
-  const coord = () => phone.querySelector('[data-coord]');
-  coord().textContent = '0.000, 0.000';
-  phone.querySelectorAll('[data-nudge]').forEach((b, i) => {
-    b.addEventListener('click', () => {
-      const d = (i % 2 === 0 ? -1 : 1) * .005;
-      if (i < 2) oy = Math.max(-1, Math.min(1, oy + d));
-      else ox = Math.max(-1, Math.min(1, ox + d));
-      coord().textContent = ox.toFixed(3) + ', ' + oy.toFixed(3);
-    });
-  });
+  // ---- Framing: Origin and Pan, per axis -----------------------------------
+  const AXIS = {
+    ox: { dp: 3, limit: 1,     step: 0.005 },
+    oy: { dp: 3, limit: 1,     step: 0.005 },
+    px: { dp: 0, limit: 400,   step: 5     },
+    py: { dp: 0, limit: 400,   step: 5     },
+  };
+  const state = { ox: 0, oy: 0, px: 0, py: 0 };
+  const fmtAxis = (k, v) => AXIS[k].dp ? v.toFixed(AXIS[k].dp) : String(Math.round(v));
+  const paintAxis = () => {
+    for (const k of Object.keys(AXIS)) {
+      const el = phone.querySelector(`[data-v="${k}"]`);
+      if (el) el.textContent = fmtAxis(k, state[k]);
+    }
+  };
+  const bump = (k, dir) => {
+    const a = AXIS[k];
+    state[k] = Math.max(-a.limit, Math.min(a.limit, state[k] + a.step * dir));
+    state[k] = a.dp ? +state[k].toFixed(a.dp) : Math.round(state[k]);
+    paintAxis();
+  };
 
-  phone.querySelector('[data-centre]').addEventListener('click', () => {
-    ox = oy = 0; coord().textContent = '0.000, 0.000';
+  const frameHold = peek(null);
+  phone.querySelectorAll('[data-nudge]').forEach(btn => {
+    const key = btn.getAttribute('data-nudge');
+    const axis = key.slice(0, -1), dir = key.endsWith('-') ? -1 : 1;
+    btn.addEventListener('pointerdown', () => frameHold.start());
+    ['pointerup','pointercancel','pointerleave'].forEach(t =>
+      btn.addEventListener(t, () => { bump(axis, dir); frameHold.end(); }));
+  });
+  paintAxis();
+
+  // ---- Reset view ----------------------------------------------------------
+  // Two taps, because it discards framing the user may have spent time on. It
+  // is the only control that restores Zoom as well, which is why it is not a
+  // fifth thing living up with the framing values.
+  const resetBtn = phone.querySelector('[data-reset]');
+  const RESTORE = () => { resetBtn.textContent = 'Reset view'; };
+  let armed = false, armTimer;
+  resetBtn.addEventListener('click', () => {
+    if (!armed) {
+      armed = true;
+      resetBtn.classList.add('armed');
+      resetBtn.textContent = 'Tap again to discard this framing';
+      armTimer = setTimeout(() => { armed = false;
+        resetBtn.classList.remove('armed'); RESTORE(); }, 3000);
+      return;
+    }
+    clearTimeout(armTimer); armed = false;
+    resetBtn.classList.remove('armed'); RESTORE();
+    state.ox = state.oy = state.px = state.py = 0; paintAxis();
+    sliders[2].at(START[2]);                        // Zoom back to default
   });
 
   const diag = phone.querySelector('[data-diag]');

@@ -121,12 +121,12 @@ it is a one-line change to the theme.
 │  │                          │  │
 │  │ Zoom               1.0×  │  │
 │  │ ●━━━───────────────      │  │
-│  │                          │  │
-│  │ ┌──────────┬──────────┐ │  │
-│  │ │  Origin  │  Centre  │ │  │   ← framing promoted, not hidden
-│  │ │ 0.000,0  │  tap the │ │  │
-│  │ │          │  preview │ │  │
-│  │ └──────────┴──────────┘ │  │
+│  │ ┌───────────┬───────────┐ │  │
+│  │ │ FRAMING               │ │  │
+│  │ │ ORIGIN      │ PAN      │ │  │   ← framing promoted, not hidden
+│  │ │ X − 0.000 + │ X − 0  + │ │  │
+│  │ │ Y − 0.000 + │ Y − 0  + │ │  │
+│  │ └───────────┴───────────┘ │  │
 │  │                          │  │
 │  │ IMAGE  DEPTH  GALLERY  CAL │  │   ← the four peer commands, unchanged
 │  │                          │  │
@@ -134,9 +134,26 @@ it is a one-line change to the theme.
 │  │  Depth AI (ComfyUI)     │  │   ← secondary: outlined
 │  │                          │  │
 │  │ ⌄ diagnostics            │  │   ← collapsed by default
+│  │                          │  │
+│  │  Reset view             │  │   ← very bottom, two taps
 │  ╰────────────────────────╯  │
 └──────────────────────────────┘
 ```
+
+### The sheet gets out of the way while you adjust
+
+Every one of Depth, Motion, Zoom and the framing nudges changes the render
+*behind* the panel. So while one is held, the sheet's contents fade to about
+13%, and the row you are holding stays at full opacity with its value in the
+accent colour.
+
+The fade goes on the sheet's **children**, not on the sheet — a child cannot
+exceed its parent's opacity, so dimming the sheet would take the active row down
+with it. Opacity rather than a blur, because the point is to see *through*, and
+there is nothing to blur.
+
+This is the change that most improves the feel of the app, and it costs one CSS
+rule and two class toggles.
 
 ### The changes that matter
 
@@ -145,12 +162,23 @@ line above, then the track — so the number you are changing is never adjacent 
 the thing you are changing. Putting `Depth  54%` on one line with the track
 beneath removes half the vertical budget and makes the relationship obvious.
 
-**Framing is promoted out of the disclosure.** For a tool called Basrelief,
-exact origin is the substance, and it is the one thing a gesture cannot express.
-It becomes a permanent row, not something hidden behind `▾`. The **Centre**
-affordance ties it to the preview: the app *already* draws an orbit marker, and
-that marker is the origin. Tapping it recentres, so the control and the thing it
-controls are the same object on screen.
+**Framing is promoted out of the disclosure, and Origin sits beside Pan.** For a
+tool called Basrelief, exact origin is the substance, and it is the one thing a
+gesture cannot express. It becomes a permanent block rather than something
+hidden behind `▾`. Pan goes next to Origin because they are the same kind of
+thing — two axes, nudged, with a typed value — and separating them made Pan look
+like an afterthought. In fact it was: the first draft of this concept left Pan
+out entirely, which is exactly the kind of omission a "simplify" pass causes when
+the thing being removed is the boring half of a pair.
+
+**There is no "Recentre" control, deliberately.** The app's `Reset view` already
+resets zoom, origin *and* pan, so a Recentre would be Reset minus zoom — a strict
+subset sitting next to its superset, which is the worst case: two things to learn
+for one job. Worse, Origin and Pan are visible per-axis values with nudges, so
+zeroing one is already a tap that shows you what you set. The one thing Reset
+does that the nudges cannot is restore Zoom and write it back to the item's
+stored settings, which is why it is a recovery action at the bottom rather than a
+framing control up top.
 
 **The photo gets an identity line.** `PHOTO` / `share_image.png` tells you what
 you are editing. Right now there is no way to see which item is loaded without
