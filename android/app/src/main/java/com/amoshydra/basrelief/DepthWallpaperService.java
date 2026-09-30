@@ -2,12 +2,14 @@ package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.opengl.GLSurfaceView;
+import android.os.Build;
 import android.service.wallpaper.WallpaperService;
 import android.view.SurfaceHolder;
 
@@ -66,6 +68,19 @@ public class DepthWallpaperService extends WallpaperService {
         /** Last value onVisibilityChanged gave us, for the diagnostic line only. */
         private volatile boolean visible = true;
         private boolean tiltRunning = false;
+        /**
+         * Which screen this engine is drawing, resolved in :core from the raw
+         * platform facts rather than here.
+         *
+         * <p>Volatile because {@code onWallpaperFlagsChanged} writes it on the main
+         * thread and {@code applyFromPrefs} reads it from whichever thread the
+         * prefs listener fires on. A resolver is immutable, so publishing one is
+         * publishing a whole answer rather than half of one — which is the same
+         * reason nothing about the surface is cached on the service: two engines
+         * share this process.
+         */
+        private volatile SurfaceResolver surface =
+                SurfaceResolver.of(Build.VERSION.SDK_INT);
         /** Last image/depth handed to the renderer, so a Depth nudge does not re-decode. */
         private SharedPreferences prefs;
         private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
@@ -126,7 +141,40 @@ public class DepthWallpaperService extends WallpaperService {
             }
         }
 
+        /**
+         * Ask the platform which screen this engine is, and resolve it in :core.
+         *
+         * <p>The one place {@code getWallpaperFlags()} is called, and the one place
+         * the version check lives, because {@code Engine.getWallpaperFlags()} does
+         * not exist below API 34 and calling it there is a
+         * {@code NoSuchMethodError} rather than a compile error. Everything the
+         * answer depends on is handed over as two ints, which is what lets the
+         * decision itself be unit tested without a device.
+         *
+         * <p>Never throws. This runs on the main thread during {@code onCreate} and
+         * again on every visibility change, and an engine that cannot answer must
+         * still draw the home screen.
+         */
+        private void resolveSurface() {
+            SurfaceResolver resolved;
+            try {
+                resolved = Build.VERSION.SDK_INT >= SurfaceResolver.API_SURFACE_SIGNAL
+                        ? SurfaceResolver.of(Build.VERSION.SDK_INT, getWallpaperFlags())
+                        : SurfaceResolver.of(Build.VERSION.SDK_INT);
+            } catch (Exception e) {
+                // A binder call on a level that claims to support it can still fail
+                // on an OEM build that does not. The home screen is the correct
+                // fallback, not a reason to leave the wallpaper blank.
+                resolved = SurfaceResolver.of(Build.VERSION.SDK_INT);
+            }
+            surface = resolved;
+        }
+
         private void applyFromPrefs(SharedPreferences p) {
+            // A flags change can arrive while the engine is still being built, and
+            // this runs before the renderer exists on that path. Nothing here may
+            // throw: the alternative is a wallpaper that is not drawn at all.
+            if (p == null || glView == null || renderer == null) return;
             final AppState state = AppState.load(p, getFilesDir());
             final LibraryItem active = state.activeItem();
             final String img;
@@ -142,20 +190,30 @@ public class DepthWallpaperService extends WallpaperService {
                 img = imgF == null ? null : imgF.getAbsolutePath();
                 dep = depF == null ? null : depF.getAbsolutePath();
             }
+            // Which screen this engine is, and therefore whose settings to render.
+            // The bundled demo and an item are both read through the one
+            // resolution point, so the two engines of a two-engine setup cannot
+            // disagree about what a photograph looks like.
+            final SurfaceResolver resolved = surface;
             // Resolved once, on the calling thread, and applied on the GL thread.
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
-            final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
+            final Framing framing = Framing.of(active, resolved.surface());
             // At Motion 0 the tilt cannot change a pixel, so the sensor is pure
             // waste. Read from the resolved framing rather than from the renderer
             // so this stays on the calling thread and needs no hop to the GL
-            // thread to find out.
+            // thread to find out. Per-surface, therefore: a lock engine parked by
+            // the lock screen's own Motion, and vice versa.
             if (sensorPolicy != null) {
                 sensorPolicy.setMotionActive(framing.motion > 0f);
             }
             String diagnostic = "visible=" + visible
                     + " surface=" + (glView.getHolder() != null
                             && glView.getHolder().getSurface().isValid())
+                    // "which", because "surface" above is the drawing surface's
+                    // validity and a second meaning for the word in the one line
+                    // people grep would cost somebody an afternoon.
+                    + " which=" + resolved.surface()
                     + " item=" + (active == null ? "bundled" : active.displayName())
                     + " want=" + (img == null ? "res/raw" : new java.io.File(img).getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep)
@@ -190,8 +248,15 @@ public class DepthWallpaperService extends WallpaperService {
         @Override
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
-            note("engine created, surface=" + (holder != null && holder.getSurface() != null
-                    && holder.getSurface().isValid()));
+            // First, before the renderer exists and before any path can read the
+            // field: a flags change that arrives between here and the first
+            // applyFromPrefs would otherwise be answered from the unread default.
+            resolveSurface();
+            // The whole resolver in brackets, so the one line carries the SDK level
+            // and the raw flags behind "which=" and is not mistaken for it.
+            note("engine created [" + surface + "] surface="
+                    + (holder != null && holder.getSurface() != null
+                            && holder.getSurface().isValid()));
             renderer = new ReliefRenderer(DepthWallpaperService.this);
             glView = new WallpaperGLSurfaceView(DepthWallpaperService.this);
             glView.setEGLContextClientVersion(2);
@@ -234,6 +299,31 @@ public class DepthWallpaperService extends WallpaperService {
         public void onSurfaceChanged(SurfaceHolder h, int f, int w, int ht) {
         }
 
+        /**
+         * The platform re-tasked this engine: it is now a different screen, or is
+         * now both. API 34+.
+         *
+         * <p>This engine object is not destroyed and recreated when the
+         * destination changes, so without this a wallpaper moved between surfaces
+         * would keep rendering the previous surface's values - the user's picture,
+         * at the previous surface's depth, zoom and framing, with no error
+         * anywhere. Re-resolving and re-applying is the whole fix; the render
+         * values come from {@code Framing} either way, so there is no second path
+         * to keep in step.
+         *
+         * <p>Safe to declare on every level even though the super method arrived
+         * in 34: the framework only calls it where it exists, and nothing here
+         * references it by super. Calling {@code super} would be the call that
+         * needs the version guard, so it is not called - AOSP's implementation is
+         * empty.
+         */
+        @Override
+        public void onWallpaperFlagsChanged(int which) {
+            note("re-tasked, platform flags=0x" + Integer.toHexString(which));
+            resolveSurface();
+            if (prefs != null) applyFromPrefs(prefs);
+        }
+
         @Override
         public void onSurfaceDestroyed(SurfaceHolder h) {
             note("surface destroyed");
@@ -245,6 +335,14 @@ public class DepthWallpaperService extends WallpaperService {
             this.visible = visible;
             if (visible) {
                 glView.onResume();
+                // Ask the platform again rather than trusting the reading taken in
+                // onCreate. Whether the flags are published by the time onCreate
+                // runs is an OEM question this build cannot check off-device, so
+                // the re-read is what makes an early zero self-healing instead of
+                // a permanently wrong surface. Becoming visible is the one moment
+                // at which the answer cannot be a cached guess, so it is the
+                // moment to ask.
+                resolveSurface();
                 // Re-read the selection now, not only when a pref change happens
                 // to arrive while the engine is alive. While hidden the GL thread
                 // is paused and does not drain the event queue, so an update

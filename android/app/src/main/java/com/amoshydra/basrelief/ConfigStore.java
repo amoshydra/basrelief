@@ -12,7 +12,11 @@ import com.amoshydra.basrelief.core.store.Config;
  * a {@code dropMissingFiles} pass to keep a restored backup honest. Those
  * settings are properties of a photograph and now live on
  * {@link com.amoshydra.basrelief.core.store.LibraryItem}, so what is left is one
- * number: how responsive the relief is to tilt.
+ * legacy number: how responsive the relief is to tilt, before Motion became a
+ * property of a photograph rather than of the device. Nothing writes it any more.
+ * It is read once, by {@link LibraryStore#load}, so a v2 blob's photos can adopt
+ * the Motion their owner had chosen instead of silently resetting to the default
+ * on upgrade.
  *
  * <p>What replaced the old work:
  * <ul>
@@ -39,14 +43,4 @@ final class ConfigStore {
         prefs.edit().putString(Config.KEY, c.toJson()).apply();
     }
 
-    /** Synchronous, so a config write cannot be reordered against a library one. */
-    static void saveNow(SharedPreferences prefs, Config c) {
-        prefs.edit().putString(Config.KEY, c.toJson()).commit();
-    }
-
-    static Config setMotion(SharedPreferences prefs, int motion) {
-        Config next = load(prefs).withMotion(motion);
-        saveNow(prefs, next);
-        return next;
-    }
 }

@@ -156,12 +156,11 @@ public class ConfigTest {
         assertEquals(0, Config.parse("{\"motion\":-99999}").motion);
     }
 
-    @Test
-    public void motionSlidersMapToTheRenderersRange() {
-        assertEquals(0f, new Config(0).motionScale(), 1e-6f);
-        assertEquals(1.5f, new Config(50).motionScale(), 1e-6f);
-        assertEquals(3f, new Config(100).motionScale(), 1e-6f);
-    }
+    // The 0..100 slider -> 0..3 render-scale mapping is no longer pinned here.
+    // Motion belongs to a photograph, so the value that gets scaled lives on
+    // SurfaceSettings and the mapping is asserted in PerItemSettingsTest
+    // (derivedAccessorsMatchTheOnesConfigHad). A copy of the formula left here
+    // would be a second one to keep in step with the first.
 
     // -------------------------------------------------------------- migration
 

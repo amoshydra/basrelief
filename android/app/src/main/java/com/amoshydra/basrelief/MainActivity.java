@@ -3,6 +3,8 @@ package com.amoshydra.basrelief;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
+import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
@@ -333,18 +335,32 @@ public class MainActivity extends Activity {
         // high zoom because of the z-clamp.
         //
         // One read feeds every slider, so the panel can never show values that
-        // disagree with what the renderer loads. Depth and Zoom come off the
-        // selected item, because they are properties of a photograph; Motion
-        // comes off the config, because it is a property of this device and how
-        // it is held.
+        // disagree with what the renderer loads. All three come off the selected
+        // item: Depth, Zoom and Motion are all properties of a photograph now, so
+        // a slider left showing the previous photo's numbers would be editing
+        // something nobody can see.
         final AppState initial = AppState.load(prefs, getFilesDir());
         final LibraryItem initialItem = initial.activeItem();
+        final SurfaceSettings s = initialItem == null
+                ? null : initialItem.settings(Surface.HOME);
         sheetContent.addView(addSlider("Depth", "intensity",
-                initialItem == null ? LibraryItem.DEFAULT_INTENSITY : initialItem.intensity, 0, 100));
+                s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100));
         sheetContent.addView(addSlider("Motion", "motion",
-                initial.config.motion, 0, 100));
+                s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider("Zoom", "zoom",
-                initialItem == null ? LibraryItem.DEFAULT_ZOOM : initialItem.zoom, 25, 200));
+                s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, 25, 200));
+
+        // Picture is its own group because these two answer a different question
+        // from Depth and Zoom: they change how the photograph renders, not where it
+        // sits or how far it stands out. Signed, because both directions are useful
+        // and an unsigned control makes "less contrast" unreachable.
+        sheetContent.addView(fieldCaption("Picture"));
+        sheetContent.addView(addSlider("Brightness", "brightness",
+                s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
+                SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
+        sheetContent.addView(addSlider("Shadow", "shadow",
+                s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
+                SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
         sheetContent.addView(buildFramingSection(initial.isEditableItem()));
 
@@ -358,8 +374,9 @@ public class MainActivity extends Activity {
                     LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
                         @Override
                         public LibraryItem edit(LibraryItem item) {
-                            return item.withZoom(LibraryItem.DEFAULT_ZOOM)
-                                    .withOrbit(0f, 0f).withPan(0f, 0f);
+                            return item.withZoom(Surface.HOME, SurfaceSettings.DEFAULT_ZOOM)
+                                    .withOrigin(Surface.HOME, 0f, 0f)
+                                    .withPan(Surface.HOME, 0f, 0f);
                         }
                     });
                 }
@@ -1376,7 +1393,7 @@ public class MainActivity extends Activity {
                             LibraryStore.editItem(prefs, zoomId, new LibraryStore.Editor() {
                                 @Override
                                 public LibraryItem edit(LibraryItem item) {
-                                    return item.withZoom(z);
+                                    return item.withZoom(Surface.HOME, z);
                                 }
                             });
                         }
@@ -1482,11 +1499,24 @@ public class MainActivity extends Activity {
         sheetContent.addView(tv);
     }
 
+    /**
+     * What the Picture sliders currently show.
+     *
+     * <p>Mirrors the renderer, not the store: these exist so a drag can preview
+     * without reading the index on every frame. They are seeded by
+     * {@link #refreshSliders} and updated as the sliders move, and the store is
+     * only written on release.
+     */
+    private int shownBrightness = 0;
+    private int shownShadow = 0;
+
     private String formatValue(String key, int value) {
         if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
         if (key.equals("motion")) return value + "%";
-        return String.valueOf(value);
+        // Signed and bare: "40" on a -100..100 control already reads as an offset,
+        // and a "%" here would be a lie -- neither is a percentage of anything.
+        return value > 0 ? "+" + value : String.valueOf(value);
     }
 
     private View addSlider(final String label, final String key, int initial,
@@ -1527,6 +1557,18 @@ public class MainActivity extends Activity {
                             renderer.setZoom(stored / 100f);
                         } else if (isMotion) {
                             renderer.setMotion(stored / 100f * 3f);
+                        } else if ("brightness".equals(key) || "shadow".equals(key)) {
+                            // Both at once, because the shader takes both and a
+                            // preview that reset the other one would flicker as the
+                            // user crossed from one slider to the other. Read from
+                            // these fields, not the index: this runs once per pixel
+                            // of travel, and re-reading the gallery each time is the
+                            // cost the neighbouring comment is about.
+                            renderer.setAdjust(
+                                    "brightness".equals(key) ? stored : shownBrightness,
+                                    "shadow".equals(key) ? stored : shownShadow);
+                            if ("brightness".equals(key)) shownBrightness = stored;
+                            else shownShadow = stored;
                         } else {
                             renderer.setDepth(stored / 100f);
                         }
@@ -1559,30 +1601,41 @@ public class MainActivity extends Activity {
     /**
      * Write one slider's final value, once, on release.
      *
-     * <p>Motion goes to the config and Depth/Zoom to the selected item, because
-     * only Motion is a property of this device rather than of a photograph. The
-     * item's id is read here rather than captured when the slider was built, so a
-     * slider left over from a previous selection writes to whatever is on screen
-     * now -- which is what the user was looking at when they let go.
+     * <p>All three sliders write to the selected item. Motion used to be the
+     * exception and went to the config, because it was once global; it is the
+     * photo's now, so it takes the same path as Depth and Zoom.
+     *
+     * <p>The item's id is read here rather than captured when the slider was built,
+     * so a slider left over from a previous selection writes to whatever is on
+     * screen now -- which is what the user was looking at when they let go.
+     *
+     * <p>Depth and Zoom are refused for the bundled demo, and Motion is not. The
+     * demo renders its framing at the defaults regardless of what the index holds,
+     * so a stored zoom there would be a number the renderer never uses -- but
+     * Motion is honoured on the demo, and refusing it would leave a live slider
+     * that silently does nothing. See {@link Framing} for the same asymmetry.
      */
     private void persist(final String key, final int value) {
-        if ("motion".equals(key)) {
-            ConfigStore.setMotion(prefs, value);
-            return;
-        }
-        // activeId() is NOT null for the bundled item -- it returns the reserved
-        // id -- so a null check here let every slider write to it. Those values
-        // were then stored, displayed, and ignored by Framing, which renders the
-        // demo at the defaults. A control that shows a number the renderer never
-        // uses is worse than a control that is visibly switched off, so the
-        // sliders are disabled for this item in refreshSliders.
-        AppState state = AppState.load(prefs, getFilesDir());
-        if (!state.isEditableItem()) return;
         final boolean isDepth = "intensity".equals(key);
+        final boolean isZoom = "zoom".equals(key);
+        final boolean isMotion = "motion".equals(key);
+        AppState state = AppState.load(prefs, getFilesDir());
+        // activeId() is NOT null for the bundled item -- it returns the reserved id
+        // -- so a null check here let every slider write to it.
+        if (!isMotion && !state.isEditableItem()) return;
         LibraryStore.editItem(prefs, state.activeId(), new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return isDepth ? item.withIntensity(value) : item.withZoom(value);
+                if (isDepth) return item.withIntensity(Surface.HOME, value);
+                if (isZoom) return item.withZoom(Surface.HOME, value);
+                if ("brightness".equals(key) || "shadow".equals(key)) {
+                    return item.withAdjust(Surface.HOME,
+                            "brightness".equals(key) ? value
+                                    : item.settings(Surface.HOME).brightness,
+                            "shadow".equals(key) ? value
+                                    : item.settings(Surface.HOME).shadow);
+                }
+                return item.withMotion(Surface.HOME, value);
             }
         });
     }
@@ -1604,28 +1657,41 @@ public class MainActivity extends Activity {
     void refreshSliders() {
         AppState state = AppState.load(prefs, getFilesDir());
         LibraryItem item = state.activeItem();
-        // Motion is always editable -- it is not a property of a photograph.
-        // Depth and Zoom are not, when the bundled demo is showing, because the
-        // renderer draws it at the defaults regardless of what the index holds.
-        // Leaving the sliders live would show a number that does nothing, which
+        // Read once, here, and used by both the sliders and the sensor policy
+        // below. Two reads would be two chances to disagree, which is how a slider
+        // ends up showing 0 while the sensor is still told to run.
+        SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
+        // Depth and Zoom are not editable when the bundled demo is showing, because
+        // the renderer draws it at the defaults regardless of what the index holds.
+        // Leaving those sliders live would show a number that does nothing, which
         // is the same class of lie as a status line claiming content that is not
-        // there, and much easier to hit by accident.
+        // there, and much easier to hit by accident. Motion IS editable there --
+        // see persist().
         boolean editable = state.isEditableItem();
         syncingZoom = true;
         try {
-            setBar("intensity", item == null ? LibraryItem.DEFAULT_INTENSITY : item.intensity,
+            setBar("intensity", s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth,
                     editable);
-            setBar("zoom", item == null ? LibraryItem.DEFAULT_ZOOM : item.zoom, editable);
-            setBar("motion", state.config.motion, true);
+            setBar("zoom", s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, editable);
+            setBar("motion", s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, true);
+            // Picture is off for the demo, like Depth and Zoom, because Framing
+            // renders it unadjusted. A live slider there would show a number the
+            // renderer ignores.
+            shownBrightness = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness;
+            shownShadow = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow;
+            setBar("brightness", shownBrightness, editable);
+            setBar("shadow", shownShadow, editable);
         } finally {
             syncingZoom = false;
         }
         // Motion decides whether the sensor can change a pixel at all, so it
-        // decides whether the sensor should be running. Set here because this is
-        // the one place the studio reads the stored Motion value, and it runs on
-        // every framing change.
+        // decides whether the sensor should be running -- and Motion belongs to the
+        // active photo now, so switching photos at Motion 0 parks the sensor even
+        // if the photo you came from had it at 60. Read from the item rather than
+        // asked of the renderer, because the value is on this thread already and a
+        // getter would cost a hop to the GL thread to learn something in hand.
         if (sensorPolicy != null) {
-            sensorPolicy.setMotionActive(state.config.motionScale() > 0f);
+            sensorPolicy.setMotionActive(s != null && s.motionScale() > 0f);
         }
     }
 
@@ -1850,7 +1916,7 @@ public class MainActivity extends Activity {
             img = imgF == null ? null : imgF.getAbsolutePath();
             dep = depF == null ? null : depF.getAbsolutePath();
         }
-        final Framing framing = Framing.of(state.activeItem(), state.config.motionScale());
+        final Framing framing = Framing.of(state.activeItem(), Surface.HOME);
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {

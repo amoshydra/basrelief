@@ -9,12 +9,19 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 /**
- * Per-item settings, the v1 -> v2 migration, and the bundled item.
+ * Per-item settings, the migrations that brought them here, and the bundled item.
  *
  * <p>The traps here are the ones this project has already paid for: a stored
  * value whose meaning changes between builds, a field that must NOT be range
  * checked because its units are not a fraction, and a cleanup pass that deletes
  * something it cannot recreate.
+ *
+ * <p>Settings are now per <em>surface</em> as well as per item — see
+ * {@link SurfaceSettings} — so every read goes through
+ * {@link LibraryItem#settings(Surface)}. That indirection is not ceremony: the
+ * render fields are private so that a writer cannot change one without the second
+ * surface hearing about it, and a test that reads {@code item.intensity} would
+ * fail to compile rather than quietly pass.
  */
 public class PerItemSettingsTest {
 
@@ -22,89 +29,195 @@ public class PerItemSettingsTest {
         return LibraryItem.of(id, id + ".png", id + "_depth.png", 1000L);
     }
 
+    private static SurfaceSettings home(LibraryItem it) {
+        return it.settings(Surface.HOME);
+    }
+
     // ------------------------------------------------------------- defaults
 
     @Test
     public void aNewItemStartsAtTheOldGlobalDefaults() {
-        LibraryItem it = item("a");
-        assertEquals(90, it.intensity);   // matches Config.DEFAULT_INTENSITY
-        assertEquals(100, it.zoom);       // matches Config.DEFAULT_ZOOM
-        assertEquals(0f, it.orbitX, 0f);
-        assertEquals(0f, it.panX, 0f);
+        SurfaceSettings s = home(item("a"));
+        assertEquals(90, s.depth);      // matches Config.DEFAULT_INTENSITY
+        assertEquals(100, s.zoom);      // matches Config.DEFAULT_ZOOM
+        assertEquals(33, s.motion);     // matches Config.DEFAULT_MOTION
+        assertEquals(0f, s.originX, 0f);
+        assertEquals(0f, s.panX, 0f);
+        assertEquals(0, s.brightness);
+        assertEquals(0, s.shadow);
     }
 
     @Test
     public void derivedAccessorsMatchTheOnesConfigHad() {
-        LibraryItem it = item("a").withIntensity(60).withZoom(150);
-        assertEquals(0.6f, it.depthFraction(), 1e-6f);
-        assertEquals(1.5f, it.zoomScale(), 1e-6f);
+        LibraryItem it = item("a")
+                .withIntensity(Surface.HOME, 60)
+                .withZoom(Surface.HOME, 150)
+                .withMotion(Surface.HOME, 50);
+        assertEquals(0.6f, it.settings(Surface.HOME).depthFraction(), 1e-6f);
+        assertEquals(1.5f, it.settings(Surface.HOME).zoomScale(), 1e-6f);
+        assertEquals(1.5f, it.settings(Surface.HOME).motionScale(), 1e-6f);
+    }
+
+    /**
+     * The lock screen starts as a mirror of the home screen, not as a second set of
+     * values.
+     *
+     * <p>A new photo needs no lock entry, and every photo before anyone customises
+     * one has none. If the default were "lock is its own defaults" then the lock
+     * screen of a freshly imported photo would render differently from its home
+     * screen for no reason the user could see.
+     */
+    @Test
+    public void aNewItemHasNoLockOverrideAndLockResolvesToHome() {
+        LibraryItem it = item("a").withIntensity(Surface.HOME, 20);
+        assertFalse(it.hasOwnLockSettings());
+        assertEquals(home(it).depth, it.settings(Surface.LOCK).depth);
     }
 
     // -------------------------------------------------------------- clamping
 
     @Test
-    public void intensityAndZoomAreClamped() {
-        assertEquals(100, item("a").withIntensity(5000).intensity);
-        assertEquals(0, item("a").withIntensity(-3).intensity);
-        assertEquals(200, item("a").withZoom(9999).zoom);
+    public void depthZoomAndMotionAreClamped() {
+        assertEquals(100, home(item("a").withIntensity(Surface.HOME, 5000)).depth);
+        assertEquals(0, home(item("a").withIntensity(Surface.HOME, -3)).depth);
+        assertEquals(200, home(item("a").withZoom(Surface.HOME, 9999)).zoom);
         // below 25% would invert the camera
-        assertEquals(25, item("a").withZoom(1).zoom);
+        assertEquals(25, home(item("a").withZoom(Surface.HOME, 1)).zoom);
+        assertEquals(100, home(item("a").withMotion(Surface.HOME, 400)).motion);
+        assertEquals(0, home(item("a").withMotion(Surface.HOME, -1)).motion);
     }
 
     @Test
-    public void orbitIsClampedBecauseItIsAFraction() {
-        LibraryItem it = item("a").withOrbit(9f, -9f);
-        assertEquals(0.5f, it.orbitX, 1e-6f);
-        assertEquals(-0.5f, it.orbitY, 1e-6f);
+    public void originIsClampedBecauseItIsAFraction() {
+        SurfaceSettings s = home(item("a").withOrigin(Surface.HOME, 9f, -9f));
+        assertEquals(0.5f, s.originX, 1e-6f);
+        assertEquals(-0.5f, s.originY, 1e-6f);
     }
 
     /**
      * Pan is in PIXELS -- CameraModel consumes panX / surfaceW -- so its range is
-     * the surface size, which this class cannot know. Clamping it to orbit's
-     * +/-0.5 range flattened a stored -135px to -0.5px, i.e. no pan at all, and
-     * it survived review because the value still round-tripped. Delta is exactly
-     * 0 on purpose: a tolerance would hide a partial clamp.
+     * the surface size, which this class cannot know. Clamping it to origin's
+     * +/-0.5 range flattened a stored -135px to -0.5px, i.e. no pan at all, and it
+     * survived review because the value still round-tripped. Delta is exactly 0 on
+     * purpose: a tolerance would hide a partial clamp.
      */
     @Test
     public void panIsPixelsAndMustNotBeClampedToAFraction() {
-        LibraryItem it = item("a").withPan(-135.25f, -632.5f);
-        assertEquals(-135.25f, it.panX, 0f);
-        assertEquals(-632.5f, it.panY, 0f);
-        assertEquals(5000f, item("a").withPan(5000f, 5000f).panX, 0f);
+        LibraryItem it = item("a").withPan(Surface.HOME, -135.25f, -632.5f);
+        assertEquals(-135.25f, home(it).panX, 0f);
+        assertEquals(-632.5f, home(it).panY, 0f);
+        assertEquals(5000f, home(item("a").withPan(Surface.HOME, 5000f, 5000f)).panX, 0f);
 
         LibraryItem r = Library.parse(libraryOf(it)).activeItem();
-        assertEquals(-135.25f, r.panX, 1e-3f);
-        assertEquals(-632.5f, r.panY, 1e-3f);
+        assertEquals(-135.25f, home(r).panX, 1e-3f);
+        assertEquals(-632.5f, home(r).panY, 1e-3f);
+    }
+
+    /**
+     * The adjustments are clamped on both signs, because 0 is the identity for both
+     * and a value past either end has no meaning.
+     */
+    @Test
+    public void theAdjustmentsAreClampedBothWays() {
+        SurfaceSettings s = home(item("a").withAdjust(Surface.HOME, 500, -500));
+        assertEquals(100, s.brightness);
+        assertEquals(-100, s.shadow);
+        assertEquals(0, home(item("a")).brightness);
     }
 
     // --------------------------------------------------------- round tripping
 
     @Test
     public void settingsSurviveAJsonRoundTrip() {
-        LibraryItem it = item("a").withIntensity(37).withZoom(175)
-                .withOrbit(0.2f, -0.3f).withPan(11f, -22f);
+        LibraryItem it = item("a")
+                .withIntensity(Surface.HOME, 37)
+                .withZoom(Surface.HOME, 175)
+                .withMotion(Surface.HOME, 61)
+                .withOrigin(Surface.HOME, 0.2f, -0.3f)
+                .withPan(Surface.HOME, 11f, -22f)
+                .withAdjust(Surface.HOME, -40, 25);
         LibraryItem r = Library.parse(
                 Library.empty().withItem(it).withSelection(it.id).toJson()).activeItem();
-        assertEquals(37, r.intensity);
-        assertEquals(175, r.zoom);
-        assertEquals(0.2f, r.orbitX, 1e-6f);
-        assertEquals(-22f, r.panY, 1e-3f);
+        SurfaceSettings s = home(r);
+        assertEquals(37, s.depth);
+        assertEquals(175, s.zoom);
+        assertEquals(61, s.motion);
+        assertEquals(0.2f, s.originX, 1e-6f);
+        assertEquals(-22f, s.panY, 1e-3f);
+        assertEquals(-40, s.brightness);
+        assertEquals(25, s.shadow);
+    }
+
+    /**
+     * A lock override survives persistence, and still overrides afterwards.
+     *
+     * <p>Written as a round trip rather than a field check because the failure this
+     * would catch is a lock entry that parses but stops being an override — which
+     * renders the lock screen correctly and quietly stops being customisable.
+     */
+    @Test
+    public void aLockOverrideSurvivesAJsonRoundTrip() {
+        LibraryItem it = item("a")
+                .withIntensity(Surface.HOME, 80)
+                .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0));
+
+        LibraryItem r = Library.parse(libraryOf(it)).activeItem();
+        assertTrue(r.hasOwnLockSettings());
+        assertEquals(25, r.settings(Surface.LOCK).depth);
+        assertEquals(80, r.settings(Surface.HOME).depth);
     }
 
     @Test
     public void mutatorsDoNotMutate() {
-        LibraryItem a = item("a").withIntensity(10);
-        LibraryItem b = a.withIntensity(20);
-        assertEquals(10, a.intensity);
-        assertEquals(20, b.intensity);
+        LibraryItem a = item("a").withIntensity(Surface.HOME, 10);
+        LibraryItem b = a.withIntensity(Surface.HOME, 20);
+        assertEquals(10, home(a).depth);
+        assertEquals(20, home(b).depth);
+    }
+
+    /**
+     * Editing one value must not reset the others.
+     *
+     * <p>This is the hazard the {@code withX} mutators exist to prevent, and it is
+     * easy to reintroduce: routing a single-field edit through a constructor that
+     * defaults everything it is not given resets everything it is not given. It
+     * shipped that way once — {@code withDepth} reset Motion, brightness and
+     * shadow — because the values it did not name had been added later.
+     */
+    @Test
+    public void aSingleFieldEditDoesNotResetTheOthers() {
+        LibraryItem full = item("a")
+                .withIntensity(Surface.HOME, 80)
+                .withZoom(Surface.HOME, 150)
+                .withMotion(Surface.HOME, 55)
+                .withOrigin(Surface.HOME, 0.1f, -0.2f)
+                .withPan(Surface.HOME, 30f, -40f)
+                .withAdjust(Surface.HOME, -15, 20);
+
+        // the three identity-only mutators are the ones most likely to take a
+        // shortcut through a short constructor
+        LibraryItem renamed = full.withLabel("Sunset");
+        LibraryItem mapped = full.withDepth("new_depth.png");
+        LibraryItem used = full.withLastUsedAt(999L);
+
+        for (LibraryItem after : new LibraryItem[]{renamed, mapped, used}) {
+            SurfaceSettings s = home(after);
+            assertEquals(80, s.depth);
+            assertEquals(150, s.zoom);
+            assertEquals("Motion was reset by an identity-only edit", 55, s.motion);
+            assertEquals(0.1f, s.originX, 1e-6f);
+            assertEquals(-40f, s.panY, 1e-3f);
+            assertEquals(-15, s.brightness);
+            assertEquals(20, s.shadow);
+        }
     }
 
     // ------------------------------------------------------------- migration
 
     /**
-     * A v1 blob has no per-item settings. Items must survive with their ids,
-     * names, labels, timestamps, the active pointer and the sort order intact,
-     * and gain the defaults.
+     * A v1 blob has no per-item settings. Items must survive with their ids, names,
+     * labels, timestamps, the active pointer and the sort order intact, and gain
+     * the defaults.
      */
     @Test
     public void v1ItemsLoadWithDefaultSettingsAndKeepEverythingElse() {
@@ -120,21 +233,142 @@ public class PerItemSettingsTest {
         assertEquals(111L, lib.find("a").addedAt);
         assertEquals(222L, lib.find("a").lastUsedAt);
         assertEquals(333L, lib.find("b").addedAt);
-        assertEquals(90, lib.find("a").intensity);
-        assertEquals(100, lib.find("a").zoom);
-        assertEquals(0f, lib.find("a").panX, 0f);
+        assertEquals(90, home(lib.find("a")).depth);
+        assertEquals(100, home(lib.find("a")).zoom);
+        assertEquals(0f, home(lib.find("a")).panX, 0f);
     }
 
+    /**
+     * A v2 blob's flat values move under {@code surfaces.home}, and the global
+     * Motion is copied onto every item.
+     *
+     * <p>The Motion half is the one that matters to a user. It used to be one
+     * number in {@code Config}, so the library blob has no copy of it and the
+     * migration has to be handed it. Dropping it instead would silently reset
+     * everyone's wallpaper to the default speed on upgrade — a change nobody can
+     * file a bug about, because the wallpaper still moves.
+     */
     @Test
-    public void migrationIsIdempotent() {
-        String v1 = "{\"version\":1,\"active\":\"a\",\"items\":["
-                + "{\"id\":\"a\",\"image\":\"a.png\",\"depth\":null,\"added_at\":1}]}";
-        Library once = Library.parse(v1);
-        // re-parsing the re-serialised form must be stable
-        Library twice = Library.parse(once.toJson());
-        assertEquals(once.activeId(), twice.activeId());
-        assertEquals(once.items().size(), twice.items().size());
-        assertEquals(once.find("a").intensity, twice.find("a").intensity);
+    public void v2FlatValuesAndTheGlobalMotionBothSurviveTheUpgrade() {
+        String v2 = "{\"version\":2,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"depth\":null,\"added_at\":1,"
+                + "\"intensity\":45,\"zoom\":160,\"orbit_x\":0.15,\"orbit_y\":-0.25,"
+                + "\"pan_x\":-135,\"pan_y\":260},"
+                + "{\"id\":\"b\",\"image\":\"b.png\",\"depth\":null,\"added_at\":2,"
+                + "\"intensity\":10,\"zoom\":100,\"orbit_x\":0,\"orbit_y\":0,"
+                + "\"pan_x\":0,\"pan_y\":0}]}";
+        Library lib = Library.parse(v2, 70);
+
+        SurfaceSettings a = home(lib.find("a"));
+        assertEquals(45, a.depth);
+        assertEquals(160, a.zoom);
+        assertEquals(0.15f, a.originX, 1e-6f);
+        assertEquals(-0.25f, a.originY, 1e-6f);
+        assertEquals(-135f, a.panX, 1e-3f);
+        assertEquals(260f, a.panY, 1e-3f);
+        assertEquals("every item must adopt the old global Motion", 70, a.motion);
+
+        assertEquals("the second photo too", 70, home(lib.find("b")).motion);
+        assertEquals(10, home(lib.find("b")).depth);
+
+        // and the migrated form writes back as v3, not as flat fields
+        Library again = Library.parse(lib.toJson());
+        assertEquals(70, home(again.find("a")).motion);
+        assertEquals(45, home(again.find("a")).depth);
+    }
+
+    /**
+     * A v2 blob with no explicit Motion value still gets the one it was given.
+     *
+     * <p>The degenerate case of the test above: the legacy value arrives as an
+     * argument, so it applies whether or not any item mentioned Motion — which no
+     * v2 item ever did.
+     */
+    @Test
+    public void v2ItemsWithNoValuesAtAllStillAdoptTheGlobalMotion() {
+        String v2 = "{\"version\":2,\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1}]}";
+        Library lib = Library.parse(v2, 88);
+        assertEquals(88, home(lib.find("a")).motion);
+        assertEquals(SurfaceSettings.DEFAULT_DEPTH, home(lib.find("a")).depth);
+    }
+
+    /**
+     * A v3 item with no lock entry inherits the home screen.
+     *
+     * <p>Migration deliberately writes no lock entry. A photo that never had
+     * per-surface settings should keep tracking its home framing until someone
+     * actually tunes the lock screen.
+     */
+    @Test
+    public void aMigratedPhotoHasNoLockOverride() {
+        String v2 = "{\"version\":2,\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"intensity\":45}]}";
+        LibraryItem a = Library.parse(v2, 33).find("a");
+        assertFalse("migration must not invent a lock override", a.hasOwnLockSettings());
+        assertEquals(45, a.settings(Surface.LOCK).depth);
+    }
+
+    /**
+     * Re-parsing what a migration produced must change nothing.
+     *
+     * <p>The weak version of this test re-parses {@code once.toJson()} and stops
+     * there — and it proves nothing, because that blob is already v3, so the
+     * migration does not run a second time. It passes identically whether the
+     * migration is idempotent or skipped entirely.
+     *
+     * <p>So the version field is put back to 2 before the second parse. That forces
+     * the migration to run again over content it already produced, which is the
+     * case that actually breaks: a migration that overwrites or re-copies rather
+     * than only filling in what is absent.
+     */
+    @Test
+    public void migrationIsIdempotentEvenWhenForcedToRunTwice() {
+        String v2 = "{\"version\":2,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"depth\":null,\"added_at\":1,"
+                + "\"intensity\":45,\"zoom\":160,\"orbit_x\":0.15,\"orbit_y\":-0.25,"
+                + "\"pan_x\":-135,\"pan_y\":260}]}";
+
+        Library once = Library.parse(v2, 70);
+
+        // The blob it wrote, with the version put back so the migration runs again.
+        String alreadyMigrated = once.toJson()
+                .replace("\"version\":" + Library.VERSION, "\"version\":2");
+        Library twice = Library.parse(alreadyMigrated, 70);
+
+        assertEquals("the whole blob must survive a second migration",
+                once.toJson(), twice.toJson());
+        SurfaceSettings a = home(once.find("a"));
+        SurfaceSettings b = home(twice.find("a"));
+        assertEquals(a.depth, b.depth);
+        assertEquals(a.zoom, b.zoom);
+        assertEquals("Motion must not be re-copied from the argument",
+                a.motion, b.motion);
+        assertEquals(0.15f, b.originX, 1e-6f);
+        assertEquals(-135f, b.panX, 1e-3f);
+    }
+
+    /**
+     * The first pass must actually do something.
+     *
+     * <p>The companion to the test above, and the reason it is worth having: a
+     * migration that silently did nothing would leave every value below at its
+     * default, which is exactly what "idempotent" looks like from the outside. The
+     * two tests together are the real assertion — one proves the work happened, the
+     * other proves it does not happen twice.
+     */
+    @Test
+    public void theFirstMigrationChangesTheBlobRatherThanPassingThrough() {
+        String v2 = "{\"version\":2,\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1,"
+                + "\"intensity\":45,\"zoom\":160}]}";
+        Library before = Library.parse(v2, 70);
+        assertTrue("the migration must not be a no-op",
+                !before.toJson().equals(v2));
+        assertTrue("and it must write the nested shape",
+                before.toJson().contains("\"surfaces\""));
+        assertTrue("leaving the flat values behind would be a second copy to disagree",
+                !before.toJson().contains("\"intensity\":45"));
     }
 
     @Test

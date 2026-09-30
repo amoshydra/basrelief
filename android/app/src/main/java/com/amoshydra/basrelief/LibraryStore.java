@@ -28,8 +28,29 @@ final class LibraryStore {
     private LibraryStore() {
     }
 
+    /**
+     * The index, migrating a pre-v3 blob.
+     *
+     * <p>{@code legacyMotion} is Motion's old home: one global number in
+     * {@link Config}. It is passed in rather than read here because
+     * {@link LibraryStore} does not own the config blob, and because reading it
+     * inside {@link #load} would mean parsing the config on every call — including
+     * the ones on the GL thread at cold start. Nothing writes Motion to the config
+     * any more; this value only ever moves a user's photos onto the per-item one.
+     */
+    static Library load(SharedPreferences prefs, int legacyMotion) {
+        return Library.parse(prefs.getString(Library.KEY, null), legacyMotion);
+    }
+
+    /**
+     * The index, for a caller with no {@code Config} in hand.
+     *
+     * <p>Reads the config to get the legacy Motion, which costs one extra parse.
+     * That is why {@link AppState} uses the two-argument form instead: it is on the
+     * GL thread at cold start, where a wallpaper depends on this returning fast.
+     */
     static Library load(SharedPreferences prefs) {
-        return Library.parse(prefs.getString(Library.KEY, null));
+        return load(prefs, ConfigStore.load(prefs).motion);
     }
 
     static void save(SharedPreferences prefs, Library library) {

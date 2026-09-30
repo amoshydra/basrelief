@@ -66,7 +66,7 @@ public final class Library {
      * v2: per-item settings. v1 items had none, so they load with the defaults
      * in {@link LibraryItem} -- which is why the migration below is a no-op.
      */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /**
      * The id of the bundled marble bust, which every install has.
@@ -553,6 +553,25 @@ public final class Library {
      * @param raw the stored string, or null if nothing has been written yet
      */
     public static Library parse(String raw) {
+        return parse(raw, Config.DEFAULT_MOTION);
+    }
+
+    /**
+     * As {@link #parse(String)}, but told what Motion was before it became
+     * per-photo.
+     *
+     * <p>Motion used to be one global value in {@link Config}. Moving it onto
+     * every item is a migration that has to be told the old value, because there
+     * is no other copy of it: the library blob never held it. A caller that has a
+     * {@code Config} in hand — which in this app means every production caller —
+     * must use this form, or an upgrading user's Motion silently resets to the
+     * default. The one-argument form above exists for callers that have no Config
+     * to offer, which in practice means tests writing a blob from scratch.
+     *
+     * @param raw          the stored string, or null if nothing has been written
+     * @param legacyMotion the global Motion to copy onto each item on upgrade
+     */
+    public static Library parse(String raw, int legacyMotion) {
         if (raw == null || raw.trim().isEmpty()) return empty();
         JSONObject o;
         try {
@@ -567,7 +586,7 @@ public final class Library {
             return empty();
         }
         if (version < VERSION) {
-            o = migrate(o, version);
+            o = migrate(o, version, legacyMotion);
         }
 
         List<LibraryItem> parsed = new ArrayList<LibraryItem>();
@@ -610,10 +629,47 @@ public final class Library {
      * field has to be rewritten, which is what makes migration idempotent for
      * free: parsing the same v1 blob twice gives the same result.
      *
-     * <p>Written as a real hook rather than inlined so the next schema change
-     * has an obvious place to go.
+     * <p>Written as a real hook rather than inlined so the next schema change has
+     * an obvious place to go.
+     *
+     * @param fromVersion the version the blob was written at
+     * @param motion      the old GLOBAL Motion, copied onto every item
      */
-    private static JSONObject migrate(JSONObject o, int fromVersion) {
+    private static JSONObject migrate(JSONObject o, int fromVersion, int motion) {
+        if (fromVersion < 3) {
+            // v2 -> v3: the six flat render values move under surfaces.home, and
+            // Motion -- which was GLOBAL, in Config -- is copied onto every item so
+            // no photo changes feel on upgrade. Copying it rather than dropping it
+            // is the whole point: a wallpaper that silently became three times
+            // more responsive on upgrade is a change nobody can file a bug about.
+            //
+            // lock is left absent, which reads as "the same as home" -- a photo
+            // that never had per-surface settings needs none.
+            JSONArray items = o.optJSONArray("items");
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.optJSONObject(i);
+                    if (it == null || it.has("surfaces")) continue;
+                    JSONObject home = new JSONObject();
+                    try {
+                        if (it.has("intensity")) home.put("depth", it.optInt("intensity"));
+                        if (it.has("zoom")) home.put("zoom", it.optInt("zoom"));
+                        home.put("motion", motion);
+                        if (it.has("orbit_x")) home.put("origin_x", it.optDouble("orbit_x"));
+                        if (it.has("orbit_y")) home.put("origin_y", it.optDouble("orbit_y"));
+                        if (it.has("pan_x")) home.put("pan_x", it.optDouble("pan_x"));
+                        if (it.has("pan_y")) home.put("pan_y", it.optDouble("pan_y"));
+                        JSONObject surfaces = new JSONObject();
+                        surfaces.put(Surface.HOME.key, home);
+                        it.put("surfaces", surfaces);
+                    } catch (JSONException ignored) {
+                        // One unreadable item is one item at its flat defaults, not
+                        // a failed migration for the whole library. These puts
+                        // cannot actually throw.
+                    }
+                }
+            }
+        }
         return o;
     }
 

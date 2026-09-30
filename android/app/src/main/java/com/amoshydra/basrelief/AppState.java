@@ -107,7 +107,7 @@ final class AppState {
         String libraryBlob = prefs.getString(Library.KEY, null);
 
         Config config = Config.parse(configBlob);
-        Library library = Library.parse(libraryBlob);
+        Library library = Library.parse(libraryBlob, config.motion);
         boolean libraryDirty = false;
 
         // 1. Adopt whatever a pre-gallery build was showing, but only when there

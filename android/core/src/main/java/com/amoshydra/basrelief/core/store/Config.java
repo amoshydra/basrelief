@@ -29,8 +29,11 @@ import org.json.JSONObject;
 public final class Config {
 
     /**
-     * v2: the per-photograph settings left this blob, so it now holds only
-     * Motion. A v1 blob is still readable -- see {@link #migrate}.
+     * v2: the per-photograph settings left this blob, so it now holds only Motion.
+     * v3 of the *library* took even that away -- Motion became a property of a
+     * photograph -- so this blob is written no further and read once per load, by
+     * the library's migration, to give a pre-v3 photo the Motion its owner chose.
+     * A v1 blob is still readable; see {@link #migrate}.
      */
     public static final int VERSION = 2;
 
@@ -41,7 +44,14 @@ public final class Config {
     public static final int MOTION_MIN = 0;
     public static final int MOTION_MAX = 100; // scaled to 0..3 internally
 
-    /** 0..100. */
+    /**
+     * 0..100, and now read-only in practice.
+     *
+     * <p>Nothing writes it. It is the one value the library blob cannot supply,
+     * because it never lived there, and dropping it would silently reset every
+     * user's wallpaper speed on upgrade — a change nobody can file a bug about,
+     * because the wallpaper still moves.
+     */
     public final int motion;
 
     public Config(int motion) {
@@ -52,23 +62,6 @@ public final class Config {
         return new Config(DEFAULT_MOTION);
     }
 
-    public static int clampMotion(int v) {
-        return clamp(v, MOTION_MIN, MOTION_MAX);
-    }
-
-    public Config withMotion(int v) {
-        return new Config(v);
-    }
-
-    /**
-     * Motion as the renderer wants it: 0..3.
-     *
-     * <p>0 is still a live value, not "off" -- the relief is built and the
-     * camera still moves, it just barely responds to tilt.
-     */
-    public float motionScale() {
-        return motion / 100f * 3f;
-    }
 
     // ------------------------------------------------------------ serialise
 

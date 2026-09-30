@@ -21,7 +21,9 @@ import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
+import com.amoshydra.basrelief.core.render.Picture;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 
@@ -132,12 +134,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
             "uniform vec3 uCamPos;\n" +
+            // Both already mapped by com.amoshydra.basrelief.core.render.Picture,
+            // which is unit tested. This is deliberately the arithmetic and nothing
+            // else: a branch or a mapping decision here would exist twice.
+            "uniform float uBrightnessGain;\n" +
+            "uniform float uShadowLift;\n" +
             "void main() {\n" +
             "  vec3 n = normalize(vWorldNormal);\n" +
             "  vec3 l = normalize(uLightDir);\n" +
             "  vec3 v = normalize(uCamPos - vWorldPos);\n" +
             "  float diff = max(dot(n, l), 0.0);\n" +
             "  vec3 color = texture2D(uColor, vUv).rgb;\n" +
+            // Applied to the photograph, before the lighting: a lift that went
+            // through the diffuse multiply would be re-darkened by it. Both are
+            // identities at their defaults, so an unadjusted photo is untouched.
+            "  color *= uBrightnessGain;\n" +
+            "  color += uShadowLift * (1.0 - color);\n" +
             "  color *= 1.0 + 0.25 * diff;\n" +
             "  gl_FragColor = vec4(color * uFade, 1.0);\n" +
             "}\n";
@@ -162,6 +174,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private int program;
     private int aPosition, aUV, aNormal, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
     private int uFade = -1;
+    private int uBrightnessGain = -1, uShadowLift = -1;
+
+    /**
+     * Live preview values, written by the UI thread and read on the GL thread.
+     *
+     * <p>Volatile and nothing more, per the threading rule: a UI-thread setter may
+     * only write a field, and anything touching GL state goes through
+     * {@code glView.queueEvent}. These are consumed in {@link #apply}, which already
+     * runs on the GL thread, so no queueEvent is needed for the read — only the
+     * field is shared.
+     */
+    private volatile float pendingBrightnessGain = 1f;
+    private volatile float pendingShadowLift = 0f;
     private FloatBuffer posBuffer, uvBuffer, normalBuffer;
     private int vertexCount;
 
@@ -433,6 +458,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         motion = Math.max(0f, Math.min(3f, v));
     }
 
+    /**
+     * Live preview for the Brightness and Shadow sliders.
+     *
+     * <p>Writes only volatile fields and does not touch GL, so it is safe from the
+     * UI thread — the same rule {@link #setDepth} and {@link #setMotion} follow. The
+     * mapping is {@link Picture}'s, called here so the slider and the stored value
+     * cannot disagree; the caller then calls {@code requestRender()} and the draw
+     * loop uploads whatever these now say.
+     *
+     * <p>Storing the value is what persists it — {@code persist()} on release — so
+     * this is preview only and a drag that never ends writes nothing.
+     */
+    public void setAdjust(int brightness, int shadow) {
+        pendingBrightnessGain = Picture.brightnessGain(brightness);
+        pendingShadowLift = Picture.shadowLift(shadow);
+    }
+
     public void setShowOrbitMarker(boolean show) {
         showOrbitMarker = show;
     }
@@ -476,7 +518,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return item.withOrbit(ox, oy).withPan(px, py);
+                return item.withOrigin(Surface.HOME, ox, oy).withPan(Surface.HOME, px, py);
             }
         });
     }
@@ -490,7 +532,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return item.withPan(px, py);
+                return item.withPan(Surface.HOME, px, py);
             }
         });
     }
@@ -825,6 +867,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uLightDir = GLES20.glGetUniformLocation(program, "uLightDir");
         uCamPos = GLES20.glGetUniformLocation(program, "uCamPos");
         uFade = GLES20.glGetUniformLocation(program, "uFade");
+        uBrightnessGain = GLES20.glGetUniformLocation(program, "uBrightnessGain");
+        uShadowLift = GLES20.glGetUniformLocation(program, "uShadowLift");
 
         markerProgram = createProgram(MARKER_VERT, MARKER_FRAG);
         markerAPos = GLES20.glGetAttribLocation(markerProgram, "aPos");
@@ -906,6 +950,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         orbitX = f.orbitX;
         orbitY = f.orbitY;
         setPan(f.panX, f.panY);
+        // Set here as well as in setAdjust, so a resolve always wins. Without it,
+        // selecting a second photo while the first is still previewed at
+        // Brightness +40 would carry that preview onto the new photo -- the draw
+        // loop has no other way to learn the value changed.
+        pendingBrightnessGain = f.brightnessGain;
+        pendingShadowLift = f.shadowLift;
     }
 
     public void reloadFromPrefs() {
@@ -918,7 +968,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final LibraryItem active = state.activeItem();
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
-        apply(Framing.of(state.activeItem(), state.config.motionScale()));
+        apply(Framing.of(state.activeItem(), Surface.HOME));
         if (active == null || active.isBundled()) {
             // No file to resolve: the marble bust, read from res/raw. This is a
             // renderable state and not a failure, and it is where a delete of the
@@ -1014,6 +1064,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uIntensity, f.zScale);
         GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
         GLES20.glUniform3f(uLightDir, -0.35f, 0.5f, 0.75f);
+        GLES20.glUniform1f(uBrightnessGain, pendingBrightnessGain);
+        GLES20.glUniform1f(uShadowLift, pendingShadowLift);
         GLES20.glUniform1f(uFade, fade);
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);

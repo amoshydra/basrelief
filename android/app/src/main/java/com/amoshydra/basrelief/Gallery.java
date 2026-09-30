@@ -17,6 +17,8 @@ import android.widget.Toast;
 
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.Surface;
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.SortOrder;
 
@@ -105,7 +107,7 @@ final class Gallery {
         lp.gravity = Gravity.CENTER;
         panel.setLayoutParams(lp);
 
-        Library lib = LibraryStore.load(activity.prefs);
+        Library lib = LibraryStore.load(activity.prefs, ConfigStore.load(activity.prefs).motion);
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         String activeId = lib.activeId();
 
@@ -253,7 +255,8 @@ final class Gallery {
         } else {
             sb.append("FLAT, no depth");
         }
-        sb.append("  ·  depth ").append(item.intensity).append('%');
+        sb.append("  ·  depth ")
+                .append(item.settings(Surface.HOME).depth).append('%');
         if (isActive) sb.append("  ·  on screen");
         return sb.toString();
     }
@@ -370,9 +373,10 @@ final class Gallery {
         LibraryStore.editItem(activity.prefs, item.id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem it) {
-                return it.withIntensity(LibraryItem.DEFAULT_INTENSITY)
-                        .withZoom(LibraryItem.DEFAULT_ZOOM)
-                        .withOrbit(0f, 0f).withPan(0f, 0f);
+                return it.withIntensity(Surface.HOME, SurfaceSettings.DEFAULT_DEPTH)
+                        .withZoom(Surface.HOME, SurfaceSettings.DEFAULT_ZOOM)
+                        .withOrigin(Surface.HOME, 0f, 0f)
+                        .withPan(Surface.HOME, 0f, 0f);
             }
         });
         if (LibraryStore.load(activity.prefs).isActive(item.id)) {

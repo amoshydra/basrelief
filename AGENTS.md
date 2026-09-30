@@ -54,7 +54,16 @@ android/app  ──depends on──▶  android/core
 
 `:core` exists so the maths that is easy to get quietly wrong is testable
 without a device. It holds depth→geometry (`ReliefMesh`), the camera
-(`CameraModel`), a vendored `Mat4`, and the prefs path scheme (`PrefFiles`).
+(`CameraModel`), the picture adjustments (`Picture`), a vendored `Mat4`, the prefs
+path scheme (`PrefFiles`), the whole persisted schema (`Config`, `Library`,
+`LibraryItem`, `Surface`, `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`),
+and the one resolution of state into numbers (`Framing`, `SurfaceResolver`).
+
+Anything that would otherwise be untestable GL or platform code belongs here as a
+pure function of plain values — that is the whole test. `Picture` is the pattern:
+the shader keeps one multiply and one mix, and the mapping it cannot be checked for
+lives in `:core` with its own tests. `SurfaceResolver` is the same, answering
+which surface an engine is drawing from two ints.
 JUnit is `testImplementation` only, so `:core` keeps **zero runtime
 dependencies** and nothing is added to the APK. The app shell's only dependency
 is `project(':core')` — no AndroidX, no Maven artifacts.
@@ -65,14 +74,25 @@ wallpaper (`DepthWallpaperService`) each own a `GLSurfaceView` and a
 the studio writes, the wallpaper reads and re-renders.
 
 There is now a gallery, so that file holds two versioned JSON blobs: `config`
-(Motion, and nothing else) and `library` (the index). **The index owns the
-selection and only the index** — the pointer exists in exactly one place, because
-two copies can disagree and a disagreeing pointer is a wallpaper showing a
-photo the user deleted. Everything about a photograph (Depth, Zoom, framing,
-files) is on its `LibraryItem`; Motion is global because it describes the device
-rather than any image. `AppState` is the single read path, and `Framing` the
-single resolution of that state into numbers, because the two surfaces computing
-it themselves is how they came to disagree about the bundled item.
+and `library` (the index). **The index owns the selection and only the index** —
+the pointer exists in exactly one place, because two copies can disagree and a
+disagreeing pointer is a wallpaper showing a photo the user deleted. **Everything
+about a photograph is on its `LibraryItem`, including Motion** — it was global
+until `Library` v3, and the config blob survives only as the legacy value the
+migration reads so an upgraded user's photos keep the speed they had.
+`AppState` is the single read path, and `Framing` the single resolution of that
+state into numbers, because the two surfaces computing it themselves is how they
+came to disagree about the bundled item.
+
+**A render value lives on exactly one surface, and a surface's values are a set.**
+`LibraryItem`'s six fields are private and are the *home* surface's storage;
+`settings(Surface)` is the only read and `withSettings`/`editSettings` the only
+write, so a `lock` override cannot be half-updated and a home edit cannot forget a
+second surface exists. Editing one value through a constructor that defaults
+everything it is not given resets everything it is not given — which shipped once,
+when `withDepth` silently reset Motion, brightness and shadow because those values
+had been added after it was written. `LibraryItem.copy` exists for the same
+reason: identity-only edits have one path that cannot name a render value.
 
 Because they share a process, one shares the other's `SharedPreferences`
 instance — which is why "does it work cold?" can only be answered without opening
@@ -152,7 +172,7 @@ already cost real time.
   bookkeeping, or a snapshot outliving the engine that drew it, and those two
   look identical from the home screen. `DepthWallpaperService` logs one line
   per resolution under the `Basrelief` tag with the visible flag, whether the
-  surface is still valid, the item it resolved, and what the renderer believes
+  surface is still valid, the item it resolved, `which=<HOME|LOCK>`, and what the renderer believes
   is on screen. Grep that before theorising — three wrong theories cost a
   whole session once already, and the fix was in a commit message rather than
   in this file, which is the same as not writing it down. Note the corollary:
@@ -309,10 +329,16 @@ already cost real time.
   renderer draws the same frame however the phone is held, so
   `SensorPolicy.shouldRunSensor()` includes `motionActive`. Both hosts feed it from
   the value they have already resolved — `Framing.motion` in the service, the
-  config in the studio — rather than asking the renderer, because that value is on
-  the calling thread and a getter would have cost a hop to the GL thread to learn
-  something already in hand. Default is `true`, not false, so a caller that never
-  mentions Motion still gets the parallax rather than silently losing it.
+  active item's settings in the studio — rather than asking the renderer, because
+  that value is on the calling thread and a getter would have cost a hop to the GL
+  thread to learn something already in hand. Default is `true`, not false, so a
+  caller that never mentions Motion still gets the parallax rather than silently
+  losing it. **Because Motion belongs to the active photo, this is now a
+  per-photo decision:** switching from a photo at Motion 60 to one at Motion 0
+  parks the sensor, which is the whole point of moving it off the config.
+  `refreshSliders` reads the settings once and uses that one value for both the
+  slider and the sensor, because two reads are two chances to disagree — which is
+  how a slider ends up showing 0 while the sensor is still told to run.
 
 ### Build constraints
 
@@ -341,7 +367,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 155 tests across thirteen classes:
+it**. 237 tests across sixteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -370,12 +396,53 @@ it**. 155 tests across thirteen classes:
   value that cannot be checked, and this is the one most likely to be
   quietly wrong. It also pins that the bundled demo renders at the
   defaults *whatever the index says*, because a Zoom stored on it is a
-  number a slider will display and the renderer will never use.
-- `PerItemSettingsTest` — per-item settings, and the one reserved id. The traps
-  are the ones this file already names: pan is in **pixels** and must not be
-  clamped to orbit's fraction range (delta exactly 0, so a partial clamp cannot
-  hide), and the bundled item is the one entry with no file on disk, so a cleanup
-  pass or a parse must not drop it — it cannot be recreated from filesDir.
+  number a slider will display and the renderer will never use — now on
+  **both** surfaces, since a lock override is a second way to store a value
+  nothing reads. Its third theme is Motion: a test here used to assert Motion
+  came *from the caller*, which was right while Motion was global and is the bug
+  now that it is per-photo. It also pins the inheritance rule — a lock screen with
+  no override resolves to exactly the home screen, because that is every photo's
+  initial state, and a write to home must not conjure an override.
+- `PerItemSettingsTest` — per-surface settings, the migrations that brought them
+  here, and the one reserved id. The traps are the ones this file already names:
+  pan is in **pixels** and must not be clamped to origin's fraction range (delta
+  exactly 0, so a partial clamp cannot hide), and the bundled item is the one entry
+  with no file on disk, so a cleanup pass or a parse must not drop it — it cannot
+  be recreated from filesDir. Two more it earns: the v2 → v3 migration must copy
+  the old **global** Motion onto every item, because the library blob has no copy of
+  it and dropping it silently resets everyone's wallpaper speed on upgrade; and a
+  single-field edit must not reset the values it does not name, which shipped broken
+  once — `withDepth` reset Motion, brightness and shadow, because the values it did
+  not pass had been added after it was written.
+- `SurfaceResolverTest` — which surface an engine is drawing, and the **three**
+  questions it takes to answer that: the engine's own surface, whether the lock
+  screen composites it, and what the lock screen can be at all. They are three
+  separate truths on purpose — collapsing them either offers a control nothing
+  reads, or refuses one that would work. The traps are the ones the truth table
+  names: 26–33 have no signal to read, 34 has the signal but not the second engine,
+  "both" is one window and therefore one set of values, and a lock-only binding on
+  34 is a **fact** while per-surface lock settings are still a **promise** — the
+  two must not be collapsed, or a Lock toggle appears on a screen whose value is
+  never rendered. A negative or unread flags value is not a bitmask; usability is
+  decided by sign, because masking −1 yields every bit.
+- `PictureTest` — brightness and shadow, which live in `:core` precisely so they
+  are not trapped in GLSL where nothing can check them. The trap is the one this
+  project keeps paying for: **0 must be the identity for both**, because a new
+  photo is written with explicit zeros and so every photo in every library takes
+  that path on its first render. Brightness is hundredths of a *stop*, so it is
+  exponential — a linear mapping passes a naive identity test while being visibly
+  wrong. Shadow is signed, or "less contrast" becomes unreachable.
+- `PlaylistTest` — rotation, and the invariant it exists to hold: rotation writes
+  the index's own selection, by the same two calls a user's tap makes, so there is
+  never a second pointer. The test asserts **byte-equality of the whole blob**, and
+  a second test enumerates the blob's allowed keys — so adding one is a deliberate
+  edit rather than an accident. Also pinned: a delete removes the id from every
+  playlist in the same derivation; a corrupt or future blob yields no rotation and
+  does not throw; a playlist naming a deleted photo cannot resurrect it and a hole
+  does not cost the playlist; an event trigger is never due on a clock; and a user's
+  hand-picked selection does not move a playlist's own clock. Note the trap in its
+  own making — a "migration is idempotent" test that only re-parses the
+  re-serialised blob **skips the migration entirely** and so cannot test it.
 - `LibraryDuplicateImageTest` — which row survives when several share an image
   file, which is the repair for a share path that wrote every import to one fixed
   name. The trap it exists to pin is *which* survivor: the active row is kept even

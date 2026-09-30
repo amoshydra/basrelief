@@ -43,26 +43,6 @@ public final class LibraryItem {
     // lit one way should come back that way, and a second photo should not
     // inherit the first one's zoom. Motion stayed global — see Config.
 
-    /** Depth, as a 0..100 slider value. See {@link #depthFraction()}. */
-    public static final int DEFAULT_INTENSITY = 90;
-    public static final int INTENSITY_MIN = 0;
-    public static final int INTENSITY_MAX = 100;
-
-    /**
-     * Zoom, as a slider value that maps onto 0.25x..2.0x. See {@link #zoomScale()}.
-     *
-     * <p>The minimum is 25 and not 0 because a zoom below 1 inverts the camera.
-     */
-    public static final int DEFAULT_ZOOM = 100;
-    public static final int ZOOM_MIN = 25;
-    public static final int ZOOM_MAX = 200;
-
-    /** Orbit is a FRACTION of the plane, so it has a real bound. See {@link #ORBIT_LIMIT}. */
-    public static final float DEFAULT_ORBIT = 0f;
-
-    /** Pan is PIXELS, so it has no bound this class could know. See the note below. */
-    public static final float DEFAULT_PAN = 0f;
-
     /** Opaque, stable for the life of the item. See {@link #newId()}. */
     public final String id;
 
@@ -94,21 +74,22 @@ public final class LibraryItem {
      * than guessed at. That was always a one-time reinterpretation; it is
      * mentioned here because this is now where the value lives.
      */
-    public final int intensity; // 0..100
+    /**
+     * The home screen's settings. The only place a render value is stored.
+     *
+     * <p>This was nine separate fields once, and the decomposition is what made it
+     * possible to add Motion, brightness and shadow and forget to store three of
+     * them: a value that has to be copied out of another object into a field is a
+     * value that can be left behind. One field, assigned once, cannot.
+     *
+     * <p>{@link #lock} is null until the lock screen is customised, and null means
+     * "the same as home" — see {@link #settings(Surface)}, which is the only way
+     * either is read.
+     */
+    private final SurfaceSettings home;
 
-    /** How close the camera is, 25..200 as a percentage of 1.0x. The Zoom slider. */
-    public final int zoom;
-
-    /** Where the user framed the photo: a fraction of the plane, -0.5..0.5. */
-    public final float orbitX;
-    public final float orbitY;
-
-    /** Where the user centred the photo, in PIXELS. Deliberately unclamped. */
-    public final float panX;
-    public final float panY;
-
-    /** Orbit is a fraction, so a bound exists: half the plane is the far stop. */
-    public static final float ORBIT_LIMIT = 0.5f;
+    /** The lock screen's own settings, or null while it still mirrors home. */
+    private final SurfaceSettings lock;
 
     /**
      * @param id        {@link #isValidId}, else this throws
@@ -122,22 +103,62 @@ public final class LibraryItem {
     public LibraryItem(String id, String imageName, String depthName, String label,
                        long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                DEFAULT_INTENSITY, DEFAULT_ZOOM,
-                DEFAULT_ORBIT, DEFAULT_ORBIT, DEFAULT_PAN, DEFAULT_PAN);
+                SurfaceSettings.DEFAULT_DEPTH, SurfaceSettings.DEFAULT_ZOOM,
+                SurfaceSettings.DEFAULT_ORIGIN, SurfaceSettings.DEFAULT_ORIGIN,
+                SurfaceSettings.DEFAULT_PAN, SurfaceSettings.DEFAULT_PAN);
     }
 
     /**
-     * The full form, for a write site that already holds the settings.
+     * The form a write site holds six render values for.
      *
-     * <p>The six-argument constructor above is "a photo that has not been
-     * adjusted yet", and it is the one a caller reaches for by accident. Anything
-     * that is updating an existing item must go through a {@code withX} mutator
-     * instead, so a changed value cannot silently reset the other five.
+     * <p>The six-argument constructor above is "a photo that has not been adjusted
+     * yet", and it is the one a caller reaches for by accident. This one still
+     * defaults Motion and the two adjustments, so it carries the same hazard for
+     * those three: a caller updating an existing item through it silently resets
+     * them. It exists because the parser and a migration legitimately need it.
      */
     public LibraryItem(String id, String imageName, String depthName, String label,
                        long addedAt, long lastUsedAt,
                        int intensity, int zoom,
                        float orbitX, float orbitY, float panX, float panY) {
+        this(id, imageName, depthName, label, addedAt, lastUsedAt,
+                intensity, zoom, SurfaceSettings.DEFAULT_MOTION,
+                orbitX, orbitY, panX, panY, SurfaceSettings.DEFAULT_ADJUST,
+                SurfaceSettings.DEFAULT_ADJUST, null);
+    }
+
+    /**
+     * Everything: the six originals, plus the Motion that used to be global, the
+     * two picture adjustments, and the lock screen's override.
+     *
+     * <p>{@code lockSettings} is null for "the same as home", which is the default
+     * and the only state a photo needs before anyone customises it.
+     */
+    public LibraryItem(String id, String imageName, String depthName, String label,
+                       long addedAt, long lastUsedAt,
+                       int intensity, int zoom, int motion,
+                       float orbitX, float orbitY, float panX, float panY,
+                       int brightness, int shadow, SurfaceSettings lockSettings) {
+        this(id, imageName, depthName, label, addedAt, lastUsedAt,
+                new SurfaceSettings(intensity, zoom, motion, orbitX, orbitY,
+                        panX, panY, brightness, shadow),
+                lockSettings);
+    }
+
+    /**
+     * The form every write site uses: both surfaces as values.
+     *
+     * <p>The fifteen-argument one above exists for the parser and for a site that
+     * genuinely holds nine loose numbers. A site that already has a
+     * {@link SurfaceSettings} — every mutation here — must use this one, because
+     * taking the values apart to pass them and putting them back together is a
+     * chance to pair the wrong surface with the wrong numbers. That mistake is not
+     * hypothetical: writing the lock screen through the loose constructor overwrote
+     * the home screen with it, and rendered correctly on both.
+     */
+    private LibraryItem(String id, String imageName, String depthName, String label,
+                        long addedAt, long lastUsedAt,
+                        SurfaceSettings home, SurfaceSettings lockSettings) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every user item must name a file. The one exception is the reserved
@@ -158,20 +179,18 @@ public final class LibraryItem {
         // every order that looks at time.
         this.addedAt = Math.max(0L, addedAt);
         this.lastUsedAt = Math.max(0L, lastUsedAt);
-        this.intensity = clamp(intensity, INTENSITY_MIN, INTENSITY_MAX);
-        this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
-        this.orbitX = clamp(orbitX, -ORBIT_LIMIT, ORBIT_LIMIT);
-        this.orbitY = clamp(orbitY, -ORBIT_LIMIT, ORBIT_LIMIT);
-        // Pan is deliberately NOT clamped here. It is carried in pixels and
-        // consumed as panX / surfaceW, so its valid range is the surface size —
-        // which this class cannot know, and which differs per device and per
-        // orientation. The renderer's setPan() clamps against the real surface.
+        // Every clamp happens in SurfaceSettings, once. A value clamped here as
+        // well is a value that can be read two ways.
         //
-        // Clamping to the orbit-style +/-0.5 here looked harmless and silently
-        // flattened every pan offset to almost nothing: a stored -135px became
-        // -0.5px. Do not add a range check without knowing the units.
-        this.panX = panX;
-        this.panY = panY;
+        // Pan is deliberately NOT clamped even there: it is carried in pixels and
+        // consumed as panX / surfaceW, so its valid range is the surface size -
+        // which this class cannot know, and which differs per device and per
+        // orientation. The renderer's setPan() clamps on the way in. Clamping to
+        // the origin-style +/-0.5 looked harmless and silently flattened every pan
+        // offset to almost nothing: a stored -135px became -0.5px. Do not add a
+        // range check without knowing the units.
+        this.home = home;
+        this.lock = lockSettings;
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -312,68 +331,130 @@ public final class LibraryItem {
         return label != null ? label : imageName;
     }
 
-    /** Depth as a fraction of the reachable maximum — see CameraModel.setDepth. */
-    public float depthFraction() {
-        return intensity / 100f;
+    // ------------------------------------------------- per-surface access
+
+    /**
+       * The settings for one surface.
+       *
+       * <p>A null lock override means "the same as home", and returns home's
+       * values rather than null - so every reader treats both surfaces
+       * identically and a missing override is never a special case at a call
+       * site. This is the only way a render value is read, and (with
+       * {@link #withSettings}) the only way one is written, which is why the six
+       * fields above are private.
+       */
+    public SurfaceSettings settings(Surface surface) {
+        return (surface == Surface.LOCK && lock != null) ? lock : home;
     }
 
-    /** Zoom as a multiplier: 25 -> 0.25x, 100 -> 1.0x, 200 -> 2.0x. */
-    public float zoomScale() {
-        return zoom / 100f;
+    /** True once the lock screen has its own settings instead of mirroring home. */
+    public boolean hasOwnLockSettings() {
+        return lock != null;
+    }
+
+    /**
+       * Replace one surface's settings wholesale. A null lock restores "the same
+       * as home".
+       *
+       * <p>Read-modify-write, never a field setter: a surface's values are a set,
+       * and writing one of them without reading the other eight first is how an
+       * unrelated value gets reset.
+       */
+    public LibraryItem withSettings(Surface surface, SurfaceSettings next) {
+        boolean lockSurface = surface == Surface.LOCK;
+        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
+                lockSurface ? home : next,
+                lockSurface ? next : lock);
+    }
+
+    /**
+       * Edit one surface by a function. The read-modify-write in one call, so no
+       * caller can hold a stale copy of the other eight values - every slider
+       * change goes through here.
+       */
+    public LibraryItem editSettings(Surface surface,
+            java.util.function.UnaryOperator<SurfaceSettings> edit) {
+        return withSettings(surface, edit.apply(settings(surface)));
+    }
+
+    /** The Depth slider, 0..100, on one surface. */
+    public LibraryItem withIntensity(Surface surface, int v) {
+        return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+    }
+
+    /** The Zoom slider, 25..200, on one surface. */
+    public LibraryItem withZoom(Surface surface, int v) {
+        return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+    }
+
+    /**
+       * The Motion slider, 0..100, on one surface. It moved here from
+       * {@link Config}, where it was global.
+       */
+    public LibraryItem withMotion(Surface surface, int v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+    }
+
+    /** Origin, a fraction of the plane, on one surface. */
+    public LibraryItem withOrigin(Surface surface, float x, float y) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
+                s.panX, s.panY, s.brightness, s.shadow));
+    }
+
+    /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
+    public LibraryItem withPan(Surface surface, float x, float y) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
+                s.originX, s.originY, x, y, s.brightness, s.shadow));
+    }
+
+    /** Brightness and shadow, -100..100, on one surface. Render-time only. */
+    public LibraryItem withAdjust(Surface surface, int brightness, int shadow) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
+                s.originX, s.originY, s.panX, s.panY, brightness, shadow));
+    }
+
+    /**
+       * Copy every render value from another item onto this one, for one surface.
+       *
+       * <p>Per-surface on purpose: how a landscape reads on the home screen says
+       * nothing about how it reads behind a lock-screen clock, and a copy that
+       * carried both would quietly overwrite a lock screen the user had tuned.
+       */
+    public LibraryItem copySettingsFrom(LibraryItem source, Surface surface) {
+        return withSettings(surface, source.settings(surface));
     }
 
     // ------------------------------------------------- single-field updates
 
     public LibraryItem withDepth(String depth) {
-        return new LibraryItem(id, imageName, depth, label, addedAt, lastUsedAt,
-                intensity, zoom, orbitX, orbitY, panX, panY);
+        return copy(id, imageName, depth, label, addedAt, lastUsedAt);
     }
 
     public LibraryItem withLabel(String newLabel) {
-        return new LibraryItem(id, imageName, depthName, newLabel, addedAt, lastUsedAt,
-                intensity, zoom, orbitX, orbitY, panX, panY);
+        return copy(id, imageName, depthName, newLabel, addedAt, lastUsedAt);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return new LibraryItem(id, imageName, depthName, label, addedAt, when,
-                intensity, zoom, orbitX, orbitY, panX, panY);
-    }
-
-    /** The Depth slider, 0..100. Clamped like the constructor. */
-    public LibraryItem withIntensity(int v) {
-        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                v, zoom, orbitX, orbitY, panX, panY);
-    }
-
-    /** The Zoom slider, 25..200. Clamped like the constructor. */
-    public LibraryItem withZoom(int v) {
-        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                intensity, v, orbitX, orbitY, panX, panY);
+        return copy(id, imageName, depthName, label, addedAt, when);
     }
 
     /**
-     * Where the photo is framed, as a fraction of the plane.
+     * A copy of this item with only its identity fields replaced; every render
+     * value carries over.
      *
-     * <p>A tap in the studio lands here, and it is a fraction, so it is bounded:
-     * a plane moved half its own width is as far as the view can go before the
-     * photo leaves the screen.
+     * <p>This exists because the alternative is a write site naming six values it
+     * did not mean to change, and the short constructor's defaults quietly
+     * resetting the other three. Three call sites had exactly that waiting in
+     * them.
      */
-    public LibraryItem withOrbit(float x, float y) {
+    private LibraryItem copy(String id, String imageName, String depthName,
+                             String label, long addedAt, long lastUsedAt) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                intensity, zoom, x, y, panX, panY);
-    }
-
-    /**
-     * Where the photo is centred, in PIXELS.
-     *
-     * <p>Not clamped, and not measurable here: the bound is the surface, which
-     * does not exist yet at this point. The renderer clamps on the way in. See
-     * the note in the constructor before adding a range check.
-     */
-    public LibraryItem withPan(float x, float y) {
-        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                intensity, zoom, orbitX, orbitY, x, y);
+                home, lock);
     }
 
     // ---------------------------------------------------------- serialise
@@ -385,12 +466,14 @@ public final class LibraryItem {
             o.put("image", imageName);
             o.put("added_at", addedAt);
             o.put("last_used_at", lastUsedAt);
-            o.put("intensity", intensity);
-            o.put("zoom", zoom);
-            o.put("orbit_x", (double) orbitX);
-            o.put("orbit_y", (double) orbitY);
-            o.put("pan_x", (double) panX);
-            o.put("pan_y", (double) panY);
+            // Nested from v3. Written flat until now, which is fine to read and
+            // is exactly why Library.migrate() has to exist: the shape an item is
+            // written in and the shape it was written in are different facts, and
+            // only the reader has to know both.
+            JSONObject surfaces = new JSONObject();
+            surfaces.put(Surface.HOME.key, settings(Surface.HOME).toJson());
+            if (lock != null) surfaces.put(Surface.LOCK.key, lock.toJson());
+            o.put("surfaces", surfaces);
             // Absent rather than null: JSONObject drops nulls anyway, and a
             // missing key reads as "not set" without a special case.
             if (depthName != null) o.put("depth", depthName);
@@ -412,6 +495,59 @@ public final class LibraryItem {
      * read as a v2 item with defaults. The version lives in {@link Library}, so
      * there is nothing here to branch on.
      */
+    /**
+     * One item's home settings, from either the nested v3 shape or the flat one.
+     *
+     * <p>Both are read here rather than relying on {@link Library#migrate} alone,
+     * so a hand-edited, partially-written or third-party blob cannot silently lose
+     * a photo's framing: whichever shape is present wins, and an item with neither
+     * gets the defaults rather than dropping.
+     *
+     * <p>A flat item has no motion of its own, because motion used to be global.
+     * The value it takes is whatever the item carries, or the default. A real v2
+     * blob's motion arrives via migrate(), which copies Config's value onto every
+     * item so no photo changes feel on upgrade.
+     */
+    private static SurfaceSettings homeFrom(JSONObject o) {
+        JSONObject nested = o.optJSONObject("surfaces");
+        if (nested != null) {
+            JSONObject home = nested.optJSONObject(Surface.HOME.key);
+            if (home != null) return SurfaceSettings.fromJson(home);
+        }
+        // Any flat key at all, not just these three: a blob carrying only pan_x was
+        // falling through to the defaults and quietly losing the user's framing.
+        if (o.has("intensity") || o.has("zoom") || o.has("orbit_x") || o.has("origin_x")
+                || o.has("pan_x") || o.has("pan_y") || o.has("motion")) {
+            // "origin" was called "orbit" in the flat shape; both spellings are read
+            // so a blob written by either version keeps the user's framing.
+            float ox = (float) o.optDouble("origin_x", 0d);
+            float oy = (float) o.optDouble("origin_y", 0d);
+            if (!o.has("origin_x")) ox = (float) o.optDouble("orbit_x", SurfaceSettings.DEFAULT_ORIGIN);
+            if (!o.has("origin_y")) oy = (float) o.optDouble("orbit_y", SurfaceSettings.DEFAULT_ORIGIN);
+            return new SurfaceSettings(
+                    o.optInt("intensity", SurfaceSettings.DEFAULT_DEPTH),
+                    o.optInt("zoom", SurfaceSettings.DEFAULT_ZOOM),
+                    o.optInt("motion", SurfaceSettings.DEFAULT_MOTION),
+                    ox, oy,
+                    (float) o.optDouble("pan_x", SurfaceSettings.DEFAULT_PAN),
+                    (float) o.optDouble("pan_y", SurfaceSettings.DEFAULT_PAN),
+                    o.optInt("brightness", SurfaceSettings.DEFAULT_ADJUST),
+                    o.optInt("shadow", SurfaceSettings.DEFAULT_ADJUST));
+        }
+        return SurfaceSettings.defaults();
+    }
+
+    /**
+     * The lock override, or null for "the same as home". Absent means inherit,
+     * which is the default and the only state a new photo needs.
+     */
+    private static SurfaceSettings lockFrom(JSONObject o) {
+        JSONObject nested = o.optJSONObject("surfaces");
+        if (nested == null) return null;
+        JSONObject lock = nested.optJSONObject(Surface.LOCK.key);
+        return lock == null ? null : SurfaceSettings.fromJson(lock);
+    }
+
     static LibraryItem fromJson(JSONObject o) {
         if (o == null) return null;
         Object rawId = o.opt("id");
@@ -425,61 +561,25 @@ public final class LibraryItem {
         // gallery loses its only way back to the default on the next launch.
         if (img == null && !Library.BUNDLED_ID.equals(id)) return null;
         try {
+            SurfaceSettings home = homeFrom(o);
             return new LibraryItem(id, img,
                     o.optString("depth", null),
                     o.optString("label", null),
                     o.optLong("added_at", 0L),
                     o.optLong("last_used_at", 0L),
-                    o.optInt("intensity", DEFAULT_INTENSITY),
-                    o.optInt("zoom", DEFAULT_ZOOM),
-                    (float) o.optDouble("orbit_x", DEFAULT_ORBIT),
-                    (float) o.optDouble("orbit_y", DEFAULT_ORBIT),
-                    (float) o.optDouble("pan_x", DEFAULT_PAN),
-                    (float) o.optDouble("pan_y", DEFAULT_PAN));
+                    home.depth, home.zoom, home.motion,
+                    home.originX, home.originY, home.panX, home.panY,
+                    home.brightness, home.shadow,
+                    lockFrom(o));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
-    }
-
-    /**
-     * Write any absent setting into a stored item, at its default.
-     *
-     * <p>For {@link Library}'s migration only. The parse path already defaults
-     * what it cannot find, so this cannot change what a v1 item reads as — it
-     * makes the blob on disk the current shape as soon as it is read, rather
-     * than whenever something next writes it, so a later migration has a shape
-     * to migrate from.
-     *
-     * <p>Only ever adds keys, and only for an item this build can read, so a
-     * malformed entry is left exactly as it was for {@link #fromJson} to drop.
-     */
-    static void stampDefaults(JSONObject o) {
-        if (o == null) return;
-        try {
-            if (!o.has("intensity")) o.put("intensity", DEFAULT_INTENSITY);
-            if (!o.has("zoom")) o.put("zoom", DEFAULT_ZOOM);
-            if (!o.has("orbit_x")) o.put("orbit_x", (double) DEFAULT_ORBIT);
-            if (!o.has("orbit_y")) o.put("orbit_y", (double) DEFAULT_ORBIT);
-            if (!o.has("pan_x")) o.put("pan_x", (double) DEFAULT_PAN);
-            if (!o.has("pan_y")) o.put("pan_y", (double) DEFAULT_PAN);
-        } catch (JSONException e) {
-            // A value this build cannot store anyway; fromJson defaults it.
-        }
-    }
-
-    private static int clamp(int v, int lo, int hi) {
-        return Math.max(lo, Math.min(hi, v));
-    }
-
-    private static float clamp(float v, float lo, float hi) {
-        return Math.max(lo, Math.min(hi, v));
     }
 
     @Override
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt
-                + " depth=" + intensity + " zoom=" + zoom
-                + " orbit=" + orbitX + "," + orbitY + " pan=" + panX + "," + panY + "}";
+                + " home=" + home + (lock == null ? "" : " lock=" + lock) + "}";
     }
 }
