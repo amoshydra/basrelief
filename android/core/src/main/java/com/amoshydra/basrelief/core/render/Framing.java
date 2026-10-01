@@ -46,51 +46,55 @@ public final class Framing {
     public final boolean bundled;
 
     private Framing(LibraryItem item, Surface surface) {
-        // The picture adjustments are not camera state, but they are still per-photo
-        // and per-surface, so they resolve here rather than in the renderer: the
-        // renderer is handed numbers, never an item.
         this.bundled = item == null || item.isBundled();
+        // Null only when there is no item at all -- not when there is a bundled one,
+        // which resolves like anything else from here.
         SurfaceSettings s = item == null ? null : item.settings(surface);
-        if (this.bundled) {
-            // The bundled demo has no stored framing of its own to keep, so Depth,
-            // Zoom, Origin and Pan are the defaults. Not a fallback: it is the only
-            // correct answer, and inheriting the last photo's zoom is how the bust
-            // ended up framed by a portrait it had never seen.
-            //
-            // MOTION IS THE EXCEPTION, and deliberately so. Its slider stays live on
-            // the demo while Depth and Zoom are switched off, because how responsive
-            // the relief is answers a question about the photo the user is looking at
-            // rather than about the demo's framing. Ignoring it here would put the
-            // slider back in the state this whole rule exists to prevent: a control
-            // that displays a number the renderer never uses.
+
+        // Everything comes from the item for one surface, INCLUDING THE BUNDLED
+        // DEMO. Nothing arrives from two places: a value that comes from two
+        // places is a value that can disagree, and this class is the single
+        // resolution point, which is the only reason it can be unit tested.
+        //
+        // There used to be a special case here that forced the demo to the defaults
+        // and ignored whatever was stored, and the studio's controls were switched
+        // off to match. That was a workaround for a real bug -- the sliders wrote a
+        // value onto the reserved item and this class ignored it, so a control
+        // displayed a number the renderer never used -- and the fix was applied to
+        // the CONTROL instead of to the bug. Switching the controls off hides the
+        // symptom and leaves the class still unable to honour a stored value.
+        //
+        // The demo is editable. Only its IMAGE comes from res/raw; Depth, Zoom,
+        // Motion, Origin, Pan and the adjustments are ordinary render values that
+        // the reserved item holds perfectly well.
+        //
+        // The one thing that remains special is the FILE: the bundled item has no
+        // image on disk, which is why LibraryItem.fromJson exempts it. Unrelated to
+        // framing, and still true.
+        if (s == null) {
+            // No item at all, which is what "nothing is selected" means and the
+            // state a delete of the active item lands in. Defaults, and no
+            // null-dereference on the way to drawing the demo.
             this.depth = SurfaceSettings.DEFAULT_DEPTH / 100f;
             this.zoom = SurfaceSettings.DEFAULT_ZOOM / 100f;
             this.orbitX = 0f;
             this.orbitY = 0f;
             this.panX = 0f;
             this.panY = 0f;
-            this.motion = s == null
-                    ? SurfaceSettings.DEFAULT_MOTION / 100f * 3f
-                    : s.motionScale();
-            // Picture is switched off for the demo, so its stored values are the same
-            // kind of lie a stored Zoom would be: displayed nowhere, used here.
+            this.motion = SurfaceSettings.DEFAULT_MOTION / 100f * 3f;
             this.brightnessGain = 1f;
             this.shadowLift = 0f;
-        } else {
-            // Everything comes from the item for one surface. Nothing is passed in:
-            // a value that arrives from two places is a value that can disagree,
-            // and this class is the single resolution point, which is the only
-            // reason it can be unit tested.
-            this.depth = s.depthFraction();
-            this.zoom = s.zoomScale();
-            this.orbitX = s.originX;
-            this.orbitY = s.originY;
-            this.panX = s.panX;
-            this.panY = s.panY;
-            this.motion = s.motionScale();
-            this.brightnessGain = Picture.brightnessGain(s.brightness);
-            this.shadowLift = Picture.shadowLift(s.shadow);
+            return;
         }
+        this.depth = s.depthFraction();
+        this.zoom = s.zoomScale();
+        this.orbitX = s.originX;
+        this.orbitY = s.originY;
+        this.panX = s.panX;
+        this.panY = s.panY;
+        this.motion = s.motionScale();
+        this.brightnessGain = Picture.brightnessGain(s.brightness);
+        this.shadowLift = Picture.shadowLift(s.shadow);
     }
 
     /**

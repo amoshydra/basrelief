@@ -154,20 +154,22 @@ public class FramingTest {
         assertEquals(-1f, f.shadowLift, 1e-6f);
     }
 
-    /**
-     * The demo renders unadjusted, whatever is stored.
-     *
-     * <p>The same rule as its Depth and Zoom: Picture is switched off for the demo,
-     * so a stored value there is one the renderer must not use. Motion is the
-     * deliberate exception and is asserted separately above.
-     */
+    /** Picture follows the same rule as everything else: stored means used. */
     @Test
-    public void aStoredPictureForTheBundledDemoIsIgnored() {
-        LibraryItem tampered = LibraryItem.bundled().withAdjust(Surface.HOME, 100, 100);
-        Framing f = home(tampered);
+    public void aStoredPictureForTheBundledDemoIsUsed() {
+        LibraryItem stored = LibraryItem.bundled().withAdjust(Surface.HOME, 100, -100);
+        Framing f = home(stored);
         assertTrue(f.bundled);
-        assertEquals("the demo must not render brighter", 1f, f.brightnessGain, 0f);
-        assertEquals("the demo must not render lifted", 0f, f.shadowLift, 0f);
+        assertEquals("one stop up", 2f, f.brightnessGain, 1e-6f);
+        assertEquals(-1f, f.shadowLift, 1e-6f);
+    }
+
+    /** And an untouched demo is unadjusted, so 0 stays the identity. */
+    @Test
+    public void anUntouchedBundledDemoIsUnadjusted() {
+        Framing f = home(LibraryItem.bundled());
+        assertEquals(1f, f.brightnessGain, 0f);
+        assertEquals(0f, f.shadowLift, 0f);
     }
 
     /** Picture is per surface, like everything else a photo owns. */
@@ -304,35 +306,61 @@ public class FramingTest {
     }
 
     /**
-     * A stored Zoom for the demo is ignored.
+     * A stored value for the bundled demo is <b>used</b>.
      *
-     * <p>This happened for real: the sliders wrote zoom 42 onto the bundled item
-     * because the guard tested {@code activeId() == null}, and the reserved id is
-     * not null. The slider then displayed 0.42x while the renderer drew the demo
-     * at 1.0x. Storing a value nothing reads is the silent-drift shape this
-     * project keeps getting bitten by, so it is pinned here: if the demo ever
-     * becomes editable, this test fails and someone has to decide what it should
-     * display.
+     * <p><b>This test asserts the opposite of what it used to, and that is the
+     * point.</b> It was named
+     * {@code aStoredValueForTheBundledDemoIsIgnoredRatherThanUsed}, and it existed
+     * because of a real bug: the sliders wrote zoom 42 onto the bundled item —
+     * the guard tested {@code activeId() == null} and the reserved id is not null —
+     * and this class ignored it, so the slider displayed 0.42x while the renderer
+     * drew at 1.0x. Storing a value nothing reads is the silent-drift shape this
+     * project keeps getting bitten by.
+     *
+     * <p>The bug was fixed in the wrong place. The controls were switched off for
+     * the demo, which hides the symptom and leaves this class still unable to
+     * honour a stored value. Only the demo's <i>image</i> comes from res/raw;
+     * Depth, Zoom, Motion, Origin, Pan and the adjustments are ordinary render
+     * values the reserved item holds perfectly well.
+     *
+     * <p>So the demo is editable and the value is read. The rule that actually
+     * matters is unchanged and is the first assertion below: a control must never
+     * display a number the renderer does not use.
      */
     @Test
-    public void aStoredValueForTheBundledDemoIsIgnoredRatherThanUsed() {
-        LibraryItem tampered = LibraryItem.bundled()
+    public void aStoredValueForTheBundledDemoIsUsedRatherThanIgnored() {
+        LibraryItem stored = LibraryItem.bundled()
                 .withZoom(Surface.HOME, 42)
                 .withIntensity(Surface.HOME, 13);
-        Framing f = home(tampered);
-        assertTrue(f.bundled);
-        assertEquals("the demo must not render at a stored zoom",
-                SurfaceSettings.DEFAULT_ZOOM / 100f, f.zoom, 0f);
-        assertEquals(SurfaceSettings.DEFAULT_DEPTH / 100f, f.depth, 1e-6f);
+        Framing f = home(stored);
+        assertTrue("the demo is still the demo", f.bundled);
+        assertEquals("a stored zoom is now honoured", 0.42f, f.zoom, 1e-6f);
+        assertEquals(0.13f, f.depth, 1e-6f);
     }
 
-    /** The lock screen does not get a hole in the demo either. */
+    /** The same on the lock screen: the demo is not special on either surface. */
     @Test
-    public void aStoredValueForTheBundledDemoIsIgnoredOnTheLockScreenToo() {
-        LibraryItem tampered = LibraryItem.bundled().withZoom(Surface.LOCK, 42);
-        assertTrue(Framing.of(tampered, Surface.LOCK).bundled);
-        assertEquals(SurfaceSettings.DEFAULT_ZOOM / 100f,
-                Framing.of(tampered, Surface.LOCK).zoom, 0f);
+    public void aStoredValueForTheBundledDemoIsUsedOnTheLockScreenToo() {
+        LibraryItem stored = LibraryItem.bundled().withZoom(Surface.LOCK, 42);
+        assertTrue(Framing.of(stored, Surface.LOCK).bundled);
+        assertEquals(0.42f, Framing.of(stored, Surface.LOCK).zoom, 1e-6f);
+    }
+
+    /**
+     * A demo with nothing stored renders at the defaults.
+     *
+     * <p>The property the old test was really protecting, still true and still worth
+     * pinning: an untouched demo looks like the demo rather than like whatever the
+     * last photo left behind.
+     */
+    @Test
+    public void anUntouchedBundledDemoRendersAtTheDefaults() {
+        Framing f = home(LibraryItem.bundled());
+        assertTrue(f.bundled);
+        assertEquals(SurfaceSettings.DEFAULT_ZOOM / 100f, f.zoom, 0f);
+        assertEquals(SurfaceSettings.DEFAULT_DEPTH / 100f, f.depth, 1e-6f);
+        assertEquals(0f, f.orbitX, 0f);
+        assertEquals(0f, f.panX, 0f);
     }
 
     @Test

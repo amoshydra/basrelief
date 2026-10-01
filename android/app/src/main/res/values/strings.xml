@@ -126,35 +126,82 @@
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
     <string name="settings_licence">MIT</string>
 
-    <!-- Depth AI -->
+    <!--
+      Depth AI. One screen: server, model, resolution. Three screens for one
+      decision is three chances to change your mind, and the endpoint used to be
+      hidden behind "discovered automatically" — which is fine until the server
+      is on another machine, which it usually is.
+    -->
     <string name="depth_title">Generate a depth map</string>
+    <string name="depth_panel_subtitle">Runs on your own ComfyUI server. Nothing is uploaded.</string>
     <string name="depth_server">Server</string>
-    <string name="depth_model">Model</string>
-    <string name="depth_resolution">Resolution</string>
+    <string name="depth_server_hint">http://&lt;server&gt;:8188</string>
+    <!-- The server row is a link, not a form: it says where the app is pointed,
+         so nobody has to remember which box they typed. -->
+    <string name="depth_server_change">Change</string>
+    <string name="depth_server_untested">Not tested</string>
+    <string name="depth_server_reachable">Reachable</string>
+    <string name="depth_server_unreachable">No answer</string>
     <string name="depth_test_connection">Test connection</string>
     <string name="depth_testing">Testing connection…</string>
+    <string name="depth_test_failed">Not reached: %1$s</string>
+    <string name="depth_models_found">%1$d models on this server</string>
+    <string name="depth_models_untested">Test the connection to load models</string>
+    <string name="depth_models_none">No depth models on this server</string>
+    <!-- R-PANEL3. Depth results get compared, so a silently changed model makes
+         the comparison meaningless; the swap says so. -->
+    <string name="depth_model_gone">%1$s is gone — using %2$s</string>
+
+    <string name="depth_model">Model</string>
+    <string name="depth_resolution">Output</string>
+    <string name="depth_resolution_value">%1$d×%1$d</string>
+    <!-- Glyph buttons, like the add-photo one: a word here would be longer than
+         the control. -->
+    <string name="depth_nudge_down">−</string>
+    <string name="depth_nudge_up">＋</string>
+
     <string name="depth_generate">Generate</string>
-    <string name="depth_starting">Starting…</string>
-    <string name="depth_connected">Connected — %1$s</string>
-    <string name="depth_connected_nodes">Connected (%1$d depth nodes)</string>
-    <string name="depth_failed">Failed: %1$s</string>
-    <string name="depth_done">Done — %1$s, loaded into studio.</string>
-    <string name="depth_export_png">Export PNG to Downloads</string>
-    <string name="depth_close">Close</string>
-    <string name="depth_pick_image">Pick image to generate depth for</string>
     <string name="depth_endpoint_required">Set the ComfyUI endpoint first</string>
-    <string name="depth_pick_image_first">Pick an image first</string>
-    <string name="depth_no_model">No depth model selected</string>
 
-    <!-- Depth AI: the image it is working on, shown so it is never ambiguous
-         which photo a run will change -->
-    <string name="depth_image_current">Image: current studio image (%1$s)</string>
-    <string name="depth_image_named">Image: %1$s</string>
+    <!-- The run. Phases, not controls: the job is queued with the model baked in,
+         so a control that appeared to change it could not (R-PANEL7). -->
+    <string name="depth_phase_uploading">Uploading the photo</string>
+    <string name="depth_phase_queued">Queued on the server</string>
+    <string name="depth_phase_working">Working</string>
+    <string name="depth_phase_fetching">Fetching the map</string>
+    <string name="depth_phase_saving">Saving</string>
+    <string name="depth_phase_resuming">Asking the server what happened</string>
 
-    <!-- Diagnostics. Read by a person debugging, so still one place. -->
+    <!--
+      A failed run. The headline has to say what SURVIVED: an error that does not
+      say that leaves the user unable to tell whether their map is gone, which is
+      the worst outcome this app has.
+    -->
+    <string name="depth_run_cause">The server said: %1$s</string>
+    <string name="depth_edit_server">Edit server</string>
+
+    <!--
+      The completion notification. R-BG3, decided: a run takes tens of seconds and
+      the user has walked away, so silence reads as failure.
+
+      NOTE: this needs android.permission.POST_NOTIFICATIONS to be visible on
+      Android 13+. It is NOT in the manifest, so on 33+ the notification is
+      suppressed. See DepthGenDialog.notifyOutcome.
+    -->
+    <string name="depth_notify_channel">Depth generation</string>
+    <string name="depth_notify_channel_desc">Tells you when a generated depth map is ready.</string>
+    <string name="depth_notify_ready">Depth map ready</string>
+    <string name="depth_notify_ready_text">Added to %1$s</string>
+    <string name="depth_notify_failed">No depth map</string>
+    <string name="depth_notify_failed_text">The server did not answer · your map is unchanged</string>
+
+    <!-- Diagnostics. Read by a person debugging, so still one place. The map's
+         filename and the model that produced it live HERE, never in the controls
+         (R-D9). -->
     <string name="diag_status_prefix">Status: </string>
     <string name="diag_zoom_prefix">Zoom: </string>
     <string name="diag_engine_prefix">Engine: </string>
+    <string name="diag_depth_prefix">Depth: </string>
 
     <!-- Toasts -->
     <string name="toast_pick_photo_first">Pick a photo from the gallery first</string>

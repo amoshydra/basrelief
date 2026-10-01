@@ -62,7 +62,7 @@ public class MainActivity extends Activity {
     SharedPreferences prefs;
     private TextView statusView;
     private LinearLayout panel;
-    private Button expandBtn;
+    private Button expandBtn;   // superseded by the pill; see buildPillBackground
 
     // ------------------------------------------------------------ bottom sheet
     // Three snap states instead of the old visible/hidden pair, because the
@@ -88,6 +88,14 @@ public class MainActivity extends Activity {
      * remembered position.
      */
     private static final float MAX_RESTORED_FRACTION = 0.85f;
+    /**
+     * How much of the phone the sheet occupies when the studio opens.
+     *
+     * <p>The render is the product; the controls are an invitation. Opening fully
+     * spends two thirds of the screen on sliders before the user has seen the thing
+     * they are adjusting, which is the wrong order.
+     */
+    private static final float SHEET_PEEK_FRACTION = 0.40f;
     /** A vertical move past this claims the gesture, so a tap on the strip is a no-op. */
     private static final int DRAG_SLOP_DP = 8;
     /** How long the panel takes to slide, in ms. */
@@ -393,7 +401,7 @@ public class MainActivity extends Activity {
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
-        sheetContent.addView(buildFramingSection(initial.isEditableItem()));
+        sheetContent.addView(buildFramingSection());
 
         Button resetView = makeButton(getString(R.string.action_reset_view), new View.OnClickListener() {
             @Override
@@ -511,36 +519,53 @@ public class MainActivity extends Activity {
                 Gravity.BOTTOM);
         root.addView(panel, panelLp);
 
-        // floating expand handle, shown only while the panel is minimised
-        expandBtn = new Button(this);
-        expandBtn.setText(R.string.add_photo_glyph);
-        expandBtn.setAllCaps(false);
-        expandBtn.setMinHeight(dp(48));
-        expandBtn.setMinWidth(dp(48));
-        expandBtn.setVisibility(View.GONE);
-        expandBtn.setOnClickListener(new View.OnClickListener() {
+        // The collapsed representation of the sheet. This replaces a "+" button,
+        // which could only ever mean one thing and had to guess which. The pill has
+        // three states -- idle, attention, progress -- so it can say what is going on
+        // without the sheet being open.
+        pill = new TextView(this);
+        pill.setVisibility(View.GONE);
+        pill.setTextSize(13.5f);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(dp(18), dp(10), dp(18), dp(10));
+        pill.setMaxLines(1);
+        // Glass, so it floats over the render rather than sitting on it. An opaque
+        // fallback, because a translucent pill on a device without backdrop-filter
+        // is a grey blob with no edge.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            pill.setBackground(pillBackground());
+        } else {
+            pill.setBackgroundColor(0xD01C2026);
+        }
+        pill.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 expandUi();
             }
         });
-        FrameLayout.LayoutParams expandLp = new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams pillLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        expandLp.bottomMargin = dp(16);
-        root.addView(expandBtn, expandLp);
+        pillLp.bottomMargin = dp(26);
+        // Never wider than the screen minus a margin, or the attention sentence
+        // runs off both edges.
+        root.addView(pill, pillLp);
 
         setContentView(root);
 
-        // Restore the panel position, but only after layout: the half and hidden
-        // translations are a fraction of the panel's own measured height, which
-        // is zero until the first layout pass has run.
-        final float savedPos = prefs.getFloat(KEY_SHEET, 0f);
+        // Open at the peek, but only after layout: the height is a fraction of the
+        // panel's own measured height, which is zero until the first layout pass.
+        //
+        // A remembered position is deliberately NOT restored. It existed to avoid
+        // launching with no controls at all, which reads as a broken launch -- but
+        // the peek is a better answer to that than remembering, and restoring made
+        // the launch position depend on wherever the sheet happened to be left. The
+        // launch is now the same every time, which is what makes it learnable.
         panel.post(new Runnable() {
             @Override
             public void run() {
-                setSheetPosition(Math.min(savedPos, MAX_RESTORED_FRACTION), false);
+                openAtPeek();
             }
         });
         applySystemUi(); // decor view exists only after setContentView
@@ -817,11 +842,11 @@ public class MainActivity extends Activity {
      *
      * <p>Disabled wholesale for the bundled demo, and that is not tidiness.
      * {@code Framing.of} returns zeroed orbit and pan for the bundled item, so
-     * anything typed here would be discarded on the next resolve. Live fields
-     * that silently do nothing are the same lie as a live Depth slider that the
-     * renderer ignores, which is why Depth and Zoom are already disabled for it.
+     * The demo's framing is editable too. It used to be disabled here, for the same
+     * reason the sliders were: Framing discarded what was typed, so a live field
+     * silently did nothing. Framing reads it now.
      */
-    private View buildFramingSection(final boolean editable) {
+    private View buildFramingSection() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
 
@@ -831,7 +856,6 @@ public class MainActivity extends Activity {
         toggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!editable) return;
                 setFramingExpanded(!framingExpanded);
             }
         });
@@ -853,11 +877,11 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         originCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_origin), getString(R.string.unit_fraction))));
-        orbitXField = addFramingField(originCol, "X", editable, true, 0);
-        orbitYField = addFramingField(originCol, "Y", editable, true, 1);
+        orbitXField = addFramingField(originCol, "X", true, true, 0);
+        orbitYField = addFramingField(originCol, "Y", true, true, 1);
         panCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_pan), getString(R.string.unit_pixels))));
-        panXField = addFramingField(panCol, "X", editable, false, 2);
-        panYField = addFramingField(panCol, "Y", editable, false, 3);
+        panXField = addFramingField(panCol, "X", true, false, 2);
+        panYField = addFramingField(panCol, "Y", true, false, 3);
 
         grid.addView(originCol);
         grid.addView(panCol);
@@ -957,14 +981,57 @@ public class MainActivity extends Activity {
      * is a status paragraph, and this is one sentence.
      */
     private enum PillState { IDLE, ATTENTION, PROGRESS }
+    private static final int WARN_COLOUR = 0xFFE8B04B;
 
     private void setPillState(PillState state) {
         pillState = state;
         if (pill == null) return;
-        // Only the collapsed sheet has a pill; while the sheet is open the fix line
-        // itself is the signal, and two of them at once is one too many.
-        pill.setVisibility(state == PillState.IDLE ? View.GONE : View.VISIBLE);
-        pill.setAlpha(state == PillState.ATTENTION ? 1f : 0.75f);
+        switch (state) {
+            case IDLE:
+                pill.setText(R.string.pill_controls);
+                pill.setTextColor(0xFFFFFFFF);
+                break;
+            case ATTENTION:
+                pill.setText(R.string.pill_no_depth);
+                pill.setTextColor(WARN_COLOUR);
+                break;
+            case PROGRESS:
+                // Text is set by the caller, which knows the percentage.
+                pill.setTextColor(0xFFFFFFFF);
+                break;
+            default:
+                break;
+        }
+        updatePillVisibility();
+    }
+
+    /**
+     * The pill is the sheet's <b>collapsed</b> representation, so it shows only when
+     * the sheet is away.
+     *
+     * <p>It used to appear alongside the fix line as well, saying the same thing
+     * twice on one screen. Attention is a property of the condition rather than of
+     * the sheet's position: {@link #setPillState} records it, and this only decides
+     * whether there is anywhere to show it.
+     */
+    private void updatePillVisibility() {
+        if (pill == null) return;
+        boolean hidden = sheetFraction >= SHEET_COLLAPSE_FRACTION;
+        pill.setVisibility(hidden ? View.VISIBLE : View.GONE);
+    }
+
+    /** A rounded, translucent, hairline-bordered background for the pill. */
+    private android.graphics.drawable.GradientDrawable pillBackground() {
+        android.graphics.drawable.GradientDrawable d =
+                new android.graphics.drawable.GradientDrawable();
+        d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dp(999));
+        // An opaque-enough fill with a hairline edge: readable over any photo, which
+        // is the whole job -- the sheet it stands in for is glass over the render and
+        // the render can be anything.
+        d.setColor(0xD01C2026);
+        d.setStroke(dp(1), 0x33FFFFFF);
+        return d;
     }
 
     private TextView fieldCaption(String s) {
@@ -1314,6 +1381,29 @@ public class MainActivity extends Activity {
      * <p>Because the panel is anchored to the bottom, a smaller height shows its top
      * portion, which is the direction a bottom sheet should collapse.
      */
+    /**
+     * Put the sheet at {@link #SHEET_PEEK_FRACTION} of the phone, capped at its own
+     * content height.
+     *
+     * <p>Capped, never padded: a sheet shorter than the fraction opens fully rather
+     * than being inflated with padding to reach it, because padding would be a row
+     * of dead space that looks like a control and is not one.
+     */
+    private void openAtPeek() {
+        int peek = Math.round(SHEET_PEEK_FRACTION
+                * getResources().getDisplayMetrics().heightPixels);
+        if (panelNaturalHeight > 0) peek = Math.min(peek, panelNaturalHeight);
+        if (panelNaturalHeight <= 0) {
+            // Not measured yet; applySheetHeight defers and re-runs from the drag.
+            applySheetHeight(1f);
+            return;
+        }
+        float showing = (float) peek / panelNaturalHeight;
+        sheetFraction = 1f - showing;
+        applySheetHeight(showing);
+        updatePillVisibility();
+    }
+
     private void applySheetHeight(float showing) {
         if (panelNaturalHeight <= 0) {
             // First time through, the panel is still unconstrained, so this is its
@@ -1358,7 +1448,7 @@ public class MainActivity extends Activity {
         boolean hidden = sheetFraction >= SHEET_COLLAPSE_FRACTION;
 
         panel.animate().cancel();
-        expandBtn.setVisibility(hidden ? View.VISIBLE : View.GONE);
+        updatePillVisibility();
         // sheetFraction is "how far DOWN the sheet is": 0 is fully open, 1 closed.
         // The height is its complement - how much of the panel is showing - and
         // confusing the two collapses the sheet to nothing the instant it opens.
@@ -1752,7 +1842,6 @@ public class MainActivity extends Activity {
         AppState state = AppState.load(prefs, getFilesDir());
         // activeId() is NOT null for the bundled item -- it returns the reserved id
         // -- so a null check here let every slider write to it.
-        if (!isMotion && !state.isEditableItem()) return;
         LibraryStore.editItem(prefs, state.activeId(), new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
@@ -1793,26 +1882,20 @@ public class MainActivity extends Activity {
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
         SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
-        // Depth and Zoom are not editable when the bundled demo is showing, because
-        // the renderer draws it at the defaults regardless of what the index holds.
-        // Leaving those sliders live would show a number that does nothing, which
-        // is the same class of lie as a status line claiming content that is not
-        // there, and much easier to hit by accident. Motion IS editable there --
-        // see persist().
-        boolean editable = state.isEditableItem();
+        // Every bar is live, including on the bundled demo. They used to be disabled
+        // for it, because Framing forced the demo to the defaults and a live slider
+        // there displayed a number the renderer ignored -- the same class of lie as a
+        // status line claiming content that is not there. Framing reads the demo's
+        // stored values now, so the premise is gone and so is the reason to disable.
         syncingZoom = true;
         try {
-            setBar("intensity", s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth,
-                    editable);
-            setBar("zoom", s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, editable);
+            setBar("intensity", s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, true);
+            setBar("zoom", s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, true);
             setBar("motion", s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, true);
-            // Picture is off for the demo, like Depth and Zoom, because Framing
-            // renders it unadjusted. A live slider there would show a number the
-            // renderer ignores.
             shownBrightness = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness;
             shownShadow = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow;
-            setBar("brightness", shownBrightness, editable);
-            setBar("shadow", shownShadow, editable);
+            setBar("brightness", shownBrightness, true);
+            setBar("shadow", shownShadow, true);
         } finally {
             syncingZoom = false;
         }
