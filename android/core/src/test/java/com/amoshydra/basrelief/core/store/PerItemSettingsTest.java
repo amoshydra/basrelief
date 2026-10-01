@@ -448,6 +448,98 @@ public class PerItemSettingsTest {
         }
     }
 
+    // ------------------------------------------------------ applied surfaces
+
+    /**
+     * A photo is on the home screen until something says otherwise.
+     *
+     * <p>Absent means home, not empty. Every pre-existing install is in exactly that
+     * state, so defaulting to empty would mean every current user's photo claims to
+     * be on no surface at all — and the segment that edits the lock screen would
+     * never appear for anyone who had not just applied it.
+     */
+    @Test
+    public void aLibraryWithNoAppliedFieldIsOnHome() {
+        Library lib = Library.parse(libraryOf(item("a")));
+        assertEquals(1, lib.appliedSurfaces().size());
+        assertTrue(lib.appliedSurfaces().contains(Surface.HOME));
+        assertFalse(lib.isOnBothSurfaces());
+    }
+
+    /**
+     * The segment only exists when the photo is genuinely on both.
+     *
+     * <p>One surface means there is nothing to switch between, and a toggle that
+     * cannot change anything is the same lie as a greyed slider.
+     */
+    @Test
+    public void bothSurfacesRequiresBoth() {
+        Library home = Library.empty().withItem(item("a")).withSelection("a");
+        assertFalse("home alone is not both", home.isOnBothSurfaces());
+        assertTrue(home.withAppliedTo(Surface.LOCK, true).isOnBothSurfaces());
+    }
+
+    /**
+     * Selecting a different photo must not inherit the surfaces the last one was on.
+     *
+     * <p>The trap: carrying the set across a selection change claims the new photo is
+     * on surfaces nobody applied it to, so the segment offers to edit a lock screen
+     * that does not exist — and the first write to it creates one.
+     */
+    @Test
+    public void selectingAnotherPhotoStartsOnHomeAgain() {
+        Library both = Library.empty()
+                .withItem(item("a")).withItem(item("b"))
+                .withSelection("a").withAppliedTo(Surface.LOCK, true);
+        assertTrue(both.isOnBothSurfaces());
+        Library after = both.withSelection("b");
+        assertFalse("b was never applied to the lock screen", after.isOnBothSurfaces());
+        assertEquals(1, after.appliedSurfaces().size());
+    }
+
+    @Test
+    public void theAppliedSetSurvivesPersistence() {
+        Library both = Library.empty().withItem(item("a")).withSelection("a")
+                .withAppliedTo(Surface.LOCK, true);
+        Library back = Library.parse(both.toJson());
+        assertTrue(back.isOnBothSurfaces());
+    }
+
+    /** Applying twice is a no-op rather than a duplicate entry. */
+    @Test
+    public void applyingTheSameSurfaceTwiceChangesNothing() {
+        Library once = Library.empty().withItem(item("a")).withSelection("a")
+                .withAppliedTo(Surface.LOCK, true);
+        Library twice = once.withAppliedTo(Surface.LOCK, true);
+        assertEquals(once.toJson(), twice.toJson());
+    }
+
+    /**
+     * The bundled demo cannot be applied to the lock screen.
+     *
+     * <p>It has no image of its own there and the platform's lock frame is captured
+     * from whatever is live, so recording it would claim a second live engine this
+     * app cannot produce. Saying no beats storing a promise.
+     */
+    @Test
+    public void theBundledDemoIsNotRecordedOnTheLockScreen() {
+        Library lib = Library.empty().withItem(LibraryItem.bundled())
+                .withSelection(Library.BUNDLED_ID)
+                .withAppliedTo(Surface.LOCK, true);
+        assertFalse(lib.isOnBothSurfaces());
+    }
+
+    /** A key from a newer build is skipped, not fatal. */
+    @Test
+    public void anUnknownAppliedKeyIsSkippedRatherThanFatal() {
+        String blob = "{\"version\":" + Library.VERSION + ",\"active\":\"a\","
+                + "\"applied\":[\"home\",\"sideways\"],\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\"}]}";
+        Library lib = Library.parse(blob);
+        assertEquals(1, lib.items().size());
+        assertTrue(lib.appliedSurfaces().contains(Surface.HOME));
+    }
+
     // ------------------------------------------------------- the bundled item
 
     @Test

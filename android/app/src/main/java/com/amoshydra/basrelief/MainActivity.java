@@ -1730,6 +1730,66 @@ public class MainActivity extends Activity {
     private int shownBrightness = 0;
     private int shownShadow = 0;
 
+    /**
+     * One of the -/+ buttons beside a slider.
+     *
+     * <p>Goes through {@link #setBar} rather than writing the store directly, so a
+     * nudge cannot skip the preview the drag does. {@code setBar} carries the
+     * syncingZoom guard, so this does not re-enter the change listener and store the
+     * value twice.
+     *
+     * @param direction -1 or +1
+     */
+    private View stepper(final String key, final SeekBar bar, final int min,
+                         final int max, final int direction) {
+        Button b = new Button(this);
+        b.setText(direction < 0 ? "\u2212" : "+");
+        b.setAllCaps(false);
+        b.setTextSize(16);
+        b.setPadding(0, 0, 0, 0);
+        // A fixed width, not setMinWidth: minWidth is only a floor, so the button
+        // still laid itself out from its text and squeezed the glyph off the end --
+        // which is the control you want most. Same reason as nudgeButton.
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int next = bar.getProgress() + direction;
+                if (next < 0) next = 0;
+                if (next > max - min) next = max - min;
+                // setBar writes progress + min and updates the label; it does not
+                // persist, so the same once-on-release rule a drag follows holds here.
+                setBar(key, next + min, bar.isEnabled());
+                glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        applyStoredSlider(key, next + min);
+                    }
+                });
+                glView.requestRender();
+                persist(key, next + min);
+            }
+        });
+        return b;
+    }
+
+    /**
+     * Push a slider's value into the renderer, on the GL thread.
+     *
+     * <p>The drag handler has this inline, capturing its own locals. A stepper has
+     * no drag to capture from, so both paths call this -- two copies of the same
+     * four branches is how one of them ends up missing a key.
+     */
+    private void applyStoredSlider(String key, int value) {
+        if ("zoom".equals(key)) renderer.setZoom(value / 100f);
+        else if ("motion".equals(key)) renderer.setMotion(value / 100f * 3f);
+        else if ("brightness".equals(key) || "shadow".equals(key)) {
+            renderer.setAdjust(
+                    "brightness".equals(key) ? value : shownBrightness,
+                    "shadow".equals(key) ? value : shownShadow);
+        } else renderer.setDepth(value / 100f);
+    }
+
     private String formatValue(String key, int value) {
         if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
@@ -1807,6 +1867,13 @@ public class MainActivity extends Activity {
             }
         });
         row.addView(bar);
+        // - and + beside every bar. A drag reaches both ends, but a drag is a
+        // gesture you have to know about: half these adjustments are signed, and a
+        // control that can only be raised cannot reach half its range for someone
+        // who does not discover the drag. Both write through the same path a release
+        // does, so a nudge is previewed and then persisted -- never persisted alone.
+        row.addView(stepper(key, bar, min, max, -1));
+        row.addView(stepper(key, bar, min, max, +1));
         bars.put(key, bar);
         barLabels.put(key, tv);
         barMin.put(key, min);

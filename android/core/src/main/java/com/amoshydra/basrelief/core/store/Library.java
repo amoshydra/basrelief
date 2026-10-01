@@ -9,7 +9,9 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -92,12 +94,77 @@ public final class Library {
     /** Id of the item the wallpaper is showing, or null for the bundled demo. */
     private final String activeId;
 
+    /**
+     * Which surfaces the selected photo has been applied to.
+     *
+     * <p>App-owned bookkeeping, and deliberately so. The platform is the truth about
+     * what is actually set; this is the app's record of its own actions, the same
+     * class of thing as {@code lastUsedAt} — which the platform also does not know
+     * and cannot contradict.
+     *
+     * <p>It lives beside the selection rather than on each item because it only ever
+     * describes the <i>selected</i> photo. Per-item storage would be duplication with
+     * no reader, and duplication is how two copies come to disagree.
+     *
+     * <p>Monotonic: surfaces are added by applying, and there is no un-apply gesture,
+     * because nothing in the app can re-bind a live wallpaper. See AGENTS.md.
+     */
+    private final Set<Surface> appliedSurfaces;
+
     private final SortOrder sort;
 
-    private Library(List<LibraryItem> items, String activeId, SortOrder sort) {
+    private Library(List<LibraryItem> items, String activeId, SortOrder sort,
+                    Set<Surface> applied) {
         this.items = Collections.unmodifiableList(items);
         this.activeId = activeId;
         this.sort = sort == null ? SortOrder.DEFAULT : sort;
+        // A home wallpaper is a home wallpaper, so an absent set means home. Every
+        // pre-v3 install is in exactly that state, and defaulting to home is the
+        // answer that describes it rather than one that needs migrating.
+        this.appliedSurfaces = Collections.unmodifiableSet(
+                applied == null || applied.isEmpty()
+                        ? new LinkedHashSet<Surface>(Collections.singleton(Surface.HOME))
+                        : new LinkedHashSet<Surface>(applied));
+    }
+
+    private Library(List<LibraryItem> items, String activeId, SortOrder sort) {
+        this(items, activeId, sort, null);
+    }
+
+    /** Which surfaces the selected photo has been applied to. Never empty. */
+    public Set<Surface> appliedSurfaces() {
+        return appliedSurfaces;
+    }
+
+    /** True when this photo is the live wallpaper on both screens. */
+    public boolean isOnBothSurfaces() {
+        return appliedSurfaces.contains(Surface.HOME) && appliedSurfaces.contains(Surface.LOCK);
+    }
+
+    /**
+     * Record that the selected photo has been applied to a surface.
+     *
+     * <p>Monotonic, and there is no "remove" for that reason: nothing in the app can
+     * re-bind a live wallpaper, so there is no gesture that could mean it. Clearing
+     * the selection is what removes a photo from both.
+     *
+     * <p>Applying the bundled demo to the lock screen is refused. The demo has no
+     * image of its own to render there and the platform's lock frame is captured from
+     * whatever is live — so recording it would claim a second live engine that this
+     * app cannot produce. Better to say no than to store a promise.
+     */
+    public Library withAppliedTo(Surface surface, boolean on) {
+        if (!on) return this;
+        if (surface == Surface.LOCK && isBundledActive()) return this;
+        if (appliedSurfaces.contains(surface)) return this;
+        Set<Surface> next = new LinkedHashSet<Surface>(appliedSurfaces);
+        next.add(surface);
+        return new Library(items, activeId, sort, next);
+    }
+
+    private boolean isBundledActive() {
+        LibraryItem a = activeItem();
+        return a == null || a.isBundled();
     }
 
     /** An empty gallery: nothing listed, nothing selected, default order. */
@@ -112,6 +179,11 @@ public final class Library {
      * actually in the list.
      */
     private static Library of(List<LibraryItem> raw, String activeId, SortOrder sort) {
+        return of(raw, activeId, sort, null);
+    }
+
+    private static Library of(List<LibraryItem> raw, String activeId, SortOrder sort,
+                              Set<Surface> applied) {
         List<LibraryItem> unique = new ArrayList<LibraryItem>();
         for (LibraryItem item : raw) {
             if (item == null) continue;
@@ -127,7 +199,7 @@ public final class Library {
                 if (item.id.equals(activeId)) { active = activeId; break; }
             }
         }
-        return new Library(unique, active, sort);
+        return new Library(unique, active, sort, applied);
     }
 
     // ------------------------------------------------------------- reading
@@ -216,7 +288,11 @@ public final class Library {
      * prevent, so the call is silently corrected rather than stored.
      */
     public Library withSelection(String id) {
-        return of(items, id, sort);
+        // The applied set is deliberately NOT carried across a selection change. It
+        // describes the photo that WAS selected, so keeping it would claim the new
+        // photo is on surfaces nobody applied it to -- and the segment would offer to
+        // edit a lock screen that does not exist.
+        return of(items, id, sort, null);
     }
 
     /**
@@ -227,7 +303,7 @@ public final class Library {
      * blob, so it survives a restart.
      */
     public Library withSort(SortOrder order) {
-        return of(items, activeId, order);
+        return of(items, activeId, order, appliedSurfaces);
     }
 
     /** Record that the wallpaper is showing this item. */
@@ -529,6 +605,7 @@ public final class Library {
             }
             o.put("version", VERSION);
             o.put("sort", sort.key());
+    o.put("applied", appliedKeys());
             o.put("items", arr);
             // Absent rather than null: JSONObject drops nulls anyway, and a
             // missing key reads as "nothing selected" without a special case.
@@ -606,6 +683,37 @@ public final class Library {
         return version < VERSION;
     }
 
+    /** The applied surfaces as stored keys, in a stable order. */
+    private JSONArray appliedKeys() {
+        JSONArray a = new JSONArray();
+        for (Surface surface : Surface.values()) {
+            if (appliedSurfaces.contains(surface)) a.put(surface.key);
+        }
+        return a;
+    }
+
+    /**
+     * Read the applied surfaces. Absent means home, which is every pre-v4 install
+     * and every fresh one.
+     *
+     * <p>An unrecognised key is skipped rather than failing the whole blob: this is
+     * bookkeeping about the app's own actions, and a key from a newer build is not a
+     * reason to lose somebody's gallery.
+     */
+    private static Set<Surface> appliedFrom(JSONObject o) {
+        Set<Surface> out = new LinkedHashSet<Surface>();
+        JSONArray a = o.optJSONArray("applied");
+        if (a == null) return out;
+        for (int i = 0; i < a.length(); i++) {
+            String key = a.optString(i, null);
+            if (key == null) continue;
+            for (Surface surface : Surface.values()) {
+                if (surface.key.equals(key)) out.add(surface);
+            }
+        }
+        return out;
+    }
+
     public static Library parse(String raw, int legacyMotion) {
         if (raw == null || raw.trim().isEmpty()) return empty();
         JSONObject o;
@@ -644,7 +752,7 @@ public final class Library {
         }
         // of() drops duplicate ids and any selection that no longer resolves,
         // so a restored backup cannot hand back a dangling pointer.
-        return of(parsed, activeId, sort);
+        return of(parsed, activeId, sort, appliedFrom(o));
     }
 
     /**
