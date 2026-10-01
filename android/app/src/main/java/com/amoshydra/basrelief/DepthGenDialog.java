@@ -137,10 +137,10 @@ public final class DepthGenDialog {
         pickedImage = f;
         String size = f.length() / 1024 + " KB";
         if ("current".equals(kind)) {
-            imageLabel.setText("Image: current studio image (" + size + ") — "
+            imageLabel.setText(activity.getString(R.string.depth_image_current, size) + " — "
                     + (hasEmbeddedDepth(f) ? "already has depth" : "no depth, will generate"));
         } else {
-            imageLabel.setText("Image: " + f.getName() + " (" + size + ")");
+            imageLabel.setText(activity.getString(R.string.depth_image_named, f.getName() + " (" + size + ")"));
         }
     }
 
@@ -183,7 +183,8 @@ public final class DepthGenDialog {
         if (f == null) return;
         pickedImage = f;
         final String size = f.length() / 1024 + " KB";
-        imageLabel.setText("Image: current studio image (" + size + ") — checking depth…");
+        imageLabel.setText(activity.getString(R.string.depth_image_current, size)
+                    + " — checking depth…");
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -192,7 +193,7 @@ public final class DepthGenDialog {
                     @Override
                     public void run() {
                         if (imageLabel == null) return;
-                        imageLabel.setText("Image: current studio image (" + size + ") — "
+                        imageLabel.setText(activity.getString(R.string.depth_image_current, size) + " — "
                                 + (has ? "already has depth" : "no depth, will generate"));
                     }
                 });
@@ -214,7 +215,7 @@ public final class DepthGenDialog {
         scroll.addView(root);
 
         TextView title = new TextView(activity);
-        title.setText("Depth AI — generate depth on your ComfyUI");
+        title.setText(R.string.depth_title);
         title.setTextSize(16);
         title.setPadding(0, 0, 0, dp(8));
         root.addView(title);
@@ -228,7 +229,7 @@ public final class DepthGenDialog {
         root.addView(hostInput);
 
         Button testBtn = new Button(activity);
-        testBtn.setText("Test connection / discover depth nodes");
+        testBtn.setText(R.string.depth_test_connection);
         testBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -244,7 +245,7 @@ public final class DepthGenDialog {
 
         // --- image ---
         Button pickBtn = new Button(activity);
-        pickBtn.setText("Pick image to generate depth for");
+        pickBtn.setText(R.string.depth_pick_image);
         pickBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -282,7 +283,7 @@ public final class DepthGenDialog {
         root.addView(resInput);
 
         generateBtn = new Button(activity);
-        generateBtn.setText("Generate depth");
+        generateBtn.setText(R.string.depth_generate);
         generateBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -309,7 +310,7 @@ public final class DepthGenDialog {
 
         // export the packed PNG to Downloads (like the web tool's download)
         exportBtn = new Button(activity);
-        exportBtn.setText("Export PNG to Downloads");
+        exportBtn.setText(R.string.depth_export_png);
         exportBtn.setEnabled(false);
         exportBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -320,7 +321,7 @@ public final class DepthGenDialog {
         root.addView(exportBtn);
 
         Button closeBtn = new Button(activity);
-        closeBtn.setText("Close");
+        closeBtn.setText(R.string.depth_close);
         closeBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -386,7 +387,7 @@ public final class DepthGenDialog {
         comfyBase = hostInput.getText().toString().trim();
         activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
                 .edit().putString(KEY_HOST, comfyBase).apply();
-        connectStatus.setText("Testing connection...");
+        connectStatus.setText(R.string.depth_testing);
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -408,7 +409,7 @@ public final class DepthGenDialog {
                         @Override
                         public void run() {
                             if (depth.isEmpty()) {
-                                connectStatus.setText("Connected (" + obj.length() + " nodes) but no "
+                                connectStatus.setText(activity.getString(R.string.depth_connected_nodes, obj.length()) + " but no "
                                         + "depth nodes — is comfyui_controlnet_aux installed?");
                                 nodes.clear();
                                 displayNames.clear();
@@ -423,8 +424,7 @@ public final class DepthGenDialog {
                                     nodes.add(n);
                                     displayNames.add(ComfyWorkflow.friendlyName(n));
                                 }
-                                connectStatus.setText("Connected — " + depth.size()
-                                        + " depth node(s) found");
+                                connectStatus.setText(activity.getString(R.string.depth_connected_nodes, depth.size()));
                                 modelSpinner.setAdapter(new ArrayAdapter<String>(
                                         activity, android.R.layout.simple_spinner_dropdown_item,
                                         new ArrayList<String>(displayNames)));
@@ -445,7 +445,7 @@ public final class DepthGenDialog {
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
-                            connectStatus.setText("Connection failed: " + e.getMessage());
+                            connectStatus.setText(activity.getString(R.string.depth_failed, e.getMessage()));
                         }
                     });
                 }
@@ -490,16 +490,16 @@ public final class DepthGenDialog {
         // user never pressed Test.
         comfyBase = hostInput.getText().toString().trim();
         if (comfyBase == null || comfyBase.length() == 0) {
-            Toast.makeText(activity, "Set the ComfyUI endpoint first", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, R.string.depth_endpoint_required, Toast.LENGTH_SHORT).show();
             return;
         }
         if (pickedImage == null) {
-            Toast.makeText(activity, "Pick an image first", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, R.string.depth_pick_image_first, Toast.LENGTH_SHORT).show();
             return;
         }
         final String model = currentModel();
         if (model == null) {
-            Toast.makeText(activity, "No depth model selected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, R.string.depth_no_model, Toast.LENGTH_SHORT).show();
             return;
         }
         int res;
@@ -522,7 +522,7 @@ public final class DepthGenDialog {
         busy = true;
         generateBtn.setEnabled(false);
         progress.setProgress(0);
-        status.setText("Starting...");
+        status.setText(R.string.depth_starting);
 
         Thread t = new Thread(new Runnable() {
             @Override
@@ -618,8 +618,8 @@ public final class DepthGenDialog {
                         public void run() {
                             preview.setImageBitmap(depthBmp);
                             preview.setVisibility(View.VISIBLE);
-                            status.setText("Done — " + ComfyWorkflow.friendlyName(model) + " @ " + resolution
-                                    + ", loaded into studio.");
+                            status.setText(activity.getString(R.string.depth_done,
+                    ComfyWorkflow.friendlyName(model) + " @ " + resolution));
                             progress.setProgress(1000);
                             generateBtn.setEnabled(true);
                             exportBtn.setEnabled(true);
@@ -633,7 +633,7 @@ public final class DepthGenDialog {
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
-                            status.setText("Failed: " + e.getMessage());
+                            status.setText(activity.getString(R.string.depth_failed, e.getMessage()));
                             generateBtn.setEnabled(true);
                             busy = false;
                         }

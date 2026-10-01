@@ -1,5 +1,170 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Every user-facing string in the app.
+
+  One file, on purpose. The strings here were inline literals at forty-odd call
+  sites, which is fine until one of them needs changing: a wording fix becomes a
+  hunt, and two sites drift into saying different things about the same control.
+  A label that disagrees with itself is worse than an ugly one — the user cannot
+  tell which is current.
+
+  Two kinds of text are deliberately NOT here:
+
+    - Log tags and diagnostic text the user never reads. Putting those in
+      resources makes them look translatable, and they are not: they are for a
+      logcat grep, and they name facts, not English.
+    - The demo map's filename, which is debug output and appears in Diagnostics.
+
+  Naming: <name> is the string's job, not its wording. `no_depth` survives a
+  rewording; `no_depth_map_error_message` does not.
+-->
 <resources>
     <string name="app_name">Basrelief</string>
     <string name="wallpaper_desc">Turns a photo and depth map into a real 3D relief. Tilt your phone to see the light move across it.</string>
+
+    <!-- The studio: title, and the gesture hint that fades after 2s -->
+    <string name="studio_title">Basrelief — live preview</string>
+    <string name="gesture_hint">Tap: orbit center · 2-finger: pan · pinch: zoom</string>
+
+    <!-- Sheet section headings -->
+    <string name="group_relief">Standing out of the plane</string>
+    <string name="group_motion">How it moves</string>
+    <string name="group_picture">Picture</string>
+    <string name="group_framing">Where it sits</string>
+    <string name="group_axis">%1$s (%2$s)</string>
+    <string name="axis_origin">Origin</string>
+    <string name="axis_pan">Pan</string>
+    <string name="unit_fraction">fraction</string>
+    <string name="unit_pixels">pixels</string>
+
+    <!-- Sliders. The value is appended by the view, not folded into the name. -->
+    <string name="slider_depth">Depth</string>
+    <string name="slider_motion">Motion</string>
+    <string name="slider_zoom">Zoom</string>
+    <string name="slider_brightness">Brightness</string>
+    <string name="slider_shadow">Shadow</string>
+    <string name="slider_glide">Glide</string>
+
+    <!-- The one button that carries a symbol rather than a word -->
+    <string name="add_photo_glyph">＋</string>
+
+    <!--
+      The fix line. Terse on purpose: the two actions underneath already say what
+      to do, so the line only has to name the condition. A sentence explaining the
+      consequence ("...so it will not stand out of the plane") was tried and read
+      as a paragraph — the conditions are glanced at, not read.
+    -->
+    <string name="fix_no_depth">No depth</string>
+    <string name="fix_no_depth_actions">Generate a map</string>
+    <string name="fix_choose_map">Choose a map</string>
+    <string name="fix_bundled_demo">Bundled demo</string>
+    <string name="fix_add_photo">Add a photo</string>
+    <string name="fix_generating">Generating depth · %1$d%%</string>
+    <string name="fix_run_in_background">Run in background</string>
+    <string name="fix_no_answer">No answer · map unchanged</string>
+    <string name="fix_try_again">Try again</string>
+
+    <!-- The collapsed pill. Three states; see PillState. -->
+    <string name="pill_controls">Controls</string>
+    <string name="pill_no_depth">No depth</string>
+    <string name="pill_generating">Generating · %1$d%%</string>
+
+    <!-- The demo's map stays reachable from the sheet, not only a row menu -->
+    <string name="action_regenerate">Regenerate</string>
+    <string name="action_replace">Replace</string>
+    <string name="action_reset_view">Reset view</string>
+
+    <!-- Surfaces. The segment appears ONLY when the photo is on both. -->
+    <string name="surface_home">Home</string>
+    <string name="surface_lock">Lock</string>
+    <string name="group_relief_surface">Standing out of the plane — %1$s</string>
+    <string name="group_motion_surface">How it moves — %1$s</string>
+    <string name="group_zoom_surface">Zoom — %1$s</string>
+    <string name="group_framing_surface">Where it sits — %1$s</string>
+
+    <!-- Apply: the surface chooser, shown only at apply time -->
+    <string name="apply_title">Set as wallpaper</string>
+    <string name="apply_subtitle">Android will ask you to confirm.</string>
+    <string name="apply_home">Home screen</string>
+    <string name="apply_home_sub">live, with tilt</string>
+    <string name="apply_lock">Lock screen</string>
+    <string name="apply_lock_sub">live, its own settings</string>
+    <string name="apply_lock_unavailable">needs Android 15 or newer</string>
+    <string name="apply_lock_note">Lock-screen wallpaper needs Android 15+. On older versions the lock screen keeps a still frame.</string>
+    <string name="apply_continue">Continue</string>
+
+    <!-- The gallery. Add photo is the only way in; Image is retired into it. -->
+    <string name="gallery_title">Gallery</string>
+    <string name="gallery_playlists">Playlists</string>
+    <string name="gallery_sort">Sort by</string>
+    <string name="gallery_rename">Rename</string>
+    <string name="gallery_delete_title">Delete?</string>
+    <string name="gallery_copy_settings">Copy settings</string>
+    <string name="gallery_paste_onto_selected">Paste onto selected</string>
+    <string name="gallery_add_to_playlist">Add to playlist</string>
+    <string name="gallery_settings_reset">Settings reset</string>
+    <string name="gallery_bundled_name">Marble bust</string>
+
+    <!-- Playlists -->
+    <string name="playlists_title">Playlists</string>
+    <string name="playlists_subtitle">Rotation writes the same selection your tap does.</string>
+    <string name="playlist_rotate_on">Rotate on</string>
+    <string name="playlist_surfaces">Surfaces</string>
+    <string name="playlist_new">New</string>
+    <string name="playlist_delete">Delete</string>
+
+    <!-- Settings: four groups, and nothing else -->
+    <string name="group_battery">Battery</string>
+    <string name="group_gyro">Gyro</string>
+    <string name="group_about">About &amp; diagnostics</string>
+    <string name="settings_follow_battery_saver">Follow battery saver</string>
+    <string name="settings_follow_battery_saver_sub">less smoothness when the phone is saving power</string>
+    <string name="settings_glide_note">One rate, for re-centring and for switching between home and lock.</string>
+    <string name="settings_calibrate_wake">Calibrate on wake</string>
+    <string name="settings_calibrate_wake_sub">re-read neutral every time it wakes</string>
+    <string name="settings_sleep_still">Sleep when still</string>
+    <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
+    <string name="settings_licence">MIT</string>
+
+    <!-- Depth AI -->
+    <string name="depth_title">Generate a depth map</string>
+    <string name="depth_server">Server</string>
+    <string name="depth_model">Model</string>
+    <string name="depth_resolution">Resolution</string>
+    <string name="depth_test_connection">Test connection</string>
+    <string name="depth_testing">Testing connection…</string>
+    <string name="depth_generate">Generate</string>
+    <string name="depth_starting">Starting…</string>
+    <string name="depth_connected">Connected — %1$s</string>
+    <string name="depth_connected_nodes">Connected (%1$d depth nodes)</string>
+    <string name="depth_failed">Failed: %1$s</string>
+    <string name="depth_done">Done — %1$s, loaded into studio.</string>
+    <string name="depth_export_png">Export PNG to Downloads</string>
+    <string name="depth_close">Close</string>
+    <string name="depth_pick_image">Pick image to generate depth for</string>
+    <string name="depth_endpoint_required">Set the ComfyUI endpoint first</string>
+    <string name="depth_pick_image_first">Pick an image first</string>
+    <string name="depth_no_model">No depth model selected</string>
+
+    <!-- Depth AI: the image it is working on, shown so it is never ambiguous
+         which photo a run will change -->
+    <string name="depth_image_current">Image: current studio image (%1$s)</string>
+    <string name="depth_image_named">Image: %1$s</string>
+
+    <!-- Diagnostics. Read by a person debugging, so still one place. -->
+    <string name="diag_status_prefix">Status: </string>
+    <string name="diag_zoom_prefix">Zoom: </string>
+    <string name="diag_engine_prefix">Engine: </string>
+
+    <!-- Toasts -->
+    <string name="toast_pick_photo_first">Pick a photo from the gallery first</string>
+    <string name="toast_depth_updated">Depth updated</string>
+
+    <string name="action_choose_map">Depth</string>
+    <string name="action_image">Image</string>
+    <string name="action_calibrate">Calibrate</string>
+    <string name="depth_ai_button">Depth AI (ComfyUI)</string>
+    <string name="apply_set_as_wallpaper">Set as wallpaper</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_done">Done</string>
 </resources>

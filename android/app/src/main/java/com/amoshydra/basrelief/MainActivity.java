@@ -304,7 +304,7 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         TextView title = new TextView(this);
-        title.setText("Basrelief — live preview");
+        title.setText(R.string.studio_title);
         title.setTextColor(Color.WHITE);
         title.setTextSize(14);
         header.addView(title, new LinearLayout.LayoutParams(
@@ -341,7 +341,7 @@ public class MainActivity extends Activity {
 
         // gesture hint (hidden once the user minimises the panel)
         hintView = new TextView(this);
-        hintView.setText("Tap: orbit center · 2-finger: pan · pinch: zoom");
+        hintView.setText(R.string.gesture_hint);
         hintView.setTextColor(0x99FFFFFF);
         hintView.setTextSize(11);
         if (prefs.getBoolean("hint_dismissed", false)) hintView.setVisibility(View.GONE);
@@ -367,7 +367,7 @@ public class MainActivity extends Activity {
         // was a control that could not do anything plus a second place saying the
         // same thing. The fix line is now the only signal, and it is one sentence.
         depthBarRow = initialItemHasMap(initial)
-                ? addSlider("Depth", "intensity",
+                ? addSlider(getString(R.string.slider_depth), "intensity",
                         s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
                 : null;
         if (depthBarRow != null) sheetContent.addView(depthBarRow);
@@ -376,26 +376,26 @@ public class MainActivity extends Activity {
         // number with it instead of leaving Depth at the top of the list.
         depthIndex = sheetContent.indexOfChild(depthBarRow);
         if (depthIndex < 0) depthIndex = 0;
-        sheetContent.addView(addSlider("Motion", "motion",
+        sheetContent.addView(addSlider(getString(R.string.slider_motion), "motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
-        sheetContent.addView(addSlider("Zoom", "zoom",
+        sheetContent.addView(addSlider(getString(R.string.slider_zoom), "zoom",
                 s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, 25, 200));
 
         // Picture is its own group because these two answer a different question
         // from Depth and Zoom: they change how the photograph renders, not where it
         // sits or how far it stands out. Signed, because both directions are useful
         // and an unsigned control makes "less contrast" unreachable.
-        sheetContent.addView(fieldCaption("Picture"));
-        sheetContent.addView(addSlider("Brightness", "brightness",
+        sheetContent.addView(fieldCaption(getString(R.string.group_picture)));
+        sheetContent.addView(addSlider(getString(R.string.slider_brightness), "brightness",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
-        sheetContent.addView(addSlider("Shadow", "shadow",
+        sheetContent.addView(addSlider(getString(R.string.slider_shadow), "shadow",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
         sheetContent.addView(buildFramingSection(initial.isEditableItem()));
 
-        Button resetView = makeButton("Reset view", new View.OnClickListener() {
+        Button resetView = makeButton(getString(R.string.action_reset_view), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // Framing and Zoom belong to the photo, so this resets the photo
@@ -430,13 +430,13 @@ public class MainActivity extends Activity {
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.addView(makeButton("Image", new View.OnClickListener() {
+        buttons.addView(makeButton(getString(R.string.action_image), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 pickFile(REQ_IMAGE);
             }
         }));
-        buttons.addView(makeButton("Depth", new View.OnClickListener() {
+        buttons.addView(makeButton(getString(R.string.action_choose_map), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 pickFile(REQ_DEPTH);
@@ -446,13 +446,13 @@ public class MainActivity extends Activity {
         // the bundled demo. The marble bust is a row in the gallery now, so
         // choosing it is a selection like any other -- and the reset it used to
         // perform is one tap, in a list that also says what everything else is.
-        buttons.addView(makeButton("Gallery", new View.OnClickListener() {
+        buttons.addView(makeButton(getString(R.string.gallery_title), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 gallery.show();
             }
         }));
-        buttons.addView(makeButton("Calibrate", new View.OnClickListener() {
+        buttons.addView(makeButton(getString(R.string.action_calibrate), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (tilt != null) tilt.recalibrate();
@@ -463,7 +463,7 @@ public class MainActivity extends Activity {
 
         // Depth AI: generate a depth map on a LAN ComfyUI instance, then pack
         // it into a self-contained PNG and load it into the studio + wallpaper
-        Button depthAiBtn = makeButton("Depth AI (ComfyUI)", new View.OnClickListener() {
+        Button depthAiBtn = makeButton(getString(R.string.depth_ai_button), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 openDepthGen();
@@ -475,7 +475,7 @@ public class MainActivity extends Activity {
         sheetContent.addView(depthAiBtn);
 
         // reliable way to reach the live-wallpaper picker on any launcher
-        Button setWallpaper = makeButton("Set as wallpaper", new View.OnClickListener() {
+        Button setWallpaper = makeButton(getString(R.string.apply_set_as_wallpaper), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Intent intent = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
@@ -513,7 +513,7 @@ public class MainActivity extends Activity {
 
         // floating expand handle, shown only while the panel is minimised
         expandBtn = new Button(this);
-        expandBtn.setText("＋");
+        expandBtn.setText(R.string.add_photo_glyph);
         expandBtn.setAllCaps(false);
         expandBtn.setMinHeight(dp(48));
         expandBtn.setMinWidth(dp(48));
@@ -852,10 +852,10 @@ public class MainActivity extends Activity {
         panCol.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        originCol.addView(fieldCaption("Origin (fraction)"));
+        originCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_origin), getString(R.string.unit_fraction))));
         orbitXField = addFramingField(originCol, "X", editable, true, 0);
         orbitYField = addFramingField(originCol, "Y", editable, true, 1);
-        panCol.addView(fieldCaption("Pan (px)"));
+        panCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_pan), getString(R.string.unit_pixels))));
         panXField = addFramingField(panCol, "X", editable, false, 2);
         panYField = addFramingField(panCol, "Y", editable, false, 3);
 
@@ -1846,7 +1846,7 @@ public class MainActivity extends Activity {
         if (want && depthBarRow == null) {
             LibraryItem item = state.activeItem();
             SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
-            depthBarRow = addSlider("Depth", "intensity",
+            depthBarRow = addSlider(getString(R.string.slider_depth), "intensity",
                     s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100);
             // Above Motion and Zoom, where Depth has always been: it is the first
             // thing anyone adjusts, and the sheet scrolls.
@@ -1935,7 +1935,7 @@ public class MainActivity extends Activity {
         syncingZoom = true;
         try {
             zoomBar.setProgress(v - 25); // min = 25
-            if (zoomLabel != null) zoomLabel.setText("Zoom: " + formatValue("zoom", v));
+            if (zoomLabel != null) zoomLabel.setText(getString(R.string.diag_zoom_prefix) + formatValue("zoom", v));
         } finally {
             syncingZoom = false;
         }
@@ -2008,7 +2008,7 @@ public class MainActivity extends Activity {
             // deletable or editable -- so a depth map picked here would have
             // nowhere to live. Saying so is better than silently writing a file
             // no row will ever read.
-            Toast.makeText(this, "Pick a photo from the gallery first",
+            Toast.makeText(this, R.string.toast_pick_photo_first,
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -2057,7 +2057,7 @@ public class MainActivity extends Activity {
                             return item.withDepth(PrefFiles.store(target));
                         }
                     });
-                    Toast.makeText(MainActivity.this, "Depth updated", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, R.string.toast_depth_updated, Toast.LENGTH_SHORT).show();
                 } else {
                     Toast.makeText(MainActivity.this,
                             "Pick an image first", Toast.LENGTH_SHORT).show();
@@ -2175,7 +2175,7 @@ public class MainActivity extends Activity {
         // this line exists to make visible without a cable.
         String w = prefs.getString("wallpaper_debug", "");
         if (!w.isEmpty()) s += "\nEngine: " + w;
-        statusView.setText("Status: " + s);
+        statusView.setText(getString(R.string.diag_status_prefix) + s);
     }
 
     /**

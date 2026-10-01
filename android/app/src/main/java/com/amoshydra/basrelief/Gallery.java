@@ -286,7 +286,7 @@ final class Gallery {
         String[] labels = new String[order.length];
         for (int i = 0; i < order.length; i++) labels[i] = order[i].label();
         new AlertDialog.Builder(activity)
-                .setTitle("Sort by")
+                .setTitle(R.string.gallery_sort)
                 .setItems(labels, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
@@ -303,7 +303,7 @@ final class Gallery {
         String setLabel = isActive ? "Already on screen" : "Set as wallpaper";
         if (item.isBundled()) {
             new AlertDialog.Builder(activity)
-                    .setTitle("Marble bust")
+                    .setTitle(R.string.gallery_bundled_name)
                     .setMessage("The built-in demo. It has no depth map of its own beyond "
                             + "the one shipped in the app, and it cannot be deleted -- "
                             + "it is the way back to the default.")
@@ -336,7 +336,7 @@ final class Gallery {
         final EditText field = new EditText(activity);
         field.setText(item.displayName());
         new AlertDialog.Builder(activity)
-                .setTitle("Rename")
+                .setTitle(R.string.gallery_rename)
                 .setView(field)
                 .setPositiveButton("Save", new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -383,7 +383,7 @@ final class Gallery {
             activity.refreshSliders();
             activity.applyFiles();
         }
-        Toast.makeText(activity, "Settings reset", Toast.LENGTH_SHORT).show();
+        Toast.makeText(activity, R.string.gallery_settings_reset, Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -400,7 +400,7 @@ final class Gallery {
                 + "wallpaper will fall back to the marble bust."
                 : "Delete " + item.displayName() + "?";
         new AlertDialog.Builder(activity)
-                .setTitle("Delete?")
+                .setTitle(R.string.gallery_delete_title)
                 .setMessage(message)
                 .setPositiveButton("Delete", new android.content.DialogInterface.OnClickListener() {
                     @Override
