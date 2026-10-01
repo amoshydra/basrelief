@@ -130,6 +130,17 @@ public class MainActivity extends Activity {
      * is what makes the sheet draggable in the first place.
      */
     private LinearLayout sheetContent;
+    /** The one dashed line under the grip. See {@link #buildFixLine}. */
+    private LinearLayout fixLine;
+    /** The pill that replaces the sheet when it is collapsed. See {@link #setPillState}. */
+    private TextView pill;
+    private PillState pillState = PillState.IDLE;
+    /** The Depth slider row, which does not exist for a photo with no map. */
+    private View depthBarRow;
+    /** Where in {@code sheetContent} the Depth row belongs when it is re-added. */
+    private int depthIndex = 0;
+    private TextView fixText;
+    private LinearLayout fixActions;
     /**
      * The panel's height when fully open, captured once.
      *
@@ -305,6 +316,14 @@ public class MainActivity extends Activity {
         // Scrolling content. Built here, before anything is added to it, because
         // every section below goes into sheetContent rather than onto the panel, so
         // the handle stays pinned and reachable and the rest can be scrolled.
+        // The fix line, between the grip and the scrolling content. Outside the
+        // scroll on purpose (R-F1/R-S2): it is the one thing that must be reachable
+        // at the launch peek, when the foot of the sheet is still below the fold.
+        // Inside the scroll it would be the first thing to scroll away, which is
+        // exactly when a condition needs reading.
+        fixLine = buildFixLine();
+        panel.addView(fixLine, 1);
+
         ScrollView sheetScroll = new ScrollView(this);
         sheetScroll.setFillViewport(true);
         sheetScroll.setClipToPadding(false);
@@ -343,8 +362,20 @@ public class MainActivity extends Activity {
         final LibraryItem initialItem = initial.activeItem();
         final SurfaceSettings s = initialItem == null
                 ? null : initialItem.settings(Surface.HOME);
-        sheetContent.addView(addSlider("Depth", "intensity",
-                s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100));
+        // Depth exists only for a photo that HAS a depth map (R-D1). It used to be
+        // built always and greyed out with "no depth map" written beside it, which
+        // was a control that could not do anything plus a second place saying the
+        // same thing. The fix line is now the only signal, and it is one sentence.
+        depthBarRow = initialItemHasMap(initial)
+                ? addSlider("Depth", "intensity",
+                        s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
+                : null;
+        if (depthBarRow != null) sheetContent.addView(depthBarRow);
+        // Where Depth goes when it has to come back. Captured from the live index
+        // rather than hard-coded, so inserting a section above it later moves the
+        // number with it instead of leaving Depth at the top of the list.
+        depthIndex = sheetContent.indexOfChild(depthBarRow);
+        if (depthIndex < 0) depthIndex = 0;
         sheetContent.addView(addSlider("Motion", "motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider("Zoom", "zoom",
@@ -835,6 +866,105 @@ public class MainActivity extends Activity {
 
         refreshFramingFields();
         return box;
+    }
+
+    /**
+     * The dashed box under the grip: at most one sentence and at most two actions.
+     *
+     * <p><b>This is the only signal that a photo has no depth map</b> (R-F3). There
+     * used to be a greyed Depth slider with "no depth map" written beside it, which
+     * was two controls for one fact and a control that could not do anything. The
+     * Depth control's <i>absence</i> is now the signal, so a photo with a map shows
+     * no line at all.
+     *
+     * <p>Drawn with a dashed border rather than a solid one so it reads as an
+     * interruption rather than as another panel -- a solid card here looks like
+     * content, and content is what the user came to look at.
+     *
+     * <p>At most two actions, never three (R-F2). The third thing you could want to
+     * do with a depth map is delete it, and that is a gallery row action, not
+     * something that belongs in a sentence you are reading under a handle.
+     */
+    private LinearLayout buildFixLine() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        DashBorder border = new DashBorder(dp(1), dp(6),
+                Color.argb(150, 255, 255, 255));
+        box.setBackground(border);
+        int pad = dp(10);
+        box.setPadding(pad, pad, pad, pad);
+
+        fixText = new TextView(this);
+        fixText.setTextColor(Color.WHITE);
+        fixText.setTextSize(13);
+        box.addView(fixText);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        fixActions = actions;
+        box.addView(actions);
+
+        box.setVisibility(View.GONE);
+        return box;
+    }
+
+    /**
+     * Show the fix line, or take it away.
+     *
+     * <p>With no condition holding it is GONE rather than blank (R-F4): an empty box
+     * with a dashed border is a permanent ornament that trains the eye to stop
+     * reading it.
+     */
+    private void setFixLine(CharSequence sentence, String primaryLabel,
+                            View.OnClickListener primary, String secondaryLabel,
+                            View.OnClickListener secondary) {
+        if (sentence == null) {
+            fixLine.setVisibility(View.GONE);
+            return;
+        }
+        fixLine.setVisibility(View.VISIBLE);
+        fixText.setText(sentence);
+        fixActions.removeAllViews();
+        // Two at most, and the layout refuses to be asked for three.
+        if (primaryLabel != null) {
+            fixActions.addView(fixButton(primaryLabel, primary));
+        }
+        if (secondaryLabel != null) {
+            fixActions.addView(fixButton(secondaryLabel, secondary));
+        }
+        // Attention is a property of the CONDITION, not of the sheet's position, so
+        // it is computed here and the collapse just re-reads it (R-F5).
+        setPillState(PillState.ATTENTION);
+    }
+
+    private Button fixButton(String label, View.OnClickListener onClick) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(8);
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /**
+     * The conditions the fix line knows how to report.
+     *
+     * <p>Deliberately a small closed set rather than a general mechanism. Every entry
+     * is a thing the app can <i>do something about</i>; a line that can only inform
+     * is a status paragraph, and this is one sentence.
+     */
+    private enum PillState { IDLE, ATTENTION, PROGRESS }
+
+    private void setPillState(PillState state) {
+        pillState = state;
+        if (pill == null) return;
+        // Only the collapsed sheet has a pill; while the sheet is open the fix line
+        // itself is the signal, and two of them at once is one too many.
+        pill.setVisibility(state == PillState.IDLE ? View.GONE : View.VISIBLE);
+        pill.setAlpha(state == PillState.ATTENTION ? 1f : 0.75f);
     }
 
     private TextView fieldCaption(String s) {
@@ -1657,6 +1787,8 @@ public class MainActivity extends Activity {
     void refreshSliders() {
         AppState state = AppState.load(prefs, getFilesDir());
         LibraryItem item = state.activeItem();
+        refreshFixLine(state);
+        syncDepthRow(state);
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
@@ -1693,6 +1825,94 @@ public class MainActivity extends Activity {
         if (sensorPolicy != null) {
             sensorPolicy.setMotionActive(s != null && s.motionScale() > 0f);
         }
+    }
+
+    /**
+     * Add or remove the Depth control so it matches the photo on screen.
+     *
+     * <p>The row is built once, from whatever was selected at launch, so without
+     * this a photo with no map would be shown a Depth slider after the user picked
+     * one that has a map, and the reverse. That is R-D1 and R-PV5 at once: the
+     * control's <i>presence</i> is the signal that there is a map, so a stale row is
+     * a false statement about the photo rather than a cosmetic mismatch.
+     *
+     * <p>Removed from every lookup as well as from the view hierarchy. Leaving the
+     * SeekBar in {@code bars} would let {@link #setBar} write to a detached view,
+     * which does not throw and does nothing -- the kind of write that looks like it
+     * worked.
+     */
+    private void syncDepthRow(AppState state) {
+        boolean want = initialItemHasMap(state);
+        if (want && depthBarRow == null) {
+            LibraryItem item = state.activeItem();
+            SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
+            depthBarRow = addSlider("Depth", "intensity",
+                    s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100);
+            // Above Motion and Zoom, where Depth has always been: it is the first
+            // thing anyone adjusts, and the sheet scrolls.
+            sheetContent.addView(depthBarRow, depthIndex);
+        } else if (!want && depthBarRow != null) {
+            sheetContent.removeView(depthBarRow);
+            SeekBar bar = bars.remove("intensity");
+            barLabels.remove("intensity");
+            barMin.remove("intensity");
+            barNames.remove("intensity");
+            depthBarRow = null;
+        }
+    }
+
+    /**
+     * Whether this item has a depth map at all.
+     *
+     * <p>The bundled demo does -- it is the one asset pair in res/raw, and shipping
+     * one without wiring the other renders correctly with no relief and no
+     * explanation. See AGENTS.md.
+     */
+    private boolean initialItemHasMap(AppState state) {
+        LibraryItem item = state.activeItem();
+        return item != null && (item.isBundled() || item.depthName != null);
+    }
+
+    /**
+     * The fix line, from the conditions that hold right now.
+     *
+     * <p>One condition is implemented: no depth map. The other three in the PRD --
+     * generation failed, server unreachable, gyro neutral drifted -- need the
+     * background-generation slice and a TiltController reading to exist, and a line
+     * that can only ever say one thing is better than one that says a thing that may
+     * be wrong.
+     *
+     * <p>With a map present this shows NOTHING (R-F4). Not an empty box: a dashed
+     * border left on screen trains the eye to stop reading it, which is how a real
+     * condition stops being noticed.
+     */
+    private void refreshFixLine(AppState state) {
+        LibraryItem item = state.activeItem();
+        boolean bundled = item == null || item.isBundled();
+        if (bundled) {
+            setFixLine(null, null, null, null, null);
+            return;
+        }
+        if (item.depthName != null) {
+            setFixLine(null, null, null, null, null);
+            setPillState(PillState.IDLE);
+            return;
+        }
+        // Two actions, and they are PEERS: the PRD settles that generating may be as
+        // common as choosing, so neither is styled as the real one.
+        setFixLine("This photo has no depth map, so it will not stand out of the plane.",
+                "Generate a map", new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        openDepthGen();
+                    }
+                },
+                "Choose a map", new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        pickFile(REQ_DEPTH);
+                    }
+                });
     }
 
     private void setBar(String key, int value, boolean enabled) {
