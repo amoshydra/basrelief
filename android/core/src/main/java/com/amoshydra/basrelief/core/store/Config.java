@@ -81,6 +81,24 @@ public final class Config {
      *
      * @param raw the stored string, or null if nothing has been written yet
      */
+    /**
+     * Whether a stored blob is older than this build, so the caller should write
+     * back what it parsed.
+     *
+     * <p>The same question {@link Library#needsMigration} answers for the index, and
+     * for the same reason. A blob from a newer build is deliberately <i>not</i> a
+     * migration: {@code parse} returns the default for it, so rewriting it would
+     * destroy settings a newer build wrote.
+     */
+    public static boolean needsMigration(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return false;
+        try {
+            return new JSONObject(raw).optInt("version", 0) < VERSION;
+        } catch (JSONException e) {
+            return false;
+        }
+    }
+
     public static Config parse(String raw) {
         if (raw == null || raw.trim().isEmpty()) return defaults();
         JSONObject o;

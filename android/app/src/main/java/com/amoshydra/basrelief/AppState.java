@@ -133,14 +133,25 @@ final class AppState {
             libraryDirty = true;
         }
 
-        if (libraryDirty) LibraryStore.save(prefs, library);
+        // A migrated blob must be WRITTEN, not just parsed. The v2 -> v3 migration
+        // resolves correctly in memory and re-runs on every load without this, so
+        // the on-disk shape never converges: every surface creation and every pref
+        // change re-walks every item, including on the GL thread at wallpaper cold
+        // start. Worse, it leaves the next migration reading a v2 blob while its
+        // author reasonably expects v3, which is a trap rather than a cost.
+        //
+        // Found on a device, not by a test: the tests assert on the parsed model,
+        // and the parsed model was always right.
+        if (libraryDirty || Library.needsMigration(libraryBlob)) {
+            LibraryStore.save(prefs, library);
+        }
 
         // The config is rewritten only to drop the dead v1 fields. Its Motion is
         // already correct either way, so this is housekeeping rather than a
         // correctness fix — but leaving a v1 blob in place would mean Config.parse
         // had to keep tolerating fields nothing reads, and the next reader would
         // have to wonder which of them still mean something.
-        if (configBlob != null && !isCurrentVersion(configBlob)) {
+        if (Config.needsMigration(configBlob)) {
             ConfigStore.save(prefs, config);
         }
 
@@ -176,9 +187,6 @@ final class AppState {
     }
 
     /** Whether a blob declares the version this build writes, not merely a number. */
-    private static boolean isCurrentVersion(String blob) {
-        return blob.indexOf("\"version\":" + Config.VERSION) >= 0;
-    }
 
     /**
      * The pair a pre-gallery build recorded, from either of the two places it

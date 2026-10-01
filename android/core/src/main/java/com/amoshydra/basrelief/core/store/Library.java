@@ -571,6 +571,41 @@ public final class Library {
      * @param raw          the stored string, or null if nothing has been written
      * @param legacyMotion the global Motion to copy onto each item on upgrade
      */
+    /**
+     * Whether a stored blob is older than this build and so was migrated in memory
+     * by {@link #parse} — which means the blob on disk is still stale and has to be
+     * rewritten, or the next migration will be written against a shape nobody
+     * actually stored.
+     *
+     * <p><b>Asked separately from {@code parse} because parsing cannot answer it.</b>
+     * A migrated blob resolves perfectly in memory, so every test of the migration
+     * passes while the file stays v2 forever and the migration re-runs on every
+     * load — including on the GL thread at wallpaper cold start. Found on a device.
+     *
+     * <p><b>A blob from a NEWER build is not migratable and must never be
+     * overwritten.</b> {@code parse} returns an empty library for it, so a caller
+     * that rewrites "anything needing migration" with {@code version &lt; VERSION}
+     * would silently delete a future version's photos on downgrade. Hence
+     * {@code >=} and not {@code ==}: the whole point of this method is to decide
+     * whether writing is safe, and clobbering is not.
+     *
+     * <p>A blob that will not parse is also left alone. It is unusable either way,
+     * and overwriting it destroys the only copy of whatever it said.
+     *
+     * @param raw the stored string; null or blank is not a migration, though a
+     *            caller is free to write a fresh blob
+     */
+    public static boolean needsMigration(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return false;
+        int version;
+        try {
+            version = new JSONObject(raw).optInt("version", 0);
+        } catch (JSONException e) {
+            return false; // unreadable: parse already yields empty, and leave it be
+        }
+        return version < VERSION;
+    }
+
     public static Library parse(String raw, int legacyMotion) {
         if (raw == null || raw.trim().isEmpty()) return empty();
         JSONObject o;

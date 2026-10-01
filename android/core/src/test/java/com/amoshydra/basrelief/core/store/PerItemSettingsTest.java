@@ -371,6 +371,68 @@ public class PerItemSettingsTest {
                 !before.toJson().contains("\"intensity\":45"));
     }
 
+    /**
+     * A migrated blob must SAY SO, so the caller rewrites it.
+     *
+     * <p>This is the question {@code parse} cannot answer. Parsing a v2 blob gives
+     * the right items, so every test of the migration passes — while the file stays
+     * v2 on disk and the migration re-runs on every load forever, including on the
+     * GL thread at wallpaper cold start. Found on a device: the parsed model was
+     * always right, and the on-disk shape never converged.
+     */
+    @Test
+    public void aMigratedBlobNoLongerNeedsMigrating() {
+        String v2 = "{\"version\":2,\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"intensity\":45}]}";
+        assertTrue("a v2 blob needs migrating", Library.needsMigration(v2));
+        assertFalse("and its migration makes that unnecessary",
+                Library.needsMigration(Library.parse(v2, 33).toJson()));
+    }
+
+    /**
+     * A blob from a NEWER build must never be overwritten.
+     *
+     * <p>The trap the mutation check found, and it is a data-loss path rather than a
+     * cosmetic one. {@code parse} returns an <i>empty</i> library for a future
+     * version, so a caller that rewrites anything "not current" — which is what
+     * {@code version == VERSION} says — writes that empty library over a future
+     * build's photos the moment the user downgrades. Silently, and with no way to
+     * tell afterwards.
+     */
+    @Test
+    public void aFutureBlobIsNotSomethingToMigrate() {
+        String future = "{\"version\":" + (Library.VERSION + 1) + ",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\"}]}";
+        assertEquals("parse yields empty for a newer build",
+                0, Library.parse(future).items().size());
+        assertFalse("but it must NOT be rewritten -- that would delete its photos",
+                Library.needsMigration(future));
+    }
+
+    /**
+     * An unreadable blob is left alone.
+     *
+     * <p>It is unusable either way, and overwriting it destroys the only copy of
+     * whatever it said — which is the one thing that might still be recoverable by
+     * hand.
+     */
+    @Test
+    public void nothingOrNothingReadableIsNotMigrated() {
+        assertFalse(Library.needsMigration(null));
+        assertFalse(Library.needsMigration(""));
+        assertFalse(Library.needsMigration("   "));
+        assertFalse(Library.needsMigration("{ not json"));
+    }
+
+    /** A label carrying the version string must not make a stale blob look current. */
+    @Test
+    public void aVersionStringInsideALabelIsNotAMatch() {
+        String v2 = "{\"version\":2,\"items\":[{\"id\":\"a\",\"image\":\"a.png\","
+                + "\"label\":\"version\\\":3\"}]}";
+        assertTrue("a label must not satisfy the version check",
+                Library.needsMigration(v2));
+    }
+
     @Test
     public void aFutureVersionYieldsAnEmptyLibraryRatherThanAGuess() {
         String future = "{\"version\":" + (Library.VERSION + 1)
