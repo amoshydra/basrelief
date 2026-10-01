@@ -92,6 +92,27 @@ final class AppState {
         String configBlob = prefs.getString(Config.KEY, null);
         String libraryBlob = prefs.getString(Library.KEY, null);
 
+        // A blob from a NEWER build is left completely alone.
+        //
+        // Library.parse returns an empty library for one, because a schema it does
+        // not understand must not be guessed at. That is right for parsing and it was
+        // catastrophic in combination with everything after it: the empty result
+        // differed from the bundled-and-reconciled one, so libraryDirty went true,
+        // and the empty index was written back over the user's photos.
+        //
+        // So installing an OLDER build over a newer one wiped the gallery. Measured,
+        // not theorised: it happened, on a device, and the only survivor was the one
+        // file the old build's own config still referenced.
+        //
+        // The fix is to refuse to write anything when the stored blob is not ours --
+        // not to guess, and not to "reconcile" a schema we cannot read. An old build
+        // must be harmless to a newer install's data, which is the whole point of
+        // storing a version number.
+        boolean storedIsNewer = Library.isNewerVersion(libraryBlob);
+        if (storedIsNewer) {
+            return new AppState(Config.parse(configBlob), Library.empty());
+        }
+
         Config config = Config.parse(configBlob);
         Library library = Library.parse(libraryBlob, config.motion);
         boolean libraryDirty = false;

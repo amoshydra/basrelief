@@ -672,6 +672,27 @@ public final class Library {
      * @param raw the stored string; null or blank is not a migration, though a
      *            caller is free to write a fresh blob
      */
+    /**
+     * Whether a stored blob was written by a build NEWER than this one.
+     *
+     * <p>Distinct from {@link #needsMigration}, and the difference is the whole
+     * safety property: a newer blob is not ours to touch. A caller that sees this
+     * true must not write, must not reconcile, and must not treat the empty parse as
+     * something to persist -- because persisting it is how an older build deletes a
+     * newer one's gallery. It happened.
+     *
+     * <p>Unreadable is NOT "newer". A corrupt blob is this build's problem and is
+     * already handled by writing a clean one.
+     */
+    public static boolean isNewerVersion(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return false;
+        try {
+            return new JSONObject(raw).optInt("version", 0) > VERSION;
+        } catch (JSONException e) {
+            return false;
+        }
+    }
+
     public static boolean needsMigration(String raw) {
         if (raw == null || raw.trim().isEmpty()) return false;
         int version;

@@ -448,6 +448,44 @@ public class PerItemSettingsTest {
         }
     }
 
+    // ------------------------------------------- a newer build's blob is not ours
+
+    /**
+     * A blob from a newer build is recognised, and is NOT a migration.
+     *
+     * <p>These are different questions and conflating them is how a gallery is
+     * deleted. "Needs migrating" means ours-but-older, so we may write. "Newer" means
+     * not ours at all, so we must not -- because parse returns an EMPTY library for
+     * it, and anything that then persists that empty result has overwritten the
+     * user's photos with nothing.
+     *
+     * <p>Measured: installing an older build over a newer one wiped the index, and
+     * the only file that survived was the one the old build's own config still named.
+     */
+    @Test
+    public void aNewerBlobIsNeitherCurrentNorAMigration() {
+        String future = "{\"version\":" + (Library.VERSION + 5) + ",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\"}]}";
+        assertTrue("must be recognised as newer", Library.isNewerVersion(future));
+        assertFalse("and must never be rewritten", Library.needsMigration(future));
+    }
+
+    /** An unreadable blob is this build's problem, not a reason to leave it alone. */
+    @Test
+    public void anUnreadableBlobIsNotNewer() {
+        assertFalse(Library.isNewerVersion(null));
+        assertFalse(Library.isNewerVersion(""));
+        assertFalse(Library.isNewerVersion("{ not json"));
+    }
+
+    /** Ours, and older, is the case that genuinely is a migration. */
+    @Test
+    public void ourOwnOlderBlobIsAMigrationAndNotNewer() {
+        String v2 = "{\"version\":2,\"items\":[]}";
+        assertFalse(Library.isNewerVersion(v2));
+        assertTrue(Library.needsMigration(v2));
+    }
+
     // ------------------------------------------------------ applied surfaces
 
     /**
