@@ -105,6 +105,66 @@
     <string name="gallery_settings_reset">Settings reset</string>
     <string name="gallery_bundled_name">Marble bust</string>
 
+    <!--
+      The two ways in and out of the gallery's browsing surfaces. The filmstrip
+      lives on the render's edge and the grid covers it, so each needs a way to
+      reach the other; the names describe the job rather than the widget, because
+      the mockup's tiles carry glyphs and a glyph cannot be worded.
+    -->
+    <string name="gallery_add_photo">Add photo</string>
+    <string name="gallery_all_photos">All photos</string>
+    <string name="gallery_rename_save">Save</string>
+    <!-- Glyphs still get names, so a screen reader says what the dot does. -->
+    <string name="gallery_more_glyph">⋯</string>
+    <string name="gallery_more_photos">More photos</string>
+    <string name="gallery_thumb_use">Use %1$s</string>
+    <string name="gallery_has_depth_map">Has a depth map</string>
+    <string name="gallery_bundled_note">The built-in demo. Its photo and depth map ship inside the app rather than on this device, so it cannot be deleted — it is the way back to the default.</string>
+
+    <!--
+      The selection line, and the one sentence that makes hold-to-select
+      discoverable. It reads as the count once there is a count, so it is one
+      text view answering two questions rather than two views.
+    -->
+    <string name="gallery_selection_hint">Tap a photo to use it · hold to pick several</string>
+    <string name="gallery_selection_count">%1$d picked</string>
+
+    <!-- Copy settings: what a copy takes, and where it goes. -->
+    <string name="gallery_copy_from">Copy settings from</string>
+    <string name="gallery_copy_takes">Depth · Zoom · Motion · Origin · Pan · Brightness · Shadow</string>
+    <string name="gallery_copy_source_row">%1$s — %2$s · %3$s</string>
+    <string name="gallery_settings_copied">Copied settings from %1$s</string>
+
+    <!-- Bulk actions, worded for the selection they act on. -->
+    <string name="gallery_paste_onto_this">Paste onto this photo</string>
+    <string name="gallery_delete_selected">Delete picked</string>
+    <string name="gallery_delete_one">Delete</string>
+    <string name="gallery_delete_one_message">Delete %1$s? Its file goes with it.</string>
+    <string name="gallery_delete_many_message">Delete %1$d photos? Their files go with them.</string>
+    <string name="gallery_delete_active_note">%1$s is on screen now, so the wallpaper falls back to the marble bust.</string>
+    <string name="gallery_deleted">Deleted</string>
+    <string name="gallery_deleted_active">Deleted · showing the marble bust</string>
+
+    <!-- Playlists, reached from the gallery header. -->
+    <string name="gallery_playlist_pick">Add to playlist</string>
+    <string name="gallery_playlist_new">New playlist</string>
+    <string name="gallery_playlist_name">Name</string>
+    <string name="gallery_playlist_added">Added %1$d to %2$s</string>
+    <string name="gallery_playlist_row">%1$s · %2$d photos</string>
+
+    <!--
+      Seams this build cannot close on its own. Both are reported rather than
+      hidden: a control that silently does nothing is the one failure mode this
+      project's constitution rules out, so the honest fallback names the state.
+    -->
+    <string name="toast_add_photo_unavailable">Adding a photo is not wired up yet</string>
+    <string name="toast_playlists_unavailable">Playlists are not wired up yet</string>
+
+    <!-- Bulk paste outcomes -->
+    <string name="toast_settings_pasted">Pasted onto %1$d photos</string>
+    <string name="toast_copy_first">Copy settings from a photo first</string>
+    <string name="toast_select_first">Hold a photo to pick several first</string>
+
     <!-- Playlists -->
     <string name="playlists_title">Playlists</string>
     <string name="playlists_subtitle">Rotation writes the same selection your tap does.</string>
@@ -140,8 +200,6 @@
          so nobody has to remember which box they typed. -->
     <string name="depth_server_change">Change</string>
     <string name="depth_server_untested">Not tested</string>
-    <string name="depth_server_reachable">Reachable</string>
-    <string name="depth_server_unreachable">No answer</string>
     <string name="depth_test_connection">Test connection</string>
     <string name="depth_testing">Testing connection…</string>
     <string name="depth_test_failed">Not reached: %1$s</string>
@@ -162,6 +220,10 @@
 
     <string name="depth_generate">Generate</string>
     <string name="depth_endpoint_required">Set the ComfyUI endpoint first</string>
+    <!-- Named for the fact, not for the wording: the panel was opened with no
+         photograph to generate for (the bundled demo has no file, and ships its
+         own map). -->
+    <string name="depth_no_subject">Open this on a photo from the gallery</string>
 
     <!-- The run. Phases, not controls: the job is queued with the model baked in,
          so a control that appeared to change it could not (R-PANEL7). -->
@@ -178,6 +240,10 @@
       the worst outcome this app has.
     -->
     <string name="depth_run_cause">The server said: %1$s</string>
+    <!-- The subject the failed run was for. One word, because a run can be
+         minutes long and the user may have looked at other photos meanwhile — so
+         which photo it was FOR is not something they can assume. -->
+    <string name="depth_run_was_for">Run for %1$s · your map is unchanged</string>
     <string name="depth_edit_server">Edit server</string>
 
     <!--

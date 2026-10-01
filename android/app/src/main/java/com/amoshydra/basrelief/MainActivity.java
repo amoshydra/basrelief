@@ -266,6 +266,24 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         rootLayout = root;
         gallery = new Gallery(this, root);
+        // The picker lives here: REQ_IMAGE and the import path are MainActivity's,
+        // and duplicating them in Gallery would be two places that can disagree about
+        // what "add a photo" means.
+        gallery.setPhotoPicker(new Gallery.PhotoPicker() {
+            @Override
+            public void pickPhoto() {
+                pickFile(REQ_IMAGE);
+            }
+        });
+        // Playlists are their own slice. Until then the header entry says so rather
+        // than opening nothing.
+        gallery.setPlaylistsNavigator(new Gallery.PlaylistsNavigator() {
+            @Override
+            public void openPlaylists() {
+                Toast.makeText(MainActivity.this, R.string.toast_playlists_unavailable,
+                        Toast.LENGTH_LONG).show();
+            }
+        });
 
         // --- fullscreen preview ---
         glView = new GLSurfaceView(this);
@@ -438,12 +456,6 @@ public class MainActivity extends Activity {
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.addView(makeButton(getString(R.string.action_image), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pickFile(REQ_IMAGE);
-            }
-        }));
         buttons.addView(makeButton(getString(R.string.action_choose_map), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -568,6 +580,10 @@ public class MainActivity extends Activity {
                 openAtPeek();
             }
         });
+        // The filmstrip is the gallery's resting state -- it lives on the render's
+        // edge and survives the collapse, so it does not need opening.
+        gallery.installStrip();
+
         applySystemUi(); // decor view exists only after setContentView
 
         tilt = new TiltController(getApplicationContext(), new TiltController.Listener() {
@@ -688,31 +704,64 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /**
+     * Ask for notification permission, but only when it is about to be needed.
+     *
+     * <p>POST_NOTIFICATIONS is runtime-requested from 33. Requesting it at launch
+     * would put a prompt in front of everyone for a feature most installations never
+     * touch — depth generation is not something you do on a phone you just bought.
+     * So it is asked when a run is started in the background and not otherwise, and
+     * if it is refused the run still completes and still applies; the user simply
+     * does not hear about it, which is a smaller failure than the map not arriving.
+     */
+    private void askForNotifyPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        try {
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+            }
+        } catch (Exception ignored) {
+            // A device that does not know the permission string simply never gets
+            // asked. Nothing here is worth failing a depth run over.
+        }
+    }
+
     /** Show the Depth AI dialog, pre-loaded with the current studio image. */
     private void openDepthGen() {
         if (depthGenDialog == null) {
             depthGenDialog = new DepthGenDialog(MainActivity.this,
                     new DepthGenDialog.Callback() {
+                        /**
+                         * The map has been written and attached already.
+                         *
+                         * <p>This callback used to be the ONLY place the depth name was
+                         * written, and it looked the id up from the current selection
+                         * at the moment the request came back. A run takes tens of
+                         * seconds, so that is a different photo than the one the run was
+                         * started for -- and one photo's depth map gets attached to
+                         * another. The dialog now owns the write, because it captured
+                         * the right id when the panel opened, and it reaches this
+                         * callback only on success.
+                         *
+                         * <p>So all that is left here is showing the result.
+                         */
                         @Override
-                        public void onGenerated(String packedPath) {
-                            final String packed = new java.io.File(packedPath).getName();
-                            // Attach it to the photo it was generated FOR, not to
-                            // whatever happens to be selected when the request
-                            // comes back -- which may be a different photo by
-                            // then, and would then carry the wrong depth map.
-                            String id = AppState.load(prefs, getFilesDir()).activeId();
-                            if (id != null) {
-                                LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
-                                    @Override
-                                    public LibraryItem edit(LibraryItem item) {
-                                        return item.withDepth(packed);
-                                    }
-                                });
-                            }
+                        public void onApplied(String itemId, String packedPath) {
                             prefs.edit().remove("status").apply();
                             applyFiles();
+                            refreshSliders();
                             Toast.makeText(MainActivity.this,
-                                    "Depth added to this photo", Toast.LENGTH_LONG).show();
+                                    getString(R.string.toast_depth_updated),
+                                    Toast.LENGTH_LONG).show();
+                        }
+
+                        /** Retired. The dialog writes the map itself, on success only. */
+                        @Override
+                        public void onGenerated(String packedPath) {
+                            prefs.edit().remove("status").apply();
+                            applyFiles();
                         }
                     });
         }
@@ -723,6 +772,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Collect a run that finished while the app was closed. Not optional: the
+        // run is process-static and its prompt id is in prefs, so nothing else in the
+        // app would ever go back and ask.
+        DepthGenDialog.resumePending(this);
         // Tidy the stored filenames on the UI thread. reloadFromPrefs() (GL
         // thread) only reads them; normalising here keeps pref writes off the
         // GL thread and means a restored legacy absolute path is rewritten as a
@@ -751,6 +804,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        // The strip holds a global-layout listener that re-measures on every frame of
+        // the sheet's height animation. Left attached to a destroyed root it is a
+        // leak that also keeps measuring a view tree nobody is looking at.
+        if (gallery != null) gallery.dismiss();
         if (sensorPolicy != null) sensorPolicy.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
         Io.shutdown();
@@ -1754,20 +1811,23 @@ public class MainActivity extends Activity {
         b.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                int next = bar.getProgress() + direction;
-                if (next < 0) next = 0;
-                if (next > max - min) next = max - min;
+                int raw = bar.getProgress() + direction;
+                int next = raw < 0 ? 0 : Math.min(raw, max - min);
+                // Effectively final, because the GL runnable below captures it. Java 8
+                // wants final rather than a copy, and the copy would be a second name
+                // for one number.
+                final int value = next + min;
                 // setBar writes progress + min and updates the label; it does not
                 // persist, so the same once-on-release rule a drag follows holds here.
-                setBar(key, next + min, bar.isEnabled());
+                setBar(key, value, bar.isEnabled());
                 glView.queueEvent(new Runnable() {
                     @Override
                     public void run() {
-                        applyStoredSlider(key, next + min);
+                        applyStoredSlider(key, value);
                     }
                 });
                 glView.requestRender();
-                persist(key, next + min);
+                persist(key, value);
             }
         });
         return b;

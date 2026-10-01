@@ -22,6 +22,21 @@
     -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
 
+      <!--
+           A finished depth generation notifies, because the run takes tens of
+           seconds and the user has usually walked away by then, so silence reads as
+           a failure rather than as a wait.
+
+           Runtime-requested on 33+, and only when a run is actually started in the
+           background: a prompt for a feature most installations never use is a cost
+           paid by everyone. Declared because on 33+ a notification is silently
+           suppressed without it, and a notification that cannot appear is the same
+           lie as a control showing a value nothing reads.
+
+           Normal level, not signature, nothing privileged.
+      -->
+      <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
