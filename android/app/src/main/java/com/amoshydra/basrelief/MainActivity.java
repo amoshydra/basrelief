@@ -152,6 +152,10 @@ public class MainActivity extends Activity {
     /** The dot, or the ring while a generation runs. Swapped by {@link #setPillState}. */
     private View pillMark;
     private ProgressRing pillRing;
+    /** What {@link #applyPillState} last drew, so a drag does not redraw it. */
+    private PillState pillDrawnState;
+    /** ...and the percentage it was drawn with, because PROGRESS carries one. */
+    private int pillDrawnPercent = -1;
     private PillState pillState = PillState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
     private View depthBarRow;
@@ -1154,12 +1158,38 @@ public class MainActivity extends Activity {
         // progress. Overwriting the condition with the transient state is what made
         // a finished run leave the pill saying "Generating" forever.
         pillState = state;
-        applyPillState(state);
+        updatePillVisibility();
     }
 
-    /** Draw one state. Does not record it as the condition. */
+    /**
+     * Draw one state, and nothing else.
+     *
+     * <p><b>This method must not call back into {@link #updatePillVisibility}.</b>
+     * Splitting "record the condition" from "draw it" put a trailing visibility call
+     * in the drawing half while the visibility half ended by calling the drawer, and
+     * the two recursed into each other until the stack ran out. Sliding the sheet down
+     * is the only gesture that reaches this path, which is why it survived every other
+     * interaction anyone tried.
+     *
+     * <p>The call graph is one-way on purpose:
+     * {@code setPillState} → {@code updatePillVisibility} → {@code applyPillState}.
+     * Nothing below this method calls upward.
+     *
+     * <p>Also skips the work when the state has not changed. This runs on every frame
+     * of a drag, and each draw allocated a fresh GradientDrawable and ProgressRing --
+     * per frame, on the UI thread, for a pill whose appearance had not moved.
+     */
     private void applyPillState(PillState state) {
         if (pill == null) return;
+        // The same STATE is not always the same PICTURE: PROGRESS carries a number.
+        // Guarding on the state alone would have frozen the percentage at whatever it
+        // was when the run started -- a progress bar that does not progress. Read once
+        // here so the guard and the text cannot disagree about it.
+        int percent = state == PillState.PROGRESS
+                ? DepthGenDialog.progressPercent() : -1;
+        if (pillDrawnState == state && pillDrawnPercent == percent) return;
+        pillDrawnState = state;
+        pillDrawnPercent = percent;
         switch (state) {
             case IDLE:
                 pillLabel.setText(R.string.pill_controls);
@@ -1177,7 +1207,8 @@ public class MainActivity extends Activity {
                 setPillMark(false);
                 break;
             case PROGRESS:
-                // Text is set by the caller, which knows the percentage.
+                // The percentage comes from the same read the guard used.
+                pillLabel.setText(getString(R.string.pill_generating, percent));
                 pillLabel.setTextColor(0xFFFFFFFF);
                 pill.setBackground(pillBackground(0x33FFFFFF));
                 setPillMark(true);
@@ -1185,7 +1216,6 @@ public class MainActivity extends Activity {
             default:
                 break;
         }
-        updatePillVisibility();
     }
 
     /** An 8dp dot when idle, a 15dp spinning ring while a generation runs. */
@@ -1237,15 +1267,9 @@ public class MainActivity extends Activity {
         // generation they started and then slid the sheet over. Read on every
         // collapse rather than pushed, because the run is started from a dialog that
         // is not this class and there is no callback to hang the end on.
-        if (DepthGenDialog.isRunning()) {
-            applyPillState(PillState.PROGRESS);
-            pillLabel.setText(getString(R.string.pill_generating,
-                    DepthGenDialog.progressPercent()));
-            return;
-        }
-        // Otherwise fall back to the condition. Restored rather than left alone,
-        // because applyPillState above may have been the last thing to touch it.
-        applyPillState(pillState);
+        // A run in progress outranks the condition. applyPillState supplies the
+        // percentage itself; this method's whole job is deciding WHICH state applies.
+        applyPillState(DepthGenDialog.isRunning() ? PillState.PROGRESS : pillState);
     }
 
     /**
