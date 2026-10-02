@@ -11,6 +11,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -794,6 +795,7 @@ public final class DepthGenDialog {
                 // Collapsing never cancels anything (R-S4). The sheet is a window,
                 // not a job: the run continues on the server and the pill carries
                 // the percentage (R-BG2).
+                askNotifyOnce();
                 dialog.dismiss();
             }
         });
@@ -1098,6 +1100,39 @@ public final class DepthGenDialog {
      * Regenerate — because they are the same decision. R-D7: regenerating a
      * photo that already has a map is a normal action, not an error state.
      */
+    /**
+     * Ask for POST_NOTIFICATIONS the first time a run is sent to the background.
+     *
+     * <p>Here rather than at launch because this is the only moment the permission
+     * is needed, and a prompt shown to everyone for a feature most installations
+     * never touch is a cost paid by everyone.
+     *
+     * <p>Without it the completion notification is silently suppressed on 33+, and
+     * the run finishes invisibly: the map applies, the user is told nothing, and a
+     * wait that took forty seconds looks like a wait that failed. So this is asked
+     * for, once, at the point where the user has just said that they are leaving.
+     *
+     * <p>One-shot, tracked in prefs, because a permission dialog that reappears on
+     * every run is worse than no notification at all.
+     */
+    private void askNotifyOnce() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        try {
+            if (activity.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
+                    .getBoolean("asked_notify", false)) return;
+            activity.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean("asked_notify", true).apply();
+            if (activity.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    != PackageManager.PERMISSION_GRANTED) {
+                activity.requestPermissions(
+                        new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+            }
+        } catch (Exception ignored) {
+            // A device that does not know the string never gets asked, and the run
+            // completes either way. Nothing here is worth failing a run over.
+        }
+    }
+
     public void startRun() {
         if (isRunning()) return;
         // Deliberately NOT re-captured here. The panel's subject is fixed when the

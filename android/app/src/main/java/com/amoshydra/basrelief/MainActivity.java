@@ -62,7 +62,6 @@ public class MainActivity extends Activity {
     SharedPreferences prefs;
     private TextView statusView;
     private LinearLayout panel;
-    private Button expandBtn;   // superseded by the pill; see buildPillBackground
 
     // ------------------------------------------------------------ bottom sheet
     // Three snap states instead of the old visible/hidden pair, because the
@@ -702,30 +701,6 @@ public class MainActivity extends Activity {
             return item;
         }
         return null;
-    }
-
-    /**
-     * Ask for notification permission, but only when it is about to be needed.
-     *
-     * <p>POST_NOTIFICATIONS is runtime-requested from 33. Requesting it at launch
-     * would put a prompt in front of everyone for a feature most installations never
-     * touch — depth generation is not something you do on a phone you just bought.
-     * So it is asked when a run is started in the background and not otherwise, and
-     * if it is refused the run still completes and still applies; the user simply
-     * does not hear about it, which is a smaller failure than the map not arriving.
-     */
-    private void askForNotifyPermissionIfNeeded() {
-        if (android.os.Build.VERSION.SDK_INT < 33) return;
-        try {
-            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
-            }
-        } catch (Exception ignored) {
-            // A device that does not know the permission string simply never gets
-            // asked. Nothing here is worth failing a depth run over.
-        }
     }
 
     /** Show the Depth AI dialog, pre-loaded with the current studio image. */
@@ -2100,7 +2075,16 @@ public class MainActivity extends Activity {
         LibraryItem item = state.activeItem();
         boolean bundled = item == null || item.isBundled();
         if (bundled) {
-            setFixLine(null, null, null, null, null);
+            // The demo is editable now, so it has no missing map -- but it is the
+            // "back to the default" row, and first run wants one sentence saying so
+            // with a way to add a photo. That is a condition, not a badge.
+            setFixLine(getString(R.string.fix_bundled_demo),
+                    getString(R.string.fix_add_photo), new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            pickFile(REQ_IMAGE);
+                        }
+                    }, null, null);
             return;
         }
         if (item.depthName != null) {
@@ -2110,14 +2094,14 @@ public class MainActivity extends Activity {
         }
         // Two actions, and they are PEERS: the PRD settles that generating may be as
         // common as choosing, so neither is styled as the real one.
-        setFixLine("This photo has no depth map, so it will not stand out of the plane.",
-                "Generate a map", new View.OnClickListener() {
+        setFixLine(getString(R.string.fix_no_depth),
+                getString(R.string.fix_no_depth_actions), new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         openDepthGen();
                     }
                 },
-                "Choose a map", new View.OnClickListener() {
+                getString(R.string.fix_choose_map), new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         pickFile(REQ_DEPTH);
