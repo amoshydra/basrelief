@@ -1,10 +1,8 @@
 package com.amoshydra.basrelief;
 
-import android.app.AlertDialog;
 import android.os.Build;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewTreeObserver;
@@ -203,6 +201,23 @@ final class Gallery {
 
     private PlaylistsNavigator playlistsNavigator;
 
+    /**
+     * Opens the apply chooser, supplied by the studio.
+     *
+     * <p>Same reason as {@link PhotoPicker} and {@link PlaylistsNavigator}: a
+     * route to a screen this class does not own, so the owner installs it
+     * rather than this class reaching into another one's internals. Applying
+     * is a chooser rather than a command — no app can re-bind its own live
+     * wallpaper, so the system picker is the only route and the choice of
+     * screen cannot be made here — which is exactly why the call belongs to
+     * the host and not to the row that asked for it. See {@link ApplyChooser}.
+     */
+    interface WallpaperApplier {
+        void applyWallpaper();
+    }
+
+    private WallpaperApplier wallpaperApplier;
+
     Gallery(MainActivity activity, FrameLayout root) {
         this.activity = activity;
         this.root = root;
@@ -225,6 +240,11 @@ final class Gallery {
     /** Route the header's Playlists entry to the playlists screen. */
     void setPlaylistsNavigator(PlaylistsNavigator navigator) {
         this.playlistsNavigator = navigator;
+    }
+
+    /** Route the foot's Set as wallpaper to the apply chooser. */
+    void setWallpaperApplier(WallpaperApplier applier) {
+        this.wallpaperApplier = applier;
     }
 
     /**
@@ -705,39 +725,46 @@ final class Gallery {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         // ---- the many-at-once actions
+        //
+        // Set as wallpaper rides at the head of the second row: it is the one
+        // action on this screen that changes what the phone itself shows, so
+        // it takes the primary plate and the seat beside Done, the way out —
+        // while everything else here rearranges only the gallery's own
+        // bookkeeping.
         panel.addView(actionRow(
-                activity.getString(R.string.gallery_copy_settings),
-                activity.getString(R.string.gallery_paste_onto_selected),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        showCopySourcePicker();
-                    }
-                },
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        pasteOnto(picksOrToast());
-                    }
-                }));
+                compact(activity.getString(R.string.gallery_copy_settings),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                showCopySourcePicker();
+                            }
+                        }),
+                compact(activity.getString(R.string.gallery_paste_onto_selected),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                pasteOnto(picksOrToast());
+                            }
+                        })));
         panel.addView(actionRow(
-                activity.getString(R.string.gallery_add_to_playlist),
-                activity.getString(R.string.action_done),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        showPlaylistPicker(null);
-                    }
-                },
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // Done is the way out, not a save. Every action here wrote
-                        // the moment it was tapped, so there is nothing to commit
-                        // and a button that said Save would imply otherwise.
-                        dismissGrid();
-                    }
-                }));
+                applyButton(),
+                compact(activity.getString(R.string.gallery_add_to_playlist),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                showPlaylistPicker(null);
+                            }
+                        }),
+                compact(activity.getString(R.string.action_done),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                // Done is the way out, not a save. Every action here wrote
+                                // the moment it was tapped, so there is nothing to commit
+                                // and a button that said Save would imply otherwise.
+                                dismissGrid();
+                            }
+                        })));
         return panel;
     }
 
@@ -975,17 +1002,48 @@ final class Gallery {
                 });
     }
 
-    private LinearLayout actionRow(String left, String right,
-                                   View.OnClickListener onLeft,
-                                   View.OnClickListener onRight) {
+    /**
+     * One row of the foot's buttons: equal shares, any count.
+     *
+     * <p>Buttons rather than label-and-listener pairs, because the foot is no
+     * longer all pairs — the apply button joined the second row — and a
+     * builder that could only take two could not hold three without a second
+     * builder drifting from this one.
+     */
+    private LinearLayout actionRow(Button... buttons) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(0, activity.dp(6), 0, 0);
-        row.addView(compact(left, onLeft), new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(compact(right, onRight), new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        for (Button b : buttons) {
+            row.addView(b, new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
         return row;
+    }
+
+    /**
+     * The apply gesture, from the grid.
+     *
+     * <p>{@code ModalSheet}'s button rather than the studio's {@code compact}
+     * one, because the mockup's foot rows and modals are one {@code .btn}
+     * family — the foot is that family's one appearance outside a modal, so
+     * it is not the place to invent a second button. Primary, because
+     * applying is the reason this screen exists at all: the gallery is where
+     * the photographs are chosen, and applying is what puts one of them on
+     * the phone.
+     *
+     * <p>The chooser it opens is {@link ApplyChooser}'s; this row only asks.
+     */
+    private Button applyButton() {
+        Button apply = ModalSheet.button(activity,
+                activity.getString(R.string.apply_set_as_wallpaper), true, true);
+        apply.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyWallpaper();
+            }
+        });
+        return apply;
     }
 
     /**
@@ -1024,6 +1082,104 @@ final class Gallery {
     private void reindex() {
         rebuildGrid();
         refreshStrip();
+    }
+
+    // ------------------------------------------------------------------ modals
+
+    /**
+     * The first moves of every modal this class opens: the app's one card, a
+     * title, and a column the caller fills. One helper, because eight copies
+     * of "a title over some rows" is eight places for the gap under the title
+     * to drift.
+     *
+     * <p><b>Why a {@link ModalSheet} rather than an {@code AlertDialog}.</b>
+     * Every dialog this class used to open arrived as a light-theme Material
+     * card — white plate, near-black text — inside a near-black app, because
+     * the platform dialog carries the activity theme and this app deliberately
+     * does not flip it: a global dark theme would restyle the GL surface's
+     * transparency and every platform dialog at once (see {@code
+     * MainActivity.makeButton}). The app's own card is the one the apply,
+     * depth, settings and playlist screens already sit on, so building here
+     * means the gallery's menus agree with the screens one gesture away
+     * rather than with the platform.
+     *
+     * <p><b>Why a Dialog is right here rather than a view.</b> The grid sits
+     * over a {@code GLSurfaceView}, and a sibling view drawn over one is the
+     * b/7179570 hazard — placed, attached, opaque, taking every touch and
+     * absent from the display. A Dialog is its own window, so the hazard does
+     * not apply, which is why every overlay in this app is one.
+     *
+     * <p>The 10dp under the title is the gap the other modals get from their
+     * subtitle (see {@code ApplyChooser}: 3 above, 10 below). A picker with no
+     * subtitle has to supply it itself, or its first row touches its title.
+     */
+    private LinearLayout modalBody(String title) {
+        TextView head = ModalSheet.title(activity, title);
+        head.setPadding(0, 0, 0, activity.dp(10));
+        LinearLayout body = new LinearLayout(activity);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(head);
+        return body;
+    }
+
+    /**
+     * A button whose whole job is closing the modal: Cancel, Done. Ghost,
+     * because it changes nothing on the screen it leaves — the same call the
+     * settings screen makes for its own Done. This is the old dialogs'
+     * negative button, keeping its place at the left of the pair.
+     */
+    private Button closeButton(String label, final ModalSheet sheet) {
+        Button close = ModalSheet.button(activity, label, false, true);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sheet.dismiss();
+            }
+        });
+        return close;
+    }
+
+    /**
+     * The modal's acting button — Save, Delete — primary because it is the
+     * reason the modal exists.
+     *
+     * <p>Closes its own modal <b>before</b> acting, because some of the
+     * choices here open the next modal (a rename out of the row menu), and a
+     * modal left under a modal is a back press that resurrects a menu whose
+     * moment has passed. The platform dialogs closed themselves only after
+     * the click handler returned, so closing first is the order the user
+     * already saw.
+     */
+    private Button commitButton(String label, final ModalSheet sheet,
+                                final Runnable action) {
+        Button commit = ModalSheet.button(activity, label, true, true);
+        commit.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sheet.dismiss();
+                action.run();
+            }
+        });
+        return commit;
+    }
+
+    /**
+     * One choice in a modal menu: an option row with no second line, because
+     * a command's label is its whole description and an invented subtitle is
+     * copy nobody asked for. The row keeps the pickers' shape, so the two
+     * kinds of list read as one family rather than as two designs that happen
+     * to share a card.
+     */
+    private LinearLayout menuOption(final ModalSheet sheet, String label,
+                                    final Runnable action) {
+        return ModalSheet.option(activity, label, "", false, false,
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        sheet.dismiss();
+                        action.run();
+                    }
+                });
     }
 
     // ----------------------------------------------------------------- actions
@@ -1081,21 +1237,45 @@ final class Gallery {
         playlistsNavigator.openPlaylists();
     }
 
+    private void applyWallpaper() {
+        if (wallpaperApplier == null) {
+            // Same rule as the picker and the playlists route: say so rather
+            // than do nothing.
+            Toast.makeText(activity, R.string.toast_wallpaper_unavailable,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        wallpaperApplier.applyWallpaper();
+    }
+
+    /**
+     * The sort order, as the app's own list of choices.
+     *
+     * <p>The current order carries the option row's own dot, because a picker
+     * that does not say which choice is in force asks a question the user can
+     * only answer from memory — and the header link already answers it, so the
+     * sheet agreeing with the header is the second place the two must not
+     * disagree.
+     */
     private void showSortMenu() {
-        final SortOrder[] order = SortOrder.values();
-        String[] labels = new String[order.length];
-        for (int i = 0; i < order.length; i++) labels[i] = order[i].label();
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_sort)
-                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        LibraryStore.setSort(activity.prefs, order[which]);
-                        reindex();
-                    }
-                })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+        final SortOrder current = AppState.load(activity.prefs,
+                activity.getFilesDir()).library.sort();
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_sort));
+        for (final SortOrder pick : SortOrder.values()) {
+            body.addView(ModalSheet.option(activity, pick.label(), "",
+                    pick == current, false, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            sheet.dismiss();
+                            LibraryStore.setSort(activity.prefs, pick);
+                            reindex();
+                        }
+                    }));
+        }
+        sheet.body(body);
+        sheet.footerRow(closeButton(activity.getString(R.string.action_cancel), sheet));
+        sheet.show(activity);
     }
 
     // ------------------------------------------------------------ copy settings
@@ -1110,27 +1290,35 @@ final class Gallery {
      *
      * <p>The copy is held in memory and never written. See {@link #copySourceId}.
      */
-    private void showCopySourcePicker() {
+    /**
+     * The sheet's foot entry for copying, and the gallery's own. Package-visible so
+     * the studio's foot can reach the same picker the gallery's action row does --
+     * one picker, not two that could disagree about what is copied.
+     */
+    void showCopySourcePicker() {
         final List<LibraryItem> items = AppState.load(activity.prefs,
                 activity.getFilesDir()).library.sorted();
         if (items.isEmpty()) return;
-        String takes = activity.getString(R.string.gallery_copy_takes);
-        String on = surfaceLabel();
-        String[] rows = new String[items.size()];
-        for (int i = 0; i < items.size(); i++) {
-            rows[i] = activity.getString(R.string.gallery_copy_source_row,
-                    items.get(i).displayName(), on, takes);
+        // Built once rather than per row: the second line is the same sentence
+        // on every row, and one string formatted many times is many chances
+        // for one of them to differ.
+        final String what = activity.getString(R.string.gallery_copy_source_row_sub,
+                surfaceLabel(), activity.getString(R.string.gallery_copy_takes));
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_copy_from));
+        for (final LibraryItem item : items) {
+            body.addView(ModalSheet.option(activity, item.displayName(), what,
+                    item.id.equals(copySourceId), false, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            sheet.dismiss();
+                            copyFrom(item);
+                        }
+                    }));
         }
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_copy_from)
-                .setItems(rows, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        copyFrom(items.get(which));
-                    }
-                })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+        sheet.body(body);
+        sheet.footerRow(closeButton(activity.getString(R.string.action_cancel), sheet));
+        sheet.show(activity);
     }
 
     /**
@@ -1270,18 +1458,23 @@ final class Gallery {
             message = message + "\n\n" + activity.getString(
                     R.string.gallery_delete_active_note, deletingActiveName);
         }
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_delete_title)
-                .setMessage(message)
-                .setPositiveButton(R.string.gallery_delete_one,
-                        new android.content.DialogInterface.OnClickListener() {
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_delete_title));
+        // The modal family's own .sub line: the question is the whole content
+        // of this modal, and the family's second line is what the design draws
+        // under every title.
+        body.addView(ModalSheet.subtitle(activity, message));
+        sheet.body(body);
+        sheet.footerRow(
+                closeButton(activity.getString(R.string.action_cancel), sheet),
+                commitButton(activity.getString(R.string.gallery_delete_one), sheet,
+                        new Runnable() {
                             @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
+                            public void run() {
                                 performDelete(targets, deletesActive);
                             }
-                        })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                        }));
+        sheet.show(activity);
     }
 
     /**
@@ -1374,56 +1567,87 @@ final class Gallery {
      */
     private void showRowMenu(final LibraryItem item) {
         if (item.isBundled()) {
-            new AlertDialog.Builder(activity)
-                    .setTitle(R.string.gallery_bundled_name)
-                    .setMessage(R.string.gallery_bundled_note)
-                    .setPositiveButton(R.string.action_done, null)
-                    .show();
+            // The bundled row's sheet is a note rather than a list: it cannot
+            // be a target (see targetsFor), so the honest menu is the reason
+            // why, with the one button that leaves.
+            final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+            LinearLayout body = modalBody(activity.getString(R.string.gallery_bundled_name));
+            body.addView(ModalSheet.subtitle(activity,
+                    activity.getString(R.string.gallery_bundled_note)));
+            sheet.body(body);
+            sheet.footerRow(closeButton(activity.getString(R.string.action_done), sheet));
+            sheet.show(activity);
             return;
         }
-        boolean many = !picked.isEmpty();
+        final boolean many = !picked.isEmpty();
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(item.displayName());
         // R-G4's four, in the design's order, with Delete last. A destructive
         // action under three others is harder to hit by accident than one at the
         // bottom of a list, and "the last thing in the menu" is the only position
         // every platform's muscle memory agrees on.
-        String[] menu = {
+        body.addView(menuOption(sheet,
                 activity.getString(R.string.gallery_copy_settings),
-                many ? activity.getString(R.string.gallery_paste_onto_selected)
-                        : activity.getString(R.string.gallery_paste_onto_this),
-                activity.getString(R.string.gallery_add_to_playlist),
-                activity.getString(R.string.gallery_rename),
-                many ? activity.getString(R.string.gallery_delete_selected)
-                        : activity.getString(R.string.gallery_delete_one),
-        };
-        new AlertDialog.Builder(activity)
-                .setTitle(item.displayName())
-                .setItems(menu, new android.content.DialogInterface.OnClickListener() {
+                new Runnable() {
                     @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        switch (which) {
-                            case 0: copyFrom(item); break;
-                            case 1: pasteOnto(targetsFor(item)); break;
-                            case 2: showPlaylistPicker(item); break;
-                            case 3: rename(item); break;
-                            case 4: confirmDelete(targetsFor(item)); break;
-                            default: break;
-                        }
+                    public void run() {
+                        copyFrom(item);
                     }
-                })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                }));
+        body.addView(menuOption(sheet, many
+                        ? activity.getString(R.string.gallery_paste_onto_selected)
+                        : activity.getString(R.string.gallery_paste_onto_this),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        pasteOnto(targetsFor(item));
+                    }
+                }));
+        body.addView(menuOption(sheet,
+                activity.getString(R.string.gallery_add_to_playlist),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        showPlaylistPicker(item);
+                    }
+                }));
+        body.addView(menuOption(sheet, activity.getString(R.string.gallery_rename),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        rename(item);
+                    }
+                }));
+        body.addView(menuOption(sheet, many
+                        ? activity.getString(R.string.gallery_delete_selected)
+                        : activity.getString(R.string.gallery_delete_one),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        confirmDelete(targetsFor(item));
+                    }
+                }));
+        sheet.body(body);
+        sheet.footerRow(closeButton(activity.getString(R.string.action_cancel), sheet));
+        sheet.show(activity);
     }
 
     private void rename(final LibraryItem item) {
-        final EditText field = new EditText(activity);
-        field.setText(item.displayName());
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_rename)
-                .setView(field)
-                .setPositiveButton(R.string.gallery_rename_save,
-                        new android.content.DialogInterface.OnClickListener() {
+        // No hint: the field opens carrying the name it would change, so an
+        // empty-hint line under a full box is a second thing to read for no
+        // answer. The playlist sheet below is the one that starts empty, and
+        // there the hint is the whole question.
+        final EditText field = ModalSheet.field(activity, item.displayName(), null);
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_rename));
+        body.addView(field);
+        sheet.body(body);
+        sheet.footerRow(
+                closeButton(activity.getString(R.string.action_cancel), sheet),
+                commitButton(activity.getString(R.string.gallery_rename_save), sheet,
+                        new Runnable() {
                             @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
+                            public void run() {
                                 final String label = renameLabel(field);
                                 // withLabel is the identity-only edit, so every
                                 // render value carries over untouched. Naming the
@@ -1439,9 +1663,8 @@ final class Gallery {
                                         });
                                 reindex();
                             }
-                        })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                        }));
+        sheet.show(activity);
     }
 
     private String renameLabel(EditText field) {
@@ -1468,7 +1691,7 @@ final class Gallery {
         // The same rule as every other many-at-once action: the picks, or the row
         // this was opened from. Asking for a pick from a row menu would be the one
         // action in the menu that cannot be used without first leaving the menu.
-        List<LibraryItem> targets = targetsFor(row);
+        final List<LibraryItem> targets = targetsFor(row);
         if (targets.isEmpty()) {
             Toast.makeText(activity, R.string.toast_select_first, Toast.LENGTH_LONG).show();
             return;
@@ -1476,38 +1699,49 @@ final class Gallery {
         final Playlists lists = Playlists.parse(
                 activity.prefs.getString(Playlists.KEY, null));
         final List<Playlist> existing = lists.playlists();
-        String[] rows = new String[existing.size() + 1];
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_playlist_pick));
         for (int i = 0; i < existing.size(); i++) {
-            rows[i] = activity.getString(R.string.gallery_playlist_row,
-                    existing.get(i).displayName(), existing.get(i).size());
-        }
-        rows[existing.size()] = activity.getString(R.string.gallery_playlist_new);
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_playlist_pick)
-                .setItems(rows, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        if (which == existing.size()) {
-                            newPlaylist(targets);
-                        } else {
-                            addToPlaylist(existing.get(which), targets);
+            final Playlist chosen = existing.get(i);
+            // The count as the row's second line, from the plurals the
+            // playlists screen already uses, so the two screens cannot
+            // disagree about what a count is called.
+            body.addView(ModalSheet.option(activity, chosen.displayName(),
+                    activity.getResources().getQuantityString(
+                            R.plurals.playlist_photos, chosen.size(), chosen.size()),
+                    false, false, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            sheet.dismiss();
+                            addToPlaylist(chosen, targets);
                         }
+                    }));
+        }
+        body.addView(menuOption(sheet, activity.getString(R.string.gallery_playlist_new),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        newPlaylist(targets);
                     }
-                })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                }));
+        sheet.body(body);
+        sheet.footerRow(closeButton(activity.getString(R.string.action_cancel), sheet));
+        sheet.show(activity);
     }
 
     private void newPlaylist(final List<LibraryItem> targets) {
-        final EditText field = new EditText(activity);
-        field.setHint(R.string.gallery_playlist_name);
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_playlist_new)
-                .setView(field)
-                .setPositiveButton(R.string.gallery_rename_save,
-                        new android.content.DialogInterface.OnClickListener() {
+        final EditText field = ModalSheet.field(activity, "",
+                activity.getString(R.string.gallery_playlist_name));
+        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        LinearLayout body = modalBody(activity.getString(R.string.gallery_playlist_new));
+        body.addView(field);
+        sheet.body(body);
+        sheet.footerRow(
+                closeButton(activity.getString(R.string.action_cancel), sheet),
+                commitButton(activity.getString(R.string.gallery_rename_save), sheet,
+                        new Runnable() {
                             @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
+                            public void run() {
                                 String name = field.getText().toString().trim();
                                 if (name.isEmpty()) {
                                     name = activity.getString(R.string.gallery_playlist_new);
@@ -1522,9 +1756,8 @@ final class Gallery {
                                 savePlaylists(loadPlaylists().withPlaylist(made), made,
                                         targets.size());
                             }
-                        })
-                .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                        }));
+        sheet.show(activity);
     }
 
     private void addToPlaylist(Playlist chosen, List<LibraryItem> targets) {

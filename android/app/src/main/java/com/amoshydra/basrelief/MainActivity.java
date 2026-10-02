@@ -31,7 +31,6 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -57,11 +56,19 @@ public class MainActivity extends Activity {
     private static final int REQ_DEPTH = 2;
     public static final int REQ_DEPTHGEN_IMAGE = 3;
 
-    private GLSurfaceView glView;
-    private ReliefRenderer renderer;
+    GLSurfaceView glView;
+    ReliefRenderer renderer;
     private TiltController tilt;
     private SensorPolicy sensorPolicy;
     SharedPreferences prefs;
+
+    /**
+     * The current index, loaded. For a section built in its own file, so it reads the
+     * same one resolution every control here reads rather than parsing the blob again.
+     */
+    AppState state() {
+        return AppState.load(prefs, getFilesDir());
+    }
     private TextView statusView;
     private LinearLayout panel;
 
@@ -178,34 +185,12 @@ public class MainActivity extends Activity {
     // would make one of them unusable.
     private static final float ORBIT_STEP = 0.01f;
     private static final float PAN_STEP = 1f;
-    private LinearLayout framingGrid;
-    private TextView framingReadout;
-    private EditText orbitXField, orbitYField, panXField, panYField;
-    private boolean framingExpanded = false;
-    /**
-     * Set while a field is written programmatically, so the watcher's own
-     * write-back does not fight the formatter.
-     */
-    private boolean suppressFramingWatcher = false;
+    TextView framingReadout;
     /**
      * One watcher for all four fields: they all want the same thing, and four
      * identical instances would be four places to keep in step.
      */
-    private final android.text.TextWatcher framingWatcher = new android.text.TextWatcher() {
-        @Override
-        public void beforeTextChanged(CharSequence s, int a, int b, int c) {
-        }
-
-        @Override
-        public void onTextChanged(CharSequence s, int a, int b, int c) {
-        }
-
-        @Override
-        public void afterTextChanged(Editable s) {
-            if (suppressFramingWatcher) return;
-            applyFramingFields(false);
-        }
-    };
+;
     private TextView hintView;
     private DepthGenDialog depthGenDialog;
     /** The one horizontal slider control, keyed as the settings are. */
@@ -218,7 +203,7 @@ public class MainActivity extends Activity {
      * ever anything but HOME when the platform can give the lock screen its own live
      * engine. The segment below the grip is how it changes.
      */
-    private Surface editSurface = Surface.HOME;
+    Surface editSurface = Surface.HOME;
 
     /**
      * The container the gallery overlay is added to.
@@ -233,7 +218,7 @@ public class MainActivity extends Activity {
 
     /** Slider handles by key, so a selection change can repopulate them. */
     /** Every slider on the sheet, by key. Replaces four parallel maps. */
-    private final java.util.Map<String, BasreliefSlider> sliders =
+    final java.util.Map<String, BasreliefSlider> sliders =
             new java.util.HashMap<>();
     /**
      * The label each slider was built with, by key.
@@ -298,6 +283,12 @@ public class MainActivity extends Activity {
         });
         // Playlists are their own slice. Until then the header entry says so rather
         // than opening nothing.
+        gallery.setWallpaperApplier(new Gallery.WallpaperApplier() {
+            @Override
+            public void applyWallpaper() {
+                ApplyChooser.show(MainActivity.this);
+            }
+        });
         gallery.setPlaylistsNavigator(new Gallery.PlaylistsNavigator() {
             @Override
             public void openPlaylists() {
@@ -413,7 +404,8 @@ public class MainActivity extends Activity {
         boolean firstCaption = segmentFor == null;
         if (segmentFor != null) sheetContent.addView(buildSurfaceSegment(segmentFor));
 
-        sectionLabel(getString(R.string.group_relief), firstCaption);
+        sectionLabel(heading(R.string.group_relief, R.string.group_relief_surface),
+                firstCaption);
 
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
@@ -442,7 +434,7 @@ public class MainActivity extends Activity {
         // number with it instead of leaving Depth at the top of the list.
         depthIndex = sheetContent.indexOfChild(depthBarRow);
         if (depthIndex < 0) depthIndex = 0;
-        sectionLabel(getString(R.string.group_motion));
+        sectionLabel(heading(R.string.group_motion, R.string.group_motion_surface));
         sheetContent.addView(addSlider("motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider("zoom",
@@ -452,7 +444,7 @@ public class MainActivity extends Activity {
         // from Depth and Zoom: they change how the photograph renders, not where it
         // sits or how far it stands out. Signed, because both directions are useful
         // and an unsigned control makes "less contrast" unreachable.
-        sectionLabel(getString(R.string.group_picture));
+        sectionLabel(heading(R.string.group_picture, R.string.group_picture_surface));
         sheetContent.addView(addSlider("brightness",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
@@ -460,39 +452,8 @@ public class MainActivity extends Activity {
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
-        sectionLabel(getString(R.string.group_framing));
-        sheetContent.addView(buildFramingSection());
-
-        Button resetView = makeButton(getString(R.string.action_reset_view), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Framing and Zoom belong to the photo, so this resets the photo
-                // and leaves every other one exactly as it was.
-                final String id = AppState.load(prefs, getFilesDir()).activeId();
-                if (id != null) {
-                    LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
-                        @Override
-                        public LibraryItem edit(LibraryItem item) {
-                            return item.withZoom(Surface.HOME, SurfaceSettings.DEFAULT_ZOOM)
-                                    .withOrigin(Surface.HOME, 0f, 0f)
-                                    .withPan(Surface.HOME, 0f, 0f);
-                        }
-                    });
-                }
-                setZoomSlider(100);
-                glView.queueEvent(new Runnable() {
-                    @Override
-                    public void run() {
-                        renderer.resetView();
-                    }
-                });
-                glView.requestRender();
-            }
-        });
-        resetView.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        sheetContent.addView(resetView);
+        sectionLabel(heading(R.string.group_framing, R.string.group_framing_surface));
+        sheetContent.addView(FramingRows.build(this));
 
         // "This photo's map": the mockup's heading for the Regenerate/Replace row and
         // the fix line. It replaces a row of three buttons that were not peers --
@@ -542,17 +503,21 @@ public class MainActivity extends Activity {
 
 
         // reliable way to reach the live-wallpaper picker on any launcher
-        // Set as wallpaper opens a chooser, because a live wallpaper is bound to a
-        // screen and the binding is only decided at the moment of applying. Before
-        // that there is nothing to choose between, so this is not a persistent
-        // control. See ApplyChooser for why the system picker is the only route.
-        sheetContent.addView(makeButton(getString(R.string.apply_set_as_wallpaper),
+        // Copy settings, in the sheet's foot. The wireframe puts it here, next to
+        // Settings, because it is a question about the photo you are looking at -- and
+        // the gallery's row menu is where you paste it ONTO another photo, which is
+        // the other half of the same action and the other end of the walk.
+        sheetContent.addView(makeButton(getString(R.string.gallery_copy_settings),
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        ApplyChooser.show(MainActivity.this);
+                        gallery.showCopySourcePicker();
                     }
                 }));
+        // No Set as wallpaper here: applying binds the wallpaper to the device, which
+        // is an act about the app rather than about this photograph's settings, and the
+        // design keeps the sheet a list of adjustments. It lives in the gallery's
+        // action row beside Add to playlist.
 
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
@@ -1026,51 +991,6 @@ public class MainActivity extends Activity {
      * reason the sliders were: Framing discarded what was typed, so a live field
      * silently did nothing. Framing reads it now.
      */
-    private View buildFramingSection() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-
-        TextView toggle = new TextView(this);
-        toggle.setTextSize(14);
-        toggle.setPadding(dp(4), dp(8), dp(4), dp(4));
-        toggle.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setFramingExpanded(!framingExpanded);
-            }
-        });
-        framingReadout = toggle;
-        box.addView(toggle);
-
-        // Two columns rather than four stacked rows: same information in half the
-        // height, which is the whole reason the section is worth opening.
-        LinearLayout grid = new LinearLayout(this);
-        grid.setOrientation(LinearLayout.HORIZONTAL);
-        grid.setVisibility(View.GONE);
-        LinearLayout originCol = new LinearLayout(this);
-        originCol.setOrientation(LinearLayout.VERTICAL);
-        originCol.setLayoutParams(new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout panCol = new LinearLayout(this);
-        panCol.setOrientation(LinearLayout.VERTICAL);
-        panCol.setLayoutParams(new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        originCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_origin), getString(R.string.unit_fraction))));
-        orbitXField = addFramingField(originCol, "X", true, true, 0);
-        orbitYField = addFramingField(originCol, "Y", true, true, 1);
-        panCol.addView(fieldCaption(getString(R.string.group_axis, getString(R.string.axis_pan), getString(R.string.unit_pixels))));
-        panXField = addFramingField(panCol, "X", true, false, 2);
-        panYField = addFramingField(panCol, "Y", true, false, 3);
-
-        grid.addView(originCol);
-        grid.addView(panCol);
-        framingGrid = grid;
-        box.addView(grid);
-
-        refreshFramingFields();
-        return box;
-    }
 
     /**
      * The dashed box under the grip: at most one sentence and at most two actions.
@@ -1387,208 +1307,16 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    /**
-     * One framing row: label, minus, field, plus.
-     *
-     * @param which 0..3 selecting which of orbitX/orbitY/panX/panY this edits
-     */
-    private EditText addFramingField(LinearLayout col, String label, boolean editable,
-            boolean fraction, final int which) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
-        TextView l = new TextView(this);
-        l.setText(label);
-        l.setTextSize(14);
-        l.setLayoutParams(new LinearLayout.LayoutParams(dp(18),
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(l);
 
-        Button minus = nudgeButton("−", editable, fraction, which, -1);
-        Button plus = nudgeButton("+", editable, fraction, which, +1);
-        row.addView(minus);
 
-        EditText field = new EditText(this);
-        field.setSingleLine(true);
-        field.setTextSize(14);
-        // A signed decimal, with the fraction side keeping its digits. Pan is
-        // whole pixels because a fractional pixel offset is not a thing anyone
-        // can aim at.
-        field.setInputType(InputType.TYPE_CLASS_NUMBER
-                | InputType.TYPE_NUMBER_FLAG_DECIMAL
-                | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        if (!fraction) {
-            field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        }
-        field.setEnabled(editable);
-        field.setEms(fraction ? 7 : 6);
-        field.setContentDescription(label + (fraction ? " origin fraction" : " pan pixels"));
-        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        flp.setMargins(dp(2), 0, dp(2), 0);
-        field.setLayoutParams(flp);
-        // Live: the relief moves as you type, which is the only reason to type a
-        // number instead of dragging. The WRITE is deferred to focus loss or the
-        // IME action, because a prefs commit per keystroke is a disk write per
-        // keystroke and the sliders already learned that the expensive part is
-        // the write, not the preview.
-        field.addTextChangedListener(framingWatcher);
-        field.setOnEditorActionListener(new android.widget.TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(android.widget.TextView v, int actionId,
-                    android.view.KeyEvent event) {
-                applyFramingFields(true);
-                return true;
-            }
-        });
-        row.addView(field);
-        // After the field, not before it, so the pair reads - value +.
-        row.addView(plus);
-        col.addView(row);
 
-        return field;
-    }
 
-    private Button nudgeButton(String glyph, boolean editable, boolean fraction,
-            final int which, final int direction) {
-        Button b = new Button(this);
-        b.setText(glyph);
-        b.setAllCaps(false);
-        b.setTextSize(14);
-        b.setPadding(0, 0, 0, 0);
-        // A fixed width, not setMinWidth. minWidth is only a floor, so the button
-        // still laid itself out from its text and squeezed the "+" off the end of
-        // the row -- which is exactly the control you want most.
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
-        b.setEnabled(editable);
-        b.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                nudge(which, direction);
-            }
-        });
-        return b;
-    }
 
-    private float currentFramingValue(int which) {
-        switch (which) {
-            case 0: return renderer.getOrbitX();
-            case 1: return renderer.getOrbitY();
-            case 2: return renderer.getPanX();
-            default: return renderer.getPanY();
-        }
-    }
 
-    private void nudge(int which, int direction) {
-        float step = which < 2 ? ORBIT_STEP : PAN_STEP;
-        // Rounded to the precision the field shows, so a nudged value and a typed
-        // value are the same number. Rounding only for display would let the
-        // stored value and the visible value drift apart by a rounding error,
-        // which is the sort of small disagreement that becomes a real one.
-        float next = roundFramingValue(
-                currentFramingValue(which) + step * direction, which < 2);
-        writeFramingField(which, next);
-        applyFramingFields(true);
-    }
 
-    /**
-     * Round to the precision the field displays.
-     *
-     * <p>Applied to the value, not just to its text, so what is stored and what is
-     * shown are the same number. A nudge of 0.01 added to a value already rounded
-     * to four places can otherwise leave the fifth place set, and the field would
-     * then read back something that was never stored.
-     */
-    private float roundFramingValue(float v, boolean fraction) {
-        if (fraction) {
-            // 10000f here and "%.4f" in formatFramingValue below are the same
-            // precision stated twice. A constant for it was tried and removed: it
-            // cannot be used by a format string, so it would have looked like the
-            // single source of truth while the two could still disagree.
-            return Math.round(v * 10000f) / 10000f;
-        }
-        return Math.round(v);
-    }
 
-    private String formatFramingValue(float v, boolean fraction) {
-        float r = roundFramingValue(v, fraction);
-        if (fraction) {
-            return String.format(java.util.Locale.US, "%.4f", r);
-        }
-        return String.valueOf((long) r);
-    }
 
-    /**
-     * Push the four fields into the renderer.
-     *
-     * @param persist true to also write them to the index
-     */
-    private void applyFramingFields(boolean persist) {
-        float ox = parseField(orbitXField, renderer.getOrbitX());
-        float oy = parseField(orbitYField, renderer.getOrbitY());
-        float px = parseField(panXField, renderer.getPanX());
-        float py = parseField(panYField, renderer.getPanY());
-        renderer.setOrbit(ox, oy);
-        renderer.setPan(px, py);
-        if (persist) {
-            renderer.saveViewToPrefs();
-            refreshSliders();
-        }
-        glView.requestRender();
-    }
-
-    /** A field mid-edit is allowed to be unparseable; keep the old value then. */
-    private float parseField(EditText f, float fallback) {
-        if (f == null) return fallback;
-        try {
-            return Float.parseFloat(f.getText().toString().trim());
-        } catch (Exception e) {
-            return fallback;
-        }
-    }
-
-    /** Pull the four values out of the renderer into the fields and the readout. */
-    private void refreshFramingFields() {
-        float ox = renderer.getOrbitX(), oy = renderer.getOrbitY();
-        float px = renderer.getPanX(), py = renderer.getPanY();
-        writeFramingField(0, ox);
-        writeFramingField(1, oy);
-        writeFramingField(2, px);
-        writeFramingField(3, py);
-        if (framingReadout != null) {
-            framingReadout.setText(String.format(java.util.Locale.US,
-                    "Framing   %.3f, %.3f  ·  %d, %d px%s",
-                    ox, oy, Math.round(px), Math.round(py),
-                    framingExpanded ? "   ▲" : "   ▾"));
-        }
-    }
-
-    private void writeFramingField(int which, float value) {
-        EditText f = which == 0 ? orbitXField : which == 1 ? orbitYField
-                : which == 2 ? panXField : panYField;
-        if (f == null) return;
-        String s = formatFramingValue(value, which < 2);
-        if (s.contentEquals(f.getText())) return;
-        // Writing the field re-enters the watcher, which would read back a value
-        // that is mid-format. Suppressed rather than detached, so there is no way
-        // to leave a field with no watcher attached.
-        suppressFramingWatcher = true;
-        try {
-            f.setText(s);
-        } finally {
-            suppressFramingWatcher = false;
-        }
-    }
-
-    private void setFramingExpanded(boolean expanded) {
-        framingExpanded = expanded;
-        if (framingGrid != null) framingGrid.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        refreshFramingFields();
-        // The panel just changed height, so the half and hidden positions have
-        // moved with it.
-        reapplySheetAfterResize();
-    }
 
     // ---------------------------------------------------------------- bottom sheet
 
@@ -2065,6 +1793,19 @@ public class MainActivity extends Activity {
      * rather than as one more slider name. Without it the groups blur into the
      * controls they introduce.
      */
+    /**
+     * A group heading, carrying the surface being edited.
+     *
+     * <p>The mockup's "On both surfaces" state suffixes every caption with the
+     * surface -- {@code Standing out of the plane — lock} -- because a switch that
+     * silently changes which set of values you are editing is a switch nobody can
+     * trust. On Home, where there is nothing to distinguish, the plain heading stands.
+     */
+    private String heading(int plainRes, int surfaceRes) {
+        if (editSurface != Surface.LOCK) return getString(plainRes);
+        return getString(surfaceRes, getString(R.string.surface_lock));
+    }
+
     private void sectionLabel(String text) {
         sectionLabel(text, false);
     }

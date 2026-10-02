@@ -415,6 +415,24 @@ public class DepthWallpaperService extends WallpaperService {
                 // at which the answer cannot be a cached guess, so it is the
                 // moment to ask.
                 resolveSurface();
+                // R-PL4: catch up a rotation that fell due while hidden.
+                // Rotation is driven by whatever wakes the pref listener, and a
+                // write is not guaranteed — the screen can be off, the studio
+                // closed, nothing writing, for a whole interval — so a timed
+                // trigger can fall due with nothing there to observe it.
+                // Becoming visible is guaranteed to happen, and it is when the
+                // user is about to look. Safe from a second trigger:
+                // Playlists.advance stamps its own clock, so calling it twice
+                // in one interval moves once, and the listener this write
+                // wakes finds nothing due and no-ops. Rotation writes the
+                // index's OWN selection, so there is no second "current
+                // photo" pointer to keep in step. It sits after
+                // resolveSurface() because the surface is a gate, not a hint
+                // (a lock-only playlist must not rotate for the home engine),
+                // and before applyFromPrefs so the apply that follows
+                // resolves the rotated selection in this same transition
+                // rather than a frame later.
+                if (prefs != null) advancePlaylistIfDue(prefs);
                 // Re-read the selection now, not only when a pref change happens
                 // to arrive while the engine is alive. While hidden the GL thread
                 // is paused and does not drain the event queue, so an update

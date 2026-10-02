@@ -1222,6 +1222,22 @@ public final class DepthGenDialog {
         // and this is not that probe. Cleared before anything below can report, so
         // the line cannot be about to be replaced by a different one.
         sayNothing();
+        // R-BG3: battery saver is the OS saying the phone cannot afford this
+        // run — minutes of upload, polling and a decode is the one thing this
+        // panel does that a phone in saver should not be doing. Refused at
+        // the tap rather than by greying Generate, because saver can be
+        // flipped while the panel is open and nothing here is re-rendered on
+        // it; a button greyed on stale state refuses before the user can
+        // even try, while the note refuses with the reason on screen — and a
+        // button that does nothing with no explanation is the failure this
+        // project bans. PowerSave.isOn is the one read path both hosts use,
+        // so the user's "follow battery saver" switch is honoured here
+        // without a second read of it: a user who turned that switch off
+        // still gets to generate.
+        if (PowerSave.isOn(activity)) {
+            say(R.string.depth_battery_saver);
+            return;
+        }
         // Deliberately NOT re-captured here. The panel's subject is fixed when the
         // panel opens, and Retry re-queues the run that just failed: re-reading
         // the selection at this point would aim a retry at whichever photo the

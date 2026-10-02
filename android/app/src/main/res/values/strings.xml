@@ -45,6 +45,17 @@
     <string name="slider_brightness">Brightness</string>
     <string name="slider_shadow">Shadow</string>
     <string name="slider_glide">Glide</string>
+    <!-- Framing axes. Two captions naming the unit, then one row per axis. The
+         wireframe gives Pan the same treatment as Origin: two axes, one slider each.
+         (A double hyphen is illegal inside an XML comment and fails the build with a
+         parse error that names neither this file nor this line.) -->
+    <string name="framing_origin_caption">Origin (fraction)</string>
+    <string name="framing_pan_caption">Pan (pixels)</string>
+    <string name="framing_origin_x">Origin X</string>
+    <string name="framing_origin_y">Origin Y</string>
+    <string name="framing_pan_x">Pan X</string>
+    <string name="framing_pan_y">Pan Y</string>
+    <string name="framing_readout">Framing   %1$s, %2$s  ·  %3$d, %4$d px</string>
 
     <!-- The one button that carries a symbol rather than a word -->
     <string name="add_photo_glyph">＋</string>
@@ -82,6 +93,7 @@
     <string name="group_motion_surface">How it moves — %1$s</string>
     <string name="group_zoom_surface">Zoom — %1$s</string>
     <string name="group_framing_surface">Where it sits — %1$s</string>
+    <string name="group_picture_surface">Picture — %1$s</string>
 
     <!-- Apply: the surface chooser, shown only at apply time -->
     <string name="apply_title">Set as wallpaper</string>
@@ -136,10 +148,12 @@
     <string name="gallery_selection_hint">Tap a photo to use it · hold to pick several</string>
     <string name="gallery_selection_count">%1$d picked</string>
 
-    <!-- Copy settings: what a copy takes, and where it goes. -->
+    <!-- Copy settings: what a copy takes, and where it goes. The source picker
+          is a two-line row, so the surface a paste writes and what a copy takes
+          are its second line rather than folded into the photo's name. -->
     <string name="gallery_copy_from">Copy settings from</string>
     <string name="gallery_copy_takes">Depth · Zoom · Motion · Origin · Pan · Brightness · Shadow</string>
-    <string name="gallery_copy_source_row">%1$s — %2$s · %3$s</string>
+    <string name="gallery_copy_source_row_sub">%1$s · %2$s</string>
     <string name="gallery_settings_copied">Copied settings from %1$s</string>
 
     <!-- Bulk actions, worded for the selection they act on. -->
@@ -152,12 +166,14 @@
     <string name="gallery_deleted">Deleted</string>
     <string name="gallery_deleted_active">Deleted · showing the marble bust</string>
 
-    <!-- Playlists, reached from the gallery header. -->
+    <!-- Playlists, reached from the gallery header. The picker's rows are the
+          playlist's own name over its photo count, which is the plurals the
+          playlists screen already uses, so the two screens cannot disagree
+          about what a count is called. -->
     <string name="gallery_playlist_pick">Add to playlist</string>
     <string name="gallery_playlist_new">New playlist</string>
     <string name="gallery_playlist_name">Name</string>
     <string name="gallery_playlist_added">Added %1$d to %2$s</string>
-    <string name="gallery_playlist_row">%1$s · %2$d photos</string>
 
     <!--
       Seams this build cannot close on its own. Both are reported rather than
@@ -166,6 +182,7 @@
     -->
     <string name="toast_add_photo_unavailable">Adding a photo is not wired up yet</string>
     <string name="toast_playlists_unavailable">Playlists are not wired up yet</string>
+    <string name="toast_wallpaper_unavailable">Set as wallpaper is not wired up yet</string>
 
     <!-- Bulk paste outcomes -->
     <string name="toast_settings_pasted">Pasted onto %1$d photos</string>
@@ -318,6 +335,13 @@
          photograph to generate for (the bundled demo has no file, and ships its
          own map). -->
     <string name="depth_no_subject">Open this on a photo from the gallery</string>
+    <!-- R-BG3: a run is minutes of upload and polling, and battery saver is
+         the OS saying the phone cannot afford it. Said on the note rather than
+         by greying Generate, because saver can be flipped while the panel is
+         open and no listener re-renders it — and PowerSave.isOn is the one
+         read path, so a user who turned "follow battery saver" off never sees
+         this at all. -->
+    <string name="depth_battery_saver">Battery saver is on — turn it off to generate a map</string>
 
     <!-- The run. Phases, not controls: the job is queued with the model baked in,
          so a control that appeared to change it could not (R-PANEL7). -->
