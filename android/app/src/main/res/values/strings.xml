@@ -93,6 +93,11 @@
     <string name="apply_lock_unavailable">needs Android 15 or newer</string>
     <string name="apply_lock_note">Lock-screen wallpaper needs Android 15+. On older versions the lock screen keeps a still frame.</string>
     <string name="apply_continue">Continue</string>
+    <!-- Says where to go rather than blaming the device: the picker is the only
+         route, so if the system will not open it the user has to do this by hand. -->
+    <string name="applied_to_home">Applied to the home screen</string>
+    <string name="applied_to_lock">Applied to the home and lock screens</string>
+    <string name="apply_manual_hint">Open System Settings › Wallpaper to set the live wallpaper</string>
 
     <!-- The gallery. Add photo is the only way in; Image is retired into it. -->
     <string name="gallery_title">Gallery</string>

@@ -546,29 +546,17 @@ public class MainActivity extends Activity {
         sheetContent.addView(depthAiBtn);
 
         // reliable way to reach the live-wallpaper picker on any launcher
-        Button setWallpaper = makeButton(getString(R.string.apply_set_as_wallpaper), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Intent intent = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
-                intent.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                        DepthWallpaperService.wallpaperComponent(MainActivity.this));
-                try {
-                    startActivity(intent);
-                } catch (ActivityNotFoundException e) {
-                    try {
-                        startActivity(new Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER));
-                    } catch (ActivityNotFoundException e2) {
-                        Toast.makeText(MainActivity.this,
-                                "Open System Settings > Wallpaper to set the live wallpaper",
-                                Toast.LENGTH_LONG).show();
+        // Set as wallpaper opens a chooser, because a live wallpaper is bound to a
+        // screen and the binding is only decided at the moment of applying. Before
+        // that there is nothing to choose between, so this is not a persistent
+        // control. See ApplyChooser for why the system picker is the only route.
+        sheetContent.addView(makeButton(getString(R.string.apply_set_as_wallpaper),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        ApplyChooser.show(MainActivity.this);
                     }
-                }
-            }
-        });
-        setWallpaper.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        sheetContent.addView(setWallpaper);
+                }));
 
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
@@ -2262,6 +2250,31 @@ public class MainActivity extends Activity {
         outer.bottomMargin = dp(10);
         seg.setLayoutParams(outer);
         return seg;
+    }
+
+    /**
+     * The index says this photo is now on a second screen.
+     *
+     * <p>Called by the apply chooser after it records an intent, so the user is told
+     * what was recorded rather than inferring it from a segment that has not appeared
+     * yet.
+     *
+     * <p><b>The segment does NOT appear in response.</b> The sheet is built inline in
+     * {@code onCreate}, so bringing it back means rebuilding the panel, the fix line
+     * and every slider's captured initial value -- a large change to the largest
+     * method in the app for one event. It appears the next time the studio opens,
+     * which is immediately after the system picker the user is being sent to anyway.
+     * Said plainly rather than left to be discovered: the alternative was a
+     * {@code buildSheet()} that does not exist.
+     */
+    void onAppliedTo(Surface surface) {
+        // Both branches are int resource ids, so the ternary cannot pick a String
+        // overload -- hence two calls rather than one with a ternary.
+        if (surface == Surface.LOCK) {
+            Toast.makeText(this, R.string.applied_to_lock, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.applied_to_home, Toast.LENGTH_SHORT).show();
+        }
     }
 
     /** Open the settings screen. Four groups, and nothing about a photo. */
