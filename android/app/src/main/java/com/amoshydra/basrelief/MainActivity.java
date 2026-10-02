@@ -24,6 +24,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.SparseArray;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -141,7 +142,16 @@ public class MainActivity extends Activity {
     /** The one dashed line under the grip. See {@link #buildFixLine}. */
     private LinearLayout fixLine;
     /** The pill that replaces the sheet when it is collapsed. See {@link #setPillState}. */
-    private TextView pill;
+    /**
+     * The collapsed sheet, as the mockup's row: a status dot (or a progress ring)
+     * followed by a label that carries the ellipsis.
+     */
+    private LinearLayout pill;
+    /** The label inside {@link #pill}. The ellipsis lives on THIS, not on the pill. */
+    private TextView pillLabel;
+    /** The dot, or the ring while a generation runs. Swapped by {@link #setPillState}. */
+    private View pillMark;
+    private ProgressRing pillRing;
     private PillState pillState = PillState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
     private View depthBarRow;
@@ -606,34 +616,70 @@ public class MainActivity extends Activity {
         // which could only ever mean one thing and had to guess which. The pill has
         // three states -- idle, attention, progress -- so it can say what is going on
         // without the sheet being open.
-        pill = new TextView(this);
-        pill.setVisibility(View.GONE);
-        pill.setTextSize(13.5f);
+        pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setPadding(dp(18), dp(10), dp(18), dp(10));
-        pill.setMaxLines(1);
-        // Glass, so it floats over the render rather than sitting on it. An opaque
-        // fallback, because a translucent pill on a device without backdrop-filter
-        // is a grey blob with no edge.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            pill.setBackground(pillBackground());
-        } else {
-            pill.setBackgroundColor(0xD01C2026);
+        pill.setVisibility(View.GONE);
+        // 8px vertical, 18px horizontal, and a 38px minimum height. The height is a
+        // floor rather than a fixed value so the pill does not change size between
+        // "Controls" and the attention sentence -- it is one control in three states.
+        pill.setPadding(dp(18), dp(8), dp(18), dp(8));
+        pill.setMinimumHeight(dp(38));
+        pill.setBackground(pillBackground(0x33FFFFFF));
+        // Glass, so it floats over the render rather than sitting on it. The fill is
+        // the mockup's rgba(28,32,38,.72); it used to be the same value in BOTH the
+        // supported and unsupported branches, which made the fallback a no-op.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            pill.setBackgroundColor(0xFF1C2026);
         }
+
+        pillMark = new View(this);
+        android.graphics.drawable.GradientDrawable dot =
+                new android.graphics.drawable.GradientDrawable();
+        dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        dot.setColor(PILL_DIM);
+        pillMark.setBackground(dot);
+        LinearLayout.LayoutParams markLp = new LinearLayout.LayoutParams(dp(8), dp(8));
+        markLp.rightMargin = dp(9);
+        pill.addView(pillMark, markLp);
+
+        pillLabel = new TextView(this);
+        pillLabel.setTextSize(13.5f);
+        pillLabel.setTextColor(0xFFFFFFFF);
+        pillLabel.setMaxLines(1);
+        // The ellipsis is on THIS view, not on the pill. On the pill it competed with
+        // the dot and the horizontal padding for room, so a long sentence compressed
+        // the dot into a speck before the text shortened at all. Here the dot is
+        // fixed and the text takes what is left.
+        pillLabel.setEllipsize(TextUtils.TruncateAt.END);
+        pill.addView(pillLabel, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
         pill.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 expandUi();
             }
         });
+
+        // The cap. A WRAP_CONTENT pill on its own measures against the screen, so a
+        // long sentence runs edge to edge. Wrapping it in a full-width holder with 28px
+        // side margins bounds what the pill is offered -- FrameLayout measures a
+        // child AT_MOST its own width -- so the pill still hugs its text and still
+        // cannot leave the screen.
+        FrameLayout pillCap = new FrameLayout(this);
+        FrameLayout.LayoutParams capLp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM);
+        capLp.leftMargin = dp(28);
+        capLp.rightMargin = dp(28);
+        capLp.bottomMargin = dp(26);
         FrameLayout.LayoutParams pillLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        pillLp.bottomMargin = dp(26);
-        // Never wider than the screen minus a margin, or the attention sentence
-        // runs off both edges.
-        root.addView(pill, pillLp);
+                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        pillCap.addView(pill, pillLp);
+        root.addView(pillCap, capLp);
 
         setContentView(root);
 
@@ -1098,27 +1144,77 @@ public class MainActivity extends Activity {
      */
     private enum PillState { IDLE, ATTENTION, PROGRESS }
     private static final int WARN_COLOUR = 0xFFE8B04B;
+    /** The idle status dot: --dimmer, because it is a fact rather than a prompt. */
+    private static final int PILL_DIM = 0x57FFFFFF;
 
     private void setPillState(PillState state) {
+        // The CONDITION, as opposed to what is drawn. Kept separately because a
+        // running generation is a transient override: when it ends, the pill must go
+        // back to whatever the fix line last said rather than to a stale copy of
+        // progress. Overwriting the condition with the transient state is what made
+        // a finished run leave the pill saying "Generating" forever.
         pillState = state;
+        applyPillState(state);
+    }
+
+    /** Draw one state. Does not record it as the condition. */
+    private void applyPillState(PillState state) {
         if (pill == null) return;
         switch (state) {
             case IDLE:
-                pill.setText(R.string.pill_controls);
-                pill.setTextColor(0xFFFFFFFF);
+                pillLabel.setText(R.string.pill_controls);
+                pillLabel.setTextColor(0xFFFFFFFF);
+                pill.setBackground(pillBackground(0x33FFFFFF));
+                setPillMark(false);
                 break;
             case ATTENTION:
-                pill.setText(R.string.pill_no_depth);
-                pill.setTextColor(WARN_COLOUR);
+                pillLabel.setText(R.string.pill_no_depth);
+                pillLabel.setTextColor(WARN_COLOUR);
+                // The BORDER carries the warning too. Changing only the text colour
+                // left a pill that read as informational at a glance, which is the
+                // opposite of the point -- the border is what you see first.
+                pill.setBackground(pillBackground(WARN_COLOUR));
+                setPillMark(false);
                 break;
             case PROGRESS:
                 // Text is set by the caller, which knows the percentage.
-                pill.setTextColor(0xFFFFFFFF);
+                pillLabel.setTextColor(0xFFFFFFFF);
+                pill.setBackground(pillBackground(0x33FFFFFF));
+                setPillMark(true);
                 break;
             default:
                 break;
         }
         updatePillVisibility();
+    }
+
+    /** An 8dp dot when idle, a 15dp spinning ring while a generation runs. */
+    private void setPillMark(boolean progress) {
+        if (pillMark == null) return;
+        LinearLayout.LayoutParams lp =
+                (LinearLayout.LayoutParams) pillMark.getLayoutParams();
+        if (progress) {
+            if (pillRing == null) {
+                pillRing = new ProgressRing(dp(15), dp(2), 0xFF7FD1C1, 0x33FFFFFF);
+            }
+            pillMark.setBackground(pillRing);
+            lp.width = dp(15);
+            lp.height = dp(15);
+            pillRing.start();
+        } else {
+            if (pillRing != null) pillRing.stop();
+            android.graphics.drawable.GradientDrawable dot =
+                    new android.graphics.drawable.GradientDrawable();
+            dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            // Dim when idle, bright when something needs attention: the dot is the
+            // one part of the pill you notice before you read.
+            dot.setColor(pillState == PillState.ATTENTION ? WARN_COLOUR : PILL_DIM);
+            pillMark.setBackground(dot);
+            lp.width = dp(8);
+            lp.height = dp(8);
+        }
+        lp.rightMargin = dp(9);
+        pillMark.setLayoutParams(lp);
     }
 
     /**
@@ -1132,21 +1228,40 @@ public class MainActivity extends Activity {
      */
     private void updatePillVisibility() {
         if (pill == null) return;
-        boolean hidden = sheetFraction >= SHEET_COLLAPSE_FRACTION;
-        pill.setVisibility(hidden ? View.VISIBLE : View.GONE);
+        boolean collapsed = sheetFraction >= SHEET_COLLAPSE_FRACTION;
+        pill.setVisibility(collapsed ? View.VISIBLE : View.GONE);
+        if (!collapsed) return;
+
+        // A run in progress outranks the condition. This is the one thing worth
+        // showing while the sheet is away: it is the only feedback a user gets for a
+        // generation they started and then slid the sheet over. Read on every
+        // collapse rather than pushed, because the run is started from a dialog that
+        // is not this class and there is no callback to hang the end on.
+        if (DepthGenDialog.isRunning()) {
+            applyPillState(PillState.PROGRESS);
+            pillLabel.setText(getString(R.string.pill_generating,
+                    DepthGenDialog.progressPercent()));
+            return;
+        }
+        // Otherwise fall back to the condition. Restored rather than left alone,
+        // because applyPillState above may have been the last thing to touch it.
+        applyPillState(pillState);
     }
 
-    /** A rounded, translucent, hairline-bordered background for the pill. */
-    private android.graphics.drawable.GradientDrawable pillBackground() {
+    /**
+     * The pill's glass: the mockup's rgba(28,32,38,.72) with a hairline edge.
+     *
+     * <p>An opaque-enough fill with an edge is the whole job -- the sheet it stands in
+     * for is glass over a render, and the render can be anything. The border is a
+     * parameter because attention changes it, which is the part you notice first.
+     */
+    private android.graphics.drawable.GradientDrawable pillBackground(int stroke) {
         android.graphics.drawable.GradientDrawable d =
                 new android.graphics.drawable.GradientDrawable();
         d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
         d.setCornerRadius(dp(999));
-        // An opaque-enough fill with a hairline edge: readable over any photo, which
-        // is the whole job -- the sheet it stands in for is glass over the render and
-        // the render can be anything.
-        d.setColor(0xD01C2026);
-        d.setStroke(dp(1), 0x33FFFFFF);
+        d.setColor(0xB81C2026);
+        d.setStroke(dp(1), stroke);
         return d;
     }
 
