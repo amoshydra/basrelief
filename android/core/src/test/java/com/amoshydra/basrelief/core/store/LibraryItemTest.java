@@ -281,4 +281,60 @@ public class LibraryItemTest {
             }
         }
     }
+
+    // ------------------------------------------------- "null" is not a filename
+
+    /**
+     * Android's optString turns a JSON null into the four-character string "null".
+     *
+     * <p>It shipped: the live index carried {@code "depth":"null"} for every photo with
+     * no map, which is what the parse below now heals. The consequences were not
+     * cosmetic — hasDepth() is {@code depthName != null}, so the app believed a map
+     * existed, the gallery drew a depth chip, the renderer looked for a file called
+     * "null" and fell back to a flat map, and the fix line that exists precisely to
+     * say "No depth" never appeared for any of them.
+     *
+     * <p>Written as a round trip because that is the shape of the bug: one read was
+     * survivable, and it was the <em>write</em> that made it permanent.
+     */
+    @Test
+    public void aJsonNullDepthIsAbsentAndSurvivesARewrite() {
+        LibraryItem item = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"depth\":null}"));
+        assertNotNull("an item with an image must parse", item);
+        assertNull("a JSON null is an absent map, not a map named \"null\"", item.depthName);
+        assertFalse("hasDepth() must not be true for a photo with no map", item.hasDepth());
+
+        // And again, from a blob the buggy build already wrote.
+        Library index = Library.empty().withBundled().withItem(item);
+        // Precisely the poisoned form. A bare "\"depth\"" would also match the
+        // per-surface depth INSIDE surfaces, which is a different field and always
+        // present.
+        assertFalse("the string \"null\" must not be written back",
+                index.toJson().contains("\"depth\":\"null\""));
+        LibraryItem again = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"depth\":\"null\"}"));
+        assertNull("the literal string \"null\" heals to absent too", again.depthName);
+    }
+
+    /** The same trap on the image name, where it would be a file called "null". */
+    @Test
+    public void aNullImageNameIsAbsentAndNormaliseRejectsTheLiteral() {
+        assertNull("normaliseName must reject \"null\"", LibraryItem.normaliseName("null"));
+        // The bundled item is the one entry allowed to have no image at all.
+        LibraryItem bundled = LibraryItem.fromJson(json(
+                "{\"id\":\"" + Library.BUNDLED_ID + "\",\"image\":null}"));
+        assertNotNull("the bundled item must survive a null image", bundled);
+        assertNull("and it must have no image NAME", bundled.imageName);
+        assertTrue("and it must still be the bundled item", bundled.isBundled());
+    }
+
+    /** A label is optional too, and "null" is not one. */
+    @Test
+    public void aNullLabelIsAbsent() {
+        LibraryItem item = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"label\":null}"));
+        assertNotNull(item);
+        assertNull("a JSON null label is absent", item.label);
+    }
 }

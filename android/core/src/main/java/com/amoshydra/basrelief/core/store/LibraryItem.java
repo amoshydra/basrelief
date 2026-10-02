@@ -276,6 +276,12 @@ public final class LibraryItem {
      */
     public static String normaliseName(String stored) {
         if (stored == null) return null;
+        // "null" is not a filename. It arrives here from a blob whose JSON null was
+        // read with optString, which returns the four-character string rather than
+        // null -- so a parse-then-write cycle could turn an absent map into a file
+        // named "null", and from then on hasDepth() was true and the fix line stayed
+        // silent for a photo with no depth. See str().
+        if ("null".equals(stored)) return null;
         String base = new File(stored).getName(); // strips any directory part
         if (base.isEmpty() || base.equals(".") || base.equals("..")) return null;
         if (base.indexOf('/') >= 0 || base.indexOf('\\') >= 0) return null;
@@ -292,6 +298,42 @@ public final class LibraryItem {
      * single-slot names in use today ({@code custom_image.png}) are overwritten
      * by the next import, and an index holding two items pointing at one file
      * would render one photo twice and delete the other.
+     *
+     * @throws IllegalArgumentException if the id is not usable, rather than
+     *         quietly producing a name two other ids could also produce
+     */
+
+    /**
+     * A string field, or null when it is absent, JSON null, or the string "null".
+     *
+     * <p>{@code optString} is not null-safe for a missing key on Android's
+     * implementation: given an explicit JSON null it returns the four-character
+     * string {@code "null"}, not null. Every field read that way therefore turned
+     * "this photo has no depth map" into "this photo has depth map 'null'" the first
+     * time the index was rewritten -- and {@code hasDepth()} is
+     * {@code depthName != null}, so the app believed a map existed, the gallery drew a
+     * depth chip for it, the renderer looked for a file called "null" and fell back to
+     * a flat map, and the fix line that exists precisely to say "No depth" never
+     * appeared.
+     *
+     * <p>The literal "null" is treated as absent as well as JSON null, so a blob
+     * already written by the buggy build heals on the next parse rather than needing
+     * a migration.
+     */
+    private static String str(JSONObject o, String key) {
+        if (o == null || o.isNull(key)) return null;
+        String v = o.optString(key, null);
+        if (v == null || v.isEmpty() || "null".equals(v)) return null;
+        return v;
+    }
+
+    /**
+     * The image filename to write for a new item.
+     *
+     * <p>Derived from the id precisely so two items cannot share a file: the
+     * single-slot names in use today are overwritten by the next import, and an
+     * index holding two items pointing at one file would render one photo twice and
+     * delete the other.
      *
      * @throws IllegalArgumentException if the id is not usable, rather than
      *         quietly producing a name two other ids could also produce
@@ -553,7 +595,7 @@ public final class LibraryItem {
         Object rawId = o.opt("id");
         if (!(rawId instanceof String)) return null;
         String id = (String) rawId;
-        String img = normaliseName(o.optString("image", null));
+        String img = normaliseName(str(o, "image"));
         // No image means nothing to render and nothing to resolve -- UNLESS this
         // is the reserved bundled item, which reads from res/raw and so has no
         // file by design. Without this exemption the bundled item is silently
@@ -563,8 +605,8 @@ public final class LibraryItem {
         try {
             SurfaceSettings home = homeFrom(o);
             return new LibraryItem(id, img,
-                    o.optString("depth", null),
-                    o.optString("label", null),
+                    str(o, "depth"),
+                    str(o, "label"),
                     o.optLong("added_at", 0L),
                     o.optLong("last_used_at", 0L),
                     home.depth, home.zoom, home.motion,
