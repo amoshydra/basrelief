@@ -3,12 +3,14 @@ package com.amoshydra.basrelief;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.FrameLayout;
+import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
 
 /**
  * The settings screen. Four groups, and nothing else.
@@ -28,9 +30,37 @@ import android.widget.TextView;
  *
  * <p>Built against the signed-off mockup: {@code .design/prototype/final.html},
  * Settings tab, and its CSS is the specification for the numbers here -- the
- * caption is {@code .caption}, the row is {@code .opt}, and the accents are
- * {@code --line}, {@code --dim}, {@code --dimmer} and {@code --accent}. Where a
- * colour is written as an int here it is that CSS value and not an approximation.
+ * caption is {@code .caption}, the row is {@code .opt}, the switch is
+ * {@code .opt .sw}, the aside is {@code .note}, and the accents are {@code --line},
+ * {@code --dim}, {@code --dimmer} and {@code --accent}. Where a colour is written as
+ * an int here it is that CSS value and not an approximation.
+ *
+ * <p><b>A sheet, in a Dialog window.</b> The mockup draws this screen as the same
+ * {@code .sheet} the studio uses -- panel colour, 22dp top corners, a grip, most of
+ * the display -- and that shape is what makes it read as glass over a live render
+ * rather than as a page. It is built on {@link ModalSheet} at 0.88 so it is the same
+ * card as the apply and the depth screens, which are one gesture away from it, rather
+ * than a fourth one written here.
+ *
+ * <p>It stays a <b>Dialog</b>, and that is a deliberate trade rather than an
+ * oversight. A Dialog brings its own window, so the mockup's shape -- a sibling view
+ * over the {@code GLSurfaceView} -- cannot happen to it, and that shape is documented
+ * to stop compositing entirely (b/7179570, recorded in AOSP 2012 and still in the
+ * API 27 sources): the view is placed, opaque, attached, {@code isShown()}, in a
+ * window that has drawn hundreds of frames, receiving every tap and absent from the
+ * display. The cost is the render behind it -- a Dialog window is its own surface, so
+ * this screen sits on a dimmed studio rather than on the photograph. That is the
+ * right way round: a correctly compositing modal over an invisible photograph is a
+ * worse outcome than a visible photograph behind a modal that never appears. It is
+ * also why the card is {@link ModalSheet}'s card rather than the studio sheet's own
+ * panel; see {@link #present} for the numbers.
+ *
+ * <p><b>No header.</b> The design has none: the first thing in the sheet is the grip
+ * and the first content row is {@code caption Battery}. There was a 16sp title and a
+ * 15sp Done here, which is a full-width line the mockup does not draw and which
+ * pushed the first group down by the height of itself. Back already dismisses and so
+ * does the grip; the Done that remains is in the foot, under the content it closes,
+ * rather than above the first question.
  */
 final class SettingsSheet {
 
@@ -38,24 +68,28 @@ final class SettingsSheet {
      * The three toggles, named once.
      *
      * <p>A pref key as a literal at two call sites is a key that can be renamed at
-     * one of them, which is a toggle that silently stops persisting.
-     *
-     * <p><b>These three are stored and read back by this screen, and by nothing
-     * else yet.</b> They are named here as the contract the sensor code is to read,
-     * rather than inlined where it will be wired up, so that whoever does that does
-     * not have to go and find the spelling. A control that changes nothing is the
-     * failure this project rules out, and the fix is the reader side, not the
-     * removal of the switch: the mockup is signed off with all four groups, and a
-     * missing toggle is a worse lie than a pending one.
+     * one of them, which is a toggle that silently stops persisting. The keys live
+     * in {@link Settings} next to the one reader each has, and nothing here spells a
+     * key out.
      */
-    // The keys live in Settings, next to the code that reads them. A key string
-    // duplicated here and there compiles fine, flips the switch, and changes nothing.
     private static final String KEY_BATTERY_SAVER = Settings.KEY_BATTERY_SAVER_FOLLOW;
     private static final String KEY_CALIBRATE_ON_WAKE = Settings.KEY_CALIBRATE_ON_WAKE;
     private static final String KEY_SLEEP_WHEN_STILL = Settings.KEY_SLEEP_WHEN_STILL;
 
+    /**
+     * What a key nobody has written yet reads as. On, for all three.
+     *
+     * <p>{@link Settings} says why, and this is the same decision: each of the three
+     * describes behaviour the app had before it was a switch, so a user upgrading
+     * must not find their wallpaper behaving differently because a new key is absent.
+     */
+    private static final boolean DEFAULT_ON = true;
+
+    /** The mockup's grip bar: rgba(255,255,255,.42). */
+    private static final int GRIP_BAR = 0x6BFFFFFF;
+
     private final MainActivity activity;
-    private android.app.Dialog dialog;
+    private ModalSheet sheet;
 
     private SettingsSheet(MainActivity activity) {
         this.activity = activity;
@@ -70,250 +104,248 @@ final class SettingsSheet {
         return activity.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
     }
 
-    private int dp(int v) {
-        return (int) (v * activity.getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    // ------------------------------------------------------------------ chrome
+    // ------------------------------------------------------------------- present
 
     /**
-     * One option row: the switch, then the title and its subtitle.
+     * Present it.
      *
-     * <p>The switch is on the LEFT and the text follows it, which is the order the
-     * mockup draws and the order a thumb expects; it used to be a checkmark button
-     * on the right, so reading a row meant reading past the answer to find the
-     * question.
+     * <p><b>0.88</b> is the mockup's {@code .modal { max-height: 88% }}. The card
+     * itself is {@link ModalSheet}'s -- {@code 0xFF171B21} at 20dp top corners, where
+     * the studio's own sheet is {@code 0xEB161A20} at 22dp -- and that difference is
+     * deliberate rather than missed. That card is shared with the apply, depth and
+     * playlist screens, which are the same primitive one gesture away; a second card
+     * definition here is exactly the drift {@link ModalSheet} exists to stop. And given
+     * the Dialog window, there is nothing behind the card to blend with, so an opaque
+     * {@code #171B21} and a 92% {@code #161A20} are within about one percent per
+     * channel of each other on screen. Making this the studio's panel is a change to
+     * {@link ModalSheet}, with a flag so the other three keep theirs -- not something
+     * to do from inside a screen that uses it.
      *
-     * <p>Rounded, hairline border, faint fill: the three things that make a row
-     * read as a row rather than as two loose lines of text. The border is the
-     * only one of the three that carries structure at all, so it is the mockup's
-     * {@code --line} (rgba(255,255,255,.14)) exactly rather than a guess.
-     *
-     * @param key the pref this row owns, or null for a row that only reports. The
-     *            row repaints its own swatch from storage after a tap rather than
-     *            rebuilding the screen: a full re-open showed the stored value, but
-     *            it also threw away the scroll position and the dialog with it, and
-     *            a user comparing two toggles would lose their place each time.
+     * <p>{@code body} is called once and only once: it adds the scroll to the card,
+     * so a second call is a second scroll rather than a replacement.
      */
-    private LinearLayout row(String title, String subtitle, String key, boolean fallback) {
-        boolean on = key != null && isTrue(key, fallback);
-        LinearLayout r = new LinearLayout(activity);
-        r.setOrientation(LinearLayout.HORIZONTAL);
-        r.setGravity(Gravity.CENTER_VERTICAL);
-        int p = dp(12);
-        r.setPadding(p, p, p, p);
-        android.graphics.drawable.GradientDrawable bg =
-                new android.graphics.drawable.GradientDrawable();
-        bg.setCornerRadius(dp(11));
-        bg.setColor(0x0AFFFFFF);
-        bg.setStroke(dp(1), 0x24FFFFFF);
-        r.setBackground(bg);
+    private void present() {
+        sheet = new ModalSheet(activity, 0.88f);
+        sheet.body(buildBody());
 
-        final FrameLayout holder = new FrameLayout(activity);
-        holder.addView(swatch(on));
-        r.addView(holder, new LinearLayout.LayoutParams(dp(34), dp(34)));
-
-        LinearLayout text = new LinearLayout(activity);
-        text.setOrientation(LinearLayout.VERTICAL);
-        // 12px between the switch and the words, .opt { gap:12px }.
-        LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        textLp.leftMargin = dp(12);
-        TextView t = new TextView(activity);
-        t.setText(title);
-        t.setTextSize(14);
-        t.setTextColor(Color.WHITE);
-        t.setTypeface(null, android.graphics.Typeface.BOLD); // .opt b
-        text.addView(t);
-        if (subtitle != null && !subtitle.isEmpty()) {
-            TextView s = new TextView(activity);
-            s.setText(subtitle);
-            s.setTextSize(12);
-            s.setTextColor(0x8CFFFFFF); // --dim
-            text.addView(s);
-        }
-        r.addView(text, textLp);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(8); // .opt { margin-bottom:8px }
-        r.setLayoutParams(lp);
-
-        if (key != null) {
-            final String k = key;
-            final boolean fb = fallback;
-            r.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    boolean now = !isTrue(k, fb);
-                    prefs().edit().putBoolean(k, now).apply();
-                    // Repaint from what was STORED rather than from `now`. Reading
-                    // back is the only way the swatch can disagree with the pref,
-                    // and the pref is the truth everything else reads.
-                    holder.removeAllViews();
-                    holder.addView(swatch(isTrue(k, fb)));
-                }
-            });
-        }
-        return r;
-    }
-
-    /**
-     * The on/off swatch: a 34dp tile with an accent badge on its bottom-right
-     * corner when the setting is on.
-     *
-     * <p>The mockup draws the badge as a filled circle that overhangs the tile and
-     * is ringed in the panel colour, so it reads as sitting ON the tile rather
-     * than inside it. That ring is why the badge is offset by -3dp: without it the
-     * badge is clipped by nothing but is the same size as one drawn flush, and the
-     * distinction between "on" and "a slightly brighter square" disappears.
-     *
-     * <p>A {@code View} with a drawable rather than a {@code Button} with a "✓":
-     * the glyph was the only reason the row needed a platform widget, and a Button
-     * brings its own minimum width, insets and background that all had to be
-     * overridden to get back to 34dp.
-     */
-    private View swatch(boolean on) {
-        FrameLayout f = new FrameLayout(activity);
-        android.graphics.drawable.GradientDrawable tile =
-                new android.graphics.drawable.GradientDrawable(
-                        android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                        new int[]{0xFF3D5563, 0xFF1B262E});
-        tile.setCornerRadius(dp(9));
-        f.setBackground(tile);
-        if (on) {
-            View badge = new View(f.getContext());
-            android.graphics.drawable.GradientDrawable dot =
-                    new android.graphics.drawable.GradientDrawable();
-            dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-            dot.setColor(0xFF7FD1C1);
-            // 2px of the panel colour, so the badge reads as on top of the tile.
-            dot.setStroke(dp(2), 0xFF0E1115);
-            badge.setBackground(dot);
-            FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(dp(14), dp(14));
-            blp.rightMargin = -dp(3);
-            blp.bottomMargin = -dp(3);
-            blp.gravity = Gravity.BOTTOM | Gravity.RIGHT;
-            f.addView(badge, blp);
-        }
-        // Spoken, because a coloured dot is not a state a screen reader can read.
-        f.setContentDescription(activity.getString(
-                on ? R.string.settings_state_on : R.string.settings_state_off));
-        return f;
-    }
-
-    /**
-     * A group heading. Four of these, one per group, and they are the only thing
-     * on the screen that is a heading.
-     *
-     * <p>{@code .caption}: 11sp, letter-spacing .09em, uppercase, --dimmer, bold,
-     * 16px above and 7px below. The first one is normally 2px from the top rather
-     * than 16 -- the mockup's {@code :first-child} rule -- which matters because
-     * here the heading is preceded by the title row rather than by the top edge, so
-     * all four take the 16px.
-     *
-     * <p>Uppercase plus letter spacing is what makes a heading read as a heading at
-     * 11sp. Without it the four group titles look like more slider labels and the
-     * page stops being four groups.
-     */
-    private TextView caption(String s) {
-        TextView t = new TextView(activity);
-        t.setText(s);
-        t.setTextSize(11);
-        t.setAllCaps(true);
-        t.setLetterSpacing(0.09f);
-        t.setTextColor(0x57FFFFFF); // --dimmer
-        t.setPadding(dp(4), dp(16), dp(4), dp(7));
-        t.setTypeface(null, android.graphics.Typeface.BOLD);
-        return t;
-    }
-
-    // ------------------------------------------------------------------ build
-
-    private View build() {
-        FrameLayout root = new FrameLayout(activity);
-        root.setBackgroundColor(0xF20E1115);
-
-        ScrollView scroll = new ScrollView(activity);
-        LinearLayout box = new LinearLayout(activity);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(16);
-        box.setPadding(pad, pad, pad, pad);
-
-        // ---- title
-        LinearLayout head = new LinearLayout(activity);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(activity);
-        title.setText(R.string.settings_title);
-        title.setTextSize(16);
-        title.setTextColor(Color.WHITE);
-        head.addView(title, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView done = new TextView(activity);
-        done.setText(R.string.action_done);
-        done.setTextColor(0x8CFFFFFF);
-        done.setTextSize(15);
-        done.setPadding(dp(12), dp(8), dp(4), dp(8));
+        // The one visible way out, and {@code .btn.ghost} rather than a filled plate:
+        // this button closes a screen and changes nothing on it, so it should not
+        // carry the weight of the primary action.
+        Button done = ModalSheet.button(activity, activity.getString(R.string.action_done),
+                false, true);
         done.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                hide();
+                dismiss();
             }
         });
-        head.addView(done);
-        box.addView(head);
+        sheet.footerRow(done);
+        sheet.show(activity);
+    }
+
+    private void dismiss() {
+        if (sheet != null) {
+            sheet.dismiss();
+            sheet = null;
+        }
+    }
+
+    // ---------------------------------------------------------------------- body
+
+    /**
+     * The four groups, in the mockup's order: Battery, Motion, Gyro, About.
+     *
+     * <p>Nothing between the grip and {@code caption Battery}, because the design has
+     * nothing there -- see the header note in the class javadoc.
+     */
+    private View buildBody() {
+        LinearLayout box = new LinearLayout(activity);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(grip());
 
         // ---- Battery. One row, because the one question is whether the app obeys the
         // OS setting or not; there is nothing else about power to decide here.
-        box.addView(caption(activity.getString(R.string.group_battery)));
-        box.addView(row(activity.getString(R.string.settings_follow_battery_saver),
-                activity.getString(R.string.settings_follow_battery_saver_sub),
-                KEY_BATTERY_SAVER, true));
+        // `first` is the mockup's `.caption:first-child`: in the design the grip is a
+        // sibling of the scroll rather than inside it, so the first caption is the
+        // first thing in the scroll and takes 2px rather than 16.
+        box.addView(ModalSheet.caption(activity,
+                activity.getString(R.string.group_battery), true));
+        box.addView(toggle(R.string.settings_follow_battery_saver,
+                R.string.settings_follow_battery_saver_sub, KEY_BATTERY_SAVER));
 
         // ---- Motion. One group, one control: the glide rate. Depth, Zoom and Motion
         // are all per-photograph and live in the sheet on the photo, so this group
         // holds the one motion setting that is about the device.
-        box.addView(caption(activity.getString(R.string.group_motion)));
+        box.addView(ModalSheet.caption(activity,
+                activity.getString(R.string.group_motion), false));
         box.addView(GlideControl.build(activity, prefs()));
-        TextView glideNote = new TextView(activity);
-        glideNote.setText(R.string.settings_glide_note);
-        glideNote.setTextSize(11);
-        glideNote.setTextColor(0x57FFFFFF);
-        // Centred and dimmer, .note in the mockup: it is an aside, and it sits
-        // under the control it qualifies rather than beside the next group.
-        glideNote.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        noteLp.topMargin = dp(7);
-        glideNote.setLayoutParams(noteLp);
-        box.addView(glideNote);
+        // .note: 11px, --dimmer, centred, under the control it qualifies rather than
+        // beside the next group. It says what the one rate is FOR, which is the part
+        // a user cannot guess: re-centring and home-to-lock are the same motion, and
+        // a user who thinks they are two settings is wrong in a way nothing else on
+        // this screen would correct.
+        box.addView(ModalSheet.note(activity,
+                activity.getString(R.string.settings_glide_note)));
 
-        // ---- Gyro. All four group headings go through caption(), which is the
-        // whole reason they read as headings rather than as four more labels; see
-        // there for the treatment and why it is not optional.
-        box.addView(caption(activity.getString(R.string.group_gyro)));
-        box.addView(row(activity.getString(R.string.settings_calibrate_wake),
-                activity.getString(R.string.settings_calibrate_wake_sub),
-                KEY_CALIBRATE_ON_WAKE, true));
-        box.addView(row(activity.getString(R.string.settings_sleep_still),
-                activity.getString(R.string.settings_sleep_still_sub),
-                KEY_SLEEP_WHEN_STILL, true));
+        // ---- Gyro. Both rows are the sensor's own lifecycle: when it re-reads
+        // neutral, and when it stops.
+        box.addView(ModalSheet.caption(activity,
+                activity.getString(R.string.group_gyro), false));
+        box.addView(toggle(R.string.settings_calibrate_wake,
+                R.string.settings_calibrate_wake_sub, KEY_CALIBRATE_ON_WAKE));
+        box.addView(toggle(R.string.settings_sleep_still,
+                R.string.settings_sleep_still_sub, KEY_SLEEP_WHEN_STILL));
 
-        // ---- About & diagnostics
-        box.addView(caption(activity.getString(R.string.group_about)));
-        // No key: the mockup's About row carries an empty swatch and is a fact, not
-        // a switch, so it must not accept a tap. Passing a key here would make the
-        // whole row look live and do nothing.
-        box.addView(row(activity.getString(R.string.app_name) + " " + versionName(),
-                activity.getString(R.string.settings_licence), null, false));
+        // ---- About & diagnostics. This row is a fact, not a setting, so its swatch is
+        // the same tile with no accent dot -- `false`, not a dimmed one -- and it takes
+        // no tap. The null listener is what makes ModalSheet's row non-clickable, so
+        // this cannot drift into a live-looking row that does nothing.
+        box.addView(ModalSheet.caption(activity,
+                activity.getString(R.string.group_about), false));
+        box.addView(ModalSheet.option(activity,
+                activity.getString(R.string.app_name) + " " + versionName(),
+                activity.getString(R.string.settings_licence), false, false, null));
+
+        // Diagnostics last, with no heading of its own. It is a panel of values rather
+        // than a control, and the mockup puts it at the bottom on purpose: debug text
+        // sprinkled through the controls reads as content, and content is what the user
+        // came here to look at.
         box.addView(DiagnosticsBlock.build(activity));
+        return box;
+    }
 
-        scroll.addView(box);
-        root.addView(scroll, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        return root;
+    /**
+     * The sheet's handle: a 38x4 bar centred in a 22dp strip, as the mockup draws it.
+     *
+     * <p><b>It collapses, on a tap.</b> The mockup's grip drags the studio's sheet
+     * down, and this screen is a Dialog, which cannot be dragged -- a grip that only
+     * <i>looked</i> draggable would advertise a gesture that does nothing, and a
+     * control that changes nothing is the failure this app rules out. Tapping it
+     * collapses the sheet, which is what the mockup's own handler does
+     * ("drag down to collapse"): the same outcome, by the gesture the platform can
+     * actually deliver. So the bar is not decoration and is not a lie.
+     *
+     * <p>It is the first child of the body rather than pinned above it, because
+     * {@link ModalSheet} has exactly one scroll and that is where a caller's content
+     * goes. The difference is that the bar leaves with the content once the sheet has
+     * been scrolled, which no amount of arrangement inside one scroll can prevent.
+     */
+    private View grip() {
+        LinearLayout strip = new LinearLayout(activity);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        // .grip { height: 22px; align-items: center; justify-content: center }. No
+        // band behind it: a full-width translucent fill across the top edge reads as
+        // a header, which is the thing this screen just deleted.
+        strip.setGravity(Gravity.CENTER);
+        strip.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, ModalSheet.dp(activity, 22)));
+
+        View bar = new View(activity);
+        bar.setBackgroundColor(GRIP_BAR);
+        strip.addView(bar, new LinearLayout.LayoutParams(
+                ModalSheet.dp(activity, 38), ModalSheet.dp(activity, 4)));
+
+        strip.setContentDescription(activity.getString(R.string.settings_close));
+        strip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dismiss();
+            }
+        });
+        return strip;
+    }
+
+    // ------------------------------------------------------------------- widgets
+
+    /**
+     * One switch row.
+     *
+     * <p>The row's shape is {@link ModalSheet#option}'s, so a settings row cannot
+     * drift from the three other screens built on the same card. Only the state is
+     * ours, and only because the design's switch <i>is</i> the swatch: {@code .opt .sw}
+     * is a tile with a dot on it, not a track with a thumb, so there is no separate
+     * widget to put state on.
+     *
+     * <p>A tap repaints this row rather than rebuilding the screen. A full re-open
+     * showed the stored value too, but it threw the scroll position and the dialog
+     * with it, and a user comparing two toggles would lose their place each time.
+     *
+     * <p>Repainted from what was <b>stored</b>, not from the value the tap computed:
+     * reading back is the only way the swatch can disagree with the pref, and the
+     * pref is the truth everything else reads.
+     */
+    private View toggle(int titleRes, int subRes, final String key) {
+        // Built first, attached second: the listener needs the row it repaints, and a
+        // row cannot be named inside the expression that creates it.
+        final LinearLayout row = ModalSheet.option(activity,
+                activity.getString(titleRes), activity.getString(subRes),
+                isTrue(key, DEFAULT_ON), false, null);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // apply() commits the in-memory map before it returns, so the read
+                // below is the value just written and not the one that was there.
+                prefs().edit().putBoolean(key, !isTrue(key, DEFAULT_ON)).apply();
+                repaint(row, isTrue(key, DEFAULT_ON));
+            }
+        });
+        announce(row, isTrue(key, DEFAULT_ON));
+        return row;
+    }
+
+    /**
+     * Move the row's own dot, and nothing else.
+     *
+     * <p>The swatch is the row's first child and the dot is that child's first child,
+     * and the dot is the only thing in the row that carries state -- which is why
+     * this is two {@code getChildAt}s and not a rebuild of the row.
+     */
+    private void repaint(LinearLayout row, boolean on) {
+        View dot = swatchOf(row);
+        if (dot == null) return;
+        Drawable d = dot.getBackground();
+        if (d instanceof GradientDrawable) {
+            // Transparent rather than a dimmed accent, because that is exactly what
+            // ModalSheet draws for "off" when the row is built; anything else and the
+            // same stored value is drawn two different ways.
+            ((GradientDrawable) d).setColor(on ? ModalSheet.ACCENT : Color.TRANSPARENT);
+        }
+        announce(row, on);
+    }
+
+    /**
+     * The dot inside the swatch at a row's leading edge, or null.
+     *
+     * <p>Guarded rather than cast blind: a swatch drawn without a dot would otherwise
+     * take this whole screen down on a tap, which is a worse outcome than one row
+     * that quietly loses its badge.
+     */
+    private static View swatchOf(View row) {
+        if (!(row instanceof ViewGroup)) return null;
+        View swatch = ((ViewGroup) row).getChildAt(0);
+        if (swatch == null) return null;
+        if (!(swatch instanceof ViewGroup)) return null;
+        return ((ViewGroup) swatch).getChildAt(0);
+    }
+
+    /**
+     * Say the state out loud, because an accent dot is not something anyone can hear.
+     *
+     * <p>API 30 gave views a state channel, and the row carries On or Off there, so a
+     * screen reader reads the title and the subtitle as themselves and the state as
+     * the state. Below 30 there is no such channel, so the swatch -- the tile, which
+     * is the thing that changed -- describes itself instead, which is what this screen
+     * did before the state description existed.
+     */
+    private void announce(View row, boolean on) {
+        String state = activity.getString(
+                on ? R.string.settings_state_on : R.string.settings_state_off);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            row.setStateDescription(state);
+        } else if (row instanceof ViewGroup) {
+            View swatch = ((ViewGroup) row).getChildAt(0);
+            if (swatch != null) swatch.setContentDescription(state);
+        }
     }
 
     // -------------------------------------------------------------- persistence
@@ -348,30 +380,6 @@ final class SettingsSheet {
             return prefs().getBoolean(key, fallback);
         } catch (Exception e) {
             return fallback;
-        }
-    }
-
-    /**
-     * A dialog rather than a view added to the studio's own root.
-     *
-     * <p>A Dialog brings its own window, so the settings screen does not have to know
-     * what the studio's view tree looks like, cannot be laid out underneath the
-     * sheet, and cannot leave a half-attached view behind if the activity is
-     * recreated. It also means nothing here has to be added to -- or removed from --
-     * MainActivity.
-     */
-    private void present() {
-        android.app.Dialog d = new android.app.Dialog(activity,
-                android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
-        d.setContentView(build());
-        dialog = d;
-        d.show();
-    }
-
-    private void hide() {
-        if (dialog != null) {
-            dialog.dismiss();
-            dialog = null;
         }
     }
 }

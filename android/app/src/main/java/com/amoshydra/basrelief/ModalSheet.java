@@ -59,11 +59,27 @@ final class ModalSheet {
     private final LinearLayout footer;
     private Dialog dialog;
 
-    private ModalSheet(Activity activity, float maxHeightFraction) {
+    /**
+     * A modal on the standard scrim: {@code .scrim} at {@code rgba(0,0,0,.62)}, which
+     * is what the mockup draws behind three of its four modals.
+     */
+    ModalSheet(Activity activity, float maxHeightFraction) {
+        this(activity, maxHeightFraction, SCRIM);
+    }
+
+    /**
+     * A modal on a chosen scrim.
+     *
+     * @param scrim the colour behind the card. One screen in the design is drawn on a
+     *     lighter one — the depth panel is a form, and .62 over a photograph is
+     *     enough to make it hard to read — so this is a parameter rather than a
+     *     constant, but only because the mockup says so.
+     */
+    ModalSheet(Activity activity, float maxHeightFraction, int scrim) {
         this.maxHeightFraction = maxHeightFraction;
 
-        FrameLayout scrim = new FrameLayout(activity);
-        scrim.setBackgroundColor(SCRIM);
+        FrameLayout scrimView = new FrameLayout(activity);
+        scrimView.setBackgroundColor(scrim);
 
         card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -88,11 +104,11 @@ final class ModalSheet {
         footer = new LinearLayout(activity);
         footer.setOrientation(LinearLayout.HORIZONTAL);
 
-        scrim.addView(card, new FrameLayout.LayoutParams(
+        scrimView.addView(card, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
 
-        root = scrim;
+        root = scrimView;
     }
 
     private final FrameLayout root;

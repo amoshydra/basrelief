@@ -96,6 +96,7 @@
     <!-- Says where to go rather than blaming the device: the picker is the only
          route, so if the system will not open it the user has to do this by hand. -->
     <string name="applied_to_home">Applied to the home screen</string>
+    <string name="applied_to_both">Home and lock · open the sheet to adjust each</string>
     <string name="applied_to_lock">Applied to the home and lock screens</string>
     <string name="apply_manual_hint">Open System Settings › Wallpaper to set the live wallpaper</string>
 
@@ -262,6 +263,10 @@
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
     <string name="settings_licence">MIT</string>
+    <!-- The sheet's grip. It has no label on screen, so a screen reader is told
+         what it is; "Done" would be a lie, because the bar closes the sheet
+         rather than committing anything. -->
+    <string name="settings_close">Close settings</string>
     <!-- Spoken state of a settings row. The swatch itself is a coloured dot, which
          no screen reader can interpret, so the state has to be named. -->
     <string name="settings_state_on">On</string>
@@ -292,6 +297,10 @@
     <string name="depth_model_gone">%1$s is gone — using %2$s</string>
 
     <string name="depth_model">Model</string>
+    <!-- The group heading, and the name on the slider's own label column. Two
+         words, because the mockup draws both and only one of them is a caption:
+         RESOLUTION heads the group, OUTPUT names the control in it. -->
+    <string name="depth_resolution_caption">Resolution</string>
     <string name="depth_resolution">Output</string>
     <string name="depth_resolution_value">%1$d×%1$d</string>
     <!-- Glyph buttons, like the add-photo one: a word here would be longer than

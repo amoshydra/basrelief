@@ -375,6 +375,56 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float panX = 0f, panY = 0f;
     private volatile float zoom = 1f;
     private float surfaceW, surfaceH;
+
+    /**
+     * Ask for one still frame, for the lock screen on a platform with no second engine.
+     *
+     * <p>A one-shot, consumed by the next drawn frame. It is a field rather than a
+     * callback parameter because the request comes from the UI thread and the capture
+     * has to happen on the GL thread before the next swap — the framebuffer's contents
+     * are undefined afterwards.
+     */
+    private volatile boolean wantLockFrame;
+
+    /**
+     * Request a still frame, published to the lock screen off the GL thread.
+     *
+     * <p>A no-op where the platform runs a second live engine, because there the lock
+     * screen is not this app's to draw. Called from the UI thread; the volatile write
+     * is the whole of the cross-thread work.
+     *
+     * <p>The caller must then ask the GLSurfaceView for a frame. The renderer has no
+     * reference to it and deliberately does not acquire one — the view owns the EGL
+     * lifecycle, and a renderer that could request its own draw would have a second
+     * opinion about when a frame is due.
+     */
+    void captureLockFrame() {
+        if (!StaticLockFrame.isNeeded()) return;
+        wantLockFrame = true;
+    }
+
+    /**
+     * The capture, at the only moment it can happen.
+     *
+     * <p>After the draw and before returning: the default framebuffer still holds what
+     * was just drawn until {@code eglSwapBuffers} recycles it. The publish is handed to
+     * the Io executor because {@code setBitmap} is a binder call plus file I/O and a
+     * 1440x3120 frame on the main thread is an ANR.
+     */
+    private void captureLockFrameIfWanted() {
+        if (!wantLockFrame) return;
+        wantLockFrame = false;
+        final Bitmap frame = StaticLockFrame.capture((int) surfaceW, (int) surfaceH);
+        if (frame == null) return;
+        final android.content.Context ctx = context;
+        Io.run(new java.util.concurrent.Callable<Void>() {
+            @Override
+            public Void call() {
+                StaticLockFrame.publish(ctx, frame);
+                return null;
+            }
+        });
+    }
     private volatile float motion = 1f;
     private volatile float depth = DEFAULT_DEPTH / 100f; // 0..1 fraction of maxZScale
 
@@ -1046,6 +1096,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, width, height);
         surfaceW = width;
         surfaceH = height;
+        // A resize invalidates a request made against the old dimensions, so drop it
+        // rather than capture at a size the framebuffer no longer has.
+        wantLockFrame = false;
         // Now that a bound exists, apply it: a pan stored on a large screen and
         // restored on a small one must not be allowed to push the relief
         // off-screen. Safe to call from the GL thread — panX/panY are only
@@ -1099,6 +1152,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount);
 
         if (showOrbitMarker) drawOrbitMarker(f);
+
+        // Last thing in the frame, and deliberately so: the readback needs the pixels
+        // that were just drawn, and it stops being possible once the buffer swaps.
+        captureLockFrameIfWanted();
     }
 
     private void drawOrbitMarker(CameraModel.Frame f) {

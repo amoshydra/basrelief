@@ -2565,6 +2565,38 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The index says the photo is now on both screens, so the switch can exist.
+     *
+     * <p>The segment is built with the rest of the sheet and there is no
+     * {@code buildSheet()} to re-run, so it still appears next time the studio opens
+     * -- which is straight after the system picker this hands you back from. The toast
+     * is what tells you in the meantime, and it names the outcome rather than saying
+     * "done", because the system dialog may bind one screen and not the other and
+     * this app cannot observe which.
+     */
+    void onAppliedToBoth() {
+        Toast.makeText(this, R.string.applied_to_both, Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * The photo was chosen for the lock screen on a platform with no live lock engine.
+     *
+     * <p>So the lock screen gets the frame it is about to be sent, captured from the
+     * render currently on screen. The chooser already promises this — "the lock screen
+     * keeps a still frame" — and until now nothing put one there, so the sentence
+     * described something that did not happen.
+     *
+     * <p>Asks the GLSurfaceView for a frame because the capture has to happen on the GL
+     * thread, after a draw and before the buffer is recycled. The renderer holds the
+     * flag; the view owns when a frame happens.
+     */
+    void onLockSurfaceChosen() {
+        if (!StaticLockFrame.isNeeded()) return;
+        renderer.captureLockFrame();
+        glView.requestRender();
+    }
+
     /** Open the settings screen. Four groups, and nothing about a photo. */
     void openSettings() {
         SettingsSheet.show(this);

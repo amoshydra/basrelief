@@ -5,7 +5,6 @@ import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 
 import android.app.Activity;
-import android.app.Dialog;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -19,16 +18,14 @@ import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
-import android.view.Gravity;
+import android.text.TextWatcher;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.Window;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -38,8 +35,10 @@ import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The Depth AI flow: one screen to set up a ComfyUI run, and a run that
@@ -51,6 +50,26 @@ import java.util.List;
  * again. The endpoint is now an ordinary editable field with a Test connection
  * button beside it, and the source is always the photo on screen, because depth
  * is generated <i>for a photograph</i>.
+ *
+ * <p><b>The panel is a {@link ModalSheet}, and the mockup is the spec.</b> It used
+ * to be a bare {@code Dialog} at 92% of the screen width with no background of its
+ * own, so what shipped was the platform's light-themed rounded frame inset 4% each
+ * side — not the design's full-bleed card over a scrim — and every control in it
+ * was a stock {@code Button}, which on a light theme arrives with its own
+ * background and no text colour of ours. So: the shared modal, and
+ * {@link ModalSheet}'s widgets for every button, caption and field. The one thing
+ * this file still builds by hand is what the mockup draws here and nowhere else.
+ *
+ * <p><b>The server field is always visible, and that is a deliberate loss.</b> PRD
+ * R-PANEL5 asks for a link that says where the app is pointed — {@code •} host
+ * {@code Change} — so nobody has to remember which box they typed, and this panel
+ * used to do exactly that, hiding the field whenever an address was stored. The
+ * mockup draws a full-width field with the stored address as its value and a Test
+ * connection row under it, and the mockup wins: an address you cannot see is an
+ * address you cannot check, and "Change" is one more step between a wrong guess
+ * and a working server. So there is no dot, no address line and no status line
+ * beside the field any more — one note under the button is where the panel says
+ * anything at all. <b>If you are here to restore R-PANEL5, read this first.</b>
  *
  * <p><b>Setup is one screen</b> — server, model, resolution — because three
  * screens for one decision is three chances to change your mind.
@@ -115,6 +134,16 @@ public final class DepthGenDialog {
     private static final String KEY_PENDING = "comfy_pending_run";
 
     private static final String TAG = "Basrelief";
+
+    /** {@code .modal{max-height:88%}}. */
+    private static final float MAX_HEIGHT = 0.88f;
+    /**
+     * The depth screen's own scrim, {@code rgba(0,0,0,.55)} — lighter than the
+     * {@link ModalSheet#SCRIM} the other modals use, and a difference in the design
+     * rather than an accident: this is a form, and a heavier scrim over a
+     * photograph makes it harder to read without making it more modal.
+     */
+    private static final int SCRIM_DEPTH = 0x8C000000;
 
     /** Output sizes offered. Pinned to the mockup's single row of nudges. */
     private static final int[] RESOLUTIONS = {256, 512, 768, 1024, 1536, 2048};
@@ -246,18 +275,44 @@ public final class DepthGenDialog {
      * The currently open panel, if any.
      *
      * <p>Not a View reference: the panel's own runnable, so the worker's
-     * completion can reach the UI thread through one hop. Held weakly in spirit
-     * only — it is nulled in {@code onDismiss}, which is the moment the panel
-     * stops being able to receive anything.
+     * completion can reach the UI thread through one hop.
+     *
+     * <p><b>Weak, and that is the price of the shared modal.</b> The panel used to
+     * null this field from its own {@code onDismiss}, which was sound while the
+     * panel owned its {@code Dialog}. {@link ModalSheet} owns the window and
+     * exposes no dismissal hook, so nothing here can null this field when the user
+     * backs out of the panel — and a static strong reference to a dismissed panel
+     * pins its Activity for the life of the process, for a window nobody can see.
+     * So it is a {@link WeakReference}, the same reason {@link #host} is one. The
+     * studio still holds its panel strongly for as long as it is alive, so a live
+     * panel is still found; a dismissed one stops being one.
      */
-    private static volatile DepthGenDialog openPanel;
+    private static volatile WeakReference<DepthGenDialog> openPanel;
+
+    /** The open panel, or null. See {@link #openPanel} for why it is weak. */
+    private static DepthGenDialog openPanel() {
+        WeakReference<DepthGenDialog> ref = openPanel;
+        return ref == null ? null : ref.get();
+    }
 
     // --------------------------------------------------------------- instance
 
     private final Activity activity;
     private final Callback callback;
-    private final Dialog dialog;
+    private final ModalSheet sheet;
     private final Handler ui = new Handler(Looper.getMainLooper());
+
+    /**
+     * The studio, for {@link BasreliefSlider}.
+     *
+     * <p>That control is built by {@code MainActivity.dp} and resolves its own
+     * label, so it asks for the studio rather than an {@code Activity} — and the
+     * manifest declares exactly one activity, so this is the studio on every path
+     * that can reach here. Checked rather than cast blind all the same: a host that
+     * is not the studio gets a panel with the stored resolution and no control to
+     * change it, which is a gap, rather than a crash on the way in.
+     */
+    private final MainActivity studio;
 
     /**
      * The photo this panel is generating for.
@@ -273,43 +328,50 @@ public final class DepthGenDialog {
     private File targetImage;
 
     // The one screen. Three blocks, always all present, so changing a value
-    // never navigates and never discards what was typed elsewhere.
+    // never navigates and never discards what was typed elsewhere. Only the
+    // widgets something else has to reach are fields: the rest are built and
+    // added in one method, and a field nothing reads is a field nobody maintains.
     private LinearLayout setupBlock;
     private LinearLayout runBlock;
     private LinearLayout outcomeBlock;
 
-    private TextView serverDot;
-    private TextView serverAddress;
-    private TextView serverHint;
-    private Button serverChangeBtn;
     private EditText hostInput;
-    private Button testBtn;
-    private TextView serverStatus;
+    private TextView serverNote;
 
     private LinearLayout modelList;
     private TextView modelEmpty;
 
-    private TextView resValue;
     private int resolution;
 
+    /** The footer. Hidden while a run is up, and greyed until a model is known. */
     private Button generateBtn;
-    private Button cancelBtn;
 
     private TextView runStatus;
     private TextView runPercent;
-    private ProgressBar runProgress;
-    private Button runHideBtn;
 
     private TextView outcomeText;
     private TextView outcomeSubject;
-    private Button outcomeRetryBtn;
-    private Button outcomeServerBtn;
 
     private String comfyBase;
     private String savedModel;
     private final List<String> nodes = new ArrayList<String>();
     private final List<String> displayNames = new ArrayList<String>();
     private boolean modelsFetched;
+
+    /**
+     * The selection dot of each model's row, keyed by node name.
+     *
+     * <p>Selection used to be a {@code ◉}/{@code ○} glyph and {@link #selectModel}
+     * walked the list's children by index, reading a tag off the name — so the
+     * shape of a row was load-bearing, and adding the "saved model is gone" note to
+     * the same container was one more thing the walk had to know to skip. The dot
+     * is now either visible or not, and this is a map: selecting a model is a
+     * lookup and a visibility flip, and the rows know nothing about it.
+     */
+    private final Map<String, View> modelDots = new HashMap<String, View>();
+
+    /** The node a run would be sent to. Written when the rows are built or tapped. */
+    private String chosenModel;
 
     /**
      * The run's progress socket.
@@ -409,7 +471,8 @@ public final class DepthGenDialog {
     public DepthGenDialog(Activity activity, Callback callback) {
         this.activity = activity;
         this.callback = callback;
-        this.dialog = build();
+        this.studio = activity instanceof MainActivity ? (MainActivity) activity : null;
+        this.sheet = build();
         // Registered here rather than in show(), so a run that finishes while the
         // panel is closed — collapsed sheet, backgrounded app — still reaches the
         // studio and reloads the render. see {@link #finishApplied}.
@@ -427,9 +490,9 @@ public final class DepthGenDialog {
     public void show() {
         // Captured here, once, so completion cannot attach to a different photo.
         captureSubject();
-        openPanel = this;
+        openPanel = new WeakReference<DepthGenDialog>(this);
         render();
-        dialog.show();
+        sheet.show(activity);
     }
 
     /** Whether a generation is in flight, wherever the user is in the app. */
@@ -558,64 +621,51 @@ public final class DepthGenDialog {
 
     // --------------------------------------------------------------- build
 
-    private Dialog build() {
+    private ModalSheet build() {
         final SharedPreferences prefs =
                 activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE);
         comfyBase = prefs.getString(KEY_HOST, "");
         savedModel = prefs.getString(KEY_MODEL, null);
         resolution = snapResolution(prefs.getInt(KEY_RES, DEFAULT_RESOLUTION));
 
-        ScrollView scroll = new ScrollView(activity);
         LinearLayout root = new LinearLayout(activity);
         root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(18);
-        root.setPadding(pad, pad, pad, dp(24));
-        scroll.addView(root);
-
-        TextView title = text(R.string.depth_title, 16);
-        root.addView(title);
-        TextView sub = text(R.string.depth_panel_subtitle, 13);
-        sub.setTextColor(0xFF8A9199);
-        LinearLayout.LayoutParams subLp = lp();
-        subLp.bottomMargin = dp(16);
-        sub.setLayoutParams(subLp);
-        root.addView(sub);
-
-        root.addView(buildSetup(prefs));
+        addRow(root, ModalSheet.title(activity, activity.getString(R.string.depth_title)));
+        addRow(root, ModalSheet.subtitle(activity,
+                activity.getString(R.string.depth_panel_subtitle)));
+        addRow(root, buildSetup());
         root.addView(buildOutcome());
         root.addView(buildRun());
 
-        Dialog d = new Dialog(activity);
-        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        d.setContentView(scroll);
-        // The panel is a bottom sheet over the render, which is the product: the
-        // mockup draws it as a scrim over a peeked sheet, not a centred dialog.
-        Window w = d.getWindow();
-        if (w != null) {
-            w.setLayout((int) (activity.getResources().getDisplayMetrics().widthPixels * 0.92),
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            w.setGravity(Gravity.BOTTOM);
-        }
-        d.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+        // The mockup's .btnrow: Cancel ghost beside Generate primary. They live in
+        // the modal's footer rather than at the end of the body, which is
+        // ModalSheet's one departure from the mockup and a deliberate one — the body
+        // is this long, and a footer that scrolls away is a Generate button the user
+        // cannot find on a short screen.
+        Button cancel = ModalSheet.button(activity,
+                activity.getString(R.string.action_cancel), false, true);
+        cancel.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onDismiss(android.content.DialogInterface di) {
-                // Save whatever was typed, on the way out. R-PANEL6: closing and
-                // reopening the panel preserves the address. The old code wrote
-                // the endpoint only from the connection test, so typing one and
-                // closing threw it away — and because the dialog instance is
-                // reused, the typed text stayed on screen looking saved right up
-                // until the activity was recreated, which made plain data loss
-                // look intermittent.
-                persistTyped();
-                // The panel stops receiving; the run does not stop with it.
-                if (openPanel == DepthGenDialog.this) openPanel = null;
-                stopWs();
+            public void onClick(View v) {
+                sheet.dismiss();
             }
         });
-        return d;
+        generateBtn = ModalSheet.button(activity, activity.getString(R.string.depth_generate),
+                true, false);
+        generateBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startRun();
+            }
+        });
+
+        ModalSheet modal = new ModalSheet(activity, MAX_HEIGHT, SCRIM_DEPTH);
+        modal.body(root);
+        modal.footerRow(cancel, generateBtn);
+        return modal;
     }
 
-    private View buildSetup(SharedPreferences prefs) {
+    private View buildSetup() {
         setupBlock = new LinearLayout(activity);
         setupBlock.setOrientation(LinearLayout.VERTICAL);
 
@@ -624,132 +674,116 @@ public final class DepthGenDialog {
         // The endpoint is enterable, not merely discovered. "Discovered
         // automatically" is a dead end the first time the server is on another
         // machine, which is the normal case: discovery only ever worked on this
-        // LAN, and the server is usually elsewhere.
-        setupBlock.addView(caption(R.string.depth_server));
+        // LAN, and the server is usually elsewhere. See the class javadoc for why
+        // this field is shown even when an address is already stored.
+        addRow(setupBlock, ModalSheet.caption(activity,
+                activity.getString(R.string.depth_server), true));
 
-        LinearLayout serverRow = row();
-        serverDot = new TextView(activity);
-        serverDot.setText("●");
-        serverDot.setTextSize(13);
-        serverDot.setLayoutParams(new LinearLayout.LayoutParams(dp(18), dp(20)));
-        serverRow.addView(serverDot);
-
-        serverAddress = new TextView(activity);
-        serverAddress.setTextSize(14);
-        serverAddress.setSingleLine(true);
-        serverAddress.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        serverRow.addView(serverAddress, weight());
-
-        serverChangeBtn = smallButton(R.string.depth_server_change, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                revealHostField(true);
-            }
-        });
-        serverRow.addView(serverChangeBtn);
-        setupBlock.addView(serverRow);
-
-        hostInput = new EditText(activity);
-        hostInput.setText(comfyBase);
-        hostInput.setHint(R.string.depth_server_hint);
-        hostInput.setTextSize(14);
+        hostInput = ModalSheet.field(activity, comfyBase,
+                activity.getString(R.string.depth_server_hint));
         // A hostname, not a number: the default soft keyboard offers digits and
         // a field the user cannot paste an address into is a field they will
         // mistype.
         hostInput.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-        hostInput.setSingleLine(true);
-        hostInput.setVisibility(View.GONE);
-        LinearLayout.LayoutParams hostLp = lp();
-        hostLp.topMargin = dp(8);
-        hostInput.setLayoutParams(hostLp);
-        setupBlock.addView(hostInput);
+        // Written as it is typed, not on the way out. R-PANEL6 wants a typed
+        // address to survive the panel being closed, and the panel no longer owns
+        // its window — ModalSheet dismisses it, on the back gesture as well as on
+        // Cancel — so there is no onDismiss left to save it from. Typing it is the
+        // only moment this class can be sure of.
+        hostInput.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
 
-        serverStatus = text(R.string.depth_server_untested, 13);
-        serverStatus.setTextColor(0xFF8A9199);
-        serverStatus.setVisibility(View.GONE);
-        // Copyable: a ComfyUI refusal can be a stack trace, and a user reporting
-        // a connection problem needs to be able to paste it rather than
-        // photograph it. Same reason the old status line was selectable.
-        serverStatus.setTextIsSelectable(true);
-        LinearLayout.LayoutParams statusLp = lp();
-        statusLp.topMargin = dp(8);
-        serverStatus.setLayoutParams(statusLp);
-        setupBlock.addView(serverStatus);
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
 
-        LinearLayout probeRow = row();
-        probeRow.setLayoutParams(topMargin(dp(10)));
-        testBtn = smallButton(R.string.depth_test_connection, new View.OnClickListener() {
+            @Override
+            public void afterTextChanged(Editable s) {
+                persistTyped();
+            }
+        });
+        addRow(setupBlock, hostInput);
+
+        Button test = ModalSheet.button(activity,
+                activity.getString(R.string.depth_test_connection), false, false);
+        test.setLayoutParams(topMargin(dp(9)));
+        test.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 testConnection();
             }
         });
-        probeRow.addView(testBtn);
-        setupBlock.addView(probeRow);
+        setupBlock.addView(test);
+
+        // The one line this panel reports on: the mockup's `.note` under the button.
+        // It replaces the status line that used to sit beside the field, and it is
+        // GONE rather than blank when there is nothing to say — an empty note is an
+        // ornament that teaches the eye to stop reading the line.
+        serverNote = ModalSheet.note(activity, "");
+        serverNote.setVisibility(View.GONE);
+        // Copyable: a ComfyUI refusal can be a stack trace, and a user reporting
+        // a connection problem needs to be able to paste it rather than
+        // photograph it. Same reason the old status line was selectable.
+        serverNote.setTextIsSelectable(true);
+        addRow(setupBlock, serverNote);
 
         // --- model ---
-        setupBlock.addView(caption(R.string.depth_model));
+        addRow(setupBlock, ModalSheet.caption(activity,
+                activity.getString(R.string.depth_model), false));
         modelEmpty = text(R.string.depth_models_untested, 13);
-        modelEmpty.setTextColor(0xFF8A9199);
-        setupBlock.addView(modelEmpty);
+        modelEmpty.setTextColor(ModalSheet.DIM);
+        addRow(setupBlock, modelEmpty);
         modelList = new LinearLayout(activity);
         modelList.setOrientation(LinearLayout.VERTICAL);
-        setupBlock.addView(modelList);
+        addRow(setupBlock, modelList);
 
         // --- resolution ---
         //
-        // No track and no tappable row. Every control in this app gets explicit
-        // - and +, because half the adjustments are signed and a one-sided
-        // control cannot reach half the range; a row that silently increments on
-        // tap is a control that changes a value the user did not aim at.
-        setupBlock.addView(caption(R.string.depth_resolution));
-        LinearLayout resRow = row();
-        TextView resLabel = text(R.string.depth_resolution, 14);
-        resRow.addView(resLabel);
-        resRow.addView(new View(activity), weight());
-        resValue = new TextView(activity);
-        resValue.setTextSize(14);
-        resValue.setTextColor(0xFF7FD1C1);
-        resRow.addView(resValue);
-        setupBlock.addView(resRow);
-
-        LinearLayout resBtns = row();
-        resBtns.setLayoutParams(topMargin(dp(8)));
-        resBtns.addView(nudge(R.string.depth_nudge_down, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                nudgeResolution(-1);
-            }
-        }));
-        resBtns.addView(new View(activity), weight());
-        resBtns.addView(nudge(R.string.depth_nudge_up, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                nudgeResolution(1);
-            }
-        }));
-        setupBlock.addView(resBtns);
-
-        // --- actions ---
-        LinearLayout actions = row();
-        actions.setLayoutParams(topMargin(dp(18)));
-        cancelBtn = smallButton(R.string.action_cancel, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                dialog.dismiss();
-            }
-        });
-        actions.addView(cancelBtn);
-        generateBtn = smallButton(R.string.depth_generate, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startRun();
-            }
-        });
-        actions.addView(generateBtn);
-        setupBlock.addView(actions);
+        // One row: the label, a 34dp track with the size printed on the fill, and
+        // the pair of nudges. It used to be a label line, a value and two buttons at
+        // the extremes — about 130dp for a control the design draws in 34. The
+        // value is an index into RESOLUTIONS rather than a pixel count, because a
+        // slider over 256..2048 lands on sizes the server is never asked for.
+        if (studio != null) {
+            addRow(setupBlock, ModalSheet.caption(activity,
+                    activity.getString(R.string.depth_resolution_caption), false));
+            setupBlock.addView(buildResolutionSlider().view());
+        }
 
         return setupBlock;
+    }
+
+    /**
+     * The mockup's {@code slider('Output', …, '1024×1024')}, on the same control the
+     * studio's own sliders use.
+     *
+     * <p>The label is {@code depth_resolution} — "Output" — passed as the row's
+     * <em>name</em>. {@link BasreliefSlider} resolves a key through its own switch
+     * and falls back to drawing the key as itself, and this is the one caller that
+     * uses that fallback deliberately: resolution is not one of the studio's
+     * adjustments and has no key there, while the caption above the row already
+     * says RESOLUTION and the row still needs a name of its own, exactly as the
+     * mockup draws it.
+     */
+    private BasreliefSlider buildResolutionSlider() {
+        return BasreliefSlider.create(studio,
+                activity.getString(R.string.depth_resolution),
+                indexOfResolution(resolution), 0, RESOLUTIONS.length - 1,
+                new BasreliefSlider.ValueFormatter() {
+                    @Override
+                    public String format(int index) {
+                        return activity.getString(R.string.depth_resolution_value,
+                                RESOLUTIONS[index]);
+                    }
+                },
+                new BasreliefSlider.OnChanged() {
+                    @Override
+                    public void onChanged(int index) {
+                        setResolution(RESOLUTIONS[index]);
+                    }
+                });
     }
 
     /**
@@ -771,14 +805,20 @@ public final class DepthGenDialog {
         outcomeBlock.addView(outcomeText);
 
         outcomeSubject = text("", 12);
-        outcomeSubject.setTextColor(0xFF8A9199);
+        outcomeSubject.setTextColor(ModalSheet.DIM);
         outcomeSubject.setVisibility(View.GONE);
         outcomeSubject.setLayoutParams(topMargin(dp(4)));
         outcomeBlock.addView(outcomeSubject);
 
-        LinearLayout actions = row();
-        actions.setLayoutParams(topMargin(dp(10)));
-        outcomeRetryBtn = smallButton(R.string.fix_try_again, new View.OnClickListener() {
+        // One action, not two, and it is the design's word: the mockup's failed
+        // state offers "Try again" and "Choose a map", and the second of those
+        // belongs to the sheet — a map chosen from the gallery is not a generation.
+        // "Edit server" is gone because the server field is always on screen, so
+        // there is nothing left for it to reveal.
+        Button retry = ModalSheet.button(activity,
+                activity.getString(R.string.fix_try_again), false, false);
+        retry.setLayoutParams(topMargin(dp(9)));
+        retry.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // Retry means retry: the same host, model and resolution, with no
@@ -786,15 +826,7 @@ public final class DepthGenDialog {
                 startRun();
             }
         });
-        actions.addView(outcomeRetryBtn);
-        outcomeServerBtn = smallButton(R.string.depth_edit_server, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                revealHostField(true);
-            }
-        });
-        actions.addView(outcomeServerBtn);
-        outcomeBlock.addView(actions);
+        outcomeBlock.addView(retry);
 
         return outcomeBlock;
     }
@@ -806,6 +838,13 @@ public final class DepthGenDialog {
      * to change it could not. The one button here is not a control — it is the
      * way out, and it is the same thing as the back gesture, so hiding it would
      * only trap the user.
+     *
+     * <p><b>No progress bar.</b> There was one, and the design has none: the
+     * percentage this panel was drawing twice is the same number the studio's fix
+     * line carries while the sheet is open and the pill carries when it is
+     * collapsed (R-BG2), and a third copy of it on a bar is a fourth place for it
+     * to be wrong. What is left is the two lines that say something the bar could
+     * not: which step of the job this is, and how far along it is.
      */
     private View buildRun() {
         runBlock = new LinearLayout(activity);
@@ -814,30 +853,27 @@ public final class DepthGenDialog {
         runBlock.setLayoutParams(topMargin(dp(18)));
 
         runStatus = text(R.string.depth_phase_queued, 14);
+        runStatus.setTextColor(ModalSheet.INK);
         runBlock.addView(runStatus);
         runPercent = text("", 13);
-        runPercent.setTextColor(0xFF8A9199);
+        runPercent.setTextColor(ModalSheet.DIM);
         runPercent.setLayoutParams(topMargin(dp(4)));
         runBlock.addView(runPercent);
 
-        runProgress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
-        runProgress.setMax(100);
-        runProgress.setLayoutParams(topMargin(dp(10)));
-        runBlock.addView(runProgress);
-
-        runHideBtn = smallButton(R.string.fix_run_in_background, new View.OnClickListener() {
+        Button runInBackground = ModalSheet.button(activity,
+                activity.getString(R.string.fix_run_in_background), false, false);
+        runInBackground.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // Collapsing never cancels anything (R-S4). The sheet is a window,
                 // not a job: the run continues on the server and the pill carries
                 // the percentage (R-BG2).
                 askNotifyOnce();
-                dialog.dismiss();
+                sheet.dismiss();
             }
         });
-        LinearLayout.LayoutParams hideLp = topMargin(dp(14));
-        runHideBtn.setLayoutParams(hideLp);
-        runBlock.addView(runHideBtn);
+        runInBackground.setLayoutParams(topMargin(dp(9)));
+        runBlock.addView(runInBackground);
 
         return runBlock;
     }
@@ -854,26 +890,20 @@ public final class DepthGenDialog {
      */
     private void render() {
         boolean running = isRunning();
+        boolean failed = !running && lastResult() == Result.FAILED;
         setupBlock.setVisibility(running ? View.GONE : View.VISIBLE);
         runBlock.setVisibility(running ? View.VISIBLE : View.GONE);
-        outcomeBlock.setVisibility(!running && lastResult() == Result.FAILED
-                ? View.VISIBLE : View.GONE);
+        outcomeBlock.setVisibility(failed ? View.VISIBLE : View.GONE);
+        // Generate is the setup state's action. While a run is going the run block
+        // says what it is doing, and after one has failed the outcome block offers
+        // "Try again" by name — so in both of those states the footer's Generate is
+        // a second button for a decision the user has already been given a word for.
+        generateBtn.setVisibility(running || failed ? View.GONE : View.VISIBLE);
         if (running) renderRun();
         else renderSetup();
     }
 
     private void renderSetup() {
-        revealHostField(false);
-        serverAddress.setText(comfyBase.length() == 0
-                ? activity.getString(R.string.depth_server_hint)
-                : ComfyWorkflow.hostPort(comfyBase));
-        // The dot is the only test result there is. "Not tested" is grey rather
-        // than red, because an untested server is not a broken one.
-        serverDot.setTextColor(!modelsFetched ? 0xFF6C737B : 0xFF7FD1C1);
-        serverStatus.setText(modelsFetched
-                ? activity.getString(R.string.depth_models_found, nodes.size())
-                : activity.getString(R.string.depth_server_untested));
-        serverStatus.setVisibility(View.VISIBLE);
         modelEmpty.setVisibility(modelsFetched ? View.GONE : View.VISIBLE);
         if (modelsFetched) {
             // Both texts are set whenever the list is known, because the list can
@@ -883,11 +913,10 @@ public final class DepthGenDialog {
             modelEmpty.setText(nodes.isEmpty()
                     ? R.string.depth_models_none : R.string.depth_models_untested);
         }
-        resValue.setText(activity.getString(R.string.depth_resolution_value, resolution));
         // Generate needs a confirmed model. The list is the SERVER's and cannot
         // be known before it is reached (R-PANEL2), so there is no path to a run
         // that skipped the model choice.
-        generateBtn.setEnabled(modelsFetched && !nodes.isEmpty());
+        setUsable(generateBtn, modelsFetched && !nodes.isEmpty());
         if (lastResult() == Result.FAILED && failureCause.length() > 0) {
             outcomeText.setText(activity.getString(R.string.fix_no_answer) + "\n"
                     + activity.getString(R.string.depth_run_cause, failureCause));
@@ -904,40 +933,55 @@ public final class DepthGenDialog {
         int pct = progressPercent();
         runPercent.setText(pct >= 0
                 ? activity.getString(R.string.pill_generating, pct) : "");
-        runProgress.setProgress(pct < 0 ? 0 : pct);
     }
 
     /**
-     * Show or hide the address field.
+     * Dim a button and take its taps, without changing how it looks when it is live.
      *
-     * <p>Hidden by default because the panel opens with a stored address and the
-     * user should never have to re-type it (R-PANEL1 asks once, ever). Shown by
-     * Test connection when there is nothing stored, and by Change or Edit server
-     * otherwise.
+     * <p>{@code setEnabled(false)} alone would not do it: the platform dims a
+     * disabled control from the <em>disabled state of its background</em>, and
+     * {@link ModalSheet}'s plates are one {@code GradientDrawable} with no states,
+     * so Generate would go inert and stay looking pressable. This is the same 0.4
+     * {@link BasreliefSlider} uses for a row it has switched off.
      */
-    private void revealHostField(boolean explicit) {
-        boolean show;
-        if (explicit) {
-            show = true;
-        } else {
-            show = comfyBase == null || comfyBase.length() == 0;
-        }
-        hostInput.setVisibility(show ? View.VISIBLE : View.GONE);
-        serverChangeBtn.setVisibility(show ? View.GONE : View.VISIBLE);
-        if (show && hostInput.getText().length() == 0 && comfyBase != null) {
-            hostInput.setText(comfyBase);
-        }
+    private void setUsable(Button b, boolean usable) {
+        b.setEnabled(usable);
+        b.setAlpha(usable ? 1f : 0.4f);
+    }
+
+    /**
+     * Say something, in the one line under Test connection.
+     *
+     * <p>Replaces the status line this panel used to keep beside the server field.
+     * There is no dot and no "Not tested" any more: an untested server is not a
+     * broken one, so the field and the button beside it are the whole answer, and
+     * the note only speaks when something has actually happened.
+     */
+    private void say(int stringRes) {
+        serverNote.setText(stringRes);
+        serverNote.setVisibility(View.VISIBLE);
+    }
+
+    private void say(CharSequence s) {
+        serverNote.setText(s);
+        serverNote.setVisibility(View.VISIBLE);
+    }
+
+    private void sayNothing() {
+        serverNote.setText("");
+        serverNote.setVisibility(View.GONE);
     }
 
     // --------------------------------------------------------------- connection
 
     private void testConnection() {
-        // Same rule as startRun: the field only speaks when it is showing.
-        String typed = hostInput.getVisibility() == View.VISIBLE
-                ? hostInput.getText().toString().trim() : comfyBase;
-        if (typed == null || typed.length() == 0) {
-            serverStatus.setText(R.string.depth_endpoint_required);
-            revealHostField(true);
+        // The field is always on screen, so it always speaks. It used to be read
+        // only when it was visible, because an address was otherwise stored and
+        // hidden — and that is the rule that made a configured server unreachable
+        // from a panel opened on the common path.
+        String typed = hostInput.getText().toString().trim();
+        if (typed.length() == 0) {
+            say(R.string.depth_endpoint_required);
             return;
         }
         comfyBase = typed;
@@ -947,8 +991,7 @@ public final class DepthGenDialog {
         // means a probe against the wrong address has somewhere to come back to.
         activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
                 .edit().putString(KEY_HOST, comfyBase).apply();
-        serverStatus.setText(R.string.depth_testing);
-        serverStatus.setVisibility(View.VISIBLE);
+        say(R.string.depth_testing);
         // Cleared as well as marked unfetched. A list left in place beside
         // "Testing..." is a list the user could act on, so Generate would offer a
         // model from a server that is not answering.
@@ -984,6 +1027,10 @@ public final class DepthGenDialog {
                                 displayNames.add(ComfyWorkflow.friendlyName(n));
                             }
                             buildModelRows();
+                            // The note said "Testing connection…", which is no
+                            // longer true and would sit under the list it just
+                            // fetched. The rows are the report.
+                            sayNothing();
                             render();
                         }
                     });
@@ -994,13 +1041,17 @@ public final class DepthGenDialog {
                             modelsFetched = false;
                             nodes.clear();
                             displayNames.clear();
+                            // The rows go too. A list the server has just failed to
+                            // answer is a list of models from the server before it,
+                            // left on screen next to Generate.
+                            buildModelRows();
                             // Names the cause, and keeps the typed address where it
                             // was. R-PANEL6.
-                            serverStatus.setText(activity.getString(
-                                    R.string.depth_test_failed, describe(e)));
-                            // The field comes back on a failure, because a failed
-                            // probe is exactly when the user needs to edit it.
-                            revealHostField(true);
+                            say(activity.getString(R.string.depth_test_failed, describe(e)));
+                            // The field does not need revealing: a failed probe is
+                            // exactly when the user needs to edit it, and it is
+                            // never hidden in the first place.
+                            render();
                         }
                     });
                 }
@@ -1021,7 +1072,14 @@ public final class DepthGenDialog {
      */
     private void buildModelRows() {
         modelList.removeAllViews();
-        if (nodes.isEmpty()) return;
+        modelDots.clear();
+        if (nodes.isEmpty()) {
+            // Nothing to choose from, so nothing is chosen: a selection left over
+            // from the previous server would be a model the run would be sent to
+            // without the user ever seeing it offered.
+            chosenModel = null;
+            return;
+        }
         int chosen = 0;
         boolean savedGone = false;
         if (savedModel != null) {
@@ -1032,9 +1090,18 @@ public final class DepthGenDialog {
                 savedGone = true;
             }
         }
+        chosenModel = nodes.get(chosen);
         for (int i = 0; i < nodes.size(); i++) {
             final String node = nodes.get(i);
-            View row = modelRow(node, displayNames.get(i), i == chosen);
+            LinearLayout row = modelRow(node, displayNames.get(i), i == chosen);
+            // The selection dot is the swatch tile's own child. Taken once, here,
+            // and keyed by node name, because {@link ModalSheet#option} builds the
+            // row and does not hand it back — and because a row's shape should not
+            // be load-bearing for the next reader.
+            FrameLayout tile = (FrameLayout) row.getChildAt(0);
+            View dot = tile.getChildAt(0);
+            dot.setVisibility(i == chosen ? View.VISIBLE : View.GONE);
+            modelDots.put(node, dot);
             modelList.addView(row);
         }
         if (savedGone) {
@@ -1046,71 +1113,49 @@ public final class DepthGenDialog {
         }
     }
 
-    private View modelRow(String node, String friendly, boolean selected) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(10), 0, dp(10));
-
-        TextView mark = new TextView(activity);
-        mark.setText(selected ? "◉" : "○");
-        mark.setTextSize(15);
-        mark.setTextColor(selected ? 0xFF7FD1C1 : 0xFF6C737B);
-        mark.setLayoutParams(new LinearLayout.LayoutParams(dp(24),
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(mark);
-
-        TextView name = text(friendly, 14);
-        name.setTag(node);
-        row.addView(name);
-
-        // Whole row is the target, not just the text: a list of node names with
-        // 20dp hit targets is a list nobody taps correctly.
-        row.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                selectModel(node);
-            }
-        });
+    /**
+     * One model, as the mockup's {@code .opt}: a tile with a dot on it, the name it
+     * is known by, and the node the server calls it.
+     *
+     * <p>The whole row is the target, not just the name: a list of node names with
+     * 20dp hit targets is a list nobody taps correctly.
+     */
+    private LinearLayout modelRow(final String node, String friendly, boolean selected) {
+        LinearLayout row = ModalSheet.option(activity, friendly, node, selected, false,
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        selectModel(node);
+                    }
+                });
         return row;
     }
 
     private void selectModel(String node) {
-        for (int i = 0; i < modelList.getChildCount(); i++) {
-            View child = modelList.getChildAt(i);
-            if (!(child instanceof LinearLayout)) continue; // the "gone" note
-            LinearLayout row = (LinearLayout) child;
-            TextView mark = (TextView) row.getChildAt(0);
-            TextView name = (TextView) row.getChildAt(1);
-            boolean on = node.equals(name.getTag());
-            mark.setText(on ? "◉" : "○");
-            mark.setTextColor(on ? 0xFF7FD1C1 : 0xFF6C737B);
+        for (Map.Entry<String, View> e : modelDots.entrySet()) {
+            e.getValue().setVisibility(node.equals(e.getKey()) ? View.VISIBLE : View.GONE);
         }
+        chosenModel = node;
     }
 
     private String selectedModel() {
-        for (int i = 0; i < modelList.getChildCount(); i++) {
-            View child = modelList.getChildAt(i);
-            if (!(child instanceof LinearLayout)) continue;
-            LinearLayout row = (LinearLayout) child;
-            if (!"◉".contentEquals(((TextView) row.getChildAt(0)).getText())) continue;
-            return String.valueOf(((TextView) row.getChildAt(1)).getTag());
-        }
-        return null;
+        return chosenModel;
     }
 
     // --------------------------------------------------------------- resolution
 
-    private void nudgeResolution(int delta) {
-        int idx = indexOfResolution(resolution);
-        int next = idx + delta;
-        if (next < 0) next = 0;
-        if (next >= RESOLUTIONS.length) next = RESOLUTIONS.length - 1;
-        if (RESOLUTIONS[next] == resolution) return;
-        resolution = RESOLUTIONS[next];
+    /**
+     * The size the next run will ask for.
+     *
+     * <p>Written here rather than from the control, so the value that is stored and
+     * the value the row is showing are the same write: the slider repaints itself
+     * from the value it was given, and nothing here has to go and tell it.
+     */
+    private void setResolution(int value) {
+        if (value == resolution) return;
+        resolution = value;
         activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
-                .edit().putInt(KEY_RES, resolution).apply();
-        resValue.setText(activity.getString(R.string.depth_resolution_value, resolution));
+                .edit().putInt(KEY_RES, value).apply();
     }
 
     private static int indexOfResolution(int value) {
@@ -1171,6 +1216,10 @@ public final class DepthGenDialog {
 
     public void startRun() {
         if (isRunning()) return;
+        // Whatever the panel last said about the connection was said about a probe,
+        // and this is not that probe. Cleared before anything below can report, so
+        // the line cannot be about to be replaced by a different one.
+        sayNothing();
         // Deliberately NOT re-captured here. The panel's subject is fixed when the
         // panel opens, and Retry re-queues the run that just failed: re-reading
         // the selection at this point would aim a retry at whichever photo the
@@ -1180,19 +1229,15 @@ public final class DepthGenDialog {
         if (targetItemId == null || targetImage == null || !targetImage.exists()) {
             // No photo, or the bundled demo, which ships its own map and has no
             // file to generate from.
-            serverStatus.setText(R.string.depth_no_subject);
+            say(R.string.depth_no_subject);
             return;
         }
-        // Read the endpoint from the field when it is showing, and from the stored
-        // value when it is not. The field is hidden whenever an address is
-        // already known, so reading it unconditionally would return "" on the
-        // common path and refuse a run against a server the user has already
-        // configured — which is exactly what the old code got wrong.
-        String host = hostInput.getVisibility() == View.VISIBLE
-                ? hostInput.getText().toString().trim() : comfyBase;
-        if (host == null || host.length() == 0) {
-            serverStatus.setText(R.string.depth_endpoint_required);
-            revealHostField(true);
+        // The endpoint comes from the field, which is always on screen and is
+        // seeded with the stored address. A configured server is one tap from a
+        // run and a wrong one is one edit from being right.
+        String host = hostInput.getText().toString().trim();
+        if (host.length() == 0) {
+            say(R.string.depth_endpoint_required);
             return;
         }
         comfyBase = host;
@@ -1405,8 +1450,8 @@ public final class DepthGenDialog {
                 // The file is on disk already, so there is no state in which the
                 // run is over and this has not happened. Ordered before
                 // applyMap so nothing can observe APPLIED with a stale map.
-                DepthGenDialog panel = openPanel;
-                if (panel != null) panel.dialog.dismiss();
+                DepthGenDialog panel = openPanel();
+                if (panel != null) panel.sheet.dismiss();
                 applyMap(r.app, r.itemId, name);
                 lastMapName = name;
                 lastModel = r.model;
@@ -1479,7 +1524,7 @@ public final class DepthGenDialog {
                 result = Result.FAILED;
                 clearPending(r.app);
                 android.util.Log.w(TAG, "depth: failed, map unchanged: " + cause);
-                DepthGenDialog panel = openPanel;
+                DepthGenDialog panel = openPanel();
                 if (panel != null) panel.render();
                 notifyOutcome(r.app, false, label);
                 // The studio has to be told, or its pill keeps saying "Generating"
@@ -1606,7 +1651,7 @@ public final class DepthGenDialog {
      */
     static void setProgress(int pct) {
         progress = Math.max(0, Math.min(100, pct));
-        final DepthGenDialog panel = openPanel;
+        final DepthGenDialog panel = openPanel();
         if (panel != null) {
             UI.post(new Runnable() {
                 @Override
@@ -1629,7 +1674,7 @@ public final class DepthGenDialog {
         UI.post(new Runnable() {
             @Override
             public void run() {
-                DepthGenDialog panel = openPanel;
+                DepthGenDialog panel = openPanel();
                 if (panel != null && panel.runStatus != null) panel.runStatus.setText(s);
             }
         });
@@ -1757,56 +1802,24 @@ public final class DepthGenDialog {
         return t;
     }
 
-    /** The small uppercase group label, as in the sheet's own headings. */
-    private TextView caption(int stringRes) {
-        TextView t = text(stringRes, 11);
-        t.setAllCaps(true);
-        t.setLetterSpacing(0.09f);
-        t.setTextColor(0xFF8A9199);
-        t.setPadding(0, dp(18), 0, dp(6));
-        return t;
-    }
-
-    private LinearLayout row() {
-        LinearLayout l = new LinearLayout(activity);
-        l.setOrientation(LinearLayout.HORIZONTAL);
-        l.setGravity(Gravity.CENTER_VERTICAL);
-        return l;
-    }
-
-    private Button smallButton(int stringRes, View.OnClickListener onClick) {
-        Button b = new Button(activity);
-        b.setText(stringRes);
-        b.setTextSize(13);
-        b.setAllCaps(false);
-        b.setOnClickListener(onClick);
-        return b;
-    }
-
     /**
-     * A −/+ glyph button.
+     * Put a row in a column, as wide as the column.
      *
-     * <p>A fixed width rather than {@code setMinWidth}: minWidth is only a floor,
-     * so the button still sized itself from its own text and the glyph ended up
-     * narrower than the thumb target on a low-density screen.
+     * <p>{@code addView} with no {@code LayoutParams} of its own gives a child
+     * WRAP_CONTENT, and a column of WRAP_CONTENT children is a column that shrinks
+     * to the widest of them — so an {@code EditText} in one comes out as wide as the
+     * address in it rather than as wide as the card, and a centred note comes out
+     * centred inside its own width. Neither is what the mockup draws, and the second
+     * is invisible until the text is long enough to matter.
      */
-    private Button nudge(int glyphRes, View.OnClickListener onClick) {
-        Button b = smallButton(glyphRes, onClick);
-        b.setTextSize(17);
-        b.setPadding(0, 0, 0, 0);
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
-        return b;
+    private void addRow(LinearLayout column, View child) {
+        column.addView(child, lp());
     }
 
     private static LinearLayout.LayoutParams lp() {
         return new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-    }
-
-    private LinearLayout.LayoutParams weight() {
-        return new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
     }
 
     private LinearLayout.LayoutParams topMargin(int px) {

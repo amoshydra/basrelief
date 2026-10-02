@@ -83,7 +83,7 @@ final class ApplyChooser {
 
     // ------------------------------------------------------------------ build
 
-    private View build(final Surface initial) {
+    private View build(final java.util.Set<Surface> applied) {
         FrameLayout scrim = new FrameLayout(activity);
         scrim.setBackgroundColor(SCRIM);
 
@@ -112,32 +112,39 @@ final class ApplyChooser {
         sub.setPadding(0, dp(3), 0, dp(10));
         modal.addView(sub);
 
-        // One selection, two candidates. A pair of checkboxes would be the wrong
-        // control: the picker binds one component to one screen, and offering two
-        // independent choices implies both can be had at once.
-        final Surface[] chosen = {initial};
+        // TWO selections, not one.
+        //
+        // <p>This was single-select, on the reasoning that "the picker binds one
+        // component to one screen". True of the picker, and irrelevant here: the
+        // picker is asked once, and Android 15+ offers Home / Lock / Both. Requiring
+        // two separate applications to reach "both" made the whole per-surface feature
+        // undiscoverable -- the sheet's Home/Lock switch stays hidden until the photo
+        // is on both, and nothing anywhere said that getting there takes two goes
+        // through a system dialog this app cannot observe. Reported as "I don't
+        // understand home vs lock".
+        //
+        // <p>Both default to on, because both is what someone editing a photo's lock
+        // settings wants, and on the platform version where that is possible.
+        final java.util.Set<Surface> chosen =
+                new java.util.LinkedHashSet<Surface>(applied);
         final Option[] homeOpt = new Option[1];
         final Option[] lockOpt = new Option[1];
 
         homeOpt[0] = option(R.string.apply_home, R.string.apply_home_sub,
-                initial == Surface.HOME, new Runnable() {
+                chosen.contains(Surface.HOME), new Runnable() {
                     @Override
                     public void run() {
-                        chosen[0] = Surface.HOME;
-                        homeOpt[0].setSelected(true);
-                        lockOpt[0].setSelected(false);
+                        toggle(chosen, Surface.HOME, homeOpt[0], lockOpt[0], lockSupported);
                     }
                 });
         modal.addView(homeOpt[0].view);
 
         if (lockSupported) {
             lockOpt[0] = option(R.string.apply_lock, R.string.apply_lock_sub,
-                    initial == Surface.LOCK, new Runnable() {
+                    chosen.contains(Surface.LOCK), new Runnable() {
                         @Override
                         public void run() {
-                            chosen[0] = Surface.LOCK;
-                            lockOpt[0].setSelected(true);
-                            homeOpt[0].setSelected(false);
+                            toggle(chosen, Surface.LOCK, homeOpt[0], lockOpt[0], lockSupported);
                         }
                     });
         } else {
@@ -181,7 +188,7 @@ final class ApplyChooser {
         ((View) row.getChildAt(1)).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                recordAndLaunch(chosen[0]);
+                recordAndLaunch(chosen);
             }
         });
 
@@ -337,17 +344,30 @@ final class ApplyChooser {
      * so a later refusal costs a claim that was never going to be rendered rather
      * than an inconsistency.
      */
-    private void recordAndLaunch(Surface surface) {
+    private void recordAndLaunch(java.util.Set<Surface> surfaces) {
+        if (surfaces == null || surfaces.isEmpty()) return;
         try {
             SharedPreferences prefs = Settings.prefs(activity);
             Library current = AppState.load(prefs, activity.getFilesDir()).library;
-            Library next = current.withAppliedTo(surface, true);
+            Library next = current;
+            for (Surface surface : surfaces) {
+                next = next.withAppliedTo(surface, true);
+            }
             if (next != current) {
                 LibraryStore.saveNow(prefs, next);
-                // The sheet's own segment must re-read, or it keeps offering a
-                // switch for a photo the index says is on one screen.
+                // The sheet's segment is built with the sheet and there is no
+                // buildSheet() to re-run, so it appears on the next open -- straight
+                // after the system picker. Saying so is what stops the user's next
+                // question being "where did the switch go".
                 if (activity instanceof MainActivity) {
-                    ((MainActivity) activity).onAppliedTo(surface);
+                    if (surfaces.size() > 1) {
+                        ((MainActivity) activity).onAppliedToBoth();
+                    }
+                    // Below 35 this is the only thing that will ever put the photo on
+                    // the lock screen, and the chooser's own wording promises it.
+                    if (surfaces.contains(Surface.LOCK)) {
+                        ((MainActivity) activity).onLockSurfaceChosen();
+                    }
                 }
             }
         } catch (Exception e) {
@@ -356,6 +376,25 @@ final class ApplyChooser {
         }
         dismiss();
         launchPicker();
+    }
+
+    /**
+     * Flip one surface, and never leave nothing chosen.
+     *
+     * <p>"Apply to nothing" is not an outcome the button should offer, and below 35
+     * Lock cannot be the only choice either -- there is no second engine to bind.
+     */
+    private void toggle(java.util.Set<Surface> chosen, Surface surface,
+                        Option home, Option lock, boolean lockSupported) {
+        if (chosen.contains(surface)) {
+            if (chosen.size() == 1) return;
+            if (surface == Surface.LOCK && !lockSupported) return;
+            chosen.remove(surface);
+        } else {
+            chosen.add(surface);
+        }
+        home.setSelected(chosen.contains(Surface.HOME));
+        lock.setSelected(chosen.contains(Surface.LOCK));
     }
 
     private void launchPicker() {
@@ -385,20 +424,28 @@ final class ApplyChooser {
     }
 
     private void present() {
-        Surface initial = Surface.HOME;
+        java.util.Set<Surface> applied = new java.util.LinkedHashSet<Surface>();
         try {
             Library lib = AppState.load(Settings.prefs(activity), activity.getFilesDir()).library;
-            if (lib.appliedSurfaces().contains(Surface.LOCK)
-                    && !lib.appliedSurfaces().contains(Surface.HOME)) {
-                initial = Surface.LOCK;
-            }
+            applied.addAll(lib.appliedSurfaces());
         } catch (Exception e) {
-            // Home is the safe default: it is the surface the wallpaper is on unless
-            // something says otherwise.
+            // Nothing recorded yet, so fall through to the default below.
+        }
+        final boolean lockSupported = SurfaceResolver.supportsPerSurfaceLock(
+                android.os.Build.VERSION.SDK_INT);
+        if (applied.isEmpty()) {
+            // Home, plus Lock wherever the platform can actually bind a second engine.
+            // Offering both by default is the point: it is what makes the sheet's
+            // Home/Lock switch reachable in one application rather than two.
+            applied.add(Surface.HOME);
+            if (lockSupported) applied.add(Surface.LOCK);
+        } else if (!lockSupported) {
+            // A restore can hand back a lock surface this platform cannot render.
+            applied.remove(Surface.LOCK);
         }
 
         dialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
-        View content = build(initial);
+        View content = build(applied);
         if (content.getLayoutParams() != null) {
             content.setLayoutParams(new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
