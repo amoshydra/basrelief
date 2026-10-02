@@ -76,6 +76,21 @@ final class AppState {
         return active == null || active.isBundled();
     }
 
+    /**
+     * Whether the selected photo is the live wallpaper on BOTH screens.
+     *
+     * <p>The gate on the surface segment. It is about the <i>photo</i> rather than
+     * about the item, because it is recorded beside the selection: applying is what
+     * puts a photo on a surface, and nothing else does.
+     *
+     * <p>Delegated rather than answered here, so there is one source for it. Two
+     * places each deciding "is this on both" is how the segment appears for a photo
+     * that is on one screen.
+     */
+    boolean isOnBothSurfaces() {
+        return library.isOnBothSurfaces();
+    }
+
     // ------------------------------------------------------------------ load
 
     /**

@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.Surface;
+import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
 import android.app.WallpaperManager;
@@ -197,6 +198,15 @@ public class MainActivity extends Activity {
     private BasreliefSlider zoomSlider;
 
     /**
+     * Which surface the sheet is editing.
+     *
+     * <p>Not a mode the user picks in Settings: it follows the photo, and it is only
+     * ever anything but HOME when the platform can give the lock screen its own live
+     * engine. The segment below the grip is how it changes.
+     */
+    private Surface editSurface = Surface.HOME;
+
+    /**
      * The container the gallery overlay is added to.
      *
      * <p>A field because the gallery is opened long after {@code onCreate} has
@@ -387,6 +397,13 @@ public class MainActivity extends Activity {
         hintView.setTextSize(11);
         if (prefs.getBoolean("hint_dismissed", false)) hintView.setVisibility(View.GONE);
         sheetContent.addView(hintView);
+
+        // The surface segment, above the first heading and below the fix line.
+        // Absent -- not greyed, not disabled -- unless the photo is genuinely on both
+        // screens AND the platform can give the lock screen its own live engine.
+        // A toggle that cannot change anything is the same lie as a greyed slider.
+        Surface segmentFor = surfaceForSegment();
+        if (segmentFor != null) sheetContent.addView(buildSurfaceSegment(segmentFor));
 
         sectionLabel(getString(R.string.group_relief));
 
@@ -1952,16 +1969,21 @@ public class MainActivity extends Activity {
         LibraryStore.editItem(prefs, state.activeId(), new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                if (isDepth) return item.withIntensity(Surface.HOME, value);
-                if (isZoom) return item.withZoom(Surface.HOME, value);
+                // Written to the surface being EDITED. Hard-coding Home here is
+                // what made the segment a control that changed nothing: it would
+                // move the switch, the label would change, and the values on screen
+                // would be re-read from Home on the next resolve.
+                if (isDepth) return item.withIntensity(editSurface, value);
+                if (isZoom) return item.withZoom(editSurface, value);
                 if ("brightness".equals(key) || "shadow".equals(key)) {
-                    return item.withAdjust(Surface.HOME,
-                            "brightness".equals(key) ? value
-                                    : item.settings(Surface.HOME).brightness,
-                            "shadow".equals(key) ? value
-                                    : item.settings(Surface.HOME).shadow);
+                    // The other adjustment is read from the SAME surface, or moving
+                    // one of them would silently reset the other to its home value.
+                    SurfaceSettings other = item.settings(editSurface);
+                    return item.withAdjust(editSurface,
+                            "brightness".equals(key) ? value : other.brightness,
+                            "shadow".equals(key) ? value : other.shadow);
                 }
-                return item.withMotion(Surface.HOME, value);
+                return item.withMotion(editSurface, value);
             }
         });
     }
@@ -1990,7 +2012,7 @@ public class MainActivity extends Activity {
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
-        SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
+        SurfaceSettings s = item == null ? null : item.settings(editSurface);
         // Every bar is live, including on the bundled demo. They used to be disabled
         // for it, because Framing forced the demo to the defaults and a live slider
         // there displayed a number the renderer ignored -- the same class of lie as a
@@ -2034,7 +2056,7 @@ public class MainActivity extends Activity {
         boolean want = initialItemHasMap(state);
         if (want && depthBarRow == null) {
             LibraryItem item = state.activeItem();
-            SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
+            SurfaceSettings s = item == null ? null : item.settings(editSurface);
             depthBarRow = addSlider("intensity",
                     s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100);
             // Above Motion and Zoom, where Depth has always been: it is the first
@@ -2111,6 +2133,103 @@ public class MainActivity extends Activity {
                         pickFile(REQ_DEPTH);
                     }
                 });
+    }
+
+    /**
+     * The surface this photo can be switched between, or null when it cannot.
+     *
+     * <p>Two conditions, and both are real:
+     *
+     * <ul>
+     *   <li>The photo must be <b>on both</b> surfaces. On one there is nothing to
+     *       switch between.</li>
+     *   <li>The platform must actually run a second live engine, which is API 35+.
+     *       On 34 an engine can tell which screen it is, but there is still only one
+     *       -- so the app knows the fact and still promises nothing. Asked of
+     *       {@link SurfaceResolver} rather than of {@code Build.VERSION}, because that
+     *       class holds the truth table and it is unit tested.</li>
+     * </ul>
+     *
+     * <p>Below 35 this returns null and the segment is <b>absent</b>. Not disabled:
+     * an absent control cannot be tapped and cannot lie about what it would do.
+     */
+    private Surface surfaceForSegment() {
+        if (!SurfaceResolver.supportsPerSurfaceLock(android.os.Build.VERSION.SDK_INT)) {
+            return null;
+        }
+        try {
+            return AppState.load(prefs, getFilesDir()).isOnBothSurfaces()
+                    ? Surface.HOME : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The Home / Lock switch: two buttons, and the whole sheet follows the choice.
+     *
+     * <p>Built from plain Buttons and added as a child of the scrolling content, so
+     * it scrolls with everything else. That is what the mockup shows, and it keeps
+     * the segment out of the sheet's fixed chrome, where a view over the GL surface
+     * would be positioned by layout rather than by a transform -- the shape that
+     * stops compositing entirely (b/7179570).
+     */
+    private View buildSurfaceSegment(Surface current) {
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        int pad = dp(3);
+        seg.setPadding(pad, pad, pad, pad);
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0x14FFFFFF);
+        bg.setCornerRadius(dp(10));
+        bg.setStroke(dp(1), 0x24FFFFFF);
+        seg.setBackground(bg);
+
+        final Surface[] shown = {current};
+        for (final Surface surface : Surface.values()) {
+            Button b = new Button(this);
+            b.setAllCaps(false);
+            b.setTextSize(12.5f);
+            b.setText(surface == Surface.HOME
+                    ? getString(R.string.surface_home) : getString(R.string.surface_lock));
+            boolean on = surface == current;
+            b.setTextColor(on ? 0xFFFFFFFF : 0x8CFFFFFF);
+            android.graphics.drawable.GradientDrawable tb =
+                    new android.graphics.drawable.GradientDrawable();
+            tb.setColor(on ? 0x28FFFFFF : 0x00000000);
+            tb.setCornerRadius(dp(7));
+            b.setBackground(tb);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (shown[0] == surface) return;
+                    shown[0] = surface;
+                    editSurface = surface;
+                    // Copy and paste must follow the surface being edited, or they
+                    // silently always mean Home.
+                    if (gallery != null) gallery.setSurface(surface);
+                    // The preview must move to the new surface's framing too, or the
+                    // sliders change while the relief on screen does not.
+                    glView.queueEvent(new Runnable() {
+                        @Override
+                        public void run() {
+                            renderer.reloadFromPrefs();
+                        }
+                    });
+                    refreshSliders();
+                    applyFiles();
+                }
+            });
+            seg.addView(b, new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        LinearLayout.LayoutParams outer = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        outer.bottomMargin = dp(10);
+        seg.setLayoutParams(outer);
+        return seg;
     }
 
     /** Open the settings screen. Four groups, and nothing about a photo. */
@@ -2351,7 +2470,7 @@ public class MainActivity extends Activity {
             img = imgF == null ? null : imgF.getAbsolutePath();
             dep = depF == null ? null : depF.getAbsolutePath();
         }
-        final Framing framing = Framing.of(state.activeItem(), Surface.HOME);
+        final Framing framing = Framing.of(state.activeItem(), editSurface);
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
