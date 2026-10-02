@@ -282,14 +282,18 @@
     <string name="depth_panel_subtitle">Runs on your own ComfyUI server. Nothing is uploaded.</string>
     <string name="depth_server">Server</string>
     <string name="depth_server_hint">http://&lt;server&gt;:8188</string>
-    <!-- The server row is a link, not a form: it says where the app is pointed,
-         so nobody has to remember which box they typed. -->
+    <!-- Three strings the panel no longer uses, kept because the PRD still asks for
+         them: R-PANEL5 wants the endpoint to be a LINK — a dot, the host, and
+         Change — and the signed-off mockup draws a plain field with the stored
+         address in it. The mockup wins, so there is no row to label and nothing
+         says "not tested" beside a field the user can read. See the class javadoc
+         of DepthGenDialog before putting any of them back. -->
     <string name="depth_server_change">Change</string>
     <string name="depth_server_untested">Not tested</string>
+    <string name="depth_models_found">%1$d models on this server</string>
     <string name="depth_test_connection">Test connection</string>
     <string name="depth_testing">Testing connection…</string>
     <string name="depth_test_failed">Not reached: %1$s</string>
-    <string name="depth_models_found">%1$d models on this server</string>
     <string name="depth_models_untested">Test the connection to load models</string>
     <string name="depth_models_none">No depth models on this server</string>
     <!-- R-PANEL3. Depth results get compared, so a silently changed model makes
@@ -334,6 +338,8 @@
          minutes long and the user may have looked at other photos meanwhile — so
          which photo it was FOR is not something they can assume. -->
     <string name="depth_run_was_for">Run for %1$s · your map is unchanged</string>
+    <!-- Unused, and gone for the same reason as depth_server_change: its only job
+         was to reveal a server field that is now always on screen. -->
     <string name="depth_edit_server">Edit server</string>
 
     <!--

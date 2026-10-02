@@ -641,7 +641,9 @@ public final class DepthGenDialog {
         // the modal's footer rather than at the end of the body, which is
         // ModalSheet's one departure from the mockup and a deliberate one — the body
         // is this long, and a footer that scrolls away is a Generate button the user
-        // cannot find on a short screen.
+        // cannot find on a short screen. Cancel is in every state, because a panel
+        // with no way out of it is a trap; Generate is the setup state's alone, and
+        // {@link #render} says why the other two do without it.
         Button cancel = ModalSheet.button(activity,
                 activity.getString(R.string.action_cancel), false, true);
         cancel.setOnClickListener(new View.OnClickListener() {
@@ -802,7 +804,7 @@ public final class DepthGenDialog {
 
         outcomeText = text(R.string.fix_no_answer, 13);
         outcomeText.setTextColor(0xFFE2725B);
-        outcomeBlock.addView(outcomeText);
+        addRow(outcomeBlock, outcomeText);
 
         outcomeSubject = text("", 12);
         outcomeSubject.setTextColor(ModalSheet.DIM);
@@ -854,7 +856,7 @@ public final class DepthGenDialog {
 
         runStatus = text(R.string.depth_phase_queued, 14);
         runStatus.setTextColor(ModalSheet.INK);
-        runBlock.addView(runStatus);
+        addRow(runBlock, runStatus);
         runPercent = text("", 13);
         runPercent.setTextColor(ModalSheet.DIM);
         runPercent.setLayoutParams(topMargin(dp(4)));
@@ -1734,6 +1736,12 @@ public final class DepthGenDialog {
      * <p>It deliberately does not {@code stop()} the socket. The poll is the
      * source of truth and is about to end anyway; a half-closed socket mid-poll
      * is a second failure mode for no gain.
+     *
+     * <p>Which is also why the panel's dismissal stopped calling this. It used to,
+     * from {@code onDismiss}, which contradicted the sentence above and cost the
+     * pill its percentage: the number the socket carries is the one the collapsed
+     * sheet shows (R-BG2), so closing the panel used to freeze it part-way. The
+     * socket now ends with the run, in every terminal path, and nothing else.
      */
     private static void stopWs() {
         ComfyWs live = ws;
@@ -1749,8 +1757,13 @@ public final class DepthGenDialog {
     // --------------------------------------------------------------- prefs
 
     /**
-     * Write the endpoint and resolution from the fields, if they hold something
-     * usable, so nothing typed is lost when the panel closes.
+     * Save whatever is in the address field, if it is usable. R-PANEL6.
+     *
+     * <p>Called as the field is typed rather than when the panel closes, because
+     * the panel does not own its window any more and so cannot know when it is
+     * closing — see the watcher in {@link #buildSetup}. The resolution does not need
+     * the same treatment: {@link #setResolution} writes it the moment the slider
+     * moves, because the control that holds the value is the one that changed it.
      */
     private void persistTyped() {
         if (hostInput == null) return;

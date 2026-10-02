@@ -123,6 +123,13 @@ final class ModalSheet {
                 new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         dialog.setContentView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // ADJUST_RESIZE, because the depth panel's first field is an endpoint the user
+        // has to be able to type. Without it the keyboard covers the box being typed
+        // into and the dialog does not move -- which reads as the field being dead
+        // rather than as an IME problem. The window must ask BEFORE show(), which is
+        // why this is here and not after.
+        dialog.getWindow().setSoftInputMode(
+                android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(DialogInterface d) {
