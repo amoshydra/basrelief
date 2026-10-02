@@ -551,6 +551,8 @@ final class PlaylistScreen {
     // --------------------------------------------------------------------- list
 
     private void showList() {
+        // Ahead of clearing the field, for the reason showEditor gives.
+        commitName();
         openId = null;
         nameField = null;
         Playlists lists = PlaylistStore.load(activity.prefs);
@@ -658,6 +660,12 @@ final class PlaylistScreen {
     }
 
     private void showEditor() {
+        // Before reading, not after. Rebuilding detaches the field the name is
+        // being typed into, so a name committed on focus loss can arrive after
+        // the value this method renders from was read — which is a rename that
+        // silently undoes itself. Cheap when nothing changed: the store compares
+        // before committing.
+        commitName();
         Playlist p = PlaylistStore.load(activity.prefs).find(openId);
         if (p == null) {
             openId = null;
@@ -1073,6 +1081,22 @@ final class PlaylistScreen {
         }
 
         /** What is stored, or nothing. Never throws, because parse does not. */
+        /**
+         * Replace the whole blob with a value computed elsewhere.
+         *
+         * <p>For the one caller that already holds the result: playlist rotation,
+         * which runs in the wallpaper engine and stamps its own clock. Every other
+         * writer goes through {@link #edit}, because that is the only way to be sure
+         * the change was derived from what was actually stored.
+         *
+         * <p>It goes through {@link #write} regardless, so the newer-build guard and
+         * the unchanged-value skip still apply. Rotation fires on its own write, so a
+         * guard that let it through twice would move two photos per tick.
+         */
+        static void save(SharedPreferences prefs, Playlists value) {
+            write(prefs, Playlists.parse(raw(prefs)), value);
+        }
+
         static Playlists load(SharedPreferences prefs) {
             return Playlists.parse(raw(prefs));
         }

@@ -193,8 +193,8 @@ public class MainActivity extends Activity {
     };
     private TextView hintView;
     private DepthGenDialog depthGenDialog;
-    private SeekBar zoomBar;
-    private TextView zoomLabel;
+    /** The one horizontal slider control, keyed as the settings are. */
+    private BasreliefSlider zoomSlider;
 
     /**
      * The container the gallery overlay is added to.
@@ -208,9 +208,9 @@ public class MainActivity extends Activity {
     private Gallery gallery;
 
     /** Slider handles by key, so a selection change can repopulate them. */
-    private final java.util.Map<String, SeekBar> bars = new java.util.HashMap<>();
-    private final java.util.Map<String, TextView> barLabels = new java.util.HashMap<>();
-    private final java.util.Map<String, Integer> barMin = new java.util.HashMap<>();
+    /** Every slider on the sheet, by key. Replaces four parallel maps. */
+    private final java.util.Map<String, BasreliefSlider> sliders =
+            new java.util.HashMap<>();
     /**
      * The label each slider was built with, by key.
      *
@@ -218,8 +218,6 @@ public class MainActivity extends Activity {
      * this a refresh relabelled Depth to "intensity", which is the field name
      * from the blob and means nothing to the person using the app.
      */
-    private final java.util.Map<String, String> barNames = new java.util.HashMap<>();
-    private boolean syncingZoom = false;
 
     /** Last value written to the shared {@code gyro_status} key, to avoid rewriting it per frame. */
     private String lastGyroStatus = null;
@@ -279,8 +277,7 @@ public class MainActivity extends Activity {
         gallery.setPlaylistsNavigator(new Gallery.PlaylistsNavigator() {
             @Override
             public void openPlaylists() {
-                Toast.makeText(MainActivity.this, R.string.toast_playlists_unavailable,
-                        Toast.LENGTH_LONG).show();
+                PlaylistScreen.show(MainActivity.this);
             }
         });
 
@@ -411,7 +408,7 @@ public class MainActivity extends Activity {
         // was a control that could not do anything plus a second place saying the
         // same thing. The fix line is now the only signal, and it is one sentence.
         depthBarRow = initialItemHasMap(initial)
-                ? addSlider(getString(R.string.slider_depth), "intensity",
+                ? addSlider("intensity",
                         s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
                 : null;
         if (depthBarRow != null) sheetContent.addView(depthBarRow);
@@ -421,9 +418,9 @@ public class MainActivity extends Activity {
         depthIndex = sheetContent.indexOfChild(depthBarRow);
         if (depthIndex < 0) depthIndex = 0;
         sectionLabel(getString(R.string.group_motion));
-        sheetContent.addView(addSlider(getString(R.string.slider_motion), "motion",
+        sheetContent.addView(addSlider("motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
-        sheetContent.addView(addSlider(getString(R.string.slider_zoom), "zoom",
+        sheetContent.addView(addSlider("zoom",
                 s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, 25, 200));
 
         // Picture is its own group because these two answer a different question
@@ -431,10 +428,10 @@ public class MainActivity extends Activity {
         // sits or how far it stands out. Signed, because both directions are useful
         // and an unsigned control makes "less contrast" unreachable.
         sheetContent.addView(fieldCaption(getString(R.string.group_picture)));
-        sheetContent.addView(addSlider(getString(R.string.slider_brightness), "brightness",
+        sheetContent.addView(addSlider("brightness",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
-        sheetContent.addView(addSlider(getString(R.string.slider_shadow), "shadow",
+        sheetContent.addView(addSlider("shadow",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
@@ -1838,48 +1835,13 @@ public class MainActivity extends Activity {
      *
      * @param direction -1 or +1
      */
-    private View stepper(final String key, final SeekBar bar, final int min,
-                         final int max, final int direction) {
-        Button b = new Button(this);
-        b.setText(direction < 0 ? "\u2212" : "+");
-        b.setAllCaps(false);
-        b.setTextSize(16);
-        b.setPadding(0, 0, 0, 0);
-        // A fixed width, not setMinWidth: minWidth is only a floor, so the button
-        // still laid itself out from its text and squeezed the glyph off the end --
-        // which is the control you want most. Same reason as nudgeButton.
-        b.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
-        b.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                int raw = bar.getProgress() + direction;
-                int next = raw < 0 ? 0 : Math.min(raw, max - min);
-                // Effectively final, because the GL runnable below captures it. Java 8
-                // wants final rather than a copy, and the copy would be a second name
-                // for one number.
-                final int value = next + min;
-                // setBar writes progress + min and updates the label; it does not
-                // persist, so the same once-on-release rule a drag follows holds here.
-                setBar(key, value, bar.isEnabled());
-                glView.queueEvent(new Runnable() {
-                    @Override
-                    public void run() {
-                        applyStoredSlider(key, value);
-                    }
-                });
-                glView.requestRender();
-                persist(key, value);
-            }
-        });
-        return b;
-    }
 
     /**
      * Push a slider's value into the renderer, on the GL thread.
      *
-     * <p>The drag handler has this inline, capturing its own locals. A stepper has
-     * no drag to capture from, so both paths call this -- two copies of the same
-     * four branches is how one of them ends up missing a key.
+     * <p>Called from a drag, a release and a -/+ nudge, so all three paths share
+     * one copy: two copies of the same four branches is how one of them ends up
+     * missing a key.
      */
     private void applyStoredSlider(String key, int value) {
         if ("zoom".equals(key)) renderer.setZoom(value / 100f);
@@ -1900,90 +1862,67 @@ public class MainActivity extends Activity {
         return value > 0 ? "+" + value : String.valueOf(value);
     }
 
-    private View addSlider(final String label, final String key, int initial,
-                           int min, int max) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(0, dp(8), 0, 0);
-
-        final TextView tv = new TextView(this);
-        tv.setTextColor(Color.WHITE);
-        tv.setTextSize(13);
-        tv.setText(label + ": " + formatValue(key, initial));
-        row.addView(tv);
-
-        SeekBar bar = new SeekBar(this);
-        bar.setMax(max - min);
-        bar.setProgress(initial - min);
-        final boolean isZoom = "zoom".equals(key);
-        final boolean isMotion = "motion".equals(key);
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+    /**
+     * One slider: label, track, value inside the fill, and a - / + pair.
+     *
+     * <p>Built by {@link BasreliefSlider} rather than from a stock SeekBar plus
+     * buttons. The version it replaced was a vertical stack -- label, bar, then a
+     * full-width "-" button and a full-width "+" button on their own rows -- so
+     * every adjustment cost about 130dp and the sheet could not show its own foot.
+     * As one 34dp horizontal row the whole set fits the 40% peek.
+     *
+     * <p>No syncing guard is needed here, and that is not a simplification. The
+     * guard existed because {@code setProgress} fires the change listener, so
+     * populating a control wrote to storage. {@link BasreliefSlider#setValue} has no
+     * listener to fire: populating it cannot write, by construction rather than by a
+     * flag someone has to remember.
+     */
+    private View addSlider(final String key, int initial, int min, int max) {
+        BasreliefSlider slider = BasreliefSlider.create(this, key, initial, min, max,
+                new BasreliefSlider.ValueFormatter() {
+                    @Override
+                    public String format(int value) {
+                        return formatValue(key, value);
+                    }
+                },
+                new BasreliefSlider.OnChanged() {
+                    @Override
+                    public void onChanged(int value) {
+                        // The renderer already followed the finger through onPreview;
+                        // this is the store, once, on release.
+                        final int v = value;
+                        glView.queueEvent(new Runnable() {
+                            @Override
+                            public void run() {
+                                applyStoredSlider(key, v);
+                            }
+                        });
+                        glView.requestRender();
+                        persist(key, v);
+                    }
+                });
+        // Live preview, once per pixel of travel. It reads shown* and never the
+        // index -- and it must UPDATE them, because applyStoredSlider sends both
+        // adjustments at once and a preview that reset the other one would flicker
+        // as the user crossed from one slider to the other.
+        slider.setOnPreview(new BasreliefSlider.OnPreview() {
             @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (syncingZoom) return;
-                int value = progress + min;
-                tv.setText(label + ": " + formatValue(key, value));
-                final int stored = value;
-                final int v = stored;
-                // Preview only. Persisting here would mean a drag writes
-                // synchronously on the UI thread once per pixel of travel, and
-                // each write re-reads and re-validates the whole gallery --
-                // a few hundred stat calls for one gesture. The label and the
-                // renderer still follow the finger, so nothing looks laggy; the
-                // write happens once, on release.
+            public void onPreview(int value) {
+                final int v = value;
+                if ("brightness".equals(key)) shownBrightness = v;
+                else if ("shadow".equals(key)) shownShadow = v;
                 glView.queueEvent(new Runnable() {
                     @Override
                     public void run() {
-                        if (isZoom) {
-                            renderer.setZoom(stored / 100f);
-                        } else if (isMotion) {
-                            renderer.setMotion(stored / 100f * 3f);
-                        } else if ("brightness".equals(key) || "shadow".equals(key)) {
-                            // Both at once, because the shader takes both and a
-                            // preview that reset the other one would flicker as the
-                            // user crossed from one slider to the other. Read from
-                            // these fields, not the index: this runs once per pixel
-                            // of travel, and re-reading the gallery each time is the
-                            // cost the neighbouring comment is about.
-                            renderer.setAdjust(
-                                    "brightness".equals(key) ? stored : shownBrightness,
-                                    "shadow".equals(key) ? stored : shownShadow);
-                            if ("brightness".equals(key)) shownBrightness = stored;
-                            else shownShadow = stored;
-                        } else {
-                            renderer.setDepth(stored / 100f);
-                        }
+                        applyStoredSlider(key, v);
                     }
                 });
                 glView.requestRender();
             }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-                persist(key, seekBar.getProgress() + min);
-            }
         });
-        row.addView(bar);
-        // - and + beside every bar. A drag reaches both ends, but a drag is a
-        // gesture you have to know about: half these adjustments are signed, and a
-        // control that can only be raised cannot reach half its range for someone
-        // who does not discover the drag. Both write through the same path a release
-        // does, so a nudge is previewed and then persisted -- never persisted alone.
-        row.addView(stepper(key, bar, min, max, -1));
-        row.addView(stepper(key, bar, min, max, +1));
-        bars.put(key, bar);
-        barLabels.put(key, tv);
-        barMin.put(key, min);
-        barNames.put(key, label);
-        if (isZoom) {
-            zoomBar = bar;
-            zoomLabel = tv;
-        }
-        return row;
+        sliders.put(key, slider);
+        if ("zoom".equals(key)) zoomSlider = slider;
+        return slider.view();
     }
 
     /**
@@ -2036,10 +1975,12 @@ public class MainActivity extends Activity {
      * drag a slider they thought was still editing the photo they were just
      * looking at.
      *
-     * <p>Guarded by {@code syncingZoom} for every bar, not just Zoom. Without it,
-     * {@code setProgress} fires {@code onProgressChanged}, which writes straight
-     * back to storage -- so selecting a photo would silently rewrite the
-     * previously selected one with the values it was already showing.
+     * <p>Populating a control must never write. It used to need a
+     * {@code syncingZoom} guard for exactly this -- {@code setProgress} fires
+     * {@code onProgressChanged}, so selecting a photo silently rewrote the photo you
+     * had just left with the values it was already showing. The flag is gone because
+     * {@link BasreliefSlider#setValue} has no change listener to fire, so the trap no
+     * longer exists rather than being merely avoided.
      */
     void refreshSliders() {
         AppState state = AppState.load(prefs, getFilesDir());
@@ -2055,8 +1996,7 @@ public class MainActivity extends Activity {
         // there displayed a number the renderer ignored -- the same class of lie as a
         // status line claiming content that is not there. Framing reads the demo's
         // stored values now, so the premise is gone and so is the reason to disable.
-        syncingZoom = true;
-        try {
+        {
             setBar("intensity", s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, true);
             setBar("zoom", s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, true);
             setBar("motion", s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, true);
@@ -2064,8 +2004,6 @@ public class MainActivity extends Activity {
             shownShadow = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow;
             setBar("brightness", shownBrightness, true);
             setBar("shadow", shownShadow, true);
-        } finally {
-            syncingZoom = false;
         }
         // Motion decides whether the sensor can change a pixel at all, so it
         // decides whether the sensor should be running -- and Motion belongs to the
@@ -2097,17 +2035,17 @@ public class MainActivity extends Activity {
         if (want && depthBarRow == null) {
             LibraryItem item = state.activeItem();
             SurfaceSettings s = item == null ? null : item.settings(Surface.HOME);
-            depthBarRow = addSlider(getString(R.string.slider_depth), "intensity",
+            depthBarRow = addSlider("intensity",
                     s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100);
             // Above Motion and Zoom, where Depth has always been: it is the first
             // thing anyone adjusts, and the sheet scrolls.
             sheetContent.addView(depthBarRow, depthIndex);
         } else if (!want && depthBarRow != null) {
             sheetContent.removeView(depthBarRow);
-            SeekBar bar = bars.remove("intensity");
-            barLabels.remove("intensity");
-            barMin.remove("intensity");
-            barNames.remove("intensity");
+            // Out of the map as well as out of the view tree. Left in it,
+            // setBar would write to a detached view -- which does not throw and
+            // does nothing, the kind of write that looks like it worked.
+            sliders.remove("intensity");
             depthBarRow = null;
         }
     }
@@ -2185,30 +2123,25 @@ public class MainActivity extends Activity {
         refreshStatus();
     }
 
+    /**
+     * Populate a slider from stored state.
+     *
+     * <p>No clamping and no guard, because {@link BasreliefSlider#setValue} does both
+     * and has no change listener to fire -- so this cannot write, which is what the
+     * old {@code syncingZoom} dance existed to prevent. Losing that flag is the
+     * point, not a simplification.
+     */
     private void setBar(String key, int value, boolean enabled) {
-        SeekBar bar = bars.get(key);
-        if (bar == null) return;
-        bar.setEnabled(enabled);
-        bar.setAlpha(enabled ? 1f : 0.4f);
-        Integer min = barMin.get(key);
-        int v = Math.max(min == null ? 0 : min, Math.min(bar.getMax() + (min == null ? 0 : min), value));
-        bar.setProgress(v - (min == null ? 0 : min));
-        TextView tv = barLabels.get(key);
-        String name = barNames.get(key);
-        if (tv != null) tv.setText((name == null ? key : name) + ": " + formatValue(key, v));
+        BasreliefSlider slider = sliders.get(key);
+        if (slider == null) return;
+        slider.setEnabled(enabled);
+        slider.setValue(value);
     }
 
-    /** Update the zoom slider + label to match the current renderer zoom. */
+    /** Update the zoom slider to match the current renderer zoom. */
     private void setZoomSlider(int percent) {
-        if (zoomBar == null) return;
-        int v = Math.max(25, Math.min(200, percent));
-        syncingZoom = true;
-        try {
-            zoomBar.setProgress(v - 25); // min = 25
-            if (zoomLabel != null) zoomLabel.setText(getString(R.string.diag_zoom_prefix) + formatValue("zoom", v));
-        } finally {
-            syncingZoom = false;
-        }
+        if (zoomSlider == null) return;
+        zoomSlider.setValue(percent);
     }
 
     /**

@@ -4,6 +4,7 @@ import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.Library;
+import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.content.Context;
@@ -93,7 +94,14 @@ public class DepthWallpaperService extends WallpaperService {
                         // one consistent snapshot -- the reason the old per-key
                         // branches could not observe half a change is the same
                         // reason to keep watching blobs rather than keys.
-                        if (!Config.KEY.equals(key) && !Library.KEY.equals(key)) return;
+                        // Three keys now. Playlists is watched because a rotation
+                        // that nothing observes is a playlist that never advances --
+                        // and the engine is the only thing alive when the screen is
+                        // off, which is when a timed trigger is most likely to fall
+                        // due.
+                        if (!Config.KEY.equals(key) && !Library.KEY.equals(key)
+                                && !Playlists.KEY.equals(key)) return;
+                        advancePlaylistIfDue(p);
                         applyFromPrefs(p);
                     }
                 };
@@ -170,7 +178,56 @@ public class DepthWallpaperService extends WallpaperService {
             surface = resolved;
         }
 
-        private void applyFromPrefs(SharedPreferences p) {
+        /**
+     * Advance the rotating playlist, if one is due on this surface.
+     *
+     * <p>Rotation writes the index's OWN selection -- the same two calls a user's
+     * tap makes -- and then this engine re-resolves from that index like any other
+     * change. So there is no second "current photo" and nothing to keep in step: the
+     * playlist decides, the index records, and the engine follows.
+     *
+     * <p>Deliberately idempotent and stamped. {@code advance} writes the playlists
+     * blob back with the new clock, so calling it twice in the same interval is a
+     * no-op rather than two photos forward -- which is why the listener above can
+     * fire on its own write without a guard.
+     *
+     * <p>An event trigger is never due on a clock, so this does nothing for
+     * {@code on_pickup}; that path is deferred and the trigger stays off.
+     */
+    private void advancePlaylistIfDue(SharedPreferences p) {
+        try {
+            Playlists playlists = Playlists.parse(p.getString(Playlists.KEY, null));
+            Library index = Library.parse(p.getString(Library.KEY, null),
+                    android.content.pm.PackageManager.PERMISSION_GRANTED >= 0
+                            ? motionFallback(p) : 33);
+            SurfaceResolver which = surface;   // read once: a re-task can change it
+            Playlists.Result result = Playlists.advance(playlists, index,
+                    which.surface(), System.currentTimeMillis());
+            if (result.selectedId == null) return;      // nothing was due
+            // The index is the single pointer, so this is the ONLY write.
+            LibraryStore.saveNow(p, result.library);
+            PlaylistScreen.PlaylistStore.save(p, result.playlists);
+            android.util.Log.i("Basrelief", "playlist advanced to "
+                    + result.selectedId);
+        } catch (Exception e) {
+            // A rotation must never take the wallpaper down with it. The engine
+            // keeps drawing whatever it already had.
+            android.util.Log.w("Basrelief", "playlist advance failed: " + e);
+        }
+    }
+
+    /** Motion's old home, needed only to migrate a pre-v3 index. Never written. */
+    private int motionFallback(SharedPreferences p) {
+        try {
+            return p.getString(Config.KEY, null) == null ? 33
+                    : com.amoshydra.basrelief.core.store.Config
+                            .parse(p.getString(Config.KEY, null)).motion;
+        } catch (Exception e) {
+            return 33;
+        }
+    }
+
+    private void applyFromPrefs(SharedPreferences p) {
             // A flags change can arrive while the engine is still being built, and
             // this runs before the renderer exists on that path. Nothing here may
             // throw: the alternative is a wallpaper that is not drawn at all.
