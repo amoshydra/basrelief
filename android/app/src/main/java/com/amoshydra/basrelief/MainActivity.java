@@ -570,11 +570,43 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         sheetContent.addView(setWallpaper);
 
+        // The foot. A hairline, the debug line, then Settings. The debug line is
+        // small, monospaced and dim on purpose: it answers "what is wrong", and a
+        // 12sp white line in the middle of the controls read as content the user
+        // had come to look at. It stays in the sheet as ONE line because noticing
+        // something is off needs no navigation; the full block is in Settings,
+        // where a person is already asking.
+        View footRule = new View(this);
+        footRule.setBackgroundColor(0x1AFFFFFF);
+        LinearLayout.LayoutParams ruleLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        ruleLp.topMargin = dp(14);
+        footRule.setLayoutParams(ruleLp);
+        sheetContent.addView(footRule);
+
         statusView = new TextView(this);
-        statusView.setTextColor(Color.WHITE);
-        statusView.setTextSize(12);
-        statusView.setPadding(0, dp(8), 0, 0);
+        statusView.setTextColor(0x57FFFFFF);
+        statusView.setTextSize(10);
+        statusView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        statusView.setPadding(0, dp(7), 0, 0);
         sheetContent.addView(statusView);
+
+        // Settings, in the foot. It was unreachable: openSettings() existed with no
+        // caller, so the whole screen was dead code. The wireframe puts it here and
+        // not in the gallery header because app-level settings answer "is this
+        // costing me battery", and this is where someone looks when they suspect it.
+        TextView settingsEntry = new TextView(this);
+        settingsEntry.setText(R.string.settings_title);
+        settingsEntry.setTextSize(13);
+        settingsEntry.setTextColor(0x8CFFFFFF);
+        settingsEntry.setPadding(0, dp(12), 0, dp(2));
+        settingsEntry.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openSettings();
+            }
+        });
+        sheetContent.addView(settingsEntry);
 
         panelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
