@@ -79,19 +79,94 @@ import java.util.Set;
  * selection is recorded, so a pointer left naming a deleted row is a wallpaper
  * showing a photograph that no longer exists.
  */
+/**
+ * A row of grid cells whose height is their own column width.
+ *
+ * <p>Every other way to say "square" needs a measurement the layout does not have yet:
+ * a fixed height makes every photograph a different shape on every phone, and a weight
+ * cannot express an aspect ratio. So this measures itself, re-heights each child to
+ * the width it was just given, and measures once more.
+ *
+ * <p>The second pass is bounded by {@code squared}, because changing a child's height
+ * invalidates this row's height and an unbounded loop here would spin the UI thread.
+ * Children's own {@code onMeasure} has already run when their widths are known, so only
+ * their LayoutParams change -- which is what LayoutParams are for.
+ */
+final class SquareRow extends LinearLayout {
+
+    private boolean squared;
+
+    SquareRow(android.content.Context context) {
+        super(context);
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        // This row's height is a CONSEQUENCE of its children's widths, so the height
+        // spec is deliberately discarded rather than passed through.
+        super.onMeasure(MeasureSpec.makeMeasureSpec(
+                MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.AT_MOST),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+        squared = false;
+    }
+
+    @Override
+    protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        if (!squared) {
+            squared = true;
+            boolean anyChanged = false;
+            for (int i = 0, n = getChildCount(); i < n; i++) {
+                View child = getChildAt(i);
+                if (child.getVisibility() == View.GONE) continue;
+                LinearLayout.LayoutParams lp =
+                        (LinearLayout.LayoutParams) child.getLayoutParams();
+                int square = child.getMeasuredWidth();
+                if (lp.height != square) {
+                    lp.height = square;
+                    child.setLayoutParams(lp);
+                    anyChanged = true;
+                }
+            }
+            if (anyChanged) {
+                int width = getMeasuredWidth();
+                int height = getMeasuredHeight();
+                super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+                setMeasuredDimension(width, getMeasuredHeight());
+                // Nothing moved: stop here rather than risk a third pass.
+                if (getMeasuredHeight() == height) {
+                    setMeasuredDimension(width, height);
+                }
+            }
+        }
+        super.onLayout(changed, l, t, r, b);
+    }
+}
+
 final class Gallery {
 
     /** Thumb size in the filmstrip: identifiable, not choosable. Hence the grid. */
     private static final int THUMB_DP = 46;
     /** The gap between the strip and whatever it is sitting on. */
-    private static final int STRIP_GAP_DP = 10;
+    private static final int STRIP_GAP_DP = 14;
     private static final int GRID_COLUMNS = 3;
     private static final int GRID_GAP_DP = 8;
     private static final int GRID_PAD_DP = 14;
-    /** How tall a grid cell's picture is. Fixed, so the rows share a baseline. */
+    /**
+     * The add-tile's size, and the fallback cell size.
+     *
+     * <p>Real cells are SQUARE and measured from their own column width, because
+     * aspect-ratio:1 is what the mockup draws and a fixed 96dp height made every
+     * photograph a different shape on a different phone. This stays only for the add
+     * tile, whose parent has no measured column of its own.
+     */
     private static final int CELL_DP = 96;
     /** The depth chip. A dot, because a chip that needs reading is a label. */
     private static final int CHIP_DP = 10;
+    /** --dim: a header entry that is a reading rather than an action. */
+    private static final int DIM = 0x8CFFFFFF;
+    /** --accent: the one header entry that goes somewhere. */
+    private static final int ACCENT = 0xFF7FD1C1;
 
     private static final String STRIP_TAG = "basrelief-strip";
     private static final String GRID_TAG = "basrelief-grid";
@@ -590,19 +665,19 @@ final class Gallery {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(activity.getString(R.string.gallery_title), 18);
+        TextView title = text(activity.getString(R.string.gallery_title), 16);
         title.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         header.addView(title);
-        header.addView(compact(activity.getString(R.string.gallery_sort) + ": "
-                + lib.sort().label(), new View.OnClickListener() {
+        header.addView(headerLink(activity.getString(R.string.gallery_sort)
+                + " · " + lib.sort().label(), DIM, false, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showSortMenu();
             }
         }));
-        header.addView(compact(activity.getString(R.string.gallery_playlists),
-                new View.OnClickListener() {
+        header.addView(headerLink(activity.getString(R.string.gallery_playlists),
+                ACCENT, true, new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         openPlaylists();
@@ -674,7 +749,10 @@ final class Gallery {
      * before it is read.
      */
     private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId) {
-        LinearLayout line = new LinearLayout(activity);
+        // SquareRow, not LinearLayout: the row re-heights its children to their own
+        // column widths, which is the only way to get aspect-ratio:1 without a fixed
+        // height that looks wrong on every phone but one.
+        SquareRow line = new SquareRow(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < GRID_COLUMNS; i++) {
             int at = start + i;
@@ -758,8 +836,12 @@ final class Gallery {
         // second question is a legend nobody learns.
         picture.setBackground(thumbBackground(item, isActive || picked.contains(item.id)));
         picture.setClipToOutline(true);
+        // Square, from the column's own measured width. The cell is a LinearLayout
+        // whose child is MATCH_PARENT, so its width is not known until the parent has
+        // been measured; a fixed height instead would make every photograph a
+        // different shape on every phone.
         picture.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(CELL_DP)));
+                LinearLayout.LayoutParams.MATCH_PARENT, 0));
         ImageView thumb = new ImageView(activity);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
         picture.addView(thumb, new FrameLayout.LayoutParams(
@@ -773,12 +855,9 @@ final class Gallery {
             if (f != null) watchForEmbeddedDepth(f, item, thumb, chip);
         }
         cell.addView(picture);
-
-        TextView name = text(item.displayName(), 12);
-        name.setMaxLines(1);
-        name.setEllipsize(TextUtils.TruncateAt.END);
-        name.setPadding(0, activity.dp(4), 0, 0);
-        cell.addView(name);
+        // No name under the cell. The mockup draws none, and with square cells a
+        // caption would be a quarter of the cell's height spent on a label -- the
+        // depth chip and the selected ring already say which photograph this is.
 
         cell.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -809,17 +888,25 @@ final class Gallery {
         return cell;
     }
 
+    /** Top-LEFT, clear of the row menu, which is top-right. */
     private FrameLayout.LayoutParams chipParams() {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                activity.dp(CHIP_DP), activity.dp(CHIP_DP), Gravity.TOP | Gravity.END);
-        lp.setMargins(0, activity.dp(5), activity.dp(5), 0);
+                activity.dp(CHIP_DP), activity.dp(CHIP_DP), Gravity.TOP | Gravity.START);
+        lp.setMargins(activity.dp(6), activity.dp(6), 0, 0);
         return lp;
     }
 
+    /**
+     * The row menu's corner.
+     *
+     * <p>Top-RIGHT, 19dp, as the mockup draws it — it was top-LEFT at 28dp, which is
+     * where the depth chip now sits. Two marks in one corner is one of them invisible,
+     * and "which is it on this row" is a question a gallery must not ask.
+     */
     private FrameLayout.LayoutParams menuParams() {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                activity.dp(28), activity.dp(28), Gravity.TOP | Gravity.START);
-        lp.setMargins(activity.dp(2), activity.dp(2), 0, 0);
+                activity.dp(19), activity.dp(19), Gravity.TOP | Gravity.END);
+        lp.setMargins(0, activity.dp(5), activity.dp(5), 0);
         return lp;
     }
 
@@ -850,11 +937,12 @@ final class Gallery {
      * fire underneath it.
      */
     private View menuButton(final LibraryItem item) {
-        TextView menu = text(activity.getString(R.string.gallery_more_glyph), 15);
+        TextView menu = text(activity.getString(R.string.gallery_more_glyph), 12);
         menu.setGravity(Gravity.CENTER);
         // A plate behind the glyph, because a dark mark on a dark photograph is
-        // a control that is present and unreadable.
-        menu.setBackground(plain(0x99000000, activity.dp(14)));
+        // a control that is present and unreadable. 19dp, so the glyph and its
+        // target are one size rather than two.
+        menu.setBackground(plain(0x99000000, activity.dp(10)));
         menu.setContentDescription(activity.getString(R.string.gallery_more_glyph));
         menu.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1480,6 +1568,30 @@ final class Gallery {
     }
 
     /** A button that hugs its label, for rows and headers rather than grids. */
+    /**
+     * A header entry: flat, no plate, no platform chrome.
+     *
+     * <p>These were {@code compact()} Buttons, and a platform Button under the app's
+     * LIGHT theme is a raised grey pill with default-coloured text -- so the
+     * accent-coloured "Playlists" the mockup draws arrived as an ordinary looking
+     * button. A padded TextView is what was being described all along.
+     *
+     * @param strong the accent colour and semibold, for the one entry that is an
+     *               action rather than a reading
+     */
+    private TextView headerLink(String label, int colour, boolean strong,
+                                View.OnClickListener listener) {
+        TextView t = text(label, 13);
+        t.setTextColor(colour);
+        if (strong) t.setTypeface(null, android.graphics.Typeface.BOLD);
+        t.setPadding(activity.dp(6), activity.dp(10), activity.dp(6), activity.dp(10));
+        if (listener != null) {
+            t.setClickable(true);
+            t.setOnClickListener(listener);
+        }
+        return t;
+    }
+
     private Button compact(String label, View.OnClickListener listener) {
         return activity.makeButton(label, listener,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 0f);
