@@ -1,6 +1,5 @@
 package com.amoshydra.basrelief;
 
-import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -43,21 +42,22 @@ final class GlideControl {
     private static final int ACCENT_FILL = 0xD97FD1C1;
     /** --dim: the label and any text on the track that is outside the fill. */
     private static final int DIM = 0x8CFFFFFF;
-    /** rgba(255,255,255,.10) — the empty part of the track. */
+    /** rgba(255,255,255,.10) -- the empty part of the track (.row .track). */
     private static final int TRACK = 0x1AFFFFFF;
-    /** rgba(255,255,255,.14) — the hairline the mockup draws around a track/nudge. */
+    /** rgba(255,255,255,.14) -- the hairline the mockup draws around a nudge. */
     private static final int LINE = 0x24FFFFFF;
     /** The value printed inside the fill: near-black on the accent. */
     private static final int ON_FILL = 0xFF08110F;
     /**
      * One nudge is one bar of the track.
      *
-     * <p>A bar is a constant step rather than a constant time, so a narrow range
-     * cannot turn the nudges into one-frame no-ops. At the declared range it also
-     * happens to be exactly 100 ms, which is fine enough to aim with and coarse
-     * enough to tap.
+     * <p>A bar rather than a constant time, so the two ends of the range cannot
+     * disagree about what a tap is worth. At the declared range one bar happens to
+     * be 100 ms, which is fine enough to aim with and coarse enough to tap with a
+     * fingertip; the reasoning for the range itself is on the constants in
+     * {@link TiltController}.
      */
-    private static final int STEP_MS = 100;
+    private static final int NUDGE_BARS = 1;
 
     private GlideControl() {
     }
@@ -73,10 +73,17 @@ final class GlideControl {
     static View build(final MainActivity activity, final SharedPreferences prefs) {
         final int min = TiltController.GLIDE_MIN_MS;
         final int max = TiltController.GLIDE_MAX_MS;
-        final Context ctx = activity;
 
-        int current = clamp(prefs.getInt(TiltController.KEY_GLIDE_MS,
-                TiltController.GLIDE_DEFAULT_MS), min, max);
+        // Defensive on the read as well as the write: a pref written as a String by
+        // an older build, or by a restored backup, throws out of getInt and would
+        // take the whole settings screen down rather than showing one wrong number.
+        int current = TiltController.GLIDE_DEFAULT_MS;
+        try {
+            current = prefs.getInt(TiltController.KEY_GLIDE_MS, current);
+        } catch (Exception e) {
+            // leave the default
+        }
+        current = clamp(current, min, max);
 
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -116,7 +123,7 @@ final class GlideControl {
         val.setTypeface(null, Typeface.BOLD);
         val.setGravity(Gravity.CENTER_VERTICAL);
         val.setPadding(dp(activity, 11), 0, dp(activity, 11), 0);
-        // .row .over { left: 11px } — the value starts at the same place either
+        // .row .over { left: 11px } -- the value starts at the same place either
         // way; only its colour changes when it moves off the fill.
         track.addView(val, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -136,14 +143,20 @@ final class GlideControl {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // ---- − and + , because a value you can only raise is a value you cannot
-        // correct (see the mockup's own note on its sliders).
+        // ---- minus and plus, because a value you can only raise is a value you
+        // cannot correct (the mockup's own note on its sliders). The glyphs are
+        // the two strings the depth dialog already uses rather than a third pair
+        // written here: a minus sign is a single character that is easy to get
+        // wrong and impossible to notice.
         LinearLayout nudges = new LinearLayout(activity);
         nudges.setOrientation(LinearLayout.HORIZONTAL);
-        TextView minus = nudge(activity, R.string.depth_nudge_down);
-        TextView plus = nudge(activity, R.string.depth_nudge_up);
-        nudges.addView(minus);
-        nudges.addView(plus);
+        TextView minus = nudgeButton(activity, R.string.depth_nudge_down);
+        TextView plus = nudgeButton(activity, R.string.depth_nudge_up);
+        LinearLayout.LayoutParams minusLp =
+                new LinearLayout.LayoutParams(dp(activity, 28), dp(activity, 30));
+        minusLp.rightMargin = dp(activity, 5); // .nudges { gap: 5px }
+        nudges.addView(minus, minusLp);
+        nudges.addView(plus, new LinearLayout.LayoutParams(dp(activity, 28), dp(activity, 30)));
         row.addView(nudges, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -156,7 +169,7 @@ final class GlideControl {
             @Override
             public void run() {
                 int p = bar.getProgress();
-                setProgressText(val, activity, p + min);
+                setProgressText(val, activity, p + min, min, max);
                 // The width is not known until the track has been laid out, and
                 // that happens after every progress change, so the fill is sized
                 // against the measured width rather than a percentage.
@@ -197,33 +210,41 @@ final class GlideControl {
             }
         });
 
+        // The direction lives on the button as a tag rather than in two near-identical
+        // anonymous listeners, so the tag is set before the listener is attached.
+        minus.setTag(Integer.valueOf(-NUDGE_BARS));
+        plus.setTag(Integer.valueOf(NUDGE_BARS));
         View.OnClickListener step = new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Object tag = v.getTag();
-                int bars = tag instanceof Integer ? (Integer) tag : 1;
-                applyProgress(bar, clamp(bar.getProgress() + bars, 0, max - min), prefs, min);
-                paint[0].run();
+                int bars = tag instanceof Integer ? (Integer) tag : NUDGE_BARS;
+                nudge(bar, clamp(bar.getProgress() + bars, 0, max - min), prefs, min);
             }
         };
-        minus.setTag(Integer.valueOf(-1));
-        plus.setTag(Integer.valueOf(1));
+        minus.setOnClickListener(step);
+        plus.setOnClickListener(step);
 
-        syncing = true;
+        setSyncing(true);
         try {
             bar.setProgress(current - min);
         } finally {
-            syncing = false;
+            setSyncing(false);
         }
-        minus.setOnClickListener(step);
-        plus.setOnClickListener(step);
         paint[0].run();
         return row;
     }
 
-    private static void applyProgress(SeekBar bar, int p, SharedPreferences prefs, int min) {
-        // Programmatic, so it must not go back out as a "user" change — but it
-        // does have to be stored, because a nudge has no release to wait for.
+    /**
+     * Move the bar by a nudge, and store it.
+     *
+     * <p>A nudge has no "release" to wait for the way a drag does, so unlike a drag
+     * it is persisted immediately: waiting for a touch-up that has already happened
+     * would mean storing nothing at all.
+     */
+    private static void nudge(SeekBar bar, int p, SharedPreferences prefs, int min) {
+        // Programmatic, so the change listener must not treat it as a drag -- but it
+        // does have to be written here, since nothing else will.
         setSyncing(true);
         try {
             bar.setProgress(p);
@@ -240,12 +261,16 @@ final class GlideControl {
      * {@code .row .over} are the same element with a different colour, and both
      * start 11px from the left. Below a twelfth of the track the fill is narrower
      * than the text, so the text has to leave the accent and be drawn in ink on
-     * the grey instead — the one place this slider is legible at its own
+     * the grey instead -- the one place this slider is legible at its own
      * extremes.
      */
-    private static void setProgressText(TextView val, MainActivity activity, int ms) {
-        float frac = (ms - TiltController.GLIDE_MIN_MS)
-                / (float) (TiltController.GLIDE_MAX_MS - TiltController.GLIDE_MIN_MS);
+    private static void setProgressText(TextView val, MainActivity activity, int ms,
+                                    int min, int max) {
+        // The threshold is the mockup's: pct >= 12 in its slider(), which is where
+        // the fill becomes wider than the text sitting in it. Computed from the
+        // range this control was actually built with rather than re-derived from the
+        // constants, so the two can never describe different ranges.
+        float frac = (ms - min) / (float) (max - min);
         boolean onFill = frac >= 0.12f;
         val.setTextColor(onFill ? ON_FILL : Color.WHITE);
         val.setText(fmt(ms));
@@ -256,7 +281,7 @@ final class GlideControl {
         return String.format(java.util.Locale.US, "%.1fs", ms / 1000f);
     }
 
-    private static TextView nudge(MainActivity activity, int glyphRes) {
+    private static TextView nudgeButton(MainActivity activity, int glyphRes) {
         TextView t = new TextView(activity);
         t.setText(glyphRes);
         t.setTextSize(16);

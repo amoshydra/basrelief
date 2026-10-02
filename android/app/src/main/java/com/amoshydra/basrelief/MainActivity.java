@@ -358,16 +358,11 @@ public class MainActivity extends Activity {
         // gesture sitting next to it is a second thing to learn and a second thing to
         // break. The handle above it is the affordance, and the plus button that
         // appears afterwards is the way back.
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        TextView title = new TextView(this);
-        title.setText(R.string.studio_title);
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(14);
-        header.addView(title, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        // Handle first, so it is the topmost child and sits above the title.
+        // Handle first, so it is the topmost child and the only fixed thing in the
+        // sheet. There is no title row: the mockup puts the first caption directly
+        // under the grip, and a permanent "Basrelief - live preview" costs a line of
+        // the 40% peek on every screen to say something the user is already looking
+        // at. The title lived in a header that held nothing else.
         panel.addView(buildSheetHandle(), 0);
 
         // Scrolling content. Built here, before anything is added to it, because
@@ -402,8 +397,6 @@ public class MainActivity extends Activity {
         panel.addView(sheetScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        sheetContent.addView(header);
-
         // gesture hint (hidden once the user minimises the panel)
         hintView = new TextView(this);
         hintView.setText(R.string.gesture_hint);
@@ -417,9 +410,10 @@ public class MainActivity extends Activity {
         // screens AND the platform can give the lock screen its own live engine.
         // A toggle that cannot change anything is the same lie as a greyed slider.
         Surface segmentFor = surfaceForSegment();
+        boolean firstCaption = segmentFor == null;
         if (segmentFor != null) sheetContent.addView(buildSurfaceSegment(segmentFor));
 
-        sectionLabel(getString(R.string.group_relief));
+        sectionLabel(getString(R.string.group_relief), firstCaption);
 
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
@@ -458,7 +452,7 @@ public class MainActivity extends Activity {
         // from Depth and Zoom: they change how the photograph renders, not where it
         // sits or how far it stands out. Signed, because both directions are useful
         // and an unsigned control makes "less contrast" unreachable.
-        sheetContent.addView(fieldCaption(getString(R.string.group_picture)));
+        sectionLabel(getString(R.string.group_picture));
         sheetContent.addView(addSlider("brightness",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
@@ -546,18 +540,6 @@ public class MainActivity extends Activity {
             sheetContent.addView(mapRow);
         }
 
-        // Depth AI: generate a depth map on a LAN ComfyUI instance, then pack
-        // it into a self-contained PNG and load it into the studio + wallpaper
-        Button depthAiBtn = makeButton(getString(R.string.depth_ai_button), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openDepthGen();
-            }
-        });
-        depthAiBtn.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        sheetContent.addView(depthAiBtn);
 
         // reliable way to reach the live-wallpaper picker on any launcher
         // Set as wallpaper opens a chooser, because a live wallpaper is bound to a
@@ -644,7 +626,7 @@ public class MainActivity extends Activity {
         dot.setColor(PILL_DIM);
         pillMark.setBackground(dot);
         LinearLayout.LayoutParams markLp = new LinearLayout.LayoutParams(dp(8), dp(8));
-        markLp.rightMargin = dp(9);
+        markLp.rightMargin = dp(10);
         pill.addView(pillMark, markLp);
 
         pillLabel = new TextView(this);
@@ -826,7 +808,30 @@ public class MainActivity extends Activity {
     }
 
     /** Show the Depth AI dialog, pre-loaded with the current studio image. */
+    /**
+     * Repaint everything that can say a run is happening.
+     *
+     * <p>Wired to {@link DepthGenDialog#setRunListener} because the run lives on a
+     * worker thread in a class that knows nothing about the sheet. Registered here,
+     * once, where the dialog is first opened -- and never cleared, because the
+     * reference is weak and this Activity is the thing being collected.
+     */
+    private void onDepthRunStateChanged() {
+        AppState state = AppState.load(prefs, getFilesDir());
+        refreshFixLine(state);
+        refreshStatus();
+        // The pill repaints only on a collapse otherwise, which is how a failed run
+        // used to leave it reading "Generating" until the sheet was touched.
+        updatePillVisibility();
+    }
+
     private void openDepthGen() {
+        DepthGenDialog.setRunListener(new DepthGenDialog.RunListener() {
+            @Override
+            public void onRunStateChanged() {
+                onDepthRunStateChanged();
+            }
+        });
         if (depthGenDialog == null) {
             depthGenDialog = new DepthGenDialog(MainActivity.this,
                     new DepthGenDialog.Callback() {
@@ -887,6 +892,12 @@ public class MainActivity extends Activity {
                 renderer.reloadFromPrefs();
             }
         });
+        // The renderer writes to whatever surface it is told to. Never told, it
+        // defaults to Home, which is right until the user picks Lock -- and wrong from
+        // then on, silently: the segment says Lock, the numbers move, and Home is what
+        // changed. Set here as well as in the segment's click, because onResume is the
+        // first thing that runs after a recreation with the segment already on Lock.
+        renderer.setEditSurface(editSurface);
         glView.requestRender();
         refreshStatus();
         sensorPolicy.setVisible(true);
@@ -970,6 +981,21 @@ public class MainActivity extends Activity {
             prefs.edit().putBoolean("hint_dismissed", true).apply();
             hintView.setVisibility(View.GONE);
         }
+    }
+
+    /**
+     * Take the sheet out of the way, leaving the run going.
+     *
+     * <p>What "Run in background" means. It does not cancel -- collapsing never does
+     * (R-S4) -- it just puts the work where the pill can report it, which is the only
+     * place the percentage can be read while the controls are in the way.
+     *
+     * <p>Animated, unlike {@link #expandUi}: a short motion here reads as the sheet
+     * getting out of the way, and the alternative is the controls vanishing under the
+     * finger with no acknowledgement at all.
+     */
+    private void collapseSheet() {
+        setSheetPosition(1f, true);
     }
 
     private void expandUi() {
@@ -1063,28 +1089,67 @@ public class MainActivity extends Activity {
      * do with a depth map is delete it, and that is a gallery row action, not
      * something that belongs in a sentence you are reading under a handle.
      */
+    /**
+     * The one dashed line under the grip, outside the scroll.
+     *
+     * <p>Geometry is the mockup's: 14px side margins so it does not run edge to edge,
+     * 11px corners, 11/12 padding, and 9px between the sentence and its actions. The
+     * border is a field rather than a value baked into the constructor because the
+     * failed state recolours it -- see {@link #fixBorderColour}.
+     */
     private LinearLayout buildFixLine() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        DashBorder border = new DashBorder(dp(1), dp(6),
-                Color.argb(150, 255, 255, 255));
+        DashBorder border = new DashBorder(dp(1), dp(6), FIX_BORDER, dp(11));
+        fixBorder = border;
         box.setBackground(border);
-        int pad = dp(10);
-        box.setPadding(pad, pad, pad, pad);
+        box.setPadding(dp(11), dp(11), dp(11), dp(12));
 
         fixText = new TextView(this);
         fixText.setTextColor(Color.WHITE);
         fixText.setTextSize(13);
+        fixText.setLineSpacing(0, 1.42f);
         box.addView(fixText);
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams actsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        actsLp.topMargin = dp(9);
+        actions.setLayoutParams(actsLp);
         fixActions = actions;
         box.addView(actions);
+
+        LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        boxLp.leftMargin = dp(14);
+        boxLp.rightMargin = dp(14);
+        boxLp.bottomMargin = dp(10);
+        box.setLayoutParams(boxLp);
 
         box.setVisibility(View.GONE);
         return box;
     }
+
+    /** The dashed border itself, so a state can recolour it. */
+    private DashBorder fixBorder;
+
+    /**
+     * Recolour the dashed edge.
+     *
+     * <p>The mockup's failure state turns the border {@code --bad} rather than
+     * changing the sentence alone, because the border is what the eye lands on: a
+     * dashed line saying "No answer" in white reads as an informational line.
+     */
+    private void setFixBorderColour(int colour) {
+        if (fixBorder != null) fixBorder.setColour(colour);
+    }
+
+    /** The mockup's dashed edge: rgba(255,255,255,.3), and --bad for a failure. */
+    private static final int FIX_BORDER = 0x4DFFFFFF;
+    private static final int BAD_COLOUR = 0xFFE2725B;
 
     /**
      * Show the fix line, or take it away.
@@ -1127,14 +1192,34 @@ public class MainActivity extends Activity {
         setPillState(attention ? PillState.ATTENTION : PillState.IDLE);
     }
 
+    /**
+     * One fix-line action.
+     *
+     * <p>Weighted to fill the row, so one action is the full width and two split it --
+     * the mockup's {@code flex:1} on both. It was WRAP_CONTENT at the left, which made
+     * a single action look like a stray chip rather than the whole row.
+     *
+     * <p>Colours set explicitly for the same reason every other button here does: the
+     * app has no dark theme, so an unstyled Button arrives light-themed with dark
+     * UPPER-CASE text, on a near-black card.
+     */
     private Button fixButton(String label, View.OnClickListener onClick) {
         Button b = new Button(this);
         b.setText(label);
+        b.setAllCaps(false);
         b.setTextSize(13);
+        b.setTextColor(0xFFFFFFFF);
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0x1AFFFFFF);
+        bg.setCornerRadius(dp(9));
+        bg.setStroke(dp(1), 0x24FFFFFF);
+        b.setBackground(bg);
+        b.setPadding(dp(8), 0, dp(8), 0);
         b.setOnClickListener(onClick);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = dp(8);
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        lp.rightMargin = dp(4);
         b.setLayoutParams(lp);
         return b;
     }
@@ -1149,7 +1234,7 @@ public class MainActivity extends Activity {
     private enum PillState { IDLE, ATTENTION, PROGRESS }
     private static final int WARN_COLOUR = 0xFFE8B04B;
     /** The idle status dot: --dimmer, because it is a fact rather than a prompt. */
-    private static final int PILL_DIM = 0x57FFFFFF;
+    private static final int PILL_DIM = 0x8CFFFFFF;
 
     private void setPillState(PillState state) {
         // The CONDITION, as opposed to what is drawn. Kept separately because a
@@ -1225,7 +1310,9 @@ public class MainActivity extends Activity {
                 (LinearLayout.LayoutParams) pillMark.getLayoutParams();
         if (progress) {
             if (pillRing == null) {
-                pillRing = new ProgressRing(dp(15), dp(2), 0xFF7FD1C1, 0x33FFFFFF);
+                // The ring's HEAD is white and its track is .28 -- an accent head
+                // reads as a mint spinner, which is a different component.
+                pillRing = new ProgressRing(dp(15), dp(2), 0xFFFFFFFF, 0x47FFFFFF);
             }
             pillMark.setBackground(pillRing);
             lp.width = dp(15);
@@ -1243,7 +1330,7 @@ public class MainActivity extends Activity {
             lp.width = dp(8);
             lp.height = dp(8);
         }
-        lp.rightMargin = dp(9);
+        lp.rightMargin = dp(10);
         pillMark.setLayoutParams(lp);
     }
 
@@ -1979,6 +2066,16 @@ public class MainActivity extends Activity {
      * controls they introduce.
      */
     private void sectionLabel(String text) {
+        sectionLabel(text, false);
+    }
+
+    /**
+     * @param first the caption at the very top of the scroll. The mockup's
+     *              {@code .caption:first-child} gets 2px rather than 16px, because the
+     *              grip is already a visible boundary and a second band of space under
+     *              it is dead space on the one screen every user opens.
+     */
+    private void sectionLabel(String text, boolean first) {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(0x57FFFFFF);
@@ -1986,7 +2083,7 @@ public class MainActivity extends Activity {
         tv.setAllCaps(true);
         tv.setLetterSpacing(0.09f);
         tv.setTypeface(null, android.graphics.Typeface.BOLD);
-        tv.setPadding(dp(4), dp(16), dp(4), dp(7));
+        tv.setPadding(dp(4), first ? dp(2) : dp(16), dp(4), dp(7));
         sheetContent.addView(tv);
     }
 
@@ -2246,11 +2343,13 @@ public class MainActivity extends Activity {
     /**
      * The fix line, from the conditions that hold right now.
      *
-     * <p>One condition is implemented: no depth map. The other three in the PRD --
-     * generation failed, server unreachable, gyro neutral drifted -- need the
-     * background-generation slice and a TiltController reading to exist, and a line
-     * that can only ever say one thing is better than one that says a thing that may
-     * be wrong.
+     * <p>Three of the PRD's four are implemented: no depth map, a run in progress,
+     * and a run that failed. Unreachable-server and failed-generation are the SAME
+     * condition to a user, so they are one line and one pair of actions.
+     *
+     * <p>The fourth -- gyro neutral drifted -- is not. It needs a TiltController
+     * reading of drift that exists, and a line that says a thing that may be wrong is
+     * worse than a line that does not.
      *
      * <p>With a map present this shows NOTHING (R-F4). Not an empty box: a dashed
      * border left on screen trains the eye to stop reading it, which is how a real
@@ -2259,17 +2358,62 @@ public class MainActivity extends Activity {
     private void refreshFixLine(AppState state) {
         LibraryItem item = state.activeItem();
         boolean bundled = item == null || item.isBundled();
+        // Reset first, so only the branch that means it actually changes the colour.
+        setFixBorderColour(FIX_BORDER);
+
+        // A run in progress, and a run that just failed, are conditions too -- and
+        // they outrank the bundled check, because they are about a real photograph.
+        // The mockup puts both in the SHEET, not only on the collapsed pill: "the
+        // sheet is open, so the fix line is already the signal".
+        if (!bundled && DepthGenDialog.isRunning()) {
+            setFixLine(getString(R.string.fix_generating,
+                            Math.max(0, DepthGenDialog.progressPercent())),
+                    getString(R.string.fix_run_in_background), new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            // Collapsing is not cancelling; this just takes the sheet
+                            // out of the way so the pill carries the rest of the wait.
+                            collapseSheet();
+                        }
+                    }, null, null, false);
+            return;
+        }
+        if (!bundled && DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
+                && (item.depthName != null || !DepthGenDialog.failureCause().isEmpty())) {
+            // The sentence says what SURVIVED. An error that does not leaves the user
+            // unable to tell whether their depth is gone, which is the worst outcome
+            // this app has -- and it is the outcome the PRD named.
+            setFixBorderColour(BAD_COLOUR);
+            setFixLine(getString(R.string.fix_no_answer),
+                    getString(R.string.fix_try_again), new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            openDepthGen();
+                        }
+                    },
+                    getString(R.string.fix_choose_map), new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            pickFile(REQ_DEPTH);
+                        }
+                    });
+            return;
+        }
         if (bundled) {
             // The demo is editable now, so it has no missing map -- but it is the
             // "back to the default" row, and first run wants one sentence saying so
             // with a way to add a photo. That is a condition, not a badge.
+            // attention=false: the bundled demo HAS a depth map and renders in relief,
+            // so an amber pill reading "No depth" beside it was a lie. The five-arg
+            // overload hard-codes attention=true, which is why this call site kept the
+            // behaviour its own comment described as fixed.
             setFixLine(getString(R.string.fix_bundled_demo),
                     getString(R.string.fix_add_photo), new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
                             pickFile(REQ_IMAGE);
                         }
-                    }, null, null);
+                    }, null, null, false);
             return;
         }
         if (item.depthName != null) {
@@ -2368,6 +2512,11 @@ public class MainActivity extends Activity {
                     // Copy and paste must follow the surface being edited, or they
                     // silently always mean Home.
                     if (gallery != null) gallery.setSurface(surface);
+                    // A volatile write from the UI thread, which is what the renderer's
+                    // setters do. Without this the segment moved, the numbers moved,
+                    // and two-finger pan and tap-to-orbit wrote to HOME anyway -- so
+                    // Lock looked edited and Home was what changed.
+                    renderer.setEditSurface(surface);
                     // The preview must move to the new surface's framing too, or the
                     // sliders change while the relief on screen does not.
                     glView.queueEvent(new Runnable() {
@@ -2683,17 +2832,19 @@ public class MainActivity extends Activity {
             });
             return;
         }
-        String s = prefs.getString("status", "loading…");
-        String g = prefs.getString("gyro_status", "");
-        if (!g.isEmpty()) s += "  |  " + g;
-        // The wallpaper engine's own view of itself, if it has ever run. A live
-        // wallpaper is a separate surface with its own lifecycle, so "the studio
-        // looks right" says nothing about whether the home screen is showing what
-        // is selected -- and the two being different is the whole class of bug
-        // this line exists to make visible without a cable.
-        String w = prefs.getString("wallpaper_debug", "");
-        if (!w.isEmpty()) s += "\nEngine: " + w;
-        statusView.setText(getString(R.string.diag_status_prefix) + s);
+        // One line: which map, and the gyro. The wireframe is explicit that this is
+        // the sheet's whole debug content -- "the map's file name and the model that
+        // made it are answers to 'what is wrong', and the sheet's Depth row is not" --
+        // and that the engine's own view of itself belongs in Settings, where someone
+        // is already asking. It used to append the engine line here too, which wrapped
+        // to three dense lines at the one place the eye goes when something looks
+        // wrong. DiagnosticsBlock still shows all of it.
+        StringBuilder line = new StringBuilder();
+        line.append(getString(R.string.diag_depth_prefix))
+                .append(prefs.getString("status", ""));
+        String gyro = prefs.getString("gyro_status", "");
+        if (!gyro.isEmpty()) line.append("  |  ").append(gyro);
+        statusView.setText(line.toString());
     }
 
     /**

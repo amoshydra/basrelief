@@ -13,7 +13,7 @@ import com.amoshydra.basrelief.core.store.LibraryItem;
  * The diagnostics block at the bottom of Settings.
  *
  * <p>Everything here is for a person with a cable and a problem. It lives in one
- * place, at the bottom, and never inside the controls — because debug text
+ * place, at the bottom, and never inside the controls -- because debug text
  * sprinkled through a UI reads as content, and content is what the user came to look
  * at.
  *
@@ -30,7 +30,7 @@ import com.amoshydra.basrelief.core.store.LibraryItem;
  */
 final class DiagnosticsBlock {
 
-    /** Shown where a value has not been written yet — see {@link #valueOf}. */
+    /** Shown where a value has not been written yet -- see {@link #valueOf}. */
     private static final String NONE = "—";
 
     private DiagnosticsBlock() {
@@ -101,7 +101,7 @@ final class DiagnosticsBlock {
      * One key/value line.
      *
      * <p>The prefix comes from a resource and carries its own trailing space, so the
-     * separator is not a second place the wording can differ between screens — the
+     * separator is not a second place the wording can differ between screens -- the
      * studio's status line and this block both say "Status:" from one string.
      */
     private static TextView line(MainActivity activity, int prefixRes, String value) {

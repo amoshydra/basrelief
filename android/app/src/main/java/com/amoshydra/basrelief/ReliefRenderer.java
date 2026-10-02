@@ -326,6 +326,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private final float[] tapOrbit = new float[2]; // scratch, avoids per-tap allocation
     private float surfaceAspect = 1f;
 
+    /**
+     * Which surface this renderer is showing, and the one its writes belong to.
+     *
+     * <p>Not a parameter to the save methods on purpose. Both savers are called from
+     * touch handlers in {@code MainActivity} and there are six call sites between
+     * them; passing a surface to each is six chances to pass the wrong one, and the
+     * wrong one is silent -- the numbers on screen move and the OTHER surface's
+     * stored values change, which is the specific defect this field exists to close.
+     *
+     * <p>Volatile rather than a queueEvent setter: the studio writes it from the UI
+     * thread and the GL thread reads it when saving, which is exactly the pattern the
+     * other setters here use. The wallpaper's own renderer sets it from its
+     * {@code SurfaceResolver} instead, so a lock engine writes to Lock.
+     */
+    private volatile Surface editSurface = Surface.HOME;
+
+    /** Which surface this renderer's writes belong to. Safe from the UI thread. */
+    void setEditSurface(Surface surface) {
+        this.editSurface = surface == null ? Surface.HOME : surface;
+    }
+
     private volatile float targetX = 0f, targetY = 0f;
     private volatile float orbitX = 0f, orbitY = 0f;
     private float smoothX = 0f, smoothY = 0f;
@@ -518,7 +539,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return item.withOrigin(Surface.HOME, ox, oy).withPan(Surface.HOME, px, py);
+                Surface on = editSurface;
+                return item.withOrigin(on, ox, oy).withPan(on, px, py);
             }
         });
     }
@@ -532,7 +554,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return item.withPan(Surface.HOME, px, py);
+                return item.withPan(editSurface, px, py);
             }
         });
     }
@@ -968,7 +990,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final LibraryItem active = state.activeItem();
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
-        apply(Framing.of(state.activeItem(), Surface.HOME));
+        apply(Framing.of(state.activeItem(), editSurface));
         if (active == null || active.isBundled()) {
             // No file to resolve: the marble bust, read from res/raw. This is a
             // renderable state and not a failure, and it is where a delete of the

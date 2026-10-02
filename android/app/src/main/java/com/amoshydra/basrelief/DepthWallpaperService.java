@@ -227,7 +227,22 @@ public class DepthWallpaperService extends WallpaperService {
         }
     }
 
+    /**
+     * Keep the renderer's writes on the engine's own surface.
+     *
+     * <p>A lock engine writes to Lock and a home engine to Home, from the same
+     * {@code SurfaceResolver} that already decides which engine this is. Reading it
+     * here rather than passing it per call keeps the renderer's write path identical
+     * to the studio's, which is what stops the two surfaces from drifting.
+     */
+    private void tellRendererItsSurface() {
+        SurfaceResolver which = surface;
+        if (tilt == null) return;
+        if (renderer != null) renderer.setEditSurface(which.surface());
+    }
+
     private void applyFromPrefs(SharedPreferences p) {
+        tellRendererItsSurface();
             // A flags change can arrive while the engine is still being built, and
             // this runs before the renderer exists on that path. Nothing here may
             // throw: the alternative is a wallpaper that is not drawn at all.

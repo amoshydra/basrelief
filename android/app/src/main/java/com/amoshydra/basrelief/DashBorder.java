@@ -30,9 +30,18 @@ final class DashBorder extends Drawable {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final float strokeWidth;
     private final float[] dash;
+    private final float cornerRadius;
 
-    DashBorder(int strokeWidthPx, float dashLengthPx, int color) {
+    /**
+     * @param cornerRadiusPx the mockup's 11px. It used to be {@code strokeWidth * 2},
+     *                       which derives a radius from the line weight rather than
+     *                       stating one -- so a 1px dash got a 2px radius and the fix
+     *                       line read as a near-rectangle with a dashed edge, where the
+     *                       design has a distinctly rounded card.
+     */
+    DashBorder(int strokeWidthPx, float dashLengthPx, int color, float cornerRadiusPx) {
         this.strokeWidth = strokeWidthPx;
+        this.cornerRadius = cornerRadiusPx;
         this.dash = new float[]{dashLengthPx, dashLengthPx};
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(strokeWidthPx);
@@ -61,7 +70,20 @@ final class DashBorder extends Drawable {
         canvas.drawRoundRect(
                 b.left + half, b.top + half,
                 b.right - half, b.bottom - half,
-                strokeWidth * 2f, strokeWidth * 2f, paint);
+                cornerRadius, cornerRadius, paint);
+    }
+
+    /**
+     * Recolour the dash.
+     *
+     * <p>A setter rather than a second Drawable, because the failure state changes the
+     * fix line's border often enough that rebuilding the line on each change would
+     * also rebuild its buttons -- and the border is one Paint whose colour is one
+     * assignment away.
+     */
+    void setColour(int color) {
+        paint.setColor(color);
+        invalidateSelf();
     }
 
     @Override

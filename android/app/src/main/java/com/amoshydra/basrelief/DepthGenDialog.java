@@ -198,6 +198,42 @@ public final class DepthGenDialog {
      */
     private static volatile WeakReference<Callback> host;
 
+    /**
+     * Told when a run starts, ends, or changes its percentage.
+     *
+     * <p>Exists because the studio's pill and fix line are the only things that can
+     * say a run is happening, and neither is on the run's own thread. Without this the
+     * pill was repainted only when the user collapsed the sheet -- so a run that
+     * FAILED while the sheet was collapsed left the pill reading "Generating · 62%"
+     * indefinitely, and the only way to clear it was to open and close the sheet.
+     *
+     * <p>A weak reference for the same reason {@link #host} is one: the studio is
+     * destroyed and recreated on every rotation, and a run outlives it.
+     */
+    public interface RunListener {
+        void onRunStateChanged();
+    }
+
+    private static volatile WeakReference<RunListener> runListenerRef;
+
+    /** Register (or clear, with null) the listener for run-state changes. */
+    public static void setRunListener(RunListener listener) {
+        runListenerRef = listener == null ? null : new WeakReference<RunListener>(listener);
+    }
+
+    /** UI thread only, so a listener may touch views directly. */
+    private static void notifyRunStateChanged() {
+        WeakReference<RunListener> ref = runListenerRef;
+        final RunListener l = ref == null ? null : ref.get();
+        if (l == null) return;
+        UI.post(new Runnable() {
+            @Override
+            public void run() {
+                l.onRunStateChanged();
+            }
+        });
+    }
+
     /** Tell the host a map landed. No-op when there is no live host. */
     private static void notifyHost(String itemId, String packedPath) {
         WeakReference<Callback> ref = host;
@@ -1180,6 +1216,9 @@ public final class DepthGenDialog {
         result = Result.NONE;
         failureCause = "";
         progress = 0;
+        // Announced here, where `run` is already set, so the studio's fix line can
+        // say "Generating" for the whole wait rather than appearing when it is over.
+        notifyRunStarted();
         // Persisted before the request is sent, so a process killed between here
         // and the answer still knows which server to ask.
         pending(r.app, r.toJson());
@@ -1383,6 +1422,7 @@ public final class DepthGenDialog {
                 // already on disk and already in the index.
                 notifyHost(r.itemId, packed.getAbsolutePath());
                 notifyOutcome(r.app, true, label);
+                notifyRunStateChanged();
             }
         });
     }
@@ -1442,6 +1482,9 @@ public final class DepthGenDialog {
                 DepthGenDialog panel = openPanel;
                 if (panel != null) panel.render();
                 notifyOutcome(r.app, false, label);
+                // The studio has to be told, or its pill keeps saying "Generating"
+                // until someone happens to collapse the sheet again.
+                notifyRunStateChanged();
             }
         });
     }
@@ -1487,6 +1530,16 @@ public final class DepthGenDialog {
      * the fix line still reports it; only the out-of-app nudge is missing, and it
      * is missing loudly in logcat rather than silently on the glass.
      */
+    /**
+     * A run has begun. Told at the start, not only at the end, because "Generating
+     * depth - 62%" is the one sentence the fix line owes the user while the wait is
+     * happening; a line that appears only when the wait is over has missed the only
+     * moment it was written for.
+     */
+    public static void notifyRunStarted() {
+        notifyRunStateChanged();
+    }
+
     private static void notifyOutcome(Context context, boolean applied, String label) {
         try {
             NotificationManager nm = (NotificationManager)

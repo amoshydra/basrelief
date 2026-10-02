@@ -121,6 +121,15 @@ final class Gallery {
     private static final String STRIP_TAG = "basrelief-strip";
     private static final String GRID_TAG = "basrelief-grid";
 
+    /**
+     * The open grid, so the strip can be ordered beneath it.
+     *
+     * <p>Held rather than found by tag: {@code root} also holds the sheet and the
+     * pill, and the ordering has to be right at the moment of insertion, which is
+     * before any tag search would be convenient.
+     */
+    private LinearLayout gridPanel;
+
     private final MainActivity activity;
     private final FrameLayout root;
 
@@ -263,7 +272,20 @@ final class Gallery {
     void installStrip() {
         if (strip != null) return;
         strip = buildStrip();
-        root.addView(strip);
+        // BELOW the grid, when one is open. Appending puts the strip last in root,
+        // i.e. on top of everything -- which was invisible until something refreshed
+        // the strip while the gallery was open. Changing the sort order does exactly
+        // that, so choosing a sort order replaced the gallery with a filmstrip.
+        //
+        // The ordering is therefore a property of WHERE it goes rather than of when it
+        // was built: a view whose z-order depends on whether a rebuild happened is a
+        // z-order that will be wrong again.
+        int below = gridPanel == null ? -1 : root.indexOfChild(gridPanel);
+        if (below >= 0) {
+            root.addView(strip, below);
+        } else {
+            root.addView(strip);
+        }
         // Ask for the insets now that it is attached. A listener set before
         // attachment is never called, and requestApplyInsets on a detached view
         // finds no ViewRootImpl to dispatch through — which is how a strip ends up
@@ -445,7 +467,7 @@ final class Gallery {
         tile.setTextSize(dashed ? 19 : 11);
         tile.setGravity(Gravity.CENTER);
         tile.setBackground(dashed
-                ? new DashBorder(activity.dp(1), activity.dp(4), 0x55FFFFFF)
+                ? new DashBorder(activity.dp(1), activity.dp(4), 0x57FFFFFF, activity.dp(11))
                 : plain(0x22FFFFFF, activity.dp(11)));
         tile.setContentDescription(description);
         tile.setOnClickListener(listener);
@@ -567,10 +589,19 @@ final class Gallery {
         if (grid != null) return;
         grid = buildGrid();
         root.addView(grid);
+        // The grid is a full-screen takeover, so "added last" is not good enough:
+        // anything that re-adds itself afterwards -- the strip, on a selection
+        // change -- would land on top of it. bringChildToFront states the intent
+        // instead of relying on the order two unrelated methods happened to run in.
+        root.bringChildToFront(grid);
         grid.requestApplyInsets();
     }
 
     private void dismissGrid() {
+        // Cleared even when there is nothing to remove: gridPanel is what installStrip
+        // orders against, and a stale reference would make a later strip build insert
+        // itself at an index that no longer means anything.
+        gridPanel = null;
         if (grid == null) return;
         root.removeView(grid);
         grid = null;
@@ -596,6 +627,7 @@ final class Gallery {
         panel.setBackgroundColor(0xF7080A0D);
         panel.setPadding(pad, pad, pad, pad);
         panel.setTag(GRID_TAG);
+        gridPanel = panel;
         panel.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
@@ -640,6 +672,25 @@ final class Gallery {
         panel.addView(selectionLine());
 
         // ---- the photographs
+        //
+        // cellPx is assigned HERE, before any row is built, because every cell reads
+        // it as both its width and its height. It was declared and read but never
+        // assigned: an earlier edit that put this line in aborted on a later mismatch,
+        // so the assignment silently never happened. cellPx stayed 0, every cell was
+        // 0 tall, and the grid rendered as an empty 2400px scroll -- which looks
+        // exactly like an empty gallery rather than like a bug.
+        //
+        // From the SCREEN rather than from panel.getWidth(): this panel was created
+        // moments ago and has never been laid out, so its width is a question about
+        // the future. It is MATCH_PARENT, so the screen's width is not an
+        // approximation of what it will be -- it is what it will be.
+        int screen = activity.getResources().getDisplayMetrics().widthPixels;
+        cellPx = (screen - 2 * pad - GRID_COLUMNS * activity.dp(GRID_GAP_DP))
+                / GRID_COLUMNS;
+        if (cellPx <= 0) {
+            cellPx = activity.dp(CELL_DP_FALLBACK);
+        }
+
         ScrollView scroll = new ScrollView(activity);
         LinearLayout cells = new LinearLayout(activity);
         cells.setOrientation(LinearLayout.VERTICAL);
@@ -735,7 +786,7 @@ final class Gallery {
         TextView add = text(activity.getString(R.string.add_photo_glyph), 22);
         add.setTextColor(0x99FFFFFF);
         add.setGravity(Gravity.CENTER);
-        add.setBackground(new DashBorder(activity.dp(1), activity.dp(4), 0x55FFFFFF));
+        add.setBackground(new DashBorder(activity.dp(1), activity.dp(4), 0x57FFFFFF, activity.dp(11)));
         add.setContentDescription(activity.getString(R.string.gallery_add_photo));
         add.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -958,6 +1009,7 @@ final class Gallery {
         root.removeView(grid);
         grid = buildGrid();
         root.addView(grid);
+        root.bringChildToFront(grid);
         grid.requestApplyInsets();
     }
 

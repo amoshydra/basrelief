@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -210,7 +211,7 @@ final class BasreliefSlider extends LinearLayout {
         // ---- the track
         face = new TrackFace(activity.dp(TRACK_RADIUS_DP), activity.dp(VALUE_PAD_DP),
                 sp(a, VALUE_SP));
-        track = new Track(a, this, face);
+        track = new Track(a, this);
         track.setBackground(face);
         track.setClickable(true);
         // Weight 1, not a fixed width: the track takes whatever the name, the nudges
@@ -438,7 +439,7 @@ final class BasreliefSlider extends LinearLayout {
         return res == 0 ? key : a.getString(res);
     }
 
-    private static float sp(android.content.Context c, float value) {
+    private static float sp(Context c, float value) {
         return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value,
                 c.getResources().getDisplayMetrics());
     }
@@ -448,23 +449,23 @@ final class BasreliefSlider extends LinearLayout {
     /**
      * The bar, and the drag.
      *
-     * <p>Owns both halves because they are the same arithmetic: the fill is drawn
-     * from a fraction, the fraction comes from a touch, and a touch handler that
-     * could not see the fraction would have to be told to repaint on every pixel
-     * rather than simply invalidating what it just changed.
+     * <p>One owner reference rather than a listener, because the touch and the paint
+     * are the same arithmetic: a touch says <i>what fraction</i>, and the face that
+     * paints the fraction has to hear about it. Routing both through the row means
+     * there is one place a value moves — preview, nudge, release and a programmatic
+     * set all go through it, and none of them can leave the bar disagreeing with the
+     * number printed on it.
      */
     private static final class Track extends View {
 
         private final BasreliefSlider owner;
-        private final TrackFace face;
 
         /** The value when this gesture began — what a cancelled drag returns to. */
         private int pressedAt;
 
-        Track(android.content.Context c, BasreliefSlider owner, TrackFace face) {
+        Track(Context c, BasreliefSlider owner) {
             super(c);
             this.owner = owner;
-            this.face = face;
         }
 
         @Override
@@ -475,11 +476,13 @@ final class BasreliefSlider extends LinearLayout {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     // This row lives inside a scroll, and a drag that drifts a few
-                    // pixels vertically belongs to the scroll. Claiming the gesture
-                    // here is a layout-independent way to say so, which a
-                    // translation would not be.
+                    // pixels downward belongs to the scroll rather than to the bar.
+                    // Claiming the gesture here is the touch-level way to say so.
                     getParent().requestDisallowInterceptTouchEvent(true);
                     pressedAt = owner.value;
+                    // Set the value on the way down, so a tap is tap-to-set. The
+                    // release that follows writes it once, down the same one-write
+                    // path a drag takes, so tap-to-set costs nothing extra.
                     owner.preview(valueAt(event.getX()));
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -561,8 +564,6 @@ final class BasreliefSlider extends LinearLayout {
         TrackFace(float radiusPx, float padPx, float textSizePx) {
             this.radius = radiusPx;
             this.pad = padPx;
-            bar.setColor(TRACK_EMPTY);
-            fill.setColor(ACCENT_FILL);
             ink.setTextSize(textSizePx);
             ink.setTypeface(Typeface.DEFAULT_BOLD);
             // A flat translucent fill at a fractional width is exactly where banding
@@ -596,14 +597,14 @@ final class BasreliefSlider extends LinearLayout {
             float h = b.height();
             if (w <= 0f || h <= 0f) return;
 
-            bar.setColor(TRACK_EMPTY);
+            bar.setColor(fade(TRACK_EMPTY));
             canvas.drawRoundRect(b.left, b.top, b.right, b.bottom, radius, radius, bar);
 
             // Rounded to whole pixels: a fill ending half a pixel in is the two
             // terraces this app already pays for once in the depth map.
             float filled = Math.round(w * fraction);
             if (filled > 0f) {
-                fill.setColor(ACCENT_FILL);
+                fill.setColor(fade(ACCENT_FILL));
                 int save = canvas.save();
                 canvas.clipRect(b.left, b.top, b.left + filled, b.bottom);
                 canvas.drawRoundRect(b.left, b.top, b.right, b.bottom, radius, radius, fill);
@@ -613,7 +614,7 @@ final class BasreliefSlider extends LinearLayout {
             if (label.isEmpty()) return;
             Paint.FontMetrics fm = ink.getFontMetrics();
             float baseline = b.top + h / 2f - (fm.ascent + fm.descent) / 2f;
-            ink.setColor(holdsText(filled) ? ON_FILL : Color.WHITE);
+            ink.setColor(fade(holdsText(filled) ? ON_FILL : Color.WHITE));
             // The same x either way. Moving the number as well as recolouring it
             // would make the value jump sideways at exactly the moment the bar is
             // being read against it.
@@ -636,12 +637,7 @@ final class BasreliefSlider extends LinearLayout {
 
         @Override
         public void setAlpha(int alpha) {
-            // Folded into the colours at paint time rather than set on the Paints:
-            // the ink's colour is chosen per draw, and setColor would drop the
-            // alpha a setAlpha had just applied.
-            int scaled = alpha;
-            bar.setColor(fade(TRACK_EMPTY, scaled));
-            fill.setColor(fade(ACCENT_FILL, scaled));
+            this.alpha = alpha;
             invalidateSelf();
         }
 
@@ -658,7 +654,7 @@ final class BasreliefSlider extends LinearLayout {
             return PixelFormat.TRANSLUCENT;
         }
 
-        private static int fade(int colour, int alpha) {
+        private int fade(int colour) {
             int a = ((colour >>> 24) * alpha) / 255;
             return (a << 24) | (colour & 0x00FFFFFF);
         }
