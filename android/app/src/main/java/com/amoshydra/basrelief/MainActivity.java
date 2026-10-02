@@ -317,9 +317,20 @@ public class MainActivity extends Activity {
         // --- overlay controls (bottom panel) ---
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundColor(Color.argb(180, 11, 14, 20));
-        int pad = dp(12);
-        panel.setPadding(dp(16), pad, dp(16), pad + dp(6));
+        // The mockup's --panel: rgba(22,26,32,.92). This was 0xB40B0E14 -- a
+        // different hue AND a much weaker alpha, so the sheet read as a grey wash
+        // over the photo instead of glass. There is no Android equivalent of
+        // backdrop-filter below API 31, so the flat panel at 92% is the honest
+        // approximation: the photo's edge still continues underneath.
+        android.graphics.drawable.GradientDrawable sheetBg =
+                new android.graphics.drawable.GradientDrawable();
+        sheetBg.setColor(0xEB161A20);
+        sheetBg.setCornerRadii(new float[]{dp(22), dp(22), dp(22), dp(22), 0, 0, 0, 0});
+        sheetBg.setStroke(dp(1), 0x24FFFFFF);
+        panel.setBackground(sheetBg);
+        // No panel padding: the mockup pads the SCROLLING content, not the sheet, so
+        // the grip and the fix line sit flush to the edges the way they do there.
+        panel.setPadding(0, 0, 0, 0);
 
         // header: just the title. The minimise button used to live here, and it is gone
         // because sliding the sheet down now does it - a control that duplicates a
@@ -352,6 +363,14 @@ public class MainActivity extends Activity {
         ScrollView sheetScroll = new ScrollView(this);
         sheetScroll.setFillViewport(true);
         sheetScroll.setClipToPadding(false);
+        // The mockup masks the last 22px so a control below the fold is visibly
+        // scrollable rather than looking like the end of the list. This is a child
+        // property -- not a transform -- so it is safe over the GLSurfaceView.
+        sheetScroll.setFadingEdgeLength(dp(22));
+        sheetScroll.setVerticalFadingEdgeEnabled(true);
+        // The sheet itself has no padding, so the content carries it: 14dp sides, and
+        // the bottom inset lives here so it scrolls away rather than eating height.
+        sheetScroll.setPadding(dp(14), 0, dp(14), dp(14));
         sheetContent = new LinearLayout(this);
         sheetContent.setOrientation(LinearLayout.VERTICAL);
         sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
@@ -372,7 +391,7 @@ public class MainActivity extends Activity {
         if (prefs.getBoolean("hint_dismissed", false)) hintView.setVisibility(View.GONE);
         sheetContent.addView(hintView);
 
-        sectionLabel("Adjust");
+        sectionLabel(getString(R.string.group_relief));
 
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
@@ -401,6 +420,7 @@ public class MainActivity extends Activity {
         // number with it instead of leaving Depth at the top of the list.
         depthIndex = sheetContent.indexOfChild(depthBarRow);
         if (depthIndex < 0) depthIndex = 0;
+        sectionLabel(getString(R.string.group_motion));
         sheetContent.addView(addSlider(getString(R.string.slider_motion), "motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider(getString(R.string.slider_zoom), "zoom",
@@ -418,6 +438,7 @@ public class MainActivity extends Activity {
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
+        sectionLabel(getString(R.string.group_framing));
         sheetContent.addView(buildFramingSection());
 
         Button resetView = makeButton(getString(R.string.action_reset_view), new View.OnClickListener() {
@@ -451,34 +472,51 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         sheetContent.addView(resetView);
 
-        sectionLabel("Actions");
+        // "This photo's map": the mockup's heading for the Regenerate/Replace row and
+        // the fix line. It replaces a row of three buttons that were not peers --
+        // Gallery became the filmstrip, Depth became the fix line, and Calibrate
+        // became a reported condition in Settings > Gyro rather than an action.
+        sectionLabel(getString(R.string.group_depth));
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.addView(makeButton(getString(R.string.action_choose_map), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pickFile(REQ_DEPTH);
-            }
-        }));
-        // Replaces the old Reset button, which cleared the image to fall back to
-        // the bundled demo. The marble bust is a row in the gallery now, so
-        // choosing it is a selection like any other -- and the reset it used to
-        // perform is one tap, in a list that also says what everything else is.
-        buttons.addView(makeButton(getString(R.string.gallery_title), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                gallery.show();
-            }
-        }));
-        buttons.addView(makeButton(getString(R.string.action_calibrate), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (tilt != null) tilt.recalibrate();
-                glView.requestRender();
-            }
-        }));
-        sheetContent.addView(buttons);
+        // Regenerate and Replace, on one row, and only when there IS a map. Two
+        // actions because an applied map has two things you might want to do to it,
+        // and neither is a third thing: deleting it belongs to the gallery row menu,
+        // where delete already asks first.
+        //
+        // Gallery is NOT here. It was a button because browsing used to be a mode you
+        // entered; it is the filmstrip now, so a button that opens a gallery you are
+        // already standing in is a control with nothing to do. Calibrate is not here
+        // either: it is a reported condition in Settings > Gyro, not something the
+        // user does while looking at a photo.
+        boolean hasMap = initialItem != null && initialItem.depthName != null;
+        if (hasMap && !initial.isBundled()) {
+            LinearLayout mapRow = new LinearLayout(this);
+            mapRow.setOrientation(LinearLayout.HORIZONTAL);
+            mapRow.addView(makeButton(getString(R.string.action_regenerate),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            openDepthGen();
+                        }
+                    }), new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            mapRow.addView(makeButton(getString(R.string.action_replace),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            // Reuses the active item's id, so it overwrites this
+                            // photo's map rather than starting a new gallery row.
+                            pickFile(REQ_DEPTH);
+                        }
+                    }), new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            mapLp.topMargin = dp(2);
+            mapRow.setLayoutParams(mapLp);
+            sheetContent.addView(mapRow);
+        }
 
         // Depth AI: generate a depth map on a LAN ComfyUI instance, then pack
         // it into a self-contained PNG and load it into the studio + wallpaper
@@ -974,6 +1012,16 @@ public class MainActivity extends Activity {
     private void setFixLine(CharSequence sentence, String primaryLabel,
                             View.OnClickListener primary, String secondaryLabel,
                             View.OnClickListener secondary) {
+        setFixLine(sentence, primaryLabel, primary, secondaryLabel, secondary, true);
+    }
+
+    /**
+     * @param attention whether this condition means something needs the user. False for
+     *                  a purely informational line, which must not turn the pill amber.
+     */
+    private void setFixLine(CharSequence sentence, String primaryLabel,
+                            View.OnClickListener primary, String secondaryLabel,
+                            View.OnClickListener secondary, boolean attention) {
         if (sentence == null) {
             fixLine.setVisibility(View.GONE);
             return;
@@ -988,9 +1036,11 @@ public class MainActivity extends Activity {
         if (secondaryLabel != null) {
             fixActions.addView(fixButton(secondaryLabel, secondary));
         }
-        // Attention is a property of the CONDITION, not of the sheet's position, so
-        // it is computed here and the collapse just re-reads it (R-F5).
-        setPillState(PillState.ATTENTION);
+        // Attention is a property of the CONDITION, not of the fact that a fix line
+        // exists. Setting it here meant the bundled demo -- whose line says only
+        // "Bundled demo" and offers "Add a photo" -- showed an amber "No depth" pill
+        // when there was nothing wrong at all. The caller decides.
+        setPillState(attention ? PillState.ATTENTION : PillState.IDLE);
     }
 
     private Button fixButton(String label, View.OnClickListener onClick) {
@@ -1070,6 +1120,9 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(12);
+        // Was unset, so it inherited the light theme's near-black text and vanished
+        // against the dark sheet. --dim is the mockup's caption colour.
+        t.setTextColor(0x8CFFFFFF);
         t.setPadding(dp(4), dp(4), dp(4), 0);
         return t;
     }
@@ -1290,17 +1343,21 @@ public class MainActivity extends Activity {
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.VERTICAL);
         strip.setGravity(android.view.Gravity.CENTER);
-        strip.setBackgroundColor(Color.argb(90, 255, 255, 255));
+        // No band. A full-width translucent fill across the sheet's top edge reads as
+        // a header; the mockup draws a 38x4 bar and nothing else. The strip stays as
+        // the touch target, which is what the height is for.
+        strip.setBackground(null);
         strip.setContentDescription("Drag to move the panel");
         strip.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(22)));
 
         // A short centred bar inside the strip: the strip is the touch target, the
         // bar is the thing that reads as a handle.
         View grip = new View(this);
-        LinearLayout.LayoutParams gripLp = new LinearLayout.LayoutParams(dp(40), dp(4));
-        gripLp.setMargins(0, dp(6), 0, dp(6));
-        grip.setBackgroundColor(Color.argb(150, 255, 255, 255));
+        LinearLayout.LayoutParams gripLp = new LinearLayout.LayoutParams(dp(38), dp(4));
+        gripLp.setMargins(0, dp(9), 0, 0);
+        // The mockup's grip bar: rgba(255,255,255,.42).
+        grip.setBackgroundColor(0x6BFFFFFF);
         grip.setLayoutParams(gripLp);
         strip.addView(grip);
 
@@ -1741,13 +1798,22 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ controls
 
+    /**
+     * A group heading.
+     *
+     * <p>Uppercase with letter spacing is what makes an 11sp label read as a heading
+     * rather than as one more slider name. Without it the groups blur into the
+     * controls they introduce.
+     */
     private void sectionLabel(String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
-        tv.setTextColor(0x88FFFFFF);
+        tv.setTextColor(0x57FFFFFF);
         tv.setTextSize(11);
-        tv.setLetterSpacing(0.15f);
-        tv.setPadding(0, dp(10), 0, dp(2));
+        tv.setAllCaps(true);
+        tv.setLetterSpacing(0.09f);
+        tv.setTypeface(null, android.graphics.Typeface.BOLD);
+        tv.setPadding(dp(4), dp(16), dp(4), dp(7));
         sheetContent.addView(tv);
     }
 
@@ -2109,6 +2175,16 @@ public class MainActivity extends Activity {
                 });
     }
 
+    /** Open the settings screen. Four groups, and nothing about a photo. */
+    void openSettings() {
+        SettingsSheet.show(this);
+    }
+
+    /** Re-read the diagnostics block. Called when it is tapped, not per gyro sample. */
+    void refreshDiagnostics() {
+        refreshStatus();
+    }
+
     private void setBar(String key, int value, boolean enabled) {
         SeekBar bar = bars.get(key);
         if (bar == null) return;
@@ -2158,6 +2234,18 @@ public class MainActivity extends Activity {
         b.setText(text);
         b.setAllCaps(false);
         b.setMinimumHeight(dp(36));
+        // The manifest theme is LIGHT (Theme.DeviceDefault.NoActionBar, no values-night),
+        // so an unstyled Button arrives as a raised platform button with near-black
+        // text -- invisible on a dark sheet. Every button sets its colours explicitly
+        // rather than the app flipping a global theme, which would restyle the GL
+        // surface's transparency and every platform dialog at once.
+        b.setTextColor(0xFFFFFFFF);
+        android.graphics.drawable.GradientDrawable btnBg =
+                new android.graphics.drawable.GradientDrawable();
+        btnBg.setColor(0x1FFFFFFF);
+        btnBg.setCornerRadius(dp(11));
+        btnBg.setStroke(dp(1), 0x24FFFFFF);
+        b.setBackground(btnBg);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 width, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.weight = weight;

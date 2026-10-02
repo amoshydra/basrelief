@@ -29,6 +29,7 @@
     <!-- Sheet section headings -->
     <string name="group_relief">Standing out of the plane</string>
     <string name="group_motion">How it moves</string>
+    <string name="group_depth">This photo’s map</string>
     <string name="group_picture">Picture</string>
     <string name="group_framing">Where it sits</string>
     <string name="group_axis">%1$s (%2$s)</string>
@@ -165,15 +166,86 @@
     <string name="toast_copy_first">Copy settings from a photo first</string>
     <string name="toast_select_first">Hold a photo to pick several first</string>
 
-    <!-- Playlists -->
+    <!-- Playlists. The screen is two states, a list and an editor. -->
     <string name="playlists_title">Playlists</string>
     <string name="playlists_subtitle">Rotation writes the same selection your tap does.</string>
     <string name="playlist_rotate_on">Rotate on</string>
     <string name="playlist_surfaces">Surfaces</string>
     <string name="playlist_new">New</string>
     <string name="playlist_delete">Delete</string>
+    <string name="playlists_none">No playlists yet — New makes one</string>
+    <!--
+      The list row: photos, trigger, screens. One line, because a playlist's
+      identity is its name and everything else about it is a consequence of those
+      three. The trigger words come from the model's own label(), so the row and
+      the editor's radio cannot disagree about what a trigger is called.
+    -->
+    <string name="playlists_row_summary">%1$s · %2$s · %3$s</string>
+    <string name="playlists_surfaces_both">%1$s + %2$s</string>
+    <!--
+      For a playlist whose stored surface list this build could not read. It
+      applies to no screen (Playlist.appliesTo), so the row says that rather than
+      ending in a dangling separator.
+    -->
+    <string name="playlists_surfaces_none">no screens</string>
+    <string name="playlists_rotation">Rotation</string>
+    <string name="playlists_rotate_row">Rotate through this list</string>
+    <string name="playlists_rotate_row_sub">the wallpaper moves to the next photo</string>
+    <!--
+      Triggers are two families and are not interchangeable: a timed one is due
+      when a clock says so, an event one when something happens. Grouping them is
+      the whole point — a flat list of four says they are the same kind of thing.
+      The timed subtitles are elapsed, not "at 07:00", because that is what the
+      model means: a calendar day needs a time zone this value cannot see.
+    -->
+    <string name="playlists_family_timed">Timed</string>
+    <string name="playlists_family_event">Event</string>
+    <string name="playlists_trigger_daily">Daily</string>
+    <string name="playlists_trigger_daily_sub">once every 24 hours</string>
+    <string name="playlists_trigger_hourly">Hourly</string>
+    <string name="playlists_trigger_hourly_sub">once every hour</string>
+    <string name="playlists_trigger_unlock">On unlock</string>
+    <string name="playlists_trigger_unlock_sub">when you pick the phone up</string>
+    <!-- Shown, dimmed, with the reason. Hidden would read as "daily" everywhere. -->
+    <string name="playlists_trigger_pickup">On pickup</string>
+    <string name="playlists_trigger_pickup_sub">needs the sensor — off by default</string>
+    <string name="playlists_pickup_unavailable">On pickup needs a sensor this build does not use yet</string>
+    <string name="playlists_needs_surface">A playlist needs at least one screen</string>
+    <string name="playlists_photos_caption">Photos</string>
+    <string name="playlists_none_photos">No photos in this list yet · add them from the gallery</string>
+    <!--
+      A hole a playlist can legitimately have: the photo is not in the gallery any
+      more. Shown rather than dropped, so the count above it stays explainable.
+    -->
+    <string name="playlists_photo_missing">Missing photo</string>
+    <string name="playlists_photo_missing_sub">skipped when the wallpaper rotates</string>
+    <string name="playlists_remove_glyph">×</string>
+    <string name="playlists_remove_photo">Take %1$s out of this list</string>
+    <string name="playlists_remove_missing">Take the missing photo out of this list</string>
+    <string name="playlists_delete_message">Delete %1$s? The photos stay in the gallery.</string>
+    <!--
+      Accessibility. Every row here draws its state as a coloured corner dot, which
+      nobody can hear, so the state is spelled out. The single-line form is for
+      rows with no detail line, so it never trails a comma.
+    -->
+    <string name="playlists_talk">%1$s, %2$s, %3$s</string>
+    <string name="playlists_talk_one">%1$s, %2$s</string>
+    <string name="playlists_state_on">on</string>
+    <string name="playlists_state_off">off</string>
+    <string name="playlists_state_rotating">rotating</string>
+    <string name="playlists_state_idle">not rotating</string>
+    <string name="playlists_state_in_list">in this list</string>
+    <string name="playlists_state_missing">skipped</string>
+    <string name="playlists_state_unavailable">unavailable</string>
+    <plurals name="playlist_photos">
+        <item quantity="one">%1$d photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
 
     <!-- Settings: four groups, and nothing else -->
+    <string name="settings_title">Settings</string>
+    <string name="diag_tap_to_refresh">Tap to refresh</string>
+
     <string name="group_battery">Battery</string>
     <string name="group_gyro">Gyro</string>
     <string name="group_about">About &amp; diagnostics</string>
@@ -185,6 +257,10 @@
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
     <string name="settings_licence">MIT</string>
+    <!-- Spoken state of a settings row. The swatch itself is a coloured dot, which
+         no screen reader can interpret, so the state has to be named. -->
+    <string name="settings_state_on">On</string>
+    <string name="settings_state_off">Off</string>
 
     <!--
       Depth AI. One screen: server, model, resolution. Three screens for one
@@ -268,6 +344,11 @@
     <string name="diag_zoom_prefix">Zoom: </string>
     <string name="diag_engine_prefix">Engine: </string>
     <string name="diag_depth_prefix">Depth: </string>
+    <!-- The other two columns of the Settings diagnostics block. Prefixes rather than
+         whole lines, because the value is written by whichever process last ran it
+         and the wording must not depend on which screen is asking. -->
+    <string name="diag_gyro_prefix">Gyro: </string>
+    <string name="diag_map_prefix">Map: </string>
 
     <!-- Toasts -->
     <string name="toast_pick_photo_first">Pick a photo from the gallery first</string>

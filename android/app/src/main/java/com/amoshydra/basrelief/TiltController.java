@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -74,10 +75,18 @@ public final class TiltController implements SensorEventListener {
     private static final int ROTATION_POWER_SAVE_PERIOD_US = 50_000;
 
     // Re-centre glide. See beginGlide() for why it lives here and not in the
-    // renderer. RECENTRE_RATE is a RATE, not a duration, so the glide is
-    // proportional to how far it has to travel: 15 degrees takes ~0.86 s, a
-    // 1-degree re-centre is floored at RECENTRE_MIN_SECONDS rather than becoming
-    // a one-frame pop again, and a 50-degree re-centre takes ~2.9 s.
+    // renderer.
+    //
+    // The glide RATE is the user's setting, read from `glide_ms` on every
+    // re-centre rather than baked in here, so that the one slider on the
+    // settings screen moves something real. A slider that writes a number no
+    // code reads is the worst thing this app can ship: it looks correct on
+    // screen and lies about what it changed.
+    //
+    // RECENTRE_RATE below is only the FALLBACK for an install that has never
+    // opened Settings (or a pref written by a future version). It is 0.7/s,
+    // which is a 1.43 s re-centre of the full +-1 tilt range -- the same
+    // 1.2-ish seconds the mockup's slider shows as its default.
     //
     // The rate is capped well below the point at which the renderer's fast
     // attack would fire and undo the whole thing.  That renderer is nonlinear:
@@ -86,12 +95,31 @@ public final class TiltController implements SensorEventListener {
     // attack fires once that passes ATTACK_ERROR -- i.e. at
     // rate = 8*ATTACK_ERROR^2/dt, which is 6.25/s at the ~50 Hz that
     // SENSOR_DELAY_GAME actually delivers, and LOWER on a slower sensor
-    // (2.5/s at 20 Hz).  The smoothstep's peak rate is 1.5x its mean, so
-    // RECENTRE_RATE = 0.7 peaks at 1.05/s: a factor of 2.4 below the worst of
-    // those, and 6x below the nominal.  If ATTACK_ERROR or SMOOTHING_TAU in
-    // ReliefRenderer is changed, re-check that budget.
+    // (2.5/s at 20 Hz, which is what battery-save uses).  The smoothstep's peak
+    // rate is 1.5x its mean, so RECENTRE_RATE = 0.7 peaks at 1.05/s: a factor of
+    // 2.4 below the worst of those, and 6x below the nominal.
+    // MIN_GLIDE_MS is that same budget expressed as the shortest glide the user
+    // can ask for: peak = 1.5 / span must stay under the 2.5/s that the
+    // slowest sensor rate permits, which puts the floor at ~600 ms.  The
+    // slider's minimum IS this floor, so no reachable value is ever clamped --
+    // the clamp below is only a guard for a hand-edited or corrupt pref.
+    // If ATTACK_ERROR or SMOOTHING_TAU in ReliefRenderer is changed, re-check
+    // that budget and move the slider's minimum with it.
     private static final float RECENTRE_RATE = 0.7f;        // tilt units per second
     private static final float RECENTRE_MIN_SECONDS = 0.3f; // floor, so no re-centre is a one-frame pop
+
+    /**
+     * Pref key and range of the one glide rate, shared with {@link GlideControl},
+     * which writes it. Both numbers live here because the two ends of the range
+     * are not free: 3000 ms is the slowest glide that still reads as a glide,
+     * and 600 ms is the attack budget above.
+     */
+    static final String KEY_GLIDE_MS = "glide_ms";
+    static final int GLIDE_MIN_MS = 600;
+    static final int GLIDE_MAX_MS = 3000;
+    static final int GLIDE_DEFAULT_MS = 1200;
+
+    private final SharedPreferences prefs;
 
     private final SensorManager sensorManager;
     private final Sensor rotationSensor;
@@ -151,6 +179,40 @@ public final class TiltController implements SensorEventListener {
         this.sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         this.rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         this.accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        // Read on every glide rather than cached in a field, so a change made in
+        // the studio's settings sheet is picked up by a wallpaper engine that is
+        // already running. SharedPreferences keeps the file in memory, so this is
+        // a map lookup, not a disk read -- and a glide is rare.
+        this.prefs = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * The user's glide rate, in tilt units per second.
+     *
+     * <p>The setting is a DURATION -- how long a re-centre of the full tilt range
+     * should take, which is what the slider says -- and the rate is its reciprocal.
+     * Going via the rate rather than fixing the span keeps the glide proportional
+     * to how far it actually has to travel: a 15-degree nudge is a fifth of a
+     * second whether the phone was picked up off a table or turned in the hand.
+     *
+     * <p>Read defensively. A pref written as a String by an older build, or by a
+     * restored backup, throws ClassCastException out of {@code getInt}, and this
+     * runs on the sensor thread where an exception takes the sensor down.
+     */
+    private float glideRate() {
+        // The fallback is the constant this class always had: 0.7 tilt units per
+        // second, which is a 1428 ms re-centre of the full range.
+        int ms = Math.round(1000f / RECENTRE_RATE);
+        try {
+            ms = prefs.getInt(KEY_GLIDE_MS, ms);
+        } catch (Exception e) {
+            // Wrong type for the key -- a pref written as a String by an older
+            // build, or by a restored backup. Fall back rather than die.
+            ms = Math.round(1000f / RECENTRE_RATE);
+        }
+        if (ms < GLIDE_MIN_MS) ms = GLIDE_MIN_MS;
+        if (ms > GLIDE_MAX_MS) ms = GLIDE_MAX_MS;
+        return 1000f / ms;
     }
 
     public boolean isSupported() {
@@ -353,7 +415,10 @@ public final class TiltController implements SensorEventListener {
      */
     private void beginGlide() {
         float travel = Math.max(Math.abs(x - viewX), Math.abs(y - viewY));
-        glideSpan = Math.max(RECENTRE_MIN_SECONDS, travel / RECENTRE_RATE);
+        // The rate is read HERE rather than cached, so a glide started after the
+        // user changed the slider glides at the speed they just chose, including
+        // in an engine that was already running when they did.
+        glideSpan = Math.max(RECENTRE_MIN_SECONDS, travel / glideRate());
         glideFromX = viewX;
         glideFromY = viewY;
         glideStartNanos = System.nanoTime();
