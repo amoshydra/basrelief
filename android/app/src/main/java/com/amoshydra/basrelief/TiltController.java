@@ -77,47 +77,61 @@ public final class TiltController implements SensorEventListener {
     // Re-centre glide. See beginGlide() for why it lives here and not in the
     // renderer.
     //
-    // The glide RATE is the user's setting, read from `glide_ms` on every
-    // re-centre rather than baked in here, so that the one slider on the
-    // settings screen moves something real. A slider that writes a number no
-    // code reads is the worst thing this app can ship: it looks correct on
-    // screen and lies about what it changed.
+    // RECENTRE_RATE is only the FALLBACK, for an install that has never opened
+    // Settings: the glide rate is the user's setting, read from `glide_ms` on every
+    // re-centre so the one slider on the settings screen moves something real. A
+    // slider that writes a number no code reads is the worst thing this app can
+    // ship -- it looks right on screen and lies about what it changed.
     //
-    // RECENTRE_RATE below is only the FALLBACK for an install that has never
-    // opened Settings (or a pref written by a future version). It is 0.7/s,
-    // which is a 1.43 s re-centre of the full +-1 tilt range -- the same
-    // 1.2-ish seconds the mockup's slider shows as its default.
-    //
-    // The rate is capped well below the point at which the renderer's fast
-    // attack would fire and undo the whole thing.  That renderer is nonlinear:
-    // while below ATTACK_ERROR it closes max(alpha, 8*err) per frame, so a
-    // steadily moving target settles at a steady err = sqrt(rate*dt/8) and the
-    // attack fires once that passes ATTACK_ERROR -- i.e. at
-    // rate = 8*ATTACK_ERROR^2/dt, which is 6.25/s at the ~50 Hz that
-    // SENSOR_DELAY_GAME actually delivers, and LOWER on a slower sensor
-    // (2.5/s at 20 Hz, which is what battery-save uses).  The smoothstep's peak
-    // rate is 1.5x its mean, so RECENTRE_RATE = 0.7 peaks at 1.05/s: a factor of
-    // 2.4 below the worst of those, and 6x below the nominal.
-    // MIN_GLIDE_MS is that same budget expressed as the shortest glide the user
-    // can ask for: peak = 1.5 / span must stay under the 2.5/s that the
-    // slowest sensor rate permits, which puts the floor at ~600 ms.  The
-    // slider's minimum IS this floor, so no reachable value is ever clamped --
-    // the clamp below is only a guard for a hand-edited or corrupt pref.
-    // If ATTACK_ERROR or SMOOTHING_TAU in ReliefRenderer is changed, re-check
-    // that budget and move the slider's minimum with it.
+    // Why the range has the ends it has. The renderer's fast attack is nonlinear:
+    // while below ATTACK_ERROR it closes max(alpha, 8*err) per frame, so a steadily
+    // moving target settles at a steady err = sqrt(rate*dt/8), and the attack fires
+    // once that passes ATTACK_ERROR -- i.e. at rate = 8*ATTACK_ERROR^2/dt, which is
+    // 6.25/s at the ~50 Hz SENSOR_DELAY_GAME actually delivers and LOWER on a
+    // slower sensor (2.5/s at the 20 Hz that battery-save uses). The smoothstep's
+    // peak rate is 1.5x its mean, so a 600 ms floor puts the peak at 2.5/s and a
+    // 3000 ms ceiling at 0.5/s. The floor is therefore a renderer invariant, not a
+    // taste: below it the glide does not glide, it hands the renderer's fast attack
+    // a big step and gets snapped, which is the exact failure beginGlide() exists
+    // to remove. The slider's minimum IS the floor, so no value a user can reach is
+    // ever clamped -- the clamp in glideRate() is only a guard against a pref
+    // written by hand or restored from a backup.
+    // If ATTACK_ERROR or SMOOTHING_TAU in ReliefRenderer changes, re-check this
+    // budget and move GLIDE_MIN_MS with it.
     private static final float RECENTRE_RATE = 0.7f;        // tilt units per second
     private static final float RECENTRE_MIN_SECONDS = 0.3f; // floor, so no re-centre is a one-frame pop
 
     /**
-     * Pref key and range of the one glide rate, shared with {@link GlideControl},
-     * which writes it. Both numbers live here because the two ends of the range
-     * are not free: 3000 ms is the slowest glide that still reads as a glide,
-     * and 600 ms is the attack budget above.
+     * The pref key, the range, and the default of the one glide rate.
+     *
+     * <p>Declared here rather than in {@link GlideControl} because the renderer is
+     * the side with the constraint: the two ends of the range are set by the
+     * fast-attack budget above, and a slider is free to choose any pair of ends it
+     * likes. GlideControl builds itself to whatever is declared here, so the two
+     * cannot describe different ranges.
      */
     static final String KEY_GLIDE_MS = "glide_ms";
     static final int GLIDE_MIN_MS = 600;
     static final int GLIDE_MAX_MS = 3000;
+
+    /**
+     * What a user who has never opened Settings gets: 1.2 s, the value the signed-off
+     * mockup shows on the slider.
+     *
+     * <p>Within a few percent of the {@link #RECENTRE_RATE} fallback above, so the
+     * number a fresh install runs on and the number the mockup shows are the same
+     * rather than two that drift apart the first time someone edits either.
+     */
     static final int GLIDE_DEFAULT_MS = 1200;
+
+    /**
+     * The same fallback expressed as a duration, for the read path.
+     *
+     * <p>Derived from {@link #RECENTRE_RATE} rather than written out, so the two
+     * cannot be edited apart -- the constant is what the glide rate has always been,
+     * and a user who has never opened Settings must get it.
+     */
+    private static final int GLIDE_FALLBACK_MS = Math.round(1000f / RECENTRE_RATE);
 
     private final SharedPreferences prefs;
 
@@ -200,15 +214,13 @@ public final class TiltController implements SensorEventListener {
      * runs on the sensor thread where an exception takes the sensor down.
      */
     private float glideRate() {
-        // The fallback is the constant this class always had: 0.7 tilt units per
-        // second, which is a 1428 ms re-centre of the full range.
-        int ms = Math.round(1000f / RECENTRE_RATE);
+        int ms = GLIDE_FALLBACK_MS;
         try {
-            ms = prefs.getInt(KEY_GLIDE_MS, ms);
+            ms = prefs.getInt(KEY_GLIDE_MS, GLIDE_FALLBACK_MS);
         } catch (Exception e) {
-            // Wrong type for the key -- a pref written as a String by an older
-            // build, or by a restored backup. Fall back rather than die.
-            ms = Math.round(1000f / RECENTRE_RATE);
+            // Wrong type for the key -- a pref written as a String by an older build,
+            // or by a restored backup. Fall back rather than take the sensor thread
+            // down, which is what the throw would do here.
         }
         if (ms < GLIDE_MIN_MS) ms = GLIDE_MIN_MS;
         if (ms > GLIDE_MAX_MS) ms = GLIDE_MAX_MS;
@@ -360,8 +372,19 @@ public final class TiltController implements SensorEventListener {
         if (move > IDLE_EPS) {
             lastMoveNanos = System.nanoTime();
         } else if (!asleep && now - lastMoveNanos > IDLE_SLEEP_MS * 1_000_000L) {
-            goToSleep();
-            return;
+            // Gated because a user can turn it off. Checked here rather than in
+            // goToSleep(), which is also the path out of a sleep, so the flag means
+            // "may fall asleep" and not "may be awake".
+            if (!Settings.sleepWhenStill(prefs)) {
+                // Do not sleep -- and do not keep re-testing every sample either,
+                // or the window since the last real move grows without bound and the
+                // first check after it is huge. Nudging it forward keeps the test
+                // within a sample of the threshold.
+                lastMoveNanos = now;
+            } else {
+                goToSleep();
+                return;
+            }
         }
 
         advanceGlide();
@@ -468,7 +491,13 @@ public final class TiltController implements SensorEventListener {
         asleep = false;
         sensorManager.unregisterListener(this);
         if (rotationSensor != null) {
-            recalibrate(); // neutral matches the (shaken) current pose
+            // Normally the neutral follows the pose the phone was shaken into, since
+            // a wake means the phone demonstrably moved. A user who turned this off
+            // keeps the older neutral instead, trading a slightly off-centre view for
+            // one fewer re-centre -- which is the choice the switch is there to make.
+            if (Settings.calibrateOnWake(prefs)) {
+                recalibrate(); // neutral matches the (shaken) current pose
+            }
             registerRotationVector();
             registered = true;
         }

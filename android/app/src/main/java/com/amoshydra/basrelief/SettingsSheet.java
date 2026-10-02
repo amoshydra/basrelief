@@ -27,12 +27,32 @@ import android.widget.TextView;
  * is refusing anything that is not one of those.
  *
  * <p>Built against the signed-off mockup: {@code .design/prototype/final.html},
- * Settings tab, and its CSS is the specification for the numbers here — the
+ * Settings tab, and its CSS is the specification for the numbers here -- the
  * caption is {@code .caption}, the row is {@code .opt}, and the accents are
  * {@code --line}, {@code --dim}, {@code --dimmer} and {@code --accent}. Where a
  * colour is written as an int here it is that CSS value and not an approximation.
  */
 final class SettingsSheet {
+
+    /**
+     * The three toggles, named once.
+     *
+     * <p>A pref key as a literal at two call sites is a key that can be renamed at
+     * one of them, which is a toggle that silently stops persisting.
+     *
+     * <p><b>These three are stored and read back by this screen, and by nothing
+     * else yet.</b> They are named here as the contract the sensor code is to read,
+     * rather than inlined where it will be wired up, so that whoever does that does
+     * not have to go and find the spelling. A control that changes nothing is the
+     * failure this project rules out, and the fix is the reader side, not the
+     * removal of the switch: the mockup is signed off with all four groups, and a
+     * missing toggle is a worse lie than a pending one.
+     */
+    // The keys live in Settings, next to the code that reads them. A key string
+    // duplicated here and there compiles fine, flips the switch, and changes nothing.
+    private static final String KEY_BATTERY_SAVER = Settings.KEY_BATTERY_SAVER_FOLLOW;
+    private static final String KEY_CALIBRATE_ON_WAKE = Settings.KEY_CALIBRATE_ON_WAKE;
+    private static final String KEY_SLEEP_WHEN_STILL = Settings.KEY_SLEEP_WHEN_STILL;
 
     private final MainActivity activity;
     private android.app.Dialog dialog;
@@ -68,8 +88,15 @@ final class SettingsSheet {
      * read as a row rather than as two loose lines of text. The border is the
      * only one of the three that carries structure at all, so it is the mockup's
      * {@code --line} (rgba(255,255,255,.14)) exactly rather than a guess.
+     *
+     * @param key the pref this row owns, or null for a row that only reports. The
+     *            row repaints its own swatch from storage after a tap rather than
+     *            rebuilding the screen: a full re-open showed the stored value, but
+     *            it also threw away the scroll position and the dialog with it, and
+     *            a user comparing two toggles would lose their place each time.
      */
-    private LinearLayout row(String title, String subtitle, boolean on, View.OnClickListener tap) {
+    private LinearLayout row(String title, String subtitle, String key, boolean fallback) {
+        boolean on = key != null && isTrue(key, fallback);
         LinearLayout r = new LinearLayout(activity);
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
@@ -81,7 +108,10 @@ final class SettingsSheet {
         bg.setColor(0x0AFFFFFF);
         bg.setStroke(dp(1), 0x24FFFFFF);
         r.setBackground(bg);
-        r.addView(swatch(on), new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        final FrameLayout holder = new FrameLayout(activity);
+        holder.addView(swatch(on));
+        r.addView(holder, new LinearLayout.LayoutParams(dp(34), dp(34)));
 
         LinearLayout text = new LinearLayout(activity);
         text.setOrientation(LinearLayout.VERTICAL);
@@ -108,7 +138,23 @@ final class SettingsSheet {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(8); // .opt { margin-bottom:8px }
         r.setLayoutParams(lp);
-        if (tap != null) r.setOnClickListener(tap);
+
+        if (key != null) {
+            final String k = key;
+            final boolean fb = fallback;
+            r.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    boolean now = !isTrue(k, fb);
+                    prefs().edit().putBoolean(k, now).apply();
+                    // Repaint from what was STORED rather than from `now`. Reading
+                    // back is the only way the swatch can disagree with the pref,
+                    // and the pref is the truth everything else reads.
+                    holder.removeAllViews();
+                    holder.addView(swatch(isTrue(k, fb)));
+                }
+            });
+        }
         return r;
     }
 
@@ -162,7 +208,7 @@ final class SettingsSheet {
      *
      * <p>{@code .caption}: 11sp, letter-spacing .09em, uppercase, --dimmer, bold,
      * 16px above and 7px below. The first one is normally 2px from the top rather
-     * than 16 — the mockup's {@code :first-child} rule — which matters because
+     * than 16 -- the mockup's {@code :first-child} rule -- which matters because
      * here the heading is preceded by the title row rather than by the top edge, so
      * all four take the 16px.
      *
@@ -218,13 +264,16 @@ final class SettingsSheet {
         head.addView(done);
         box.addView(head);
 
-        // ---- Battery
+        // ---- Battery. One row, because the one question is whether the app obeys the
+        // OS setting or not; there is nothing else about power to decide here.
         box.addView(caption(activity.getString(R.string.group_battery)));
         box.addView(row(activity.getString(R.string.settings_follow_battery_saver),
                 activity.getString(R.string.settings_follow_battery_saver_sub),
-                isTrue("battery_saver_follow", true), toggle("battery_saver_follow", true)));
+                KEY_BATTERY_SAVER, true));
 
-        // ---- Motion: glide, ONE rate
+        // ---- Motion. One group, one control: the glide rate. Depth, Zoom and Motion
+        // are all per-photograph and live in the sheet on the photo, so this group
+        // holds the one motion setting that is about the device.
         box.addView(caption(activity.getString(R.string.group_motion)));
         box.addView(GlideControl.build(activity, prefs()));
         TextView glideNote = new TextView(activity);
@@ -241,23 +290,24 @@ final class SettingsSheet {
         glideNote.setLayoutParams(noteLp);
         box.addView(glideNote);
 
-        // ---- Gyro
-        // The heading is a CAPTION because that is the only thing in the mockup
-        // that is a heading: 11sp, uppercase, letter-spaced, in the dimmest
-        // colour on the screen. Without the treatment it is another 11sp grey
-        // label and the four groups stop reading as four groups.
+        // ---- Gyro. All four group headings go through caption(), which is the
+        // whole reason they read as headings rather than as four more labels; see
+        // there for the treatment and why it is not optional.
         box.addView(caption(activity.getString(R.string.group_gyro)));
         box.addView(row(activity.getString(R.string.settings_calibrate_wake),
                 activity.getString(R.string.settings_calibrate_wake_sub),
-                isTrue("gyro_calibrate_on_wake", true), toggle("gyro_calibrate_on_wake", true)));
+                KEY_CALIBRATE_ON_WAKE, true));
         box.addView(row(activity.getString(R.string.settings_sleep_still),
                 activity.getString(R.string.settings_sleep_still_sub),
-                isTrue("gyro_sleep_when_still", true), toggle("gyro_sleep_when_still", true)));
+                KEY_SLEEP_WHEN_STILL, true));
 
         // ---- About & diagnostics
         box.addView(caption(activity.getString(R.string.group_about)));
+        // No key: the mockup's About row carries an empty swatch and is a fact, not
+        // a switch, so it must not accept a tap. Passing a key here would make the
+        // whole row look live and do nothing.
         box.addView(row(activity.getString(R.string.app_name) + " " + versionName(),
-                activity.getString(R.string.settings_licence), false, null));
+                activity.getString(R.string.settings_licence), null, false));
         box.addView(DiagnosticsBlock.build(activity));
 
         scroll.addView(box);
@@ -269,7 +319,7 @@ final class SettingsSheet {
     // -------------------------------------------------------------- persistence
 
     /**
-     * The mockup's About row reads "Basrelief 0.1.0" — the name and the version.
+     * The mockup's About row reads "Basrelief 0.1.0" -- the name and the version.
      *
      * <p>Asked of the package manager rather than hard-coded, so the row cannot
      * quote a version the APK does not have; that is the same class of bug as the
@@ -284,19 +334,21 @@ final class SettingsSheet {
         }
     }
 
+    /**
+     * Read a boolean setting.
+     *
+     * <p>Defensive for the same reason the glide read is: a pref restored from a
+     * backup can hold a String under a key that is a boolean here, and
+     * {@code getBoolean} throws rather than falling back. A throw here would take
+     * down the whole settings screen, which is a far worse outcome than showing one
+     * row at its default.
+     */
     private boolean isTrue(String key, boolean fallback) {
-        return prefs().getBoolean(key, fallback);
-    }
-
-    private View.OnClickListener toggle(final String key, final boolean fallback) {
-        return new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                prefs().edit().putBoolean(key, !isTrue(key, fallback)).apply();
-                hide();
-                show(activity);
-            }
-        };
+        try {
+            return prefs().getBoolean(key, fallback);
+        } catch (Exception e) {
+            return fallback;
+        }
     }
 
     /**
