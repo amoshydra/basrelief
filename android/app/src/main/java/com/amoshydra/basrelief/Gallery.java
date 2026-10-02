@@ -79,70 +79,6 @@ import java.util.Set;
  * selection is recorded, so a pointer left naming a deleted row is a wallpaper
  * showing a photograph that no longer exists.
  */
-/**
- * A row of grid cells whose height is their own column width.
- *
- * <p>Every other way to say "square" needs a measurement the layout does not have yet:
- * a fixed height makes every photograph a different shape on every phone, and a weight
- * cannot express an aspect ratio. So this measures itself, re-heights each child to
- * the width it was just given, and measures once more.
- *
- * <p>The second pass is bounded by {@code squared}, because changing a child's height
- * invalidates this row's height and an unbounded loop here would spin the UI thread.
- * Children's own {@code onMeasure} has already run when their widths are known, so only
- * their LayoutParams change -- which is what LayoutParams are for.
- */
-final class SquareRow extends LinearLayout {
-
-    private boolean squared;
-
-    SquareRow(android.content.Context context) {
-        super(context);
-    }
-
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        // This row's height is a CONSEQUENCE of its children's widths, so the height
-        // spec is deliberately discarded rather than passed through.
-        super.onMeasure(MeasureSpec.makeMeasureSpec(
-                MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.AT_MOST),
-                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-        squared = false;
-    }
-
-    @Override
-    protected void onLayout(boolean changed, int l, int t, int r, int b) {
-        if (!squared) {
-            squared = true;
-            boolean anyChanged = false;
-            for (int i = 0, n = getChildCount(); i < n; i++) {
-                View child = getChildAt(i);
-                if (child.getVisibility() == View.GONE) continue;
-                LinearLayout.LayoutParams lp =
-                        (LinearLayout.LayoutParams) child.getLayoutParams();
-                int square = child.getMeasuredWidth();
-                if (lp.height != square) {
-                    lp.height = square;
-                    child.setLayoutParams(lp);
-                    anyChanged = true;
-                }
-            }
-            if (anyChanged) {
-                int width = getMeasuredWidth();
-                int height = getMeasuredHeight();
-                super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
-                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-                setMeasuredDimension(width, getMeasuredHeight());
-                // Nothing moved: stop here rather than risk a third pass.
-                if (getMeasuredHeight() == height) {
-                    setMeasuredDimension(width, height);
-                }
-            }
-        }
-        super.onLayout(changed, l, t, r, b);
-    }
-}
-
 final class Gallery {
 
     /** Thumb size in the filmstrip: identifiable, not choosable. Hence the grid. */
@@ -153,14 +89,28 @@ final class Gallery {
     private static final int GRID_GAP_DP = 8;
     private static final int GRID_PAD_DP = 14;
     /**
-     * The add-tile's size, and the fallback cell size.
+     * The width of one grid cell's picture, in pixels, computed once per grid.
      *
-     * <p>Real cells are SQUARE and measured from their own column width, because
-     * aspect-ratio:1 is what the mockup draws and a fixed 96dp height made every
-     * photograph a different shape on a different phone. This stays only for the add
-     * tile, whose parent has no measured column of its own.
+     * <p>SQUARE is what the mockup draws, and every way of getting it from the layout
+     * is worse than arithmetic. A fixed 96dp height makes every photograph a different
+     * shape on every phone but one. Asking a container to re-height its children means
+     * trusting a measure that a ScrollView may have run before the width was final --
+     * which is how this ended up with rows of 1032, 1356 and 852 pixels side by side,
+     * and blank spacers squared into empty 428px boxes.
+     *
+     * <p>So the column is arithmetic: the panel is MATCH_PARENT, so its width is the
+     * screen's, and three weighted columns sharing the row minus three gaps is a sum
+     * with one answer. Uniform by construction, on any screen, with no second
+     * measure pass and nothing to get wrong later.
      */
-    private static final int CELL_DP = 96;
+    private int cellPx;
+
+    /**
+     * The last resort when the screen is too narrow to divide three ways. 96dp is
+     * the height the grid used to have for every cell, so it is the one number here
+     * that has been seen.
+     */
+    private static final int CELL_DP_FALLBACK = 96;
     /** The depth chip. A dot, because a chip that needs reading is a label. */
     private static final int CHIP_DP = 10;
     /** --dim: a header entry that is a reading rather than an action. */
@@ -749,10 +699,7 @@ final class Gallery {
      * before it is read.
      */
     private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId) {
-        // SquareRow, not LinearLayout: the row re-heights its children to their own
-        // column widths, which is the only way to get aspect-ratio:1 without a fixed
-        // height that looks wrong on every phone but one.
-        SquareRow line = new SquareRow(activity);
+        LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < GRID_COLUMNS; i++) {
             int at = start + i;
@@ -760,9 +707,12 @@ final class Gallery {
                 LibraryItem item = rows.get(at);
                 line.addView(cell(item, item.id.equals(activeId)));
             } else {
+                // A spacer, and deliberately zero-height: it exists only to hold a
+                // column open so the row's cells keep their weight, and giving it a
+                // height makes an empty box the size of a photograph.
                 View blank = new View(activity);
                 LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(0,
-                        LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                        0, 1f);
                 blankLp.leftMargin = activity.dp(GRID_GAP_DP);
                 blank.setLayoutParams(blankLp);
                 line.addView(blank);
@@ -793,8 +743,7 @@ final class Gallery {
                 addPhoto();
             }
         });
-        add.setLayoutParams(new LinearLayout.LayoutParams(activity.dp(CELL_DP),
-                activity.dp(CELL_DP)));
+        add.setLayoutParams(new LinearLayout.LayoutParams(cellPx, cellPx));
         line.addView(add);
         return line;
     }
@@ -836,12 +785,12 @@ final class Gallery {
         // second question is a legend nobody learns.
         picture.setBackground(thumbBackground(item, isActive || picked.contains(item.id)));
         picture.setClipToOutline(true);
-        // Square, from the column's own measured width. The cell is a LinearLayout
-        // whose child is MATCH_PARENT, so its width is not known until the parent has
-        // been measured; a fixed height instead would make every photograph a
-        // different shape on every phone.
+        // Square by arithmetic, not by measurement: cellPx is the column's width, so
+        // using it as the height is what makes the cell a square. MATCH_PARENT width
+        // and the computed height, because the two have to agree and only one of them
+        // was computed.
         picture.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0));
+                LinearLayout.LayoutParams.MATCH_PARENT, cellPx));
         ImageView thumb = new ImageView(activity);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
         picture.addView(thumb, new FrameLayout.LayoutParams(
@@ -966,7 +915,7 @@ final class Gallery {
     private void watchForEmbeddedDepth(final File file, final LibraryItem item,
                                        final ImageView thumb, final View chip) {
         final boolean hasFile = item.hasDepth();
-        Io.decodePreview(activity, file, thumb, activity.dp(CELL_DP),
+        Io.decodePreview(activity, file, thumb, cellPx,
                 new Io.EmbeddedDepthListener() {
                     @Override
                     public void onFound(boolean embedded) {
