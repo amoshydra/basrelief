@@ -204,6 +204,9 @@ public class MainActivity extends Activity {
      * engine. The segment below the grip is how it changes.
      */
     Surface editSurface = Surface.HOME;
+    /** The Home / Lock switch. Always built; shown by {@link #refreshSurfaceSegment}. */
+    private LinearLayout surfaceSegment;
+    private Button segHome, segLock;
 
     /**
      * The container the gallery overlay is added to.
@@ -400,12 +403,26 @@ public class MainActivity extends Activity {
         // Absent -- not greyed, not disabled -- unless the photo is genuinely on both
         // screens AND the platform can give the lock screen its own live engine.
         // A toggle that cannot change anything is the same lie as a greyed slider.
-        Surface segmentFor = surfaceForSegment();
-        boolean firstCaption = segmentFor == null;
-        if (segmentFor != null) sheetContent.addView(buildSurfaceSegment(segmentFor));
+        // Built ALWAYS and gated with GONE, not built conditionally.
+        //
+        // <p>The conditional build was why the switch "did not exist": the segment was
+        // decided once, here in onCreate, and onResume never re-checked it. Android
+        // re-delivers to the running studio rather than recreating it, so onCreate
+        // never ran again -- and after applying to both surfaces the only way to see
+        // the switch was a cold start, which a live wallpaper must never be given
+        // (force-stop reverts it). GONE is the design's "absent, not greyed": no space,
+        // not tappable, and it can appear the moment the index says it should.
+        surfaceSegment = buildSurfaceSegment(editSurface);
+        sheetContent.addView(surfaceSegment);
+        refreshSurfaceSegment();
 
+        // The first caption sits 2px down when the switch is above it, per the
+        // mockup's .caption:first-child -- and 16px when it is not, which is the
+        // state this build starts in. Decided once, at build time: moving the caption
+        // as well as the switch on every refresh is a layout pass an apply does not
+        // need.
         sectionLabel(heading(R.string.group_relief, R.string.group_relief_surface),
-                firstCaption);
+                surfaceForSegment() == null);
 
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
@@ -839,6 +856,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // The switch can become real between launches: applying puts the photo on a
+        // second surface, and onCreate -- where it used to be decided -- does not run
+        // again. This is the one line that makes it appear without a cold start.
+        refreshSurfaceSegment();
         // Collect a run that finished while the app was closed. Not optional: the
         // run is process-static and its prompt id is in prefs, so nothing else in the
         // app would ever go back and ask.
@@ -2218,7 +2239,14 @@ public class MainActivity extends Activity {
      * would be positioned by layout rather than by a transform -- the shape that
      * stops compositing entirely (b/7179570).
      */
-    private View buildSurfaceSegment(Surface current) {
+    /**
+     * The Home / Lock switch, always constructed, shown by {@link #refreshSurfaceSegment}.
+     *
+     * <p>Keeps its two buttons as fields so the active one can be restyled in place
+     * rather than by rebuilding -- rebuilding is what made the switch unable to
+     * appear without a cold start in the first place.
+     */
+    private LinearLayout buildSurfaceSegment(Surface current) {
         LinearLayout seg = new LinearLayout(this);
         seg.setOrientation(LinearLayout.HORIZONTAL);
         int pad = dp(3);
@@ -2230,7 +2258,6 @@ public class MainActivity extends Activity {
         bg.setStroke(dp(1), 0x24FFFFFF);
         seg.setBackground(bg);
 
-        final Surface[] shown = {current};
         for (final Surface surface : Surface.values()) {
             Button b = new Button(this);
             b.setAllCaps(false);
@@ -2247,8 +2274,7 @@ public class MainActivity extends Activity {
             b.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    if (shown[0] == surface) return;
-                    shown[0] = surface;
+                    if (editSurface == surface) return;
                     editSurface = surface;
                     // Copy and paste must follow the surface being edited, or they
                     // silently always mean Home.
@@ -2268,8 +2294,11 @@ public class MainActivity extends Activity {
                     });
                     refreshSliders();
                     applyFiles();
+                    setSegmentActive(surface);
                 }
             });
+            if (surface == Surface.HOME) segHome = b; else segLock = b;
+            setSegmentButton(b, surface == current);
             seg.addView(b, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         }
@@ -2279,6 +2308,38 @@ public class MainActivity extends Activity {
         outer.bottomMargin = dp(10);
         seg.setLayoutParams(outer);
         return seg;
+    }
+
+    /** One button of the segment, and whether it is the surface being edited. */
+    private void setSegmentButton(Button b, boolean on) {
+        b.setTextColor(on ? 0xFFFFFFFF : 0x8CFFFFFF);
+        android.graphics.drawable.GradientDrawable tb =
+                new android.graphics.drawable.GradientDrawable();
+        tb.setColor(on ? 0x28FFFFFF : 0x00000000);
+        tb.setCornerRadius(dp(7));
+        b.setBackground(tb);
+    }
+
+    /** Restyle the pair after a switch, or after the segment appears. */
+    private void setSegmentActive(Surface surface) {
+        if (segHome != null) setSegmentButton(segHome, surface == Surface.HOME);
+        if (segLock != null) setSegmentButton(segLock, surface == Surface.LOCK);
+    }
+
+    /**
+     * Show the switch only when it can change something.
+     *
+     * <p>Called from {@code onResume} and after an apply, which are the only two
+     * moments the answer can change: the index's applied-surfaces record is written
+     * by applying, and the platform version never changes.
+     */
+    private void refreshSurfaceSegment() {
+        if (surfaceSegment == null) return;
+        boolean show = surfaceForSegment() != null;
+        // GONE, never INVISIBLE and never disabled-with-opacity: the design's rule is
+        // that a control which cannot change anything is absent. GONE is absent.
+        surfaceSegment.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show) setSegmentActive(editSurface);
     }
 
     /**
@@ -2318,6 +2379,9 @@ public class MainActivity extends Activity {
      */
     void onAppliedToBoth() {
         Toast.makeText(this, R.string.applied_to_both, Toast.LENGTH_SHORT).show();
+        // The switch becomes real this moment, and the sheet is already on screen --
+        // so this is where it appears, not on the next launch.
+        refreshSurfaceSegment();
     }
 
     /**
