@@ -380,6 +380,15 @@ There is no longer a build script that runs here — everything builds through
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
 it**. 335 tests across nineteen classes:
 
+**But `test` only runs `:core:test` — it does not compile `:app`, and it will
+report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
+`:core` work and nothing more. Any change to `:app` must be verified with
+`./podman-build.sh build-apk`, which runs `test` first and then compiles the app.
+This has already cost one session: a broken `MainActivity` call passed `test`
+clean, and the failure surfaced as an unrelated agent reporting it could not
+build. **"The gate is green" is only true of the JVM tests until `build-apk`
+has run.**
+
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
   the v convention and dropping a face normal each fail it.
