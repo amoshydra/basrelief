@@ -179,8 +179,17 @@ public class MainActivity extends Activity {
     private PillState pillState = PillState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
     private View depthBarRow;
-    /** Where in {@code sheetContent} the Depth row belongs when it is re-added. */
-    private int depthIndex = 0;
+    /**
+     * The first group caption, "Standing out of the plane".
+     *
+     * <p>The Depth row belongs immediately after this caption, and the position is
+     * re-derived from this view every time Depth is inserted. It is an anchor, not
+     * a saved index, on purpose: an integer captured when the sheet was built is 0
+     * when the selected photo had no map (there is nothing to take the index of),
+     * and re-adding at 0 puts Depth above every other control including the Home /
+     * Lock segment. A sibling that is always present cannot go stale that way.
+     */
+    private View reliefCaption;
     private TextView fixText;
     private LinearLayout fixActions;
     /**
@@ -359,6 +368,21 @@ public class MainActivity extends Activity {
         // No panel padding: the mockup pads the SCROLLING content, not the sheet, so
         // the grip and the fix line sit flush to the edges the way they do there.
         panel.setPadding(0, 0, 0, 0);
+        // A gesture that starts on the sheet must not reach the GLSurfaceView beneath
+        // it and orbit or pan the render. A plain ViewGroup consumes nothing, so a
+        // touch on the panel's own area -- the fix line's text, the gap a control
+        // leaves -- falls through to the surface. Returning true here consumes only
+        // the events no child handled: ViewGroup dispatch offers every touch to its
+        // children first, so the ScrollView still scrolls and the sliders still drag,
+        // and this runs for the leftovers alone. That is the platform's existing "is
+        // this touch on a control" answer, reused instead of a second hit-test
+        // written here that could disagree with it.
+        panel.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                return true;
+            }
+        });
 
         // header: just the title. The minimise button used to live here, and it is gone
         // because sliding the sheet down now does it - a control that duplicates a
@@ -466,7 +490,8 @@ public class MainActivity extends Activity {
         // state this build starts in. Decided once, at build time: moving the caption
         // as well as the switch on every refresh is a layout pass an apply does not
         // need.
-        sectionLabel(heading(R.string.group_relief, R.string.group_relief_surface),
+        reliefCaption = sectionLabel(
+                heading(R.string.group_relief, R.string.group_relief_surface),
                 surfaceForSegment() == null);
 
         // 0..100 = fraction of the maximum depth the camera allows at the
@@ -490,12 +515,9 @@ public class MainActivity extends Activity {
                 ? addSlider("intensity",
                         s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
                 : null;
-        if (depthBarRow != null) sheetContent.addView(depthBarRow);
-        // Where Depth goes when it has to come back. Captured from the live index
-        // rather than hard-coded, so inserting a section above it later moves the
-        // number with it instead of leaving Depth at the top of the list.
-        depthIndex = sheetContent.indexOfChild(depthBarRow);
-        if (depthIndex < 0) depthIndex = 0;
+        // Immediately after the caption it belongs under, derived here rather than
+        // saved: see depthInsertIndex for the bug a saved index caused.
+        if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
         sectionLabel(heading(R.string.group_motion, R.string.group_motion_surface));
         sheetContent.addView(addSlider("motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
@@ -691,6 +713,15 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
         pillCap.addView(pill, pillLp);
+        // The cap is wider than the pill and a drag on its empty edge would reach the
+        // render for the same reason the panel's would. The pill itself is a child and
+        // keeps its click; this consumes only what the pill did not.
+        pillCap.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                return true;
+            }
+        });
         root.addView(pillCap, capLp);
 
         setContentView(root);
@@ -2109,8 +2140,8 @@ public class MainActivity extends Activity {
         return getString(surfaceRes, getString(R.string.surface_lock));
     }
 
-    private void sectionLabel(String text) {
-        sectionLabel(text, false);
+    private TextView sectionLabel(String text) {
+        return sectionLabel(text, false);
     }
 
     /**
@@ -2118,8 +2149,11 @@ public class MainActivity extends Activity {
      *              {@code .caption:first-child} gets 2px rather than 16px, because the
      *              grip is already a visible boundary and a second band of space under
      *              it is dead space on the one screen every user opens.
+     * @return the caption itself, so a caller can anchor a later insert to it
+     *              rather than to an index that can be captured before its
+     *              neighbours exist.
      */
-    private void sectionLabel(String text, boolean first) {
+    private TextView sectionLabel(String text, boolean first) {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(0x57FFFFFF);
@@ -2129,6 +2163,24 @@ public class MainActivity extends Activity {
         tv.setTypeface(null, android.graphics.Typeface.BOLD);
         tv.setPadding(dp(4), first ? dp(2) : dp(16), dp(4), dp(7));
         sheetContent.addView(tv);
+        return tv;
+    }
+
+    /**
+     * Where in {@code sheetContent} the Depth row is inserted.
+     *
+     * <p>Directly after {@link #reliefCaption}, the first group caption, which is
+     * the sibling that is always present. Re-derived here at insert time from the
+     * live tree instead of kept as a field: the field this replaced was captured
+     * with {@code indexOfChild(depthBarRow)} in {@code onCreate}, and when the
+     * selected photo had no map there was no {@code depthBarRow} to take the index
+     * of, so it stored 0. The next photo with a map was then inserted at 0 -- above
+     * the hint and above the Home / Lock segment -- because a saved integer cannot
+     * know that its neighbours were added after it was written.
+     */
+    private int depthInsertIndex() {
+        int at = reliefCaption == null ? -1 : sheetContent.indexOfChild(reliefCaption);
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
 
     /**
@@ -2365,9 +2417,9 @@ public class MainActivity extends Activity {
             SurfaceSettings s = item == null ? null : item.settings(editSurface);
             depthBarRow = addSlider("intensity",
                     s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100);
-            // Above Motion and Zoom, where Depth has always been: it is the first
-            // thing anyone adjusts, and the sheet scrolls.
-            sheetContent.addView(depthBarRow, depthIndex);
+            // After the first caption and therefore under the Home / Lock segment,
+            // wherever it belongs today. Derived, never saved -- see depthInsertIndex.
+            sheetContent.addView(depthBarRow, depthInsertIndex());
         } else if (!want && depthBarRow != null) {
             sheetContent.removeView(depthBarRow);
             // Out of the map as well as out of the view tree. Left in it,
