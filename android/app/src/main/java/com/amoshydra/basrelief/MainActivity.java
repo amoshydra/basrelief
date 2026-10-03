@@ -269,7 +269,6 @@ public class MainActivity extends Activity {
     // would make one of them unusable.
     private static final float ORBIT_STEP = 0.01f;
     private static final float PAN_STEP = 1f;
-    TextView framingReadout;
     /**
      * One watcher for all four fields: they all want the same thing, and four
      * identical instances would be four places to keep in step.

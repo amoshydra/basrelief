@@ -57,7 +57,6 @@
     <string name="framing_origin_y">Origin Y</string>
     <string name="framing_pan_x">Pan X</string>
     <string name="framing_pan_y">Pan Y</string>
-    <string name="framing_readout">Framing   %1$s, %2$s  ·  %3$d, %4$d px</string>
 
     <!-- The two buttons that carry a symbol rather than a word: the add-photo
          tile and the sheet foot's gear. Each has a contentDescription, because
@@ -474,16 +473,22 @@
 
     <!-- Diagnostics. Read by a person debugging, so still one place. The map's
          filename and the model that produced it live HERE, never in the controls
-         (R-D9). -->
-    <string name="diag_status_prefix">Status: </string>
-    <string name="diag_zoom_prefix">Zoom: </string>
-    <string name="diag_engine_prefix">Engine: </string>
-    <string name="diag_depth_prefix">Depth: </string>
+         (R-D9).
+
+         QUOTED ON PURPOSE. These are prefixes that carry their own trailing
+         space, and aapt strips leading/trailing whitespace from an unquoted
+         string, so the screen read "Depth:custom image". The quotes are the
+         platform's idiom for preserving that space and are removed on compile;
+         do not "tidy" them away, and keep the space inside them. -->
+    <string name="diag_status_prefix">"Status: "</string>
+    <string name="diag_zoom_prefix">"Zoom: "</string>
+    <string name="diag_engine_prefix">"Engine: "</string>
+    <string name="diag_depth_prefix">"Depth: "</string>
     <!-- The other two columns of the Settings diagnostics block. Prefixes rather than
          whole lines, because the value is written by whichever process last ran it
          and the wording must not depend on which screen is asking. -->
-    <string name="diag_gyro_prefix">Gyro: </string>
-    <string name="diag_map_prefix">Map: </string>
+    <string name="diag_gyro_prefix">"Gyro: "</string>
+    <string name="diag_map_prefix">"Map: "</string>
 
     <!-- Toasts -->
     <string name="toast_pick_photo_first">Pick a photo from the gallery first</string>

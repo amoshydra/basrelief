@@ -2,7 +2,9 @@ package com.amoshydra.basrelief;
 
 import android.os.Build;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -64,14 +66,25 @@ import java.util.Set;
  * photograph cannot answer by looking at it: can this one stand out of the plane
  * at all.
  *
- * <p><b>The active photograph and the picked set are two facts, drawn as two
+ * <p><b>The active photograph and the picked set are two facts, drawn as three
  * marks.</b> Active is a persistent white ring, because it answers "what is on
- * the wallpaper right now" and must survive every other state. Picked is an
- * accent tint and a checkmark badge, because it answers "what will the next
- * action touch" and is a mode the user can leave. They compose: a picked
- * photograph can also be the one on screen, and then it wears both. Drawing
- * both with one ring was how the previous version made the question
+ * the wallpaper right now" and must survive every other state. Picked is a
+ * thicker accent ring, an accent tint and a checkmark badge, because it answers
+ * "what will the next action touch" and is a mode the user can leave. They
+ * compose: a picked photograph can also be the one on screen, and then the
+ * accent ring stays outermost and a white ring sits immediately inside it, so
+ * both facts are readable at once instead of one ring having to stand for two.
+ * Drawing both with one ring was how the previous version made the question
  * unanswerable.
+ *
+ * <p><b>Every ring is a foreground, and none is a background.</b> A ring drawn
+ * as the background is painted before the bitmap, so the bitmap covers it — and
+ * the previous padding did not save the corners: {@code clipToOutline} clipped
+ * the bitmap to the background drawable's outline, which is the ring's
+ * <i>outer</i> edge, so at the corners the photo reached over the stroke's inner
+ * half and the white ring came out cut off at all four corners. Drawing the ring
+ * over the photograph is also what the mockup does: its {@code border} is
+ * painted on top of the background, not under it.
  *
  * <p><b>Rows and cells are built by hand</b> because there is no AndroidX
  * anywhere in this app, and that is a deliberate constraint rather than an
@@ -117,6 +130,16 @@ final class Gallery {
     private static final int CHIP_DP = 10;
     /** The checkmark badge: big enough to read at a glance over a photograph. */
     private static final int BADGE_DP = 22;
+    /** The active ring: `.thumb[aria-current=true]`'s 2px white border. */
+    private static final int RING_ACTIVE_DP = 2;
+    /**
+     * The picked ring, deliberately thicker than the active one. It is the
+     * accent, so "picked" is the state that shouts, and a thicker stroke reads
+     * across the room where the wash and the badge need a look.
+     */
+    private static final int RING_PICKED_DP = 3;
+    /** `.thumb`/`.cell`'s 11px radius: shared by the fill, the clip and every ring. */
+    private static final int TILE_RADIUS_DP = 11;
     /**
      * The picked cell's wash. The accent at 30%, so the photograph is visibly
      * claimed without being hidden — the user still has to be able to tell
@@ -198,19 +221,29 @@ final class Gallery {
     private final List<Button> selectionActions = new ArrayList<Button>();
 
     /**
-     * One grid cell's picked mark: the wash and the checkmark badge, plus the
-     * cell whose description names the state.
+     * One grid cell's picked mark: the wash, the checkmark badge and the picture
+     * whose foreground ring is redrawn, plus the cell whose description names
+     * the state.
+     *
+     * <p>The picture is here because the ring depends on <i>both</i> states:
+     * a pick toggled on the active cell has to become the doubled ring, and a
+     * pick toggled off has to fall back to the white one. Writing the tint and
+     * the badge alone would leave the outline claiming a selection that has
+     * just been cleared.
      */
     private static final class PickedCell {
         final LibraryItem item;
         final View cell;
+        final View picture;
         final View tint;
         final View badge;
         final boolean active;
 
-        PickedCell(LibraryItem item, View cell, View tint, View badge, boolean active) {
+        PickedCell(LibraryItem item, View cell, View picture, View tint, View badge,
+                   boolean active) {
             this.item = item;
             this.cell = cell;
+            this.picture = picture;
             this.tint = tint;
             this.badge = badge;
             this.active = active;
@@ -450,14 +483,16 @@ final class Gallery {
         final int size = activity.dp(THUMB_DP);
         ImageView thumb = new ImageView(activity);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumb.setBackground(thumbBackground(isActive));
-        // The ring is on the background, and an ImageView draws its picture over
-        // its own background — so an active thumb is padded just enough to let
-        // the stroke show instead of being painted out from under the bitmap.
-        // The same cover-up is why the old grid's single background ring could
-        // never read as a selection mark.
-        int ring = isActive ? activity.dp(2) : 0;
-        thumb.setPadding(ring, ring, ring, ring);
+        thumb.setBackground(tileBackground());
+        // The ring is a foreground, over the picture. A background ring is painted
+        // before the bitmap, and the padding that used to keep the bitmap off it
+        // did not save the corners: clipToOutline clipped the bitmap to the
+        // background drawable's outline — the ring's OUTER edge — so the picture
+        // covered the stroke's inner half at every corner and the ring arrived
+        // with its radius cut off. A foreground cannot be painted over by the
+        // content it decorates, and it is what the mockup draws: its border sits
+        // on top of the background.
+        thumb.setForeground(tileRing(isActive, false));
         // A rounded background plus clipToOutline is the framework's own rounded
         // thumbnail. The alternative is a second bitmap pass per photograph, and
         // there is no view recycling in this app, so that is a per-photo cost for
@@ -492,10 +527,9 @@ final class Gallery {
     /**
      * Redraw one strip tile's ring, in place.
      *
-     * <p>The ring is the background plus the padding that lets a stroke show
-     * under the picture, so it is both writes here. A missing tile is a no-op:
-     * the strip may not have been installed yet, and a selection arriving with
-     * no strip to update is not an error.
+     * <p>The ring is the foreground, so this is one write. A missing tile is a
+     * no-op: the strip may not have been installed yet, and a selection arriving
+     * with no strip to update is not an error.
      *
      * @param active whether this photograph is now the one on screen
      */
@@ -503,14 +537,11 @@ final class Gallery {
         if (id == null) return;
         ImageView tile = stripTiles.get(id);
         if (tile == null) return;
-        tile.setBackground(thumbBackground(active));
-        int ring = active ? activity.dp(2) : 0;
-        tile.setPadding(ring, ring, ring, ring);
+        tile.setForeground(tileRing(active, false));
     }
 
     /**
-     * The background behind one thumbnail: rounded, and ringed when this is the
-     * photograph on screen.
+     * The fill behind one thumbnail, rounded like the mockup's tile.
      *
      * <p>One fill for every row, including the bundled demo. The old
      * demo-specific brown was standing in for a photograph the tile could not
@@ -518,15 +549,60 @@ final class Gallery {
      * the same preview path as any other, a second fill would be a colour the
      * user sees for one frame — and the "not a solid brown colour" the demo's
      * thumbnail was reported as.
+     *
+     * <p>No stroke here: the ring is a foreground, because a stroke on this
+     * background is what {@code clipToOutline} would clip the picture to. See
+     * {@link #tileRing}.
      */
-    private GradientDrawable thumbBackground(boolean isActive) {
-        int fill = 0xFF2E3B44;
-        int ring = isActive ? 0xFFFFFFFF : 0x00000000;
+    private GradientDrawable tileBackground() {
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.RECTANGLE);
-        d.setColor(fill);
-        d.setCornerRadius(activity.dp(11));
-        d.setStroke(activity.dp(isActive ? 2 : 1), ring);
+        d.setColor(0xFF2E3B44);
+        d.setCornerRadius(activity.dp(TILE_RADIUS_DP));
+        return d;
+    }
+
+    /**
+     * The outline a tile wears for its two states, or null for neither.
+     *
+     * <p><b>Picked is thicker than active, and both at once is a doubled
+     * ring.</b> Picked and active are independent facts — "what the next action
+     * will touch" and "what is on the wallpaper" — so a cell can be either, or
+     * both. With both, the accent ring stays outermost, because picked is the
+     * mode the user is in and the accent is the app's one selection colour;
+     * immediately inside it sits the white active ring, so the cell still
+     * answers "this is the one on screen" without a tap on anything else. Two
+     * strokes on two concentric radii, rather than one colour hiding the other,
+     * is what keeps the doubled state readable at a glance.
+     *
+     * <p>The radius shrinks with the inset so the two strokes stay concentric:
+     * the white ring's corner must follow the accent ring's inner edge, not the
+     * tile's outer corner, or the pair pinches at the corners.
+     */
+    private Drawable tileRing(boolean active, boolean picked) {
+        if (!active && !picked) return null;
+        int radius = activity.dp(TILE_RADIUS_DP);
+        if (!picked) {
+            return ring(activity.dp(RING_ACTIVE_DP), 0xFFFFFFFF, radius);
+        }
+        int thick = activity.dp(RING_PICKED_DP);
+        if (!active) {
+            return ring(thick, ACCENT, radius);
+        }
+        LayerDrawable both = new LayerDrawable(new Drawable[] {
+                ring(thick, ACCENT, radius),
+                ring(activity.dp(RING_ACTIVE_DP), 0xFFFFFFFF, radius - thick),
+        });
+        both.setLayerInset(1, thick, thick, thick, thick);
+        return both;
+    }
+
+    /** One stroke of a ring, rounded like the tile it sits on. */
+    private GradientDrawable ring(int widthPx, int colour, int radiusPx) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(radiusPx);
+        d.setStroke(widthPx, colour);
         return d;
     }
 
@@ -935,16 +1011,16 @@ final class Gallery {
     }
 
     /**
-     * One cell: the picture, the active ring, the picked wash and badge, the
-     * depth chip, and the menu.
+     * One cell: the picture, the active ring, the picked ring, wash and badge,
+     * the depth chip, and the menu.
      *
      * <p><b>Tap uses the photograph; a hold starts picking; a tap while picking
      * toggles.</b> While picking, a tap deliberately cannot change the
      * wallpaper: two answers on one gesture is how a user trying to unpick a
      * photograph ends up replacing the wallpaper instead. The marks make the
-     * mode visible — white ring for what is on screen, accent wash and a
-     * checkmark for what is picked — so "which mode am I in" is answered by the
-     * grid rather than remembered.
+     * mode visible — a white ring for what is on screen, a thicker accent ring
+     * plus wash and checkmark for what is picked — so "which mode am I in" is
+     * answered by the grid rather than remembered.
      */
     private View cell(final LibraryItem item, final boolean isActive,
                       boolean firstInRow) {
@@ -960,16 +1036,12 @@ final class Gallery {
         cell.setLayoutParams(cellLp);
 
         FrameLayout picture = new FrameLayout(activity);
-        // Ring behind the image, wash in front of it. The ring is the active
-        // mark and the wash is the picked one on purpose: "what the wallpaper is
-        // showing" and "what the next action will touch" are different facts,
-        // and drawing both with one ring is what made the old state unreadable.
-        picture.setBackground(thumbBackground(isActive));
-        // Padded only when active, because the ImageView fills its parent and a
-        // stroke drawn behind it is a stroke nobody sees. The cost of the ring
-        // is paid only where the ring exists: no ring, no inset.
-        int ring = isActive ? activity.dp(2) : 0;
-        picture.setPadding(ring, ring, ring, ring);
+        // A plain rounded fill behind the image; every ring is a foreground on
+        // top of it. See tileRing: a background ring is painted before the
+        // bitmap, and clipToOutline's outline is the ring's outer edge, which is
+        // how the previous version's stroke got covered at the corners.
+        picture.setBackground(tileBackground());
+        picture.setForeground(tileRing(isActive, isPicked));
         picture.setClipToOutline(true);
         // Square by arithmetic, not by measurement: cellPx is the column's width, so
         // using it as the height is what makes the cell a square. MATCH_PARENT width
@@ -1043,7 +1115,7 @@ final class Gallery {
                 return true;
             }
         });
-        cellMarks.put(item.id, new PickedCell(item, cell, tint, badge, isActive));
+        cellMarks.put(item.id, new PickedCell(item, cell, picture, tint, badge, isActive));
         cell.setContentDescription(stateDescription(item, isActive, isPicked));
         return cell;
     }
@@ -1074,6 +1146,12 @@ final class Gallery {
      * Show or hide one cell's picked mark, and say the new state to a screen
      * reader.
      *
+     * <p>The outline is redrawn here too, and it is not optional: the ring
+     * depends on picked and active together, so toggling a pick on the active
+     * cell has to turn the white ring into the doubled one, and unpicking it has
+     * to put the white ring back. Leaving the outline alone would let the wash
+     * say "not picked" while the ring still said "picked".
+     *
      * <p>A no-op without a mark: the grid may be down, and a toggle that raced
      * its own dismissal has nothing left to draw on.
      */
@@ -1082,6 +1160,7 @@ final class Gallery {
         if (mark == null) return;
         mark.tint.setVisibility(on ? View.VISIBLE : View.GONE);
         mark.badge.setVisibility(on ? View.VISIBLE : View.GONE);
+        mark.picture.setForeground(tileRing(mark.active, on));
         mark.cell.setContentDescription(stateDescription(mark.item, mark.active, on));
     }
 

@@ -32,11 +32,24 @@ final class FramingRows {
     }
 
     /**
-     * Origin is a fraction of the reachable range, so it is carried in thousandths
-     * to keep a slider integral: −1.000..1.000.
+     * Origin is a fraction of the plane, and its range is the model's own bound,
+     * not a range of this class's choosing: {@link SurfaceSettings#ORIGIN_LIMIT}
+     * is where the camera's pivot reaches the plane's edge. It is carried in
+     * thousandths to keep a slider integral: −0.500..0.500.
+     *
+     * <p><b>These used to be a literal ±1000 — twice the far stop — and the
+     * difference was not cosmetic.</b> The extra half of the track previewed an
+     * origin the model cannot mean: at +1.000 the camera sits a whole plane-width
+     * beyond the photo's edge, so the preview was the void and nothing else. On
+     * release {@code SurfaceSettings} clamped the write to 0.5 while the control
+     * kept displaying what it had previewed, leaving the slider, the stored value
+     * and the render on three different numbers — the render at the far stop with
+     * its bar three-quarters full, which is exactly how a photo that has left half
+     * the screen was reached. Deriving the bound from the model's constant is what
+     * makes that unable to come back.
      */
-    private static final int ORIGIN_MIN = -1000;
-    private static final int ORIGIN_MAX = 1000;
+    private static final int ORIGIN_MIN = Math.round(-SurfaceSettings.ORIGIN_LIMIT * 1000f);
+    private static final int ORIGIN_MAX = Math.round(SurfaceSettings.ORIGIN_LIMIT * 1000f);
 
     /**
      * How much further than the picture the finger must travel on Origin.
@@ -104,21 +117,10 @@ final class FramingRows {
                 * ORIGIN_DRAG_FACTOR / 1000f;
     }
 
-    /** Build the whole section: readout, Origin caption, X, Y, Pan caption, X, Y. */
+    /** Build the whole section: Origin caption, X, Y, Pan caption, X, Y. */
     static View build(final MainActivity activity) {
         LinearLayout box = new LinearLayout(activity);
         box.setOrientation(LinearLayout.VERTICAL);
-
-        // The readout, because the group heading above it says only "Where it sits"
-        // and a heading is not a place for a number.
-        activity.framingReadout = new TextView(activity);
-        activity.framingReadout.setTextSize(13);
-        activity.framingReadout.setTextColor(0x8CFFFFFF);
-        // No side padding, so the readout shares the column of the captions and
-        // axis rows beneath it instead of sitting 4dp inside it.
-        activity.framingReadout.setPadding(0, activity.dp(2), 0, activity.dp(6));
-        box.addView(activity.framingReadout);
-        refreshReadout(activity);
 
         box.addView(caption(activity, R.string.framing_origin_caption));
         box.addView(axis(activity, "originX", true));
@@ -144,25 +146,19 @@ final class FramingRows {
             }
         });
 
-        refreshReadout(activity);
         return box;
     }
 
     /**
      * Give both pan rows the renderer's current bound, silently.
      *
-     * <p>The readout follows in the same call: it prints the pan values, so a
-     * range that stopped the sliders at the bound while the readout still printed
-     * a larger stored number would be two readings of one thing — the exact
-     * disagreement this row exists to prevent. The value itself is only shown
-     * clamped; the stored blob is not rewritten, so a pan stored on a larger
-     * screen survives a visit to a smaller one, exactly as
+     * <p>The value is only shown clamped; the stored blob is not rewritten, so a
+     * pan stored on a larger screen survives a visit to a smaller one, exactly as
      * {@code ReliefRenderer.setPan}'s own comment promises.
      */
     private static void setPanRange(MainActivity activity, int limit) {
         setRange(activity, "panX", limit);
         setRange(activity, "panY", limit);
-        refreshReadout(activity);
     }
 
     private static void setRange(MainActivity activity, String key, int limit) {
@@ -198,8 +194,14 @@ final class FramingRows {
         BasreliefSlider.ValueFormatter fmt = new BasreliefSlider.ValueFormatter() {
             @Override
             public String format(int v) {
+                // Origin is a fraction of the reachable range carried in
+                // thousandths, so three decimals show the step a nudge takes.
+                // Two decimals printed neighbouring steps as the same number,
+                // which makes the control look stuck at exactly the values it
+                // is meant to be aimed at. Pan stays whole pixels: a fraction
+                // of a pixel is not a distance anyone aims at.
                 return fraction
-                        ? String.format(java.util.Locale.US, "%.2f", v / 1000f)
+                        ? String.format(java.util.Locale.US, "%.3f", v / 1000f)
                         : String.valueOf(v);
             }
         };
@@ -325,7 +327,6 @@ final class FramingRows {
             }
         });
         activity.glView.requestRender();
-        refreshReadout(activity);
     }
 
     /**
@@ -350,7 +351,6 @@ final class FramingRows {
         setSlider(activity, "originY", true);
         setSlider(activity, "panX", false);
         setSlider(activity, "panY", false);
-        refreshReadout(activity);
     }
 
     /**
@@ -364,23 +364,5 @@ final class FramingRows {
         BasreliefSlider slider = activity.sliders.get(key);
         if (slider == null) return;
         slider.setValue(read(activity, key, fraction));
-    }
-
-    /**
-     * The one number the heading cannot carry, so it sits directly under it. The
-     * wireframe draws the pair on one line because they are one question — where the
-     * photograph sits — at two scales.
-     */
-    static void refreshReadout(MainActivity activity) {
-        if (activity.framingReadout == null) return;
-        activity.framingReadout.setText(activity.getString(R.string.framing_readout,
-                fmt3(read(activity, "originX", true) / 1000f),
-                fmt3(read(activity, "originY", true) / 1000f),
-                read(activity, "panX", false),
-                read(activity, "panY", false)));
-    }
-
-    private static String fmt3(float v) {
-        return String.format(java.util.Locale.US, "%.3f", v);
     }
 }
