@@ -404,3 +404,35 @@ rule: **blur + dim when blur is supported; when it is not, dim the background fu
 (much darker, not the same alpha). Already recorded above as two constants from one
 derivation, both scrim variants, with `BottomSheet` (the studio sheet) explicitly **out of
 scope** — its background must stay visible for free positioning.
+
+## Scrolling modal content jitters — the height is coupled to scrollY (2026-10-04)
+
+**The brief, in substance:** *scrolling inside the sheet made the content jitter, because the scroll was also trying to expand it. The scroll should expand the sheet only when scrolling up with nothing left to scroll, and collapse it only when scrolling down with nothing left to scroll.*
+
+**The user has diagnosed it correctly.** `c3f8d41` made the card's height a continuous
+function of scroll position — `viewportHeight = min(content, ceiling, open + scrollY)` — and
+`CappedScroll.onMeasure` clamps its own measured height. So scrolling changes the viewport
+height, which changes the layout, which can change the effective scroll position: a feedback
+loop that oscillates. The bounds were measured and were *correct at rest*, which is why this
+passed review; nothing measured the motion, and `AGENTS.md` already records that a settled
+state is the one thing `screencap` cannot check.
+
+**The rule, which is the fix:**
+- **Within the content's scroll range the card's height is CONSTANT.** Scrolling is for
+  reading, not for resizing.
+- **Over-scroll UP at the top edge** → expand.
+- **Over-scroll DOWN at the bottom edge** → collapse.
+- Growth and shrink are **monotonic within a gesture and settle at a stop** (full height =
+  the ceiling). A card that jitters is the whole symptom; monotonic-within-a-gesture is the
+  property to test, not "ends up the right size".
+
+So the mechanism is **edge over-scroll driving the parent**, not scroll position driving it —
+the canonical nested-scroll handoff, where the parent consumes only the *unconsumed* delta
+at the edges. Whether that is `NestedScrollView` plus a child-scroll callback, or a
+`ScrollView` computing its own unconsumed delta at the edges, is a choice to make and
+justify; what is not a choice is that plain `scrollY` must not drive the height.
+
+**Must not regress:** shrink-wrap for content with no scroll range (the card still fits its
+content and does not grow); the grip and footer never moving; the hand-over from content to
+card drag; `OPEN_FRACTION`'s opening height; `SOFT_INPUT_ADJUST_RESIZE` with a keyboard up;
+the 120dp floor; and the depth form's fields still being typeable.
