@@ -22,6 +22,11 @@ import android.view.SurfaceHolder;
  */
 public class DepthWallpaperService extends WallpaperService {
 
+    /** The surface that was showing most recently, process-wide. Both engines live
+     *  in this process, so this is the one honest answer to "what did the user just
+     *  see". See DepthEngine.pendingGlideFrom for why it exists. */
+    private static Surface lastVisibleSurface;
+
     /**
      * The component a user selects, i.e. what the studio hands to the system
      * picker.
@@ -70,15 +75,29 @@ public class DepthWallpaperService extends WallpaperService {
         /** Last value onVisibilityChanged gave us, for the diagnostic line only. */
         private volatile boolean visible = true;
         /**
-         * Set by becoming visible and consumed by the resolve that follows it.
+         * What the user was actually looking at the moment before this engine woke.
          *
-         * <p>The difference between the two events that both run applyFromPrefs:
-         * waking is a transition between the two surfaces' configs and glides; a
-         * slider move or an index change is a same-surface resolve and must apply
-         * instantly, or every adjustment would smear. Visible alone cannot tell them
-         * apart -- the engine is visible for both.
+         * <p>Null unless this engine just became visible, so a slider move or an
+         * index change -- which also run applyFromPrefs -- cannot glide: only a wake
+         * carries a "from", and it is consumed by the resolve that follows.
          */
-        private boolean wokeThisTransition;
+        private Surface pendingGlideFrom;
+        /**
+         * The surface that was showing most recently, process-wide.
+         *
+         * <p>Static because both engines share this process (AGENTS.md), and it is
+         * the only honest answer to "what did the user just see". The first version
+         * of the glide assumed waking meant the OTHER surface was just showing --
+         * which on a one-engine setup bound to both surfaces (flags=0x3,
+         * surface=HOME, coversLock) is a surface that never rendered anything, so
+         * every wake animated from a config no screen had been showing. Reported as
+         * "it now always glides from lock to home", on turning the screen on, on
+         * unlocking, and on returning to the launcher. The truth is knowable: ask
+         * whichever engine was visible.
+         */
+        // Not static here: a non-static inner class cannot hold static fields, and
+        // the service is the process-wide home both engines already share.
+        // (Held as DepthWallpaperService.lastVisibleSurface.)
         private boolean tiltRunning = false;
         /**
          * Which screen this engine is drawing, resolved in :core from the raw
@@ -256,12 +275,16 @@ public class DepthWallpaperService extends WallpaperService {
      * and gliding it would smear every adjustment.
      */
     private Framing glideFromSurface(LibraryItem active, SurfaceResolver resolved) {
-        if (!wokeThisTransition) return null; // a same-surface resolve: apply, do not smear
-        wokeThisTransition = false;           // consumed: one glide per wake
+        Surface from = pendingGlideFrom;
+        pendingGlideFrom = null;             // consumed: one glide per wake
+        if (from == null) return null;       // not a wake: apply, do not smear
+        // The surface that was showing is the one to come from. NOT "the other
+        // surface": that guess is what made every wake glide from a config nothing
+        // was rendering. Same surface showing before and now -- returning to the
+        // launcher, a same-surface wake -- is not a transition and must not ease.
+        if (from == resolved.surface()) return null;
         if (!resolved.supportsPerSurfaceLock()) return null; // no second engine, no other side
-        Surface mine = resolved.surface();
-        Surface theirs = mine == Surface.HOME ? Surface.LOCK : Surface.HOME;
-        return Framing.of(active, theirs);
+        return Framing.of(active, from);
     }
 
     /**
@@ -467,11 +490,12 @@ public class DepthWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             this.visible = visible;
             if (visible) {
-                // Marked BEFORE anything that can resolve, so the applyFromPrefs this
-                // wake triggers glides from the other surface's config -- and the
-                // pref-listener fire from that same resolve chain finds it already
-                // consumed, which is what keeps a slider move an instant apply.
-                wokeThisTransition = true;
+                // Captured AFTER resolveSurface so the flags are fresh, and BEFORE
+                // anything that can resolve: the applyFromPrefs this wake triggers
+                // consumes it, and a pref-listener fire from that same chain finds it
+                // already gone, which is what keeps a slider move an instant apply.
+                pendingGlideFrom = DepthWallpaperService.lastVisibleSurface;
+                DepthWallpaperService.lastVisibleSurface = surface.surface();
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
                 // onCreate. Whether the flags are published by the time onCreate
