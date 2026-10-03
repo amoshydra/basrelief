@@ -37,14 +37,20 @@ need storing separately.
   verified from this side.
 - **The photo cross-fade on the home screen** — the engine uses the same renderer, but the
   wallpaper path itself was never exercised.
+- **The light rake and the seam**: pull Elevation to 0 — grazing light is the whole point of
+  the feature and cannot be judged from here (`screencap` forces the frame under test). And
+  decide whether azimuth **clamping** at 0/359 is acceptable or the slider must wrap.
 - **Per-surface Lock settings** on API 35+; the static lock frame on a sub-35 device (moot on
   the current phones).
 - IME over the depth field, RTL, TalkBack.
 
 ## Ideation backlog, ranked
 
-1. **Light UI** (in progress) — azimuth/elevation sliders + presets, against the contract in
-   `LightDirection`. The bundle already stores it per surface.
+1. ~~**Light UI**~~ **Shipped** (`ed1726e`) — Azimuth/Elevation sliders in a `Light` group;
+   bounds derived from `LightDirection`; both angles in one `setLight`; the untouched angle
+   carried as a float so the preview is exact. Remaining: **presets**, which are also the
+   cheap way across the 0/359 seam (the slider clamps, it does not wrap), and the user's
+   judgement that a low-elevation rake actually reads as raking light.
 2. **Auto-depth on import + camera capture** — depth is the moat, and today it needs a panel
    and a button.
 3. **Portable packed PNG (export/import) + a static web viewer** — the only distribution the
@@ -77,6 +83,12 @@ need storing separately.
   impossible at 30 Hz on a phone.
 
 ## Known drift / deliberate deviations
+
+- **`MainActivity` still rebuilds the whole film strip on two paths** — a re-share that
+  selects an existing photo, and `onResume` (which calls `gallery.reindex()`
+  unconditionally). The Gallery-side fix (`b426298`) made a *selection* re-parent one tile;
+  these two call the rebuild path directly, so every return to the studio still re-decodes
+  each thumbnail. Fix shape: reindex only when the index actually changed.
 
 - The studio sheet's Home·Lock segment **scrolls**; the mockup pins it outside the scroll.
   The user chose scrolling.
