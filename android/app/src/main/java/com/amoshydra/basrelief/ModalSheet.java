@@ -117,8 +117,8 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * no cross-window blur support at all, in which case WMS draws nothing and leaves the
  * window background transparent. So the scrim carries the difference instead:
  * {@link #SCRIM} is the blurred value and {@link #darker} adds
- * {@link #SCRIM_UNBLURRED_STEP} for every device that gets no blur, because a blurred
- * backdrop reads darker than a sharp one at the same alpha. <b>None of this touches
+ * nothing — see the {@link #SCRIM} note for the measurement that removed the second
+ * value and left the scrim doing the work on its own. <b>None of this touches
  * the studio sheet</b> — it is a view beside the {@code GLSurfaceView} in the same
  * window, which cannot be blurred from inside itself without a per-frame screenshot.
  *
@@ -144,63 +144,36 @@ final class ModalSheet {
     // The mockup's tokens. --scrim is rgba(0,0,0,.62); the depth screen deliberately
     // passes a lighter one, which is a difference in the design and not an accident.
     //
-    // SCRIM is the BLURRED backdrop, and there is a second, much darker one for the
-    // devices that cannot blur -- see SCRIM_UNBLURRED_STEP for why "the same alpha"
-    // would be wrong there, and darker() for how both variants darken together.
-    static final int SCRIM = 0x4D000000;
+    // ONE scrim for every device. It was two, and the split is gone because it was
+    // built on an assumption that measurement disproved -- see BLUR_RADIUS_DP.
+    static final int SCRIM = 0xD9000000;
 
     /**
-     * How much darker the backdrop goes when nothing is blurring it: {@code +140} of
-     * alpha, so {@code .30 → .85} on the standard scrim.
+     * {@code SCRIM_UNBLURRED_STEP}, {@link #SCRIM_UNBLURRED} and {@link #darker} were
+     * deleted rather than left at zero.
      *
-     * <p><b>The two paths are not variants of one backdrop; they are two different
-     * backdrops, and this step is the whole reason.</b> A scrim is drawn OVER the
-     * window's blur, so the blur's contrast reaches the eye multiplied by
-     * {@code 1 - scrimAlpha}: at {@code .70} only 30% of it survives, and over a
-     * dark relief render essentially none of it does. <b>That is the real reason a
-     * blur could be composited and still not be seen</b> — not the window's shape,
-     * and not the device. So where the platform blurs, the scrim is deliberately
-     * <b>light</b> and the blur does the separating, because it removes competing
-     * detail and reads darker at the same mean level. Where it cannot, the scrim is
-     * <b>very dark</b> because then it is the only tool there is.
+     * <p><b>Why the split existed and why it was wrong.</b> A scrim is drawn OVER
+     * the window's blur, so the blur's contrast reaches the eye multiplied by
+     * {@code 1 - scrimAlpha}. That is real, and it drove a light scrim on
+     * blur-capable devices (.30) and a heavy one elsewhere (.85) on the theory that
+     * the blur would then be visible. <b>It never was.</b> Measured on a Pixel 7 Pro
+     * with a dialog open over a bright photograph: the call lands
+     * ({@code blur=true sdk=37 radius=74}), the window is {@code fmt=TRANSLUCENT},
+     * {@code fillxfill} and not {@code FLAG_FULLSCREEN}, the compositor has
+     * {@code KawaseDualFilterV2} with {@code disableBackgroundBlur=false} — and
+     * nothing appears. Two independent reasons, and neither is fixable from here:
+     * AOSP composites a background blur only for a window that is translucent and
+     * <i>floating</i>, and a {@link android.app.Dialog} is {@code ty=BASE_APPLICATION};
+     * a floating window is {@code TYPE_APPLICATION_OVERLAY}, which needs
+     * {@code SYSTEM_ALERT_WINDOW}, a permission a wallpaper studio should not hold.
+     * And {@code dumpsys SurfaceFlinger} on sdk 37 prints no {@code blurRadius} field
+     * at all — zero entries device-wide — so the shell cannot even confirm it.
      *
-     * <p>The user asked for both backdrops darker and a visible blur. Those are the
-     * same lever pointed opposite ways, and the resolution is that blur substitutes
-     * for darkness where blur exists rather than stacking on top of it.
+     * <p><b>So the scrim is the separation on every device</b>, which is what it was
+     * before anyone mistook it for a progressive enhancement. The blur call is still
+     * made, because it costs nothing and may land on an OEM that composites it, but
+     * the design no longer depends on it.
      */
-    static final int SCRIM_UNBLURRED_STEP = 0x8C;
-
-    /**
-     * The no-blur counterpart of {@link #SCRIM}: {@code 0xD9000000},
-     * {@code rgba(0,0,0,.85)} — the OnePlus, and anything else reporting no blur.
-     * Derived, not picked, so the two paths cannot drift.
-     */
-    static final int SCRIM_UNBLURRED = darker(SCRIM);
-
-    /**
-     * The same backdrop with {@link #SCRIM_UNBLURRED_STEP} more alpha, for a window
-     * that cannot blur what is behind it.
-     *
-     * <p><b>One step applied to whatever scrim it is given, which is what keeps the
-     * two variants related.</b> The depth screen passes a lighter scrim than the
-     * standard ({@code rgba(0,0,0,.55)} against {@code .62}) because it is a form and
-     * a heavier backdrop makes it harder to read. If the unblurred path were two
-     * hand-picked constants, that gap would have to be re-guessed for the dark pair
-     * and the depth screen would drift toward the standard's darkness on exactly the
-     * devices where legibility matters most. Applying the same step to both keeps the
-     * design's difference a difference: {@code .55 → .75} and {@code .62 → .82}.
-     *
-     * <p>Package-visible and static so the derivation is checkable rather than
-     * asserted, and so a screen with its own scrim gets the fallback without having to
-     * know the step.
-     */
-    static int darker(int scrim) {
-        int alpha = (scrim >>> 24) + SCRIM_UNBLURRED_STEP;
-        // Clamped, because a caller may pass an opaque scrim and 0xFF + step wraps to
-        // a transparent one, which would silently invert the whole comparison.
-        if (alpha > 0xFF) alpha = 0xFF;
-        return (alpha << 24) | (scrim & 0x00FFFFFF);
-    }
 
     static final int CARD = 0xFF171B21;
     static final int LINE = 0x24FFFFFF;
@@ -259,7 +232,7 @@ final class ModalSheet {
      * attribute, so it blurs the studio's GL surface and the wallpaper behind the
      * dialog as well as any app underneath; the scrim then darkens what comes
      * through. Both are needed and neither substitutes for the other, which is why
-     * {@link #SCRIM_UNBLURRED_STEP} exists rather than one scrim doing both jobs.
+     * is called on devices that cannot use it; see {@link #SCRIM}.
      */
     private static final int BLUR_RADIUS_DP = 25;
 
@@ -449,7 +422,7 @@ final class ModalSheet {
         // under a running drag would make the fade non-deterministic. A device does
         // not gain or lose cross-window blur mid-window (battery saver can turn it off,
         // which WMS applies to new windows), and the dialog is short-lived regardless.
-        this.scrim = blurSupported(activity) ? scrim : darker(scrim);
+        this.scrim = scrim;
         this.dismissOnScrimTap = dismissOnScrimTap;
 
         FrameLayout scrimView = new FrameLayout(activity);
@@ -601,7 +574,7 @@ final class ModalSheet {
         // subtract a capability.
         //
         // NOTE: this was not why the blur was invisible -- the scrim was. See
-        // SCRIM_UNBLURRED_STEP for the arithmetic that mattered.
+        // SCRIM for the measurement that decided the design.
         dialog.getWindow().clearFlags(
                 android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
         dialog.getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);

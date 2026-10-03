@@ -137,22 +137,19 @@ public final class DepthGenDialog {
     /** {@code .modal{max-height:88%}}. */
     private static final float MAX_HEIGHT = 0.88f;
     /**
-     * The depth screen's own scrim, {@code rgba(0,0,0,.25)} — lighter than the
+     * The depth screen's own scrim, {@code rgba(0,0,0,.80)} — lighter than the
      * {@link ModalSheet#SCRIM} the other modals use, and a difference in the design
      * rather than an accident: this is a form, and a heavier scrim over a
      * photograph makes it harder to read without making it more modal.
      *
-     * <p><b>It was {@code .55}, which is now wrong twice over.</b> A scrim is drawn
-     * over the window's blur, so the blur survives multiplied by {@code 1 - alpha}
-     * and {@code .55} was already hiding most of it; and because
-     * {@link ModalSheet#SCRIM_UNBLURRED_STEP} adds {@code +.55} on the no-blur path,
-     * this value clamped the result to <b>fully opaque</b> — the photograph would
-     * have disappeared entirely on any device that cannot blur. That was found by
-     * computing the arithmetic rather than reading it: the two constants are one
-     * relationship, so a change to either has to be checked against the other's
-     * step.
+     * <p><b>One value now, on every device.</b> It used to have a second, darker
+     * counterpart for devices that cannot blur a window's backdrop, derived by adding a
+     * fixed step; that pair is gone, and the reason is in {@link ModalSheet#SCRIM} —
+     * the blur is not composited for a {@code Dialog} on any device measured, so a
+     * backdrop that depended on it was depending on nothing. Two numbers that had to
+     * be kept in step is one more relationship than this is worth.
      */
-    private static final int SCRIM_DEPTH = 0x40000000;
+    private static final int SCRIM_DEPTH = 0xCC000000;
 
     /** Output sizes offered. Pinned to the mockup's single row of nudges. */
     private static final int[] RESOLUTIONS = {256, 512, 768, 1024, 1536, 2048};
