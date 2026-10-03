@@ -1737,6 +1737,16 @@ public class MainActivity extends Activity {
 
         switch (action) {
             case MotionEvent.ACTION_DOWN:
+                // A gesture takes control from a glide in flight. Queued, not called:
+                // the renderer's values are the GL thread's, and this runs on the UI
+                // thread. Without it the tween and the finger contest the same values
+                // for the rest of the span and the gesture is lost.
+                glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        renderer.cancelGlide();
+                    }
+                });
                 pointers.put(id, new PointF(e.getX(index), e.getY(index)));
                 downX = e.getX();
                 downY = e.getY();

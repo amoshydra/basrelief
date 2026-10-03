@@ -1068,6 +1068,26 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return glideTo != null;
     }
 
+    /**
+     * End a glide now, keeping its destination.
+     *
+     * <p>Called when the user touches the render: a gesture takes control from the
+     * tween. Without this the two contest the same values for the rest of the span --
+     * the finger sets them, the next frame overwrites them, and the gesture is
+     * effectively lost, which reads as the view fighting back.
+     *
+     * <p>The destination is kept rather than the current interpolated values, because
+     * the tween was already on its way there and the user is about to move from
+     * wherever they think it is. Must be called on the GL thread.
+     */
+    void cancelGlide() {
+        if (glideTo == null) return;
+        Framing end = glideTo;
+        glideFrom = null;
+        glideTo = null;
+        apply(end);
+    }
+
     /** One step of an active glide, called at the top of every drawn frame. */
     private void stepGlide() {
         if (glideTo == null) return;

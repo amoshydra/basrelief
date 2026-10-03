@@ -266,6 +266,13 @@ public final class Library {
      *
      * <p>A replacement keeps its position, so editing a label does not move a
      * row out from under the user's thumb.
+     *
+     * <p>The applied-surfaces set is CARRIED ACROSS. It was not, because this method
+     * rebuilt the index through the three-argument {@code of} and that defaults the
+     * set to {{HOME}} -- so every single edit, on every slider change, silently reset
+     * which screens the photo had been applied to. It was invisible only because
+     * nothing read the set at the time; the failure was one reader away, which is not
+     * a reason to leave it.
      */
     public Library withItem(LibraryItem item) {
         if (item == null) return this;
@@ -273,11 +280,11 @@ public final class Library {
         for (int i = 0; i < next.size(); i++) {
             if (next.get(i).id.equals(item.id)) {
                 next.set(i, item);
-                return of(next, activeId, sort);
+                return of(next, activeId, sort, appliedSurfaces);
             }
         }
         next.add(item);
-        return of(next, activeId, sort);
+        return of(next, activeId, sort, appliedSurfaces);
     }
 
     /**
