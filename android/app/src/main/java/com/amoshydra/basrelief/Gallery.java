@@ -159,8 +159,8 @@ final class Gallery {
      * Where the strip lives, told by the studio rather than decided here.
      *
      * <p>{@link #installStrip} receives the sheet and the index it wants, and a
-     * rebuild — the ring on a selection change, a new sort order — re-adds into
-     * that same seat. The studio changes the seat and every rebuild follows it;
+     * rebuild — a new sort order, an import, a delete — re-adds into that same
+     * seat. The studio changes the seat and every rebuild follows it;
      * this class never moves the strip on its own, and there is no offset to keep
      * in step with an animated sheet because a child of the panel moves with it.
      */
@@ -417,9 +417,6 @@ final class Gallery {
     /** Re-read the index and put the strip back, in the seat the studio gave. */
     private void refreshStrip() {
         if (strip == null || stripHost == null) return;
-        StackTraceElement from = new Throwable().getStackTrace()[1];
-        android.util.Log.i("Basrelief", "PROBE refreshStrip from "
-                + from.getMethodName() + ":" + from.getLineNumber());
         stripHost.removeView(strip);
         strip = null;
         stripRow = null;
@@ -591,16 +588,17 @@ final class Gallery {
      * authority on order. An id that is not in the index, or a tile the strip
      * has not built, is a no-op: this is only ever reached for a selection the
      * current index already names.
+     *
+     * @param sorted the index's post-write order, as returned by
+     *               {@link LibraryStore#select}
      */
-    private void moveStripTile(String id) {
+    private void moveStripTile(String id, List<LibraryItem> sorted) {
         if (stripRow == null || id == null) return;
         ImageView tile = stripTiles.get(id);
         if (tile == null) return;
-        List<LibraryItem> rows = AppState.load(activity.prefs, activity.getFilesDir())
-                .library.sorted();
         int at = -1;
-        for (int i = 0; i < rows.size(); i++) {
-            if (rows.get(i).id.equals(id)) {
+        for (int i = 0; i < sorted.size(); i++) {
+            if (sorted.get(i).id.equals(id)) {
                 at = i;
                 break;
             }
@@ -787,7 +785,6 @@ final class Gallery {
         // The marks and the selection controls are the views the build below is
         // about to create; anything left from the previous grid addresses views
         // that are no longer on screen, so the maps start empty on every build.
-        android.util.Log.i("Basrelief", "PROBE buildGrid");
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;
@@ -1658,7 +1655,11 @@ final class Gallery {
         AppState before = AppState.load(activity.prefs, activity.getFilesDir());
         String was = before.library.activeId();
         SortOrder order = before.library.sort();
-        LibraryStore.select(activity.prefs, id);
+        // The returned index is the order as it was just written. Re-reading it
+        // below would be a second parse of the same blob -- and a second chance
+        // for the wallpaper service to write between the two reads, which would
+        // move the tile to an index the photograph is no longer at.
+        Library next = LibraryStore.select(activity.prefs, id);
         // The sheet repopulates itself through the guarded path, so a switch does
         // not write: refreshSliders sets syncingZoom around every setProgress
         // precisely because setProgress fires the change listener, and without the
@@ -1668,19 +1669,19 @@ final class Gallery {
         activity.refreshSliders();
         activity.applyFiles();
         dismissGrid();
-        // The ring is the only thing in the strip that a selection changes, and
-        // under a fixed order the row cannot move — so the two rings are repainted
-        // instead of the whole strip rebuilt, which would drop every thumbnail and
-        // decode it again. "Recent" is the exception: the selection IS the sort
-        // key there, so the row genuinely moves and the strip is rebuilt. The grid
-        // closes either way, because the render is the thing the user came for and
-        // a photograph chosen from a list should leave the list behind it.
+        // The strip itself is never rebuilt for a selection: under every order
+        // the two rings are repainted in place, and under "Recent" the selected
+        // tile is moved to its new position rather than the whole strip being
+        // thrown away and its thumbnails decoded again. Rebuilding here was the
+        // strip-wide flash: a reorder of one photograph re-decoded every
+        // photograph. The grid closes either way, because the render is the
+        // thing the user came for and a photograph chosen from a list should
+        // leave the list behind it.
         if (order == SortOrder.RECENTLY_USED) {
-            refreshStrip();
-        } else {
-            drawStripRing(was, false);
-            drawStripRing(id, true);
+            moveStripTile(id, next.sorted());
         }
+        drawStripRing(was, false);
+        drawStripRing(id, true);
     }
 
     private void addPhoto() {
