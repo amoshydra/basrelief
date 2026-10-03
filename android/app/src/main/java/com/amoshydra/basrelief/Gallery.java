@@ -213,23 +213,6 @@ final class Gallery {
 
     private PlaylistsNavigator playlistsNavigator;
 
-    /**
-     * Opens the apply chooser, supplied by the studio.
-     *
-     * <p>Same reason as {@link PhotoPicker} and {@link PlaylistsNavigator}: a
-     * route to a screen this class does not own, so the owner installs it
-     * rather than this class reaching into another one's internals. Applying
-     * is a chooser rather than a command — no app can re-bind its own live
-     * wallpaper, so the system picker is the only route and the choice of
-     * screen cannot be made here — which is exactly why the call belongs to
-     * the host and not to the row that asked for it. See {@link ApplyChooser}.
-     */
-    interface WallpaperApplier {
-        void applyWallpaper();
-    }
-
-    private WallpaperApplier wallpaperApplier;
-
     Gallery(MainActivity activity, FrameLayout root) {
         this.activity = activity;
         this.root = root;
@@ -252,11 +235,6 @@ final class Gallery {
     /** Route the header's Playlists entry to the playlists screen. */
     void setPlaylistsNavigator(PlaylistsNavigator navigator) {
         this.playlistsNavigator = navigator;
-    }
-
-    /** Route the foot's Set as wallpaper to the apply chooser. */
-    void setWallpaperApplier(WallpaperApplier applier) {
-        this.wallpaperApplier = applier;
     }
 
     /**
@@ -783,11 +761,11 @@ final class Gallery {
 
         // ---- the many-at-once actions
         //
-        // Set as wallpaper rides at the head of the second row: it is the one
-        // action on this screen that changes what the phone itself shows, so
-        // it takes the primary plate and the seat beside Done, the way out —
-        // while everything else here rearranges only the gallery's own
-        // bookkeeping.
+        // Copy settings / Paste onto selected stay as the design's first foot
+        // row. Set as wallpaper used to lead the second row and has moved to the
+        // studio sheet's foot, which the user asked for, so this is the one route
+        // rather than two. Add to playlist and Done remain -- both answer
+        // questions about the gallery's own bookkeeping.
         panel.addView(actionRow(
                 compact(activity.getString(R.string.gallery_copy_settings),
                         new View.OnClickListener() {
@@ -804,7 +782,6 @@ final class Gallery {
                             }
                         })));
         panel.addView(actionRow(
-                applyButton(),
                 compact(activity.getString(R.string.gallery_add_to_playlist),
                         new View.OnClickListener() {
                             @Override
@@ -1079,31 +1056,6 @@ final class Gallery {
     }
 
     /**
-     * The apply gesture, from the grid.
-     *
-     * <p>{@code ModalSheet}'s button rather than the studio's {@code compact}
-     * one, because the mockup's foot rows and modals are one {@code .btn}
-     * family — the foot is that family's one appearance outside a modal, so
-     * it is not the place to invent a second button. Primary, because
-     * applying is the reason this screen exists at all: the gallery is where
-     * the photographs are chosen, and applying is what puts one of them on
-     * the phone.
-     *
-     * <p>The chooser it opens is {@link ApplyChooser}'s; this row only asks.
-     */
-    private Button applyButton() {
-        Button apply = ModalSheet.button(activity,
-                activity.getString(R.string.apply_set_as_wallpaper), true, true);
-        apply.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                applyWallpaper();
-            }
-        });
-        return apply;
-    }
-
-    /**
      * The line that says how many photographs are picked, or how to pick several.
      *
      * <p>It changes text rather than appearing and disappearing, so the row it
@@ -1292,17 +1244,6 @@ final class Gallery {
             return;
         }
         playlistsNavigator.openPlaylists();
-    }
-
-    private void applyWallpaper() {
-        if (wallpaperApplier == null) {
-            // Same rule as the picker and the playlists route: say so rather
-            // than do nothing.
-            Toast.makeText(activity, R.string.toast_wallpaper_unavailable,
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        wallpaperApplier.applyWallpaper();
     }
 
     /**

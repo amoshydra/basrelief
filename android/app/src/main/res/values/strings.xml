@@ -57,8 +57,11 @@
     <string name="framing_pan_y">Pan Y</string>
     <string name="framing_readout">Framing   %1$s, %2$s  ·  %3$d, %4$d px</string>
 
-    <!-- The one button that carries a symbol rather than a word -->
+    <!-- The two buttons that carry a symbol rather than a word: the add-photo
+         tile and the sheet foot's gear. Each has a contentDescription, because
+         a glyph cannot be worded and the control would otherwise be unnamed. -->
     <string name="add_photo_glyph">＋</string>
+    <string name="settings_glyph">⚙</string>
 
     <!--
       The fix line. Terse on purpose: the two actions underneath already say what

@@ -318,12 +318,6 @@ public class MainActivity extends Activity {
         });
         // Playlists are their own slice. Until then the header entry says so rather
         // than opening nothing.
-        gallery.setWallpaperApplier(new Gallery.WallpaperApplier() {
-            @Override
-            public void applyWallpaper() {
-                ApplyChooser.show(MainActivity.this);
-            }
-        });
         gallery.setPlaylistsNavigator(new Gallery.PlaylistsNavigator() {
             @Override
             public void openPlaylists() {
@@ -417,12 +411,14 @@ public class MainActivity extends Activity {
         fixLine = buildFixLine();
         panel.addView(fixLine, 1);
 
-        sheetScroll = new ScrollView(this);
+        sheetScroll = new BottomFadeScrollView(this);
         sheetScroll.setFillViewport(true);
         sheetScroll.setClipToPadding(false);
         // The mockup masks the last 22px so a control below the fold is visibly
-        // scrollable rather than looking like the end of the list. This is a child
-        // property -- not a transform -- so it is safe over the GLSurfaceView.
+        // scrollable rather than looking like the end of the list. The fade is at
+        // the foot only: BottomFadeScrollView suppresses Android's top edge fade,
+        // which the design does not draw. This is a child property -- not a
+        // transform -- so it is safe over the GLSurfaceView.
         sheetScroll.setFadingEdgeLength(dp(22));
         sheetScroll.setVerticalFadingEdgeEnabled(true);
         // The sheet itself has no padding, so the content carries it: 14dp sides, and
@@ -433,7 +429,7 @@ public class MainActivity extends Activity {
         // Fold the navigation-bar inset into the bottom padding, the same way every
         // modal does. It was safe to omit while the bar was always hidden; API 35+
         // shows it over the wallpaper (see applySystemUi), and without this the
-        // sheet's foot -- "Copy settings", "Settings" -- is drawn under the bar.
+        // sheet's foot -- the gear and "Set as wallpaper" -- is drawn under the bar.
         // ModalSheet.insetBottom is reused rather than re-derived so all five
         // surfaces resolve the bar identically.
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -616,24 +612,6 @@ public class MainActivity extends Activity {
             sheetContent.addView(mapRow);
         }
 
-
-        // reliable way to reach the live-wallpaper picker on any launcher
-        // Copy settings, in the sheet's foot. The wireframe puts it here, next to
-        // Settings, because it is a question about the photo you are looking at -- and
-        // the gallery's row menu is where you paste it ONTO another photo, which is
-        // the other half of the same action and the other end of the walk.
-        sheetContent.addView(makeButton(getString(R.string.gallery_copy_settings),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        gallery.showCopySourcePicker();
-                    }
-                }));
-        // No Set as wallpaper here: applying binds the wallpaper to the device, which
-        // is an act about the app rather than about this photograph's settings, and the
-        // design keeps the sheet a list of adjustments. It lives in the gallery's
-        // action row beside Add to playlist.
-
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
         // 12sp white line in the middle of the controls read as content the user
@@ -653,26 +631,45 @@ public class MainActivity extends Activity {
         statusView.setTextSize(10);
         statusView.setTypeface(android.graphics.Typeface.MONOSPACE);
         // .debug { margin-top:14px; padding-top:9px } over the hairline above. The
-        // same 9px at the bottom is what keeps the debug line and the Settings plate
+        // same 9px at the bottom is what keeps the debug line and the foot plate
         // from reading as one cramped block at the very foot of the sheet.
         statusView.setPadding(0, dp(9), 0, dp(9));
         sheetContent.addView(statusView);
 
-        // Settings, in the foot. It was unreachable: openSettings() existed with no
-        // caller, so the whole screen was dead code. The wireframe puts it here and
-        // not in the gallery header because app-level settings answer "is this
-        // costing me battery", and this is where someone looks when they suspect it.
+        // The sheet's foot: a gear icon button and the primary action, side by side.
         //
-        // A makeButton rather than the padded TextView it used to be: it is one of
-        // the two things in the foot someone taps, so it has to read as a control
-        // and carry the same 48dp target, plate and pressed state as Copy settings.
-        sheetContent.addView(makeButton(getString(R.string.settings_title),
+        // The gear is a glyph because a worded "Settings" plate competed for the
+        // row's width with the action that matters, and "Set as wallpaper" is why
+        // someone opens this sheet at all. Fixed at 48dp so it cannot steal width
+        // from the action that takes the rest. A glyph alone is unnamed to a screen
+        // reader, so it carries settings_title as its content description.
+        //
+        // Set as wallpaper moved here from the gallery's action row at the user's
+        // request: one route now, not two. It opens the same ApplyChooser the
+        // gallery's route did.
+        LinearLayout footRow = new LinearLayout(this);
+        footRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button gearButton = makeButton(getString(R.string.settings_glyph),
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         openSettings();
                     }
-                }));
+                }, dp(48), 0f);
+        // The platform Button style carries its own 88dp minimum width, which would
+        // override the 48dp LayoutParams. Setting the minimum here makes the square
+        // the width that is actually laid out.
+        gearButton.setMinimumWidth(dp(48));
+        gearButton.setContentDescription(getString(R.string.settings_title));
+        footRow.addView(gearButton);
+        footRow.addView(makeButton(getString(R.string.apply_set_as_wallpaper),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        ApplyChooser.show(MainActivity.this);
+                    }
+                }, 0, 1f));
+        sheetContent.addView(footRow);
 
         panelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -768,9 +765,19 @@ public class MainActivity extends Activity {
         // the peek is a better answer to that than remembering, and restoring made
         // the launch position depend on wherever the sheet happened to be left. The
         // launch is now the same every time, which is what makes it learnable.
-        panel.post(new Runnable() {
+        //
+        // Triggered by the panel's first LAYOUT CHANGE, not a global-layout
+        // listener. A listener added to root.getViewTreeObserver() before the view
+        // is attached uses that observer's pre-attach instance, which ViewRootImpl
+        // replaces when the window attaches -- so the callback silently never ran
+        // and the panel stayed at its full natural height. An OnLayoutChangeListener
+        // is stored on the view itself, so it survives attachment and fires on the
+        // first real layout pass, which is exactly when panelNaturalHeight is known.
+        panel.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
-            public void run() {
+            public void onLayoutChange(View v, int l, int t, int r, int b,
+                                       int ol, int ot, int or, int ob) {
+                panel.removeOnLayoutChangeListener(this);
                 openAtPeek();
             }
         });
@@ -1815,16 +1822,37 @@ public class MainActivity extends Activity {
      * <p>Capped, never padded: a sheet shorter than the fraction opens fully rather
      * than being inflated with padding to reach it, because padding would be a row
      * of dead space that looks like a control and is not one.
+     *
+     * <p><b>The launch state is the peek, and measuring before applying is what makes
+     * that true.</b> This used to call {@code applySheetHeight(1f)} whenever the
+     * panel had not been measured, which is every fresh launch -- so the sheet opened
+     * at 100% of its natural height and the design's 40% peek was never reached.
+     * Because the filmstrip sits on whatever is beneath it, the over-tall sheet is
+     * also why the strip rode up to y=0. Learning {@link #panelNaturalHeight} here,
+     * from a post-layout callback where {@code getHeight()} is already measured, is
+     * the whole fix.
      */
     private void openAtPeek() {
-        int peek = Math.round(SHEET_PEEK_FRACTION
-                * getResources().getDisplayMetrics().heightPixels);
-        if (panelNaturalHeight > 0) peek = Math.min(peek, panelNaturalHeight);
         if (panelNaturalHeight <= 0) {
-            // Not measured yet; applySheetHeight defers and re-runs from the drag.
-            applySheetHeight(1f);
+            // While no height has been imposed yet, getHeight() is the panel's
+            // own wrap_content height -- the denominator the fraction is a fraction
+            // of, and the only chance to read it before applySheetHeight freezes it.
+            panelNaturalHeight = panel.getHeight();
+        }
+        if (panelNaturalHeight <= 0) {
+            // Still unmeasured: no layout pass has run. Defer the whole decision
+            // rather than guessing a fraction of an unknown height.
+            panel.post(new Runnable() {
+                @Override
+                public void run() {
+                    openAtPeek();
+                }
+            });
             return;
         }
+        int peek = Math.round(SHEET_PEEK_FRACTION
+                * getResources().getDisplayMetrics().heightPixels);
+        peek = Math.min(peek, panelNaturalHeight);
         float showing = (float) peek / panelNaturalHeight;
         sheetFraction = 1f - showing;
         applySheetHeight(showing);
@@ -3224,5 +3252,32 @@ public class MainActivity extends Activity {
 
     int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * A {@link ScrollView} whose edge fade is drawn only at the foot.
+     *
+     * <p>The design masks the last 22px of the scroll ({@code final.html:57-59})
+     * so a control below the fold is visibly reachable. Android's fading edge is
+     * all-or-nothing at the API level and draws at <b>both</b> ends, so the top of
+     * the scroll grew a bright band under the grip that the design never draws --
+     * the "not aligned correctly" the user reported. Suppressing the top
+     * <i>strength</i> is the one supported hook for a bottom-only fade; the bottom
+     * edge is untouched and still uses {@code setFadingEdgeLength}.
+     *
+     * <p>This is a child effect, not a transform, so it is safe over the
+     * {@code GLSurfaceView} -- the same reason the sheet positions itself by layout
+     * height rather than {@code translationY} (see AGENTS.md and b/7179570).
+     */
+    private static final class BottomFadeScrollView extends ScrollView {
+        BottomFadeScrollView(android.content.Context context) {
+            super(context);
+        }
+
+        @Override
+        protected float getTopFadingEdgeStrength() {
+            // Zero disables the top fade without touching the bottom one.
+            return 0f;
+        }
     }
 }
