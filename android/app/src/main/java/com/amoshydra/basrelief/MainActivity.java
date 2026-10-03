@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.gesture.SheetIntent;
+import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.Library;
@@ -90,6 +91,42 @@ public class MainActivity extends Activity {
      */
     private static final String KEY_SHEET = "sheet_pos";
     /**
+     * The last position the sheet rested at while it was <i>not</i> put away.
+     *
+     * <p>Separate from {@link #KEY_SHEET} on purpose, and the separation is what
+     * makes a tap on the pill mean something. {@code sheet_pos} is 1.0 while the
+     * sheet is away, so it cannot also be the answer to "how far was it open" —
+     * one key cannot hold both the current state and the place to return to, and
+     * overwriting the first with the second is how a pill tap ends up snapping the
+     * sheet fully open and discarding the position the user chose. Both are
+     * written together in {@link #onSheetResting} and neither is ever migrated:
+     * a missing {@code sheet_open} reads as "never open this session", which is the
+     * fully-open fallback the component already had.
+     */
+    private static final String KEY_SHEET_OPEN = "sheet_open_pos";
+
+    /**
+     * The collapsed sheet's height, and therefore the strip's height at every
+     * fraction — the strip is this tall and the panel is never shorter.
+     *
+     * <p>56dp for two reasons that happen to agree. It is the mockup's pill row read
+     * as a card rather than a chip, and it is comfortably over the 48dp Android
+     * asks of a touch target — which matters now in a way it did not before,
+     * because the whole collapsed sheet is this strip and it is the drag handle.
+     * A shorter strip would be a handle the user has to aim at.
+     */
+    private static final int STRIP_HEIGHT_DP = 56;
+
+    /**
+     * The grip band inside the strip, above the pill's own row.
+     *
+     * <p>Its own number rather than "whatever is left", because the strip's
+     * remaining height <i>is</i> the pill's row: the label is revealed by geometry,
+     * not by fading, so at {@code fraction = 0} the leftover is zero and there is
+     * no row to show. This is the height that makes the leftover zero.
+     */
+    private static final int STRIP_GRIP_DP = 22;
+    /**
      * How much of the phone the sheet occupies when no position has been stored.
      *
      * <p>The render is the product; the controls are an invitation. Opening fully
@@ -169,22 +206,56 @@ public class MainActivity extends Activity {
     private ScrollView sheetScroll;
     /** The one dashed line under the grip. See {@link #buildFixLine}. */
     private LinearLayout fixLine;
-    /** The pill that replaces the sheet when it is collapsed. See {@link #setPillState}. */
+
     /**
-     * The collapsed sheet, as the mockup's row: a status dot (or a progress ring)
-     * followed by a label that carries the ellipsis.
+     * The pill, which is the top strip of this same panel.
+     *
+     * <p><b>There is no separate pill view, and that is the whole change.</b> It
+     * used to be a second view with its own label, dot, ring, background and click
+     * listener, made VISIBLE when the panel's height reached zero — two state
+     * changes driven by one gesture, which is a pop by construction, and the reason
+     * the pill could not be a drag handle (a different view cannot be dragging the
+     * sheet). The pill is now {@link #sheetStrip} at {@code fraction = 1}: same
+     * view, same touch listener, same gesture. See {@link SheetMorph}.
      */
-    private LinearLayout pill;
-    /** The label inside {@link #pill}. The ellipsis lives on THIS, not on the pill. */
-    private TextView pillLabel;
-    /** The dot, or the ring while a generation runs. Swapped by {@link #setPillState}. */
-    private View pillMark;
-    private ProgressRing pillRing;
-    /** What {@link #applyPillState} last drew, so a drag does not redraw it. */
-    private PillState pillDrawnState;
+    private LinearLayout sheetStrip;
+
+    /**
+     * The strip's glass. The mockup's rgba(28,32,38,.72) with a hairline edge, and
+     * it doubles as the pill's plate.
+     *
+     * <p>A field because the morph writes its corner radius every frame and because
+     * the three states each recolour the edge — the border is what the eye lands on
+     * for a warning, so it cannot be a value baked into the constructor.
+     */
+    private android.graphics.drawable.GradientDrawable stripBackground;
+
+    /** The panel's own background, so the morph can round its top corners. */
+    private ModalSheet.TopEdgeBackground panelBackground;
+
+    /** The label inside {@link #sheetStrip}. The ellipsis lives on THIS, not the strip. */
+    private TextView stripLabel;
+
+    /** The dot, or the ring while a generation runs. Swapped by {@link #setStripMark}. */
+    private View stripMark;
+    private ProgressRing stripRing;
+
+    /**
+     * The panel's height the last time the morph placed it, in pixels.
+     *
+     * <p>Read by {@link #applySheetFade} because the component's {@code applyFade}
+     * hands over a <i>progress</i> value built from the dialogs' fade line, which is
+     * not the studio's. The studio's fade is a function of the same collapse
+     * fraction {@link #applySheetPosition} was just given, so it keeps it rather than
+     * inverting somebody else's number.
+     */
+    private float lastSheetFraction;
+
+    /** What {@link #applyStripState} last drew, so a drag does not redraw it. */
+    private StripState stripDrawnState;
     /** ...and the percentage it was drawn with, because PROGRESS carries one. */
-    private int pillDrawnPercent = -1;
-    private PillState pillState = PillState.IDLE;
+    private int stripDrawnPercent = -1;
+    private StripState stripState = StripState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
     private View depthBarRow;
     /**
@@ -435,7 +506,7 @@ public class MainActivity extends Activity {
         // reported -- and the two side lines were also why the rounded corners
         // read as a boxed card. ModalSheet.TopEdgeBackground clips the edge to
         // the top pixel, so it follows the corner rounding and stops there.
-        panel.setBackground(new ModalSheet.TopEdgeBackground(
+        panel.setBackground(panelBackground = new ModalSheet.TopEdgeBackground(
                 0xEB161A20, 0x24FFFFFF, dp(22), dp(1)));
         // No panel padding: the mockup pads the SCROLLING content, not the sheet, so
         // the grip and the fix line sit flush to the edges the way they do there.
@@ -465,7 +536,11 @@ public class MainActivity extends Activity {
         // under the grip, and a permanent "Basrelief - live preview" costs a line of
         // the third-of-the-screen peek on every screen to say something the user is already looking
         // at. The title lived in a header that held nothing else.
-        panel.addView(buildSheetHandle(), 0);
+        //
+        // This is also the PILL: the panel's height at fraction 1 is exactly this
+        // strip, so the collapsed sheet needs no second view. See sheetStrip.
+        sheetStrip = (LinearLayout) buildSheetHandle();
+        panel.addView(sheetStrip, 0);
 
         // Scrolling content. Built here, before anything is added to it, because
         // every section below goes into sheetContent rather than onto the panel, so
@@ -809,12 +884,15 @@ public class MainActivity extends Activity {
 
             @Override
             public void applyFade(float progress) {
-                // The studio sheet NEVER fades. Its contents stay fully legible
-                // until they have been physically dragged off the bottom edge;
-                // an extreme drag is not a reason to make the panel look
-                // disabled. A dialog still dissolves its content and scrim
-                // (ModalSheet), because a modal that is leaving is gone, not
-                // parked.
+                // The progress handed over here is the DIALOGS' fade line, built
+                // from BottomSheet.FADE_START, and the studio's fade is a different
+                // function of the same collapse fraction — a band, not a ramp from
+                // 0.60. So the studio ignores the number and asks SheetMorph, using
+                // the fraction applySheetPosition was just given. Passing the
+                // fraction through the interface instead would be the cleaner
+                // signature and would break ModalSheet, which is a shared host and
+                // whose fade genuinely is driven by this progress.
+                applySheetFade(SheetMorph.edgeFade(lastSheetFraction));
             }
 
             @Override
@@ -824,94 +902,29 @@ public class MainActivity extends Activity {
 
             @Override
             public void onResting(float fraction, boolean collapsed) {
-                // Every release stores the exact position; the launch reads it
-                // back. A collapsed release stores 1.0, which reopens as the pill.
-                prefs.edit().putFloat(KEY_SHEET, fraction).apply();
-                // The committed state is what the pill, the system bars and the
-                // hint follow; nothing mid-drag pretends the sheet is away.
-                updatePillVisibility();
-                if (collapsed) dismissHintIfShown();
+                onSheetResting(fraction, collapsed);
             }
         }, SpringSettle.SHEET, SheetIntent.SHEET, BottomSheet.Snap.FREE,
-                dp(DRAG_SLOP_DP), null);
-
-        // The collapsed representation of the sheet. This replaces a "+" button,
-        // which could only ever mean one thing and had to guess which. The pill has
-        // three states -- idle, attention, progress -- so it can say what is going on
-        // without the sheet being open.
-        pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setVisibility(View.GONE);
-        // 8px vertical, 18px horizontal, and a 38px minimum height. The height is a
-        // floor rather than a fixed value so the pill does not change size between
-        // "Controls" and the attention sentence -- it is one control in three states.
-        pill.setPadding(dp(18), dp(8), dp(18), dp(8));
-        pill.setMinimumHeight(dp(38));
-        pill.setBackground(pillBackground(0x33FFFFFF));
-        // Glass, so it floats over the render rather than sitting on it. The fill is
-        // the mockup's rgba(28,32,38,.72); it used to be the same value in BOTH the
-        // supported and unsupported branches, which made the fallback a no-op.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            pill.setBackgroundColor(0xFF1C2026);
-        }
-
-        pillMark = new View(this);
-        android.graphics.drawable.GradientDrawable dot =
-                new android.graphics.drawable.GradientDrawable();
-        dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        dot.setColor(PILL_DIM);
-        pillMark.setBackground(dot);
-        LinearLayout.LayoutParams markLp = new LinearLayout.LayoutParams(dp(8), dp(8));
-        markLp.rightMargin = dp(10);
-        pill.addView(pillMark, markLp);
-
-        pillLabel = new TextView(this);
-        pillLabel.setTextSize(13.5f);
-        pillLabel.setTextColor(0xFFFFFFFF);
-        pillLabel.setMaxLines(1);
-        // The ellipsis is on THIS view, not on the pill. On the pill it competed with
-        // the dot and the horizontal padding for room, so a long sentence compressed
-        // the dot into a speck before the text shortened at all. Here the dot is
-        // fixed and the text takes what is left.
-        pillLabel.setEllipsize(TextUtils.TruncateAt.END);
-        pill.addView(pillLabel, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        pill.setOnClickListener(new View.OnClickListener() {
+                dp(DRAG_SLOP_DP), new Runnable() {
             @Override
-            public void onClick(View v) {
-                expandUi();
+            public void run() {
+                // A tap on the strip that never became a drag. This is the pill's
+                // old click listener, and it works now because the pill is the
+                // strip: one view, one gesture, no second target to miss.
+                //
+                // Only from the collapsed state, because that is the only place the
+                // tap used to mean anything. Expanded, the sheet's own gesture is
+                // the way down and a tap on the handle doing nothing is deliberate:
+                // a control that duplicated the gesture beside it was one of the
+                // things the user was asked to unlearn.
+                if (sheet != null && sheet.isCollapsed()) expandUi();
             }
         });
 
-        // The cap. A WRAP_CONTENT pill on its own measures against the screen, so a
-        // long sentence runs edge to edge. Wrapping it in a full-width holder with 28px
-        // side margins bounds what the pill is offered -- FrameLayout measures a
-        // child AT_MOST its own width -- so the pill still hugs its text and still
-        // cannot leave the screen.
-        FrameLayout pillCap = new FrameLayout(this);
-        FrameLayout.LayoutParams capLp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM);
-        capLp.leftMargin = dp(28);
-        capLp.rightMargin = dp(28);
-        capLp.bottomMargin = dp(26);
-        FrameLayout.LayoutParams pillLp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
-        pillCap.addView(pill, pillLp);
-        // The cap is wider than the pill and a drag on its empty edge would reach the
-        // render for the same reason the panel's would. The pill itself is a child and
-        // keeps its click; this consumes only what the pill did not.
-        pillCap.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
-                return true;
-            }
-        });
-        root.addView(pillCap, capLp);
+        // The last position the sheet rested at while open, read once so a pill tap
+        // in this session returns there rather than snapping fully open. See
+        // restoreLastResting.
+        sheet.restoreLastResting(prefs.getFloat(KEY_SHEET_OPEN, -1f));
 
         setContentView(root);
 
@@ -1120,9 +1133,11 @@ public class MainActivity extends Activity {
         AppState state = AppState.load(this, prefs, getFilesDir());
         refreshFixLine(state);
         refreshStatus();
-        // The pill repaints only on a collapse otherwise, which is how a failed run
-        // used to leave it reading "Generating" until the sheet was touched.
-        updatePillVisibility();
+        // The strip repaints only when something else refreshes it otherwise, which
+        // is how a failed run used to leave it reading "Generating" until the sheet
+        // was touched. applyStripState re-reads whether a run is in progress, so this
+        // is what carries the transition in and out of PROGRESS.
+        applyStripState();
     }
 
     private void openDepthGen() {
@@ -1298,7 +1313,7 @@ public class MainActivity extends Activity {
      * so the wallpaper is full-bleed and the collapsed pill is not sitting under a
      * bar. The decision is a function of the sheet's position and nothing else, so
      * the system's resulting inset change cannot feed back into it; see
-     * {@link #updatePillVisibility} for where it is driven and why that cannot
+     * {@link #onSheetResting} for where it is driven and why that cannot
      * oscillate.
      *
      * <p>The consequence of a visible bar is handled where {@code sheetScroll} is
@@ -1704,7 +1719,7 @@ public class MainActivity extends Activity {
         // exists. Setting it here once meant a purely informational line -- the
         // bundled demo's, before that sentence was removed -- showed an amber "No
         // depth" pill when there was nothing wrong at all. The caller decides.
-        setPillState(attention ? PillState.ATTENTION : PillState.IDLE);
+        setStripState(attention ? StripState.ATTENTION : StripState.IDLE);
     }
 
     /**
@@ -1742,78 +1757,88 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * The conditions the fix line knows how to report.
+     * The conditions the strip knows how to report.
      *
      * <p>Deliberately a small closed set rather than a general mechanism. Every entry
      * is a thing the app can <i>do something about</i>; a line that can only inform
      * is a status paragraph, and this is one sentence.
+     *
+     * <p>Named for the strip rather than the pill because the pill <i>is</i> the
+     * strip now — see {@link #sheetStrip}. The three states are unchanged: this is
+     * the old pill's condition set, and it is what lets the collapsed sheet say
+     * what is going on without being open.
      */
-    private enum PillState { IDLE, ATTENTION, PROGRESS }
+    private enum StripState { IDLE, ATTENTION, PROGRESS }
     private static final int WARN_COLOUR = 0xFFE8B04B;
     /** The idle status dot: --dimmer, because it is a fact rather than a prompt. */
-    private static final int PILL_DIM = 0x8CFFFFFF;
+    private static final int STRIP_DIM = 0x8CFFFFFF;
 
-    private void setPillState(PillState state) {
+    private void setStripState(StripState state) {
         // The CONDITION, as opposed to what is drawn. Kept separately because a
-        // running generation is a transient override: when it ends, the pill must go
+        // running generation is a transient override: when it ends, the strip must go
         // back to whatever the fix line last said rather than to a stale copy of
         // progress. Overwriting the condition with the transient state is what made
-        // a finished run leave the pill saying "Generating" forever.
-        pillState = state;
-        updatePillVisibility();
+        // a finished run leave the strip saying "Generating" forever.
+        stripState = state;
+        applyStripState();
     }
 
     /**
      * Draw one state, and nothing else.
      *
-     * <p><b>This method must not call back into {@link #updatePillVisibility}.</b>
-     * Splitting "record the condition" from "draw it" put a trailing visibility call
-     * in the drawing half while the visibility half ended by calling the drawer, and
-     * the two recursed into each other until the stack ran out. Sliding the sheet down
-     * is the only gesture that reaches this path, which is why it survived every other
-     * interaction anyone tried.
+     * <p><b>The call graph is one-way on purpose:</b>
+     * {@code setStripState} → {@code applyStripState}, and nothing below calls
+     * upward. The visibility half this used to sit between them is gone: there is no
+     * second view to show or hide. What replaced it — the navigation bar's
+     * visibility — follows the <i>committed</i> state from {@link #onSheetResting},
+     * which is the only other thing that depended on being collapsed, and keeping
+     * the two apart is what stops them recursing.
      *
-     * <p>The call graph is one-way on purpose:
-     * {@code setPillState} → {@code updatePillVisibility} → {@code applyPillState}.
-     * Nothing below this method calls upward.
-     *
-     * <p>Also skips the work when the state has not changed. This runs on every frame
-     * of a drag, and each draw allocated a fresh GradientDrawable and ProgressRing --
-     * per frame, on the UI thread, for a pill whose appearance had not moved.
+     * <p>Also skips the work when the state has not changed. This runs on every
+     * refresh of the fix line, and each draw allocated a fresh drawable and ring.
      */
-    private void applyPillState(PillState state) {
-        if (pill == null) return;
+    private void applyStripState() {
+        if (sheetStrip == null) return;
+        // A run in progress outranks the condition. This is the one thing worth
+        // showing while the sheet is away: it is the only feedback a user gets for a
+        // generation they started and then slid the sheet over. Read on every
+        // refresh rather than pushed, because the run is started from a dialog that
+        // is not this class and there is no callback to hang the end on.
+        StripState drawn = DepthGenDialog.isRunning() ? StripState.PROGRESS : stripState;
         // The same STATE is not always the same PICTURE: PROGRESS carries a number.
         // Guarding on the state alone would have frozen the percentage at whatever it
         // was when the run started -- a progress bar that does not progress. Read once
         // here so the guard and the text cannot disagree about it.
-        int percent = state == PillState.PROGRESS
+        int percent = drawn == StripState.PROGRESS
                 ? DepthGenDialog.progressPercent() : -1;
-        if (pillDrawnState == state && pillDrawnPercent == percent) return;
-        pillDrawnState = state;
-        pillDrawnPercent = percent;
-        switch (state) {
+        if (stripDrawnState == drawn && stripDrawnPercent == percent) return;
+        stripDrawnState = drawn;
+        stripDrawnPercent = percent;
+        switch (drawn) {
             case IDLE:
-                pillLabel.setText(R.string.pill_controls);
-                pillLabel.setTextColor(0xFFFFFFFF);
-                pill.setBackground(pillBackground(0x33FFFFFF));
-                setPillMark(false);
+                stripLabel.setText(R.string.pill_controls);
+                stripLabel.setTextColor(0xFFFFFFFF);
+                stripBackground.setColor(0xB81C2026);
+                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                setStripMark(false);
                 break;
             case ATTENTION:
-                pillLabel.setText(R.string.pill_no_depth);
-                pillLabel.setTextColor(WARN_COLOUR);
+                stripLabel.setText(R.string.pill_no_depth);
+                stripLabel.setTextColor(WARN_COLOUR);
                 // The BORDER carries the warning too. Changing only the text colour
                 // left a pill that read as informational at a glance, which is the
                 // opposite of the point -- the border is what you see first.
-                pill.setBackground(pillBackground(WARN_COLOUR));
-                setPillMark(false);
+                stripBackground.setColor(0xB81C2026);
+                stripBackground.setStroke(dp(1), WARN_COLOUR);
+                setStripMark(false);
                 break;
             case PROGRESS:
                 // The percentage comes from the same read the guard used.
-                pillLabel.setText(getString(R.string.pill_generating, percent));
-                pillLabel.setTextColor(0xFFFFFFFF);
-                pill.setBackground(pillBackground(0x33FFFFFF));
-                setPillMark(true);
+                stripLabel.setText(getString(R.string.pill_generating, percent));
+                stripLabel.setTextColor(0xFFFFFFFF);
+                stripBackground.setColor(0xB81C2026);
+                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                setStripMark(true);
                 break;
             default:
                 break;
@@ -1821,86 +1846,48 @@ public class MainActivity extends Activity {
     }
 
     /** An 8dp dot when idle, a 15dp spinning ring while a generation runs. */
-    private void setPillMark(boolean progress) {
-        if (pillMark == null) return;
+    private void setStripMark(boolean progress) {
+        if (stripMark == null) return;
         LinearLayout.LayoutParams lp =
-                (LinearLayout.LayoutParams) pillMark.getLayoutParams();
+                (LinearLayout.LayoutParams) stripMark.getLayoutParams();
         if (progress) {
-            if (pillRing == null) {
+            if (stripRing == null) {
                 // The ring's HEAD is white and its track is .28 -- an accent head
                 // reads as a mint spinner, which is a different component.
-                pillRing = new ProgressRing(dp(15), dp(2), 0xFFFFFFFF, 0x47FFFFFF);
+                stripRing = new ProgressRing(dp(15), dp(2), 0xFFFFFFFF, 0x47FFFFFF);
             }
-            pillMark.setBackground(pillRing);
+            stripMark.setBackground(stripRing);
             lp.width = dp(15);
             lp.height = dp(15);
-            pillRing.start();
+            stripRing.start();
         } else {
-            if (pillRing != null) pillRing.stop();
+            if (stripRing != null) stripRing.stop();
             android.graphics.drawable.GradientDrawable dot =
                     new android.graphics.drawable.GradientDrawable();
             dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
             // Dim when idle, bright when something needs attention: the dot is the
             // one part of the pill you notice before you read.
-            dot.setColor(pillState == PillState.ATTENTION ? WARN_COLOUR : PILL_DIM);
-            pillMark.setBackground(dot);
+            dot.setColor(stripState == StripState.ATTENTION ? WARN_COLOUR : STRIP_DIM);
+            stripMark.setBackground(dot);
             lp.width = dp(8);
             lp.height = dp(8);
         }
         lp.rightMargin = dp(10);
-        pillMark.setLayoutParams(lp);
+        stripMark.setLayoutParams(lp);
     }
 
     /**
-     * The pill is the sheet's <b>collapsed</b> representation, so it shows only when
-     * the sheet is away.
+     * The strip's glass: the mockup's rgba(28,32,38,.72) with a hairline edge.
      *
-     * <p>It used to appear alongside the fix line as well, saying the same thing
-     * twice on one screen. Attention is a property of the condition rather than of
-     * the sheet's position: {@link #setPillState} records it, and this only decides
-     * whether there is anywhere to show it.
-     */
-    private void updatePillVisibility() {
-        if (pill == null) return;
-        // The committed state, not a live threshold: the pill appears when a
-        // collapse settle has LANDED, so a drag that reaches the bottom and then
-        // reverses never flashes it and a mid-settle every-frame redraw is not a
-        // second state machine.
-        boolean collapsed = sheet != null && sheet.isCollapsed();
-        pill.setVisibility(collapsed ? View.VISIBLE : View.GONE);
-        // The navigation bar is part of the same decision, driven by the one value
-        // that decides "collapsed" here. Expanded, back is discoverable and the bar
-        // composites over the render; collapsed, the wallpaper must be full-bleed.
-        // 26–34 keep their always-immersive flags. Guarded on attachment so a
-        // position resolved before the window exists cannot force the decor early;
-        // onWindowFocusChanged applies the same state once there is one.
-        if (Build.VERSION.SDK_INT >= 35 && panel != null && panel.isAttachedToWindow()) {
-            applySystemUi();
-        }
-        if (!collapsed) return;
-
-        // A run in progress outranks the condition. This is the one thing worth
-        // showing while the sheet is away: it is the only feedback a user gets for a
-        // generation they started and then slid the sheet over. Read on every
-        // collapse rather than pushed, because the run is started from a dialog that
-        // is not this class and there is no callback to hang the end on.
-        // A run in progress outranks the condition. applyPillState supplies the
-        // percentage itself; this method's whole job is deciding WHICH state applies.
-        applyPillState(DepthGenDialog.isRunning() ? PillState.PROGRESS : pillState);
-    }
-
-    /**
-     * The pill's glass: the mockup's rgba(28,32,38,.72) with a hairline edge.
-     *
-     * <p>An opaque-enough fill with an edge is the whole job -- the sheet it stands in
-     * for is glass over a render, and the render can be anything. The border is a
-     * parameter because attention changes it, which is the part you notice first.
+     * <p>An opaque-enough fill with an edge is the whole job — the sheet it stands in
+     * for is glass over a render, and the render can be anything. The corner radius
+     * is not set here: the morph owns it, and it must match the panel's own every
+     * frame or one of them peeks out of the other at {@code f = 1}.
      */
     private android.graphics.drawable.GradientDrawable pillBackground(int stroke) {
         android.graphics.drawable.GradientDrawable d =
                 new android.graphics.drawable.GradientDrawable();
         d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        d.setCornerRadius(dp(999));
         d.setColor(0xB81C2026);
         d.setStroke(dp(1), stroke);
         return d;
@@ -1931,42 +1918,93 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- bottom sheet
 
     /**
-     * The drag strip, added as the panel's FIRST child so it sits above the title.
+     * The panel's top strip: the drag handle, and <b>the pill</b>.
      *
-     * <p>The grip is the sheet's own affordance, so it always drags; {@link
-     * SheetPanel} arbitrates drags everywhere else. Both feed the same
-     * {@link BottomSheet} instance, so the gesture cannot behave differently
-     * depending on where on the sheet it started.
+     * <p>Added as the panel's FIRST child so it sits above everything, and at a
+     * fixed {@link #STRIP_HEIGHT_DP} — which is the whole of the morph's geometry.
+     * The panel's height is {@code lerp(natural, STRIP_HEIGHT_DP, f)}, so at
+     * {@code f = 1} the strip <i>is</i> the whole panel and every other child is
+     * laid out below the panel's bounds and clipped away. Nothing is shown or
+     * hidden, nothing swaps, and there is no second view to be out of step.
+     *
+     * <p><b>The pill's row is the strip's leftover height, not a fade.</b> The grip
+     * band is a fixed {@link #STRIP_GRIP_DP} and the row below it takes the rest,
+     * so at {@code f = 0} the leftover is zero — the label is <i>clipped into
+     * existence</i> as the sheet closes rather than dissolved, which is what keeps
+     * this project's standing rule that the studio sheet is never faded. Alpha is
+     * reserved for the content below, and only in the edge band; see {@link
+     * SheetMorph#edgeFade}.
+     *
+     * <p><b>Dragging the pill is dragging the sheet</b>, because it is the same view
+     * with the same listener: {@code BottomSheet} owns the gesture and this only
+     * stands the panel's arbitration down for the duration. At {@code f = 1} the
+     * entire visible sheet is this strip, so the whole pill is the drag target.
      */
     private View buildSheetHandle() {
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.VERTICAL);
-        strip.setGravity(android.view.Gravity.CENTER);
-        // No band. A full-width translucent fill across the sheet's top edge reads as
-        // a header; the mockup draws a 38x4 bar and nothing else. The strip stays as
-        // the touch target, which is what the height is for.
-        strip.setBackground(null);
+        // Horizontal centring for the grip bar; the pill row is MATCH_PARENT width,
+        // so this only moves the bar.
+        strip.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
         strip.setContentDescription(getString(R.string.sheet_drag_handle));
         strip.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(22)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(STRIP_HEIGHT_DP)));
+        // The pill's own plate. A field so the morph can round it with the panel
+        // and so the attention state can recolour its edge.
+        stripBackground = pillBackground(0x33FFFFFF);
+        strip.setBackground(stripBackground);
 
-        // A short centred bar inside the strip: the strip is the touch target, the
-        // bar is the thing that reads as a handle.
+        // The grip band: the mockup's 38x4 bar and nothing else, centred in a fixed
+        // band so the pill's row below gets exactly the strip's leftover height.
+        // No band fill — a full-width translucent band across the sheet's top edge
+        // reads as a header, which is what the mockup deliberately does not draw.
+        LinearLayout gripBand = new LinearLayout(this);
+        gripBand.setOrientation(LinearLayout.VERTICAL);
+        gripBand.setGravity(android.view.Gravity.CENTER);
         View grip = new View(this);
-        LinearLayout.LayoutParams gripLp = new LinearLayout.LayoutParams(dp(38), dp(4));
-        // No top margin. The 9dp it carried pushed the bar below the strip's
-        // centre, so the one line a sheet is read by sat low; .grip centres it,
-        // and the settings sheet's copy of this grip -- also .grip -- already
-        // centres. With no margin, the strip's own CENTER gravity does it.
-        // The mockup's grip bar: rgba(255,255,255,.42).
-        grip.setBackgroundColor(0x6BFFFFFF);
-        grip.setLayoutParams(gripLp);
-        strip.addView(grip);
+        grip.setBackgroundColor(0x6BFFFFFF);   // the mockup's rgba(255,255,255,.42)
+        gripBand.addView(grip, new LinearLayout.LayoutParams(dp(38), dp(4)));
+        strip.addView(gripBand, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(STRIP_GRIP_DP)));
+
+        // The pill's row: the status dot (or a progress ring) and a label that
+        // carries the ellipsis. Weight 1 so it takes precisely the leftover.
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        // Side padding so the dot is not hard against the panel's edge when the
+        // panel's own corners round over it.
+        row.setPadding(dp(18), 0, dp(18), 0);
+
+        stripMark = new View(this);
+        android.graphics.drawable.GradientDrawable dot =
+                new android.graphics.drawable.GradientDrawable();
+        dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        dot.setColor(STRIP_DIM);
+        stripMark.setBackground(dot);
+        LinearLayout.LayoutParams markLp = new LinearLayout.LayoutParams(dp(8), dp(8));
+        markLp.rightMargin = dp(10);
+        row.addView(stripMark, markLp);
+
+        stripLabel = new TextView(this);
+        stripLabel.setTextSize(13.5f);
+        stripLabel.setTextColor(0xFFFFFFFF);
+        stripLabel.setMaxLines(1);
+        // The ellipsis is on the LABEL, not on the strip. On the strip it competed
+        // with the dot and the padding for room, so a long sentence compressed the
+        // dot into a speck before the text shortened at all. Here the dot is fixed
+        // and the text takes what is left.
+        stripLabel.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(stripLabel, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        strip.addView(row, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         strip.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent e) {
-                // The grip is a control of the sheet's own, so the panel's
+                // The strip is a control of the sheet's own, so the panel's
                 // arbitration stands down for the whole gesture rather than
                 // deciding the same drag a second time.
                 boolean end = e.getActionMasked() == MotionEvent.ACTION_UP
@@ -2065,16 +2103,18 @@ public class MainActivity extends Activity {
         }
         float stored = prefs.getFloat(KEY_SHEET, -1f);
         if (stored >= 1f) {
-            // Put away last time: the pill is the whole representation, and it
-            // must be there from the first frame rather than after a collapse
-            // animation the user did not ask for.
+            // Put away last time: the strip is the whole panel and it must be there
+            // from the first frame rather than after a collapse animation the user
+            // did not ask for. restAt places it with no motion, and apply() draws
+            // the strip's state on the way through — there is nothing to show or
+            // hide, which is the point.
             sheet.restAt(1f, true);
-            updatePillVisibility();
+            applyStripState();
             return;
         }
         float fraction = stored >= 0f ? stored : peekFraction();
         sheet.open(fraction);
-        updatePillVisibility();
+        applyStripState();
     }
 
     /** The first-launch fraction: a third of the phone, capped at the whole panel. */
@@ -2088,10 +2128,19 @@ public class MainActivity extends Activity {
     /**
      * Place the panel from the component's fraction and entrance offset.
      *
-     * <p>The height is how much of the panel is <i>showing</i>: 0 hidden, 1 fully
-     * open. That is the complement of the collapse fraction, which measures how far
-     * <i>down</i> the sheet is, and the two must not be confused - doing so
-     * collapses the sheet to nothing the moment it opens.
+     * <p><b>The height is {@link SheetMorph#heightFor}: a lerp from the panel's
+     * natural height to the strip's, never a shrink to zero.</b> That single change
+     * is what makes the pill a morph rather than a swap. It used to be
+     * {@code showing = 1 - fraction}, so at {@code f = 1} the panel's height was
+     * <b>zero</b> and a second view had to appear in its place — two state changes
+     * from one gesture, which pops by construction, and the reason the pill could
+     * not be a drag handle. Now the panel at {@code f = 1} <i>is</i> the strip, at
+     * its real height, and the pill needs no second view, no visibility change and
+     * no lifecycle of its own.
+     *
+     * <p>Height also <b>never</b> falls below the strip, which is what keeps the drag
+     * handle reachable at the bottom of the travel: a panel that shrank to nothing
+     * would take its own handle with it and could never be dragged back up.
      *
      * <p><b>Positioning by layout height and margin rather than by
      * {@code translationY} is a regression repair, not a new idea.</b> The panel
@@ -2105,9 +2154,18 @@ public class MainActivity extends Activity {
      * — and layout changes, including margins, are exactly what it does recompute.
      * The entrance offset rides in {@code bottomMargin} for the same reason.
      *
+     * <p><b>The corner radius is a drawable property</b>, for the same reason: it
+     * must not cost a relayout, and it certainly must not be a transform. It is
+     * applied to the panel's own background <i>and</i> to the strip's, to the same
+     * number, because at {@code f = 1} the strip covers the panel exactly and any
+     * disagreement between the two radii would show as a sliver of one poking out
+     * of the other.
+     *
      * <p>Over-opening is allowed a little past fully shown: that is the visible
      * tether of {@link SpringSettle#resistUp}, the top edge rising above its
-     * resting place and falling back. The component's asymptote bounds it.
+     * resting place and falling back. {@code SheetMorph} carries it as the negative
+     * domain of the same function rather than as a separate ceiling here, so there
+     * is one place that knows the panel's height at every fraction.
      */
     private void applySheetPosition(float fraction, float belowPx) {
         if (panelNaturalHeight <= 0) {
@@ -2116,17 +2174,107 @@ public class MainActivity extends Activity {
             panelNaturalHeight = panel.getHeight();
             if (panelNaturalHeight <= 0) return;  // not measured yet; caller defers
         }
-        float showing = 1f - fraction;
-        float ceiling = 1f + SpringSettle.RESISTANCE_FRACTION + 0.01f;
-        if (showing < 0f) showing = 0f;
-        if (showing > ceiling) showing = ceiling;
-        int target = Math.round(showing * panelNaturalHeight);
+        lastSheetFraction = fraction;
+        float height = SheetMorph.heightFor(fraction, panelNaturalHeight,
+                dp(STRIP_HEIGHT_DP));
+        int target = Math.round(height);
         int margin = -Math.round(belowPx);
-        if (panelLp.height == target && panelLp.bottomMargin == margin) return;
+        // The radius is compared against the last one applied, because it changes
+        // with the height and would otherwise be re-set on every frame of a drag
+        // whose height had not moved. setCornerRadii invalidates the drawable: a
+        // repaint, never a relayout, which is the property that makes this safe here.
+        //
+        // The pill's target is half the STRIP's height, not half the panel's current
+        // one. Passing the current height reads as "half the box" and hands the
+        // interpolation a target that grows with the sheet: measured on a device, a
+        // 2400px panel was given a 443px corner half way down the drag. The current
+        // height is only the CEILING, which is what SheetMorph's fourth argument
+        // clamping is for.
+        float radius = SheetMorph.cornerRadiusFor(fraction, target, dp(22),
+                dp(STRIP_HEIGHT_DP) * 0.5f);
+        if (panelLp.height == target && panelLp.bottomMargin == margin
+                && lastSheetRadius == radius) {
+            return;
+        }
+        lastSheetRadius = radius;
         panelLp.height = target;
         panelLp.bottomMargin = margin;
         // setLayoutParams requests a layout, which is the repaint this needs.
         panel.setLayoutParams(panelLp);
+        applySheetRadius(radius);
+        // Same reasoning as the fade's line, and bounded by this method's own guard:
+        // this is reached only when the height, the margin or the radius moved, so
+        // it is one line per real change rather than one per frame.
+        android.util.Log.i("Basrelief", "morph f=" + fraction
+                + " height=" + target + "px (natural=" + panelNaturalHeight
+                + " pill=" + dp(STRIP_HEIGHT_DP) + ")"
+                + " radius=" + radius);
+    }
+
+    /** The radius last written, so an unchanged height does not rewrite it. */
+    private float lastSheetRadius = -1f;
+
+    /**
+     * Round the panel and its strip together.
+     *
+     * <p>Only the <b>top</b> corners, as the panel has always been. The pill is
+     * flush to the window's bottom edge, so rounding its bottom corners would show
+     * the render through them and read as a pill with its foot cut off, rather than
+     * as the same sheet at a smaller size.
+     */
+    private void applySheetRadius(float radius) {
+        float[] corners = new float[]{radius, radius, 0f, 0f, 0f, 0f, 0f, 0f};
+        if (panelBackground != null) panelBackground.setCornerRadii(corners);
+        if (stripBackground != null) stripBackground.setCornerRadii(corners);
+    }
+
+    /**
+     * The morph's fade: the <b>content below the strip</b> only, and only in the
+     * edge band.
+     *
+     * <p><b>Never the strip.</b> The grip, the dot, the ring and the label are the
+     * pill, and they are the only thing that survives the collapse, so their alpha
+     * stays 1 throughout. Anything that fades is content that is leaving.
+     *
+     * <p><b>Never the panel's own glass either</b>, for the same reason it is never
+     * faded today: the surface must stay a surface. The morph's floor means the
+     * panel is also never shorter than the strip, so the glass cannot be all the
+     * panel at {@code f = 1} and it has nothing to fade into.
+     *
+     * <p>Alpha, not a transform and not a height: alpha is a paint property, so it
+     * cannot desync the {@code GLSurfaceView}'s transparent region (b/7179570) and
+     * it costs no relayout per frame. It is a function of the collapse fraction
+     * alone, never of scroll position — see {@link SheetMorph#edgeFade} for why that
+     * is the half that matters.
+     */
+    private void applySheetFade(float alpha) {
+        if (panel == null) return;
+        // From index 1: index 0 is the strip, which is the pill and never fades.
+        // Every other child — the filmstrip, the fix line, the scroll — is content
+        // below it. Iterating rather than naming them means a child Gallery adds
+        // later fades with everything else instead of staying behind.
+        int written = 0;
+        for (int i = 1; i < panel.getChildCount(); i++) {
+            View child = panel.getChildAt(i);
+            // The epsilon keeps a settle's tail from writing the same value every
+            // frame, which is a per-frame invalidate for nothing.
+            if (Math.abs(child.getAlpha() - alpha) > 0.004f) {
+                child.setAlpha(alpha);
+                written++;
+            }
+        }
+        // One line per actual change, in the same spirit as the wallpaper's
+        // per-resolution diagnostic and for the same reason: the morph's two
+        // numbers are invisible from the outside — uiautomator emits no alpha, and
+        // screencap cannot be trusted for appearance — so the only honest way to
+        // check them from outside this process is for the process to say them.
+        // Bounded by the write count, so a drag logs its band's descent and nothing
+        // else: above the band the alpha is 1.0 and this never fires at all.
+        if (written > 0) {
+            android.util.Log.i("Basrelief", "morph f=" + lastSheetFraction
+                    + " contentAlpha=" + alpha
+                    + " children=" + (panel.getChildCount() - 1));
+        }
     }
 
     /**
@@ -2438,6 +2586,46 @@ public class MainActivity extends Activity {
         SheetSection section = new SheetSection(caption);
         sheetContent.addView(section);
         return section;
+    }
+
+    /**
+     * The sheet has come to rest, or an entrance has placed it. The only two moments
+     * the position or the collapsed state is decided.
+     *
+     * <p><b>What this replaced.</b> The old pill's {@code updatePillVisibility} did
+     * two unrelated things from this same callback: it showed and hid the second
+     * view, and it drove the navigation bar. The first half is gone — there is no
+     * second view — and what is left is here, which is why this method exists at all
+     * rather than the callback being a one-liner.
+     *
+     * <p>Two keys, because one key cannot hold both the current state and the place
+     * to return to. {@code sheet_pos} is the current position and is 1.0 while the
+     * sheet is away; {@code sheet_open_pos} is the last position the sheet rested at
+     * while it was <i>not</i> away, which is what a tap on the pill returns to. See
+     * {@link #KEY_SHEET_OPEN}.
+     *
+     * <p>The bar follows the <b>committed</b> state, not a live threshold, so a drag
+     * that reaches the bottom and reverses never flashes the system bars and a
+     * mid-settle every-frame relayout is not a second state machine. Guarded on
+     * attachment so a position resolved before the window exists cannot force the
+     * decor early; {@code onWindowFocusChanged} applies the same state once there is
+     * one.
+     */
+    private void onSheetResting(float fraction, boolean collapsed) {
+        // Every release stores the exact position; the launch reads it back.
+        prefs.edit().putFloat(KEY_SHEET, fraction).apply();
+        if (!collapsed) {
+            // Only while it is present, so a collapse cannot overwrite the place to
+            // return to with 1.0 — which is the bug a single key would have.
+            prefs.edit().putFloat(KEY_SHEET_OPEN, fraction).apply();
+        }
+        // Expanded, back is discoverable and the bar composites over the render;
+        // collapsed, the wallpaper must be full-bleed. 26–34 keep their
+        // always-immersive flags.
+        if (Build.VERSION.SDK_INT >= 35 && panel != null && panel.isAttachedToWindow()) {
+            applySystemUi();
+        }
+        if (collapsed) dismissHintIfShown();
     }
 
     /**
@@ -3225,7 +3413,7 @@ public class MainActivity extends Activity {
             // place carrying the demo's specialness rather than the only place
             // carrying a condition.
             setFixLine(null, null, null, null, null);
-            setPillState(PillState.IDLE);
+            setStripState(StripState.IDLE);
             return;
         }
         // Two actions, and they are PEERS: the PRD settles that generating may be as

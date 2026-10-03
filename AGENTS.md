@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 335 tests across nineteen classes:
+it**. 350 tests across twenty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -515,6 +515,26 @@ has run.**
   for; the repair must never *add* the row, or a delete stops sticking; and a row
   seeded by the write path (which has no `Context`, so cannot copy) must converge
   on the same bytes as one seeded by the read path.
+- `SheetMorphTest` — the studio sheet **morphing into the pill** as one view on one
+  axis, because it used to be two views with two lifecycles (the panel's height
+  reached zero and a separate `pill` view went VISIBLE), and a pop by construction
+  is also why the pill could not be a drag handle. Three functions, one band
+  constant. The height's traps: it must never dip below the pill at any fraction
+  (a lerp that dipped would be a card that gets *taller* as it collapses, which a
+  sweep catches and a spot check does not), and it must keep rising for a negative
+  fraction, because that is the over-open tether and clamping it would delete a
+  spring the user can feel. The fade's trap is **the parked sheet**: the studio is
+  `FREE` and can rest anywhere below its collapse threshold, so the band is pinned
+  to exactly that threshold — asserted *equal* to `SheetIntent.SHEET`'s, so the two
+  cannot drift — and the substantive test is that a sheet parked at the band's start
+  is already down to a fraction of its natural height, which is why fading there is
+  not the old "looks disabled" bug. Note two tests here that were written wrong and
+  fixed rather than papered over: one compared `edgeFade(f)` with `edgeFade(f)`,
+  which cannot fail; and one asserted the band began with the panel "nearly its full
+  height", which is false because the height mapping is linear and 5% of travel is
+  5% of the range. The radius test exists because interpolating toward
+  `panelHeight / 2` gave a 2400px panel a **611px** corner half way down a drag —
+  a stadium — so the panel's half-height is a ceiling, never the target.
 - `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
   a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
   for. The trap is reading a *position* when the user changed *direction*: the

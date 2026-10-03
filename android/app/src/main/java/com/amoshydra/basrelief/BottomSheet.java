@@ -266,6 +266,26 @@ final class BottomSheet {
     }
 
     /**
+     * Seed {@link #lastResting} from a host that persists it, once, at construction.
+     *
+     * <p><b>Because "the pill" is now the same view as the sheet</b>, a tap on it is
+     * the one gesture that has to work before anything has been dragged this
+     * session — which is every tap after a relaunch with the sheet stored away. The
+     * field alone is a process-lifetime value, so without this the first tap after
+     * a restart would snap the sheet fully open and throw away the position the
+     * user chose, which is the specific complaint this replaced ("pill tap after a
+     * collapsed relaunch opens fully rather than to the last expanded fraction").
+     *
+     * <p>A negative value means "nothing stored", which is the same as the field's
+     * own initial state and leaves {@link #openLast} on its fully-open fallback.
+     * Passed in rather than read from prefs here so this class still owns no
+     * storage and no Android type.
+     */
+    void restoreLastResting(float fraction) {
+        if (fraction >= 0f) lastResting = clamp01(fraction);
+    }
+
+    /**
      * Place the sheet at rest, collapsed or not, with no motion.
      *
      * <p>For a launch restoring a stored position that says "away": the pill is
