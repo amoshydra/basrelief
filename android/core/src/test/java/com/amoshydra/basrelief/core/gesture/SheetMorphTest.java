@@ -437,11 +437,71 @@ public class SheetMorphTest {
                             + "own corner and the pill's",
                     r >= OPEN_R - 1e-3f && r <= PILL_R + 1e-3f);
         }
-        // Mid-way is mid-way, and moves with its neighbours rather than jumping.
-        float mid = SheetMorph.cornerRadiusFor(0.5f, NATURAL, OPEN_R, PILL_R);
-        assertEquals((OPEN_R + PILL_R) / 2f, mid, 1e-3f);
-        assertTrue(mid > SheetMorph.cornerRadiusFor(0.49f, NATURAL, OPEN_R, PILL_R));
-        assertTrue(mid < SheetMorph.cornerRadiusFor(0.51f, NATURAL, OPEN_R, PILL_R));
+        // NOT "mid-way is mid-way" any more. The shape used to interpolate across the
+        // whole travel, and this assertion pinned that; with one shared progress a
+        // sheet at f=0.5 is still fully open, so its radius is the sheet's own. The
+        // midpoint that matters is mid-BAND, and the band rule itself is pinned by
+        // theShapeIsUntouchedUntilTheBandAndThenMovesWithTheHeight below.
+        assertEquals(OPEN_R, SheetMorph.cornerRadiusFor(0.5f, NATURAL, OPEN_R, PILL_R), 0f);
+    }
+
+    /**
+     * <b>The corners do not start rounding the moment the drag does.</b>
+     *
+     * <p>This and its three siblings -- the inset, the colour and the width -- were
+     * written when the shape was a plain lerp across the whole travel, and they
+     * asserted exactly that: a midpoint at {@code f = 0.5}, a smooth run through the
+     * end, alpha moving with the colour. Every assertion was true and the gesture was
+     * wrong, because the HEIGHT was already banded while the shape was not. So at a
+     * quarter of the way down the drag the sheet had all of its height and was already
+     * narrower, lifted, rounder and recoloured: one gesture, three timelines.
+     *
+     * <p>The rule now is one progress, {@link SheetMorph#morphProgress}, and this
+     * pins the half of it that is easiest to get wrong by accident: <b>below the band
+     * the shape is the open shape, exactly</b>. Not approximately, not nearly -- the
+     * sheet must be laid out and painted precisely as it was before the morph existed,
+     * or there is a seam where nothing is supposed to happen.
+     */
+    @Test
+    public void theShapeIsUntouchedUntilTheBandAndThenMovesWithTheHeight() {
+        for (int i = 0; i <= 900; i++) {
+            float f = i / 1000f;
+            assertEquals("radius moved at f=" + f + ", below the band",
+                    OPEN_R, SheetMorph.cornerRadiusFor(f, NATURAL, OPEN_R, PILL_R), 0f);
+            assertEquals("inset moved at f=" + f + ", below the band",
+                    0f, SheetMorph.insetFor(f, 220f), 0f);
+            assertEquals("side margin moved at f=" + f + ", below the band",
+                    0f, SheetMorph.pillSideMarginFor(f, 1440f, 0.72f), 0f);
+            assertEquals("height moved at f=" + f + ", below the band",
+                    NATURAL, SheetMorph.heightFor(f, NATURAL, PILL), 0f);
+        }
+        // ... and past the band all four move, and all four arrive together.
+        assertEquals(PILL_R, SheetMorph.cornerRadiusFor(1f, NATURAL, OPEN_R, PILL_R), 1e-3f);
+        assertEquals(220f, SheetMorph.insetFor(1f, 220f), 1e-3f);
+        assertEquals(1440f * 0.28f * 0.5f, SheetMorph.pillSideMarginFor(1f, 1440f, 0.72f), 1e-2f);
+        assertEquals(PILL, SheetMorph.heightFor(1f, NATURAL, PILL), 1e-3f);
+    }
+
+    /** The shared progress itself: flat, then a straight ramp, with no step at the join. */
+    @Test
+    public void morphProgressIsFlatThenRampsWithNoStepAtTheJoin() {
+        assertEquals(0f, SheetMorph.morphProgress(0f), 0f);
+        assertEquals(0f, SheetMorph.morphProgress(SheetMorph.HEIGHT_BAND_START), 0f);
+        assertEquals(1f, SheetMorph.morphProgress(1f), 0f);
+        // Monotone, and continuous: a step anywhere shows up as a large single delta.
+        float previous = 0f;
+        float maxStep = 0f;
+        for (int i = 1; i <= 1000; i++) {
+            float f = i / 1000f;
+            float p = SheetMorph.morphProgress(f);
+            assertTrue("progress went backwards at f=" + f, p >= previous);
+            maxStep = Math.max(maxStep, p - previous);
+            previous = p;
+        }
+        // 1000 steps across a 5% band, so no single step may exceed what a smooth ramp
+        // needs; a seam at the join would need 1/bandWidth times more than this.
+        assertTrue("a step at the join: largest single step " + maxStep,
+                maxStep <= 0.01f * (1f / (1f - SheetMorph.HEIGHT_BAND_START)) + 1e-6f);
     }
 
     /** A radius taller than the box it rounds is clamped, for the same reason. */
@@ -516,13 +576,16 @@ public class SheetMorphTest {
                     now <= SIDE + 1e-4f);
             previous = now;
         }
-        // The specific boundary the user saw: 0.99 -> 1.0 must be one 1% step and
-        // not the whole inset. A lerp moves SIDE/100 = 0.84px in that step; an
-        // inset that snapped would move all 84.
+        // The boundary, in the band arithmetic rather than the old whole-travel one.
+        // The fall lives in the last (1 - HEIGHT_BAND_START) of the travel, so the
+        // last 1% of travel is 1/(1 - band) of the inset -- NOT SIDE/100, which was
+        // only true while the inset ran over the whole gesture. A SNAP, which is what
+        // this test exists to catch, would still move all of SIDE in that step.
         float step = SheetMorph.insetFor(1f, SIDE) - SheetMorph.insetFor(0.99f, SIDE);
-        assertEquals(SIDE / 100f, step, 1e-3f);
+        float bandWidth = 1f - SheetMorph.HEIGHT_BAND_START;
+        assertEquals(SIDE * 0.01f / bandWidth, step, 1e-2f);
         assertTrue("the last 1% moved " + step + "px of a " + SIDE + "px inset",
-                step < SIDE * 0.02f);
+                step < SIDE * 0.4f);
     }
 
     /** A negative inset is not an inset, and nothing here throws on nonsense. */
@@ -641,20 +704,33 @@ public class SheetMorphTest {
      */
     @Test
     public void theBlendMovesTheAlphaAsWellAsTheColour() {
-        int mid = SheetMorph.blendColour(GLASS, PLATE, 0.5f);
-        // 210, not 209: the true mid-alpha is 209.5 and Math.round takes half up.
-        // Written as the expected value rather than (a+b)/2 because the integer
-        // average is a different number from the rounded one, and asserting it is
-        // what a reader will try first.
-        assertEquals(210, mid >>> 24);
+        // Sampled MID-BAND, not at f = 0.5. The colour used to interpolate across the
+        // whole travel, so half-way was half-way; with the shared progress half-way is
+        // still fully open and the colour is the sheet's own glass unchanged. The
+        // midpoint that exists is the one inside the band.
+        float midF = (SheetMorph.HEIGHT_BAND_START + 1f) / 2f;
+        int mid = SheetMorph.blendColour(GLASS, PLATE, midF);
+        // Alpha lands mid-way between 0xEB and 0xB8, within a level of it. NOT asserted as
+        // exactly 210 any more: the true mid-alpha is 209.5, so the answer depends on
+        // which side of the tie the arithmetic lands, and 0.95f is really
+        // 0.94999998 -- so mid-band computes a progress of 0.5000005 and rounds DOWN to
+        // 209. The old whole-travel midpoint was exact and the test could afford to be
+        // precise about a tie; this one cannot, and pretending otherwise would make the
+        // test a float-representation test wearing a colour test's clothes.
+        assertTrue("mid-band alpha " + (mid >>> 24) + " is not mid-way",
+                Math.abs((mid >>> 24) - 210) <= 1);
         assertEquals((0x16 + 0x1C) / 2, mid >> 16 & 0xFF);
         assertEquals((0x1A + 0x20) / 2, mid >> 8 & 0xFF);
         assertEquals((0x20 + 0x26) / 2, mid & 0xFF);
         // And the alpha really is on a lerp between the two ends, not held: a third
-        // of the way along must be most of the way from 0xEB to 0xB8.
-        int third = SheetMorph.blendColour(GLASS, PLATE, 1f / 3f);
-        assertTrue("a third of the way along gave alpha " + (third >>> 24),
+        // of the way ALONG THE BAND must be most of the way from 0xEB to 0xB8.
+        float thirdF = SheetMorph.HEIGHT_BAND_START
+                + (1f / 3f) * (1f - SheetMorph.HEIGHT_BAND_START);
+        int third = SheetMorph.blendColour(GLASS, PLATE, thirdF);
+        assertTrue("a third of the way along the band gave alpha " + (third >>> 24),
                 third >>> 24 < 0xEB && third >>> 24 > 0xB8);
+        // Below the band it is untouched, which is the rule the whole class exists for.
+        assertEquals(GLASS, SheetMorph.blendColour(GLASS, PLATE, 0.5f));
     }
 
     /**
@@ -702,13 +778,18 @@ public class SheetMorphTest {
             }
             previous = now;
         }
-        // The named boundary, stated on its own so the intent survives the sweep
-        // being relaxed later: 0.99 -> 1.0 must be an ordinary step.
+        // The named boundary, in band arithmetic: the blend now happens inside the last
+        // 5% of travel, so 0.99 -> 1.0 is one fifth of the WHOLE blend (51 levels of
+        // alpha across 500 sweep steps), not one level. What must still hold is that
+        // it is a ramp and not a snap: a fifth of the blend is nothing like all of
+        // it, and a snap would move all 51 in that one step.
         int a = SheetMorph.blendColour(GLASS, PLATE, 0.99f);
         int b = SheetMorph.blendColour(GLASS, PLATE, 1f);
-        assertTrue("the last 1% jumped the alpha by "
-                        + Math.abs((b >>> 24) - (a >>> 24)) + " levels",
-                Math.abs((b >>> 24) - (a >>> 24)) <= 1);
+        int wholeBlend = (GLASS >>> 24) - (PLATE >>> 24);
+        int moved = Math.abs((b >>> 24) - (a >>> 24));
+        assertTrue("the last 1% of travel jumped the alpha by " + moved
+                        + " levels of a " + wholeBlend + "-level blend",
+                moved <= wholeBlend / 2);
         assertEquals(0xB8, b >>> 24);
     }
 

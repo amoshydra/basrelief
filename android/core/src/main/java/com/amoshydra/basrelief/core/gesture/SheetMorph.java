@@ -136,6 +136,35 @@ public final class SheetMorph {
      * @param pillPx    the collapsed height, which is the strip's height
      * @return the height to lay the panel out at, never below {@code pillPx}
      */
+    /**
+     * The morph's single progress: <b>0 until {@link #HEIGHT_BAND_START}, then a
+     * straight 0 to 1 across the band.</b>
+     *
+     * <p><b>One gesture, one timeline.</b> Every property of the collapse — the
+     * height, the side margins, the bottom lift, the corner radius and the fill —
+     * reads <i>this</i>, so they move together or not at all. They did not used to:
+     * the height was banded while the shape was a plain lerp across the whole
+     * travel, so at a quarter of the way down the drag the sheet had every pixel of
+     * its height <i>and</i> was already narrower, lifted, rounder and a different
+     * colour. Every measured number was correct and the gesture read as three
+     * things happening at once. The user: <i>the shrink should happen only at the very end of the travel</i> A collapse is one event.
+     *
+     * <p><b>NaN reads as "not collapsed".</b> Everything downstream of this is a
+     * layout value or a paint colour, and a NaN reaching either is not a degraded
+     * one — a NaN margin is an unusable layout and a NaN alpha is an invisible
+     * strip. Zero is the open shape, which is exactly what the sheet looked like
+     * before the morph existed.
+     *
+     * @param fraction the collapse fraction, as {@link #heightFor} takes it
+     * @return 0 while the sheet is still the sheet, 1 once it is the pill
+     */
+    public static float morphProgress(float fraction) {
+        if (!(fraction > 0f)) return 0f; // `!(f > 0f)`, not `f <= 0f`: NaN.
+        if (fraction >= 1f) return 1f;
+        if (fraction <= HEIGHT_BAND_START) return 0f;
+        return (fraction - HEIGHT_BAND_START) / (1f - HEIGHT_BAND_START);
+    }
+
     public static float heightFor(float fraction, float naturalPx, float pillPx) {
         float pill = Math.max(0f, pillPx);
         float natural = Math.max(pill, naturalPx);
@@ -145,16 +174,11 @@ public final class SheetMorph {
             // fraction is 1% of the natural height taller.
             return natural * (1f - fraction);
         }
-        if (fraction <= HEIGHT_BAND_START) {
-            // The hold: the sheet keeps every pixel of its height, so the gesture
-            // reads as moving rather than as shrinking.
-            return natural;
-        }
-        // The fall. Its parameter is 0 at the band start, where this returns exactly
-        // `natural`, and 1 at f = 1, where it returns exactly `pill` -- so the two
-        // halves meet without a step.
-        float t = (fraction - HEIGHT_BAND_START) / (1f - HEIGHT_BAND_START);
-        return natural + (pill - natural) * t;
+        // The hold and the fall are one line, because the height is not the only thing
+        // on this axis: the side margins, the bottom lift, the corner radius and the
+        // fill all read the same progress, so the sheet cannot be full height and
+        // already a different shape.
+        return natural + (pill - natural) * morphProgress(fraction);
     }
 
     /**
@@ -225,15 +249,10 @@ public final class SheetMorph {
         float ceiling = Math.max(0f, panelHeightPx) * 0.5f;
         float open = Math.min(Math.max(0f, openRadiusPx), ceiling);
         float pill = Math.min(Math.max(0f, pillRadiusPx), ceiling);
-        float f = fraction;
-        float radius;
-        if (f <= 0f) {
-            radius = open;
-        } else if (f >= 1f) {
-            radius = pill;
-        } else {
-            radius = open + (pill - open) * f;
-        }
+        // The same shared progress as the height, so the corners do not start rounding
+        // the moment the drag does. Both pairs are read from one place below, so the
+        // top and bottom cannot arrive at the capsule's radius at different moments.
+        float radius = open + (pill - open) * morphProgress(fraction);
         // The ceiling is applied to the RESULT, so no fraction and no panel size can
         // produce a radius larger than the box it rounds. Swept by the test.
         return Math.min(radius, ceiling);
@@ -272,16 +291,11 @@ public final class SheetMorph {
      * @return the inset in px, never negative
      */
     public static float insetFor(float fraction, float pillInsetPx) {
-        float inset = Math.max(0f, pillInsetPx);
-        float f = fraction;
-        // `!(f > 0f)` rather than `f <= 0f`, because the second is false for NaN and
-        // would fall through to `inset * NaN` -- a NaN margin, which is not a
-        // degraded margin, it is an unusable one. An unreadable fraction reads as
-        // "not collapsed", which is the safe direction: no inset is the layout the
-        // sheet had before the morph existed.
-        if (!(f > 0f)) return 0f;
-        if (f >= 1f) return inset;
-        return inset * f;
+        // One progress, shared with the height: zero until the band, so the open
+        // sheet is laid out at exactly the margins it always had and there is no seam
+        // to see. This used to be a plain `inset * fraction`, which narrowed and
+        // lifted the sheet across the whole drag while its height was still whole.
+        return Math.max(0f, pillInsetPx) * morphProgress(fraction);
     }
 
     /**
@@ -354,12 +368,12 @@ public final class SheetMorph {
      * @return the ARGB colour to draw at that fraction
      */
     public static int blendColour(int from, int to, float fraction) {
-        float f = fraction;
-        // NaN-safe for the same reason as insetFor: a NaN fraction would otherwise
-        // reach Math.round and come back as a channel of 0, i.e. a fully transparent
-        // strip -- the one outcome that would be silently invisible on screen. The
-        // safe reading of an unreadable fraction is "not collapsed".
-        if (!(f > 0f)) return from;
+        // The shared progress, so the colour eases in the same last stretch the shape does.
+        // A NaN fraction is 0 here, which is the sheet's own glass -- a NaN reaching
+        // Math.round would come back as a channel of 0, i.e. a fully transparent
+        // strip, the one outcome that would be silently invisible on screen.
+        float f = morphProgress(fraction);
+        if (f <= 0f) return from;
         if (f >= 1f) return to;
         int a = lerpChannel(from >>> 24, to >>> 24, f);
         int r = lerpChannel(from >> 16 & 0xFF, to >> 16 & 0xFF, f);

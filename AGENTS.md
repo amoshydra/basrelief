@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 378 tests across twenty-one classes:
+it**. 380 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -566,7 +566,23 @@ has run.**
   flush to the bottom of the screen, and the user filed that as the fully collapsed sheet did not look like the original pill — a complaint every measured
   number contradicted, because the strip really was 167px, unmoved and unfaded.
   **Appearance is not measurable by bounds, and this is the second time that has
-  cost a round trip.** **The pill's shape is a width, not a margin.** The first
+  cost a round trip.** **ONE PROGRESS FOR THE WHOLE MORPH, and the four tests that had to
+  change to say so.** The height was banded while the shape was not: `insetFor`,
+  `pillSideMarginFor`, `cornerRadiusFor` and `blendColour` were plain lerps across the
+  *entire* travel, so at a quarter of the way down the drag the sheet had all of its
+  height **and** was already narrower, lifted, rounder and recoloured. One gesture, three
+  timelines, every measured number correct -- and the user read it as the sheet moved as three unrelated timelines. All five read `SheetMorph.morphProgress` now, so
+  below the band the sheet is exactly what it was before the morph existed. Four tests
+  **encoded the bug** and were rewritten rather than deleted: a midpoint asserted at
+  `f = 0.5` (which is the *open* value now, because half-way is still open), a "the last
+  1% of travel is one 1% step" inset assertion (now band arithmetic -- 1% of travel is a
+  fifth of the fall), a blend asserted to move across the whole gesture, and an alpha of
+  exactly `210` mid-band which held only because the old midpoint was exact: `0.95f` is
+  really `0.94999998`, so mid-band computes `0.5000005` and rounds **down** to 209. That
+  one is a tolerance now, because a test pinning a float tie is a float test wearing a
+  colour test's clothes. **A test that passes while the product reads as illogical is the
+  failure this repo cannot automate its way out of.**
+  **The pill's shape is a width, not a margin.** The first
   version of this fix specified it as 28dp a side -- faithful to the pre-morph pill,
   and still a bar, because on a 483dp phone that leaves 88% of the width. The token
   is now `PILL_WIDTH_FRACTION = 0.72` in `:app`, with the subtraction in
