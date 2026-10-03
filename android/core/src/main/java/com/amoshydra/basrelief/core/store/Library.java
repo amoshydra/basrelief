@@ -71,17 +71,20 @@ public final class Library {
     public static final int VERSION = 3;
 
     /**
-     * The id of the bundled marble bust, which every install has.
+     * The id of the bundled marble bust, the demo every install starts with.
      *
      * <p>It has no files in {@code filesDir}: {@code imageName} and
      * {@code depthName} are both null, which is exactly the signal the renderer
      * uses to fall back to {@code res/raw}. It is the "back to the default"
      * affordance, and it replaces the studio's old Reset button.
      *
-     * <p>It cannot be deleted. A reserved id is used rather than a flag on the
-     * item so that the rule survives a round trip through JSON, and so that a
-     * cleanup pass cannot quietly drop the one item that cannot be recreated
-     * from files on disk.
+     * <p><b>It is an ordinary preloaded photo, not an immortal one.</b> It can
+     * be selected, renamed, edited, put in a playlist and deleted, and a delete
+     * sticks. The reserved id is what lets a fileless row survive a JSON round
+     * trip -- {@link LibraryItem#fromJson} exempts it from "no image means no
+     * item" -- and what lets a cleanup pass keep it when the index lists it. It
+     * is not a delete guard: the only thing that puts the row back is
+     * {@link #withBundled}, and that seeds only an otherwise-empty library.
      */
     public static final String BUNDLED_ID = "bundled";
 
@@ -320,13 +323,21 @@ public final class Library {
     }
 
     /**
-     * Guarantee the bundled item is listed.
+     * Seed the bundled item, but only into an otherwise-empty library.
      *
-     * <p>It is the only row that cannot be recreated from files on disk, and it
-     * is the only way back to the default once every photo has been deleted — so
-     * an index without it is a gallery with no exit. That makes it worth
-     * repairing on every load rather than only at first run: a blob that has
-     * lost it, for whatever reason, recovers by itself.
+     * <p>The demo is an ordinary preloaded photo: it can be selected, renamed,
+     * edited, put in a playlist and deleted like any other row, and a delete
+     * must stick. It is also the one row with no file behind it, so a gallery
+     * that has lost it cannot rebuild it from {@code filesDir} -- which is why
+     * it is seeded at first run rather than being baked into the grid.
+     *
+     * <p><b>Only when the library is otherwise empty.</b> That is the
+     * difference between a preload and a resurrection. A fresh install (or a
+     * factory state after every other row is gone) gets the demo so the gallery
+     * is never an empty room; a non-empty gallery is authoritative, and a row
+     * the user deleted from it stays deleted however many times a load runs.
+     * Every load calls this, so binding the seed to the empty state is what
+     * makes a delete stick through a restart.
      *
      * <p>Where it lands is decided by its zero timestamps, not by where it is
      * inserted: every time-based order puts it last, which is right, because a
@@ -335,7 +346,7 @@ public final class Library {
      * timestamps entirely, so it sorts by its label there, like anything else.
      */
     public Library withBundled() {
-        if (contains(BUNDLED_ID)) return this;
+        if (!items.isEmpty()) return this;
         return withItem(LibraryItem.bundled());
     }
 
@@ -348,6 +359,13 @@ public final class Library {
      * selection instead has a visible, honest outcome: the bundled demo, which
      * the status line already names as such. A gallery that cannot delete is not
      * a gallery.
+     *
+     * <p><b>The bundled row is not an exception.</b> It is a preloaded photo
+     * with no file, not an unremovable one, so removing it drops it and clears
+     * the selection exactly as for any other id. The seeding rule that keeps a
+     * first run from showing an empty gallery lives in {@link #withBundled} and
+     * fires only on an empty library, so a delete from a non-empty gallery
+     * sticks; deleting the last row returns to the preloaded demo by design.
      *
      * <p><b>This touches the index only, never the files.</b> Delete the files
      * <i>after</i> persisting the result, so a crash in between leaves orphan
@@ -363,10 +381,6 @@ public final class Library {
      * remember; it was removed.
      */
     public Library remove(String id) {
-        // The bundled item is the "back to the default" affordance and has no
-        // files to recreate it from, so it is not removable. Refused here rather
-        // than only in the UI, so no caller can bypass it.
-        if (BUNDLED_ID.equals(id)) return this;
         LibraryItem gone = find(id);
         if (gone == null) return this;
         List<LibraryItem> next = new ArrayList<LibraryItem>();
@@ -523,15 +537,22 @@ public final class Library {
      * <p>A missing <i>depth</i> file is not grounds for dropping the item: a flat
      * item is a legal item, and the user may be about to generate its depth.
      *
+     * <p><b>A row with no file belongs to the index.</b> The bundled row is the
+     * only one, and it is kept when the index lists it and not added when it does
+     * not: this method filters, it never seeds. Seeding is {@link #withBundled}'s
+     * job, and it is deliberately narrower, so that a delete cannot be undone by a
+     * load that was only supposed to be cleaning missing files.
+     *
      * @param fileExists given a bare filename, whether it is present
      */
     public Library retainExisting(Predicate<String> fileExists) {
         if (fileExists == null) return this;
         List<LibraryItem> next = new ArrayList<LibraryItem>();
         for (LibraryItem item : items) {
-            // The bundled item has no file to look for: it lives in res/raw.
-            // Testing its null name would drop the one item that cannot be
-            // recreated from disk, so it is kept unconditionally.
+            // The bundled item has no file to look for: it lives in res/raw, and
+            // its null image name would fail any on-disk test. Keeping it here is
+            // retention, not resurrection -- the row is already in the index, so
+            // the index is the authority. Nothing in this method adds one.
             if (item.isBundled() || Boolean.TRUE.equals(fileExists.test(item.imageName))) {
                 next.add(item);
             }

@@ -126,15 +126,23 @@ may only write `volatile` fields. Anything touching GL state — including
 These are invisible from the code and easy to undo by accident. Each one has
 already cost real time.
 
-- **The bundled demo is a row in the gallery, and it is the one item with no
-  file.** `Library.BUNDLED_ID` is a reserved id; a null image name is the signal
-  the renderer already used to read
-  `android/app/src/main/res/raw/image.png`. Because it cannot be recreated from
-  `filesDir`, three things refuse to drop it — `remove`,
-  `retainExisting`, and `fromJson` — and all three are in the data layer rather
-  than the UI, so no caller can route around them. The third was a real bug the
-  tests found: `fromJson` dropped any item with no image name, which is correct
-  for a user item and fatal for this one.
+- **The bundled demo is an ordinary preloaded photo, and delete must stick.**
+  It is a row in the gallery and the one item with no file: a null image name is
+  the signal the renderer already used to read
+  `android/app/src/main/res/raw/image.png`, and that is all the reserved
+  `Library.BUNDLED_ID` is for. It can be selected, renamed, edited, put in a
+  playlist and deleted like anything else. What keeps it from vanishing forever
+  is not a delete guard but **where it is seeded**: `withBundled` adds it only
+  when the library is otherwise empty — a fresh install, or the factory state
+  after the last row is gone — and never into a non-empty gallery, so a delete
+  sticks through the load every surface performs. `retainExisting` keeps it when
+  the index lists it and never adds it, because the index is the authority over
+  a fileless row; `fromJson` keeps its exemption so such a row survives a round
+  trip, which is parsing, not resurrection. `Playlists.afterRemoving` removes the
+  id from the index and every playlist in one derivation, like any other photo.
+  Deleting it while it is active clears the selection like any delete, and a
+  null selection still renders `res/raw`, so the picture on screen does not
+  change until another row is picked.
 - **The bundled demo is a pair, and an unreferenced asset fails silently.**
   `android/app/src/main/res/raw/image.png` and
   `android/app/src/main/res/raw/depth.png` are loaded together; ship one
@@ -367,7 +375,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 271 tests across sixteen classes:
+it**. 277 tests across sixteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -457,7 +465,9 @@ it**. 271 tests across sixteen classes:
   restored backup must not resurrect a dangling selection, an absolute path
   must never be stored, and deleting the *active* item has to clear the
   wallpaper pointer in the same write — otherwise the next reconcile adopts the
-  deleted files straight back and the delete never sticks.
+  deleted files straight back and the delete never sticks. The bundled preload
+  is deletable on those same terms, and what stops a reload resurrecting it is
+  the empty-only seed, not a refusal to delete.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the

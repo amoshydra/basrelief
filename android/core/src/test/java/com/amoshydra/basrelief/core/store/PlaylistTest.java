@@ -550,15 +550,18 @@ public class PlaylistTest {
         assertEquals("p", left.displayName());
     }
 
-    /** The one row that cannot be recreated from disk is not deletable either. */
+    /** The bundled row is an ordinary photo: deleting it drops its id everywhere. */
     @Test
-    public void theBundledRowSurvivesADelete() {
+    public void theBundledRowIsDeletedLikeAnyOther() {
         Playlists p = daily("p", "a", Library.BUNDLED_ID);
         Library l = lib("a").withItem(LibraryItem.bundled());
 
         Playlists.Result r = Playlists.afterRemoving(p, l, Library.BUNDLED_ID);
-        assertNotNull(r.library.find(Library.BUNDLED_ID));
-        assertTrue(r.playlists.active().contains(Library.BUNDLED_ID));
+        assertNull("the index row must go", r.library.find(Library.BUNDLED_ID));
+        assertFalse("the playlist must not keep naming a deleted photo",
+                r.playlists.active().contains(Library.BUNDLED_ID));
+        assertTrue("and the rest of the playlist survives",
+                r.playlists.active().contains("a"));
     }
 
     /**

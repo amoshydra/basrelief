@@ -240,6 +240,11 @@ public final class Playlists {
      * a caller that has already dropped the row somewhere else still has one place
      * that knows the ids have to go.
      *
+     * <p>The bundled row is an ordinary id here, like everywhere else: it can be
+     * put in a playlist and deleted out of one. A guard for it would leave the
+     * playlist naming a photo the index no longer has, which rotation would then
+     * step over silently -- the exact failure this method exists to prevent.
+     *
      * <p>No playlist is dropped for becoming empty. An emptied playlist is inert
      * ({@link #advance} has nothing to rotate to) and keeps its name and its
      * settings, because the user configured those and deleting the photo is not a
@@ -247,12 +252,6 @@ public final class Playlists {
      */
     public Playlists withoutItem(String itemId) {
         if (itemId == null) return this;
-        // The bundled row is the one item with no file to recreate it from, so
-        // {@link Library#remove} refuses to drop it. Refused here too, so the two
-        // halves of a delete cannot disagree about which photos exist: a playlist
-        // that quietly lost the marble bust would be a rotation that skips it, and
-        // nothing would say why.
-        if (Library.BUNDLED_ID.equals(itemId)) return this;
         List<Playlist> next = new ArrayList<Playlist>();
         boolean changed = false;
         for (Playlist p : playlists) {
@@ -368,9 +367,11 @@ public final class Playlists {
      * loudly on its next rotation: {@link #advance} steps over the missing id, so
      * the wallpaper simply never comes back to it, and nothing anywhere says why.
      *
-     * <p>The bundled row cannot go, so calling this with its id changes nothing —
-     * {@link Library#remove} refuses it and {@link #withoutItem} stands down with
-     * it, so the two halves cannot end up describing different libraries.
+     * <p>The bundled row is removed like any other id: the index drops its row
+     * and every playlist loses it in the same derivation, so the two halves
+     * cannot end up describing different libraries. Whether an emptied index then
+     * gets the demo seeded back is {@link Library#withBundled}'s decision, not
+     * this method's -- {@code afterRemoving} always removes.
      */
     public static Result afterRemoving(Playlists playlists, Library library, String id) {
         Playlists from = playlists == null ? empty() : playlists;

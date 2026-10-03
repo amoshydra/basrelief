@@ -162,11 +162,10 @@ public final class LibraryItem {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every user item must name a file. The one exception is the reserved
-        // bundled id, which reads from res/raw and therefore has none -- and it
-        // is the only item that cannot be recreated from disk, so refusing it
-        // here would leave the gallery with no way back to the default. Gated
-        // on the id rather than relaxed generally, so no user item can be given
-        // a null name by accident.
+        // bundled id, which reads from res/raw and therefore has none. Gated on
+        // the id rather than relaxed generally, so no user item can be given a
+        // null name by accident. The id is not a delete guard -- see
+        // Library.BUNDLED_ID -- it is only what lets this fileless row exist.
         if (img == null && !Library.BUNDLED_ID.equals(id)) {
             throw new IllegalArgumentException("bad image name: " + imageName);
         }
@@ -598,9 +597,11 @@ public final class LibraryItem {
         String img = normaliseName(str(o, "image"));
         // No image means nothing to render and nothing to resolve -- UNLESS this
         // is the reserved bundled item, which reads from res/raw and so has no
-        // file by design. Without this exemption the bundled item is silently
-        // dropped on every parse, and since it cannot be recreated from disk the
-        // gallery loses its only way back to the default on the next launch.
+        // file by design. This is a PARSE exemption and deliberately not a
+        // resurrection: it keeps a row the blob already carries (so a rename or
+        // a settings edit survives the next load) and adds nothing on its own.
+        // The demo is deletable like any other row; what seeds it is
+        // Library.withBundled, and only into an empty library.
         if (img == null && !Library.BUNDLED_ID.equals(id)) return null;
         try {
             SurfaceSettings home = homeFrom(o);

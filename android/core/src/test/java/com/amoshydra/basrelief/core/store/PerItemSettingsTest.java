@@ -590,18 +590,21 @@ public class PerItemSettingsTest {
     }
 
     @Test
-    public void theBundledItemCannotBeRemoved() {
+    public void theBundledItemIsRemovedLikeAnyOtherRow() {
         Library lib = Library.empty().withItem(item("a")).withItem(LibraryItem.bundled());
         assertEquals(2, lib.items().size());
         Library after = lib.remove(Library.BUNDLED_ID);
-        assertEquals("the bundled item must survive remove()", 2, after.items().size());
-        assertNotNull(after.find(Library.BUNDLED_ID));
+        assertEquals("the bundled item must go when it is asked to", 1, after.items().size());
+        assertNull(after.find(Library.BUNDLED_ID));
+        assertNotNull("and the library keeps its other row", after.find("a"));
     }
 
     @Test
     public void theBundledItemSurvivesAFileCleanupPass() {
         // A predicate that reports nothing exists -- the worst case, e.g. right
-        // after a restore onto a device where filesDir came back empty.
+        // after a restore onto a device where filesDir came back empty. The
+        // bundled row has no file to look for and is listed, so a cleanup keeps
+        // it: the index is the authority over a row with no file.
         Library lib = Library.empty().withItem(item("a")).withItem(LibraryItem.bundled());
         Library kept = lib.retainExisting(new java.util.function.Predicate<String>() {
             @Override
@@ -610,7 +613,7 @@ public class PerItemSettingsTest {
             }
         });
         assertEquals("only the bundled item may remain", 1, kept.items().size());
-        assertNotNull("the one item that cannot be recreated must not be dropped",
+        assertNotNull("a listed row with no file must not be dropped",
                 kept.find(Library.BUNDLED_ID));
     }
 
@@ -618,9 +621,11 @@ public class PerItemSettingsTest {
     public void theBundledItemSurvivesAJsonRoundTrip() {
         // fromJson drops any item with no image name, because for a user item
         // that means nothing to render. The bundled item has none by design, so
-        // without an exemption it was silently dropped on every parse -- and
-        // since it cannot be recreated from filesDir, the gallery lost its only
-        // way back to the default on the very next launch.
+        // without an exemption it was silently dropped on every parse -- and a
+        // rename or an edit would not survive the next load. The exemption is
+        // parsing, not resurrection: it keeps what the blob carries and adds
+        // nothing. What seeds the row is withBundled, and only into an empty
+        // library.
         Library lib = Library.empty().withItem(LibraryItem.bundled())
                 .withSelection(Library.BUNDLED_ID);
         Library back = Library.parse(lib.toJson());
