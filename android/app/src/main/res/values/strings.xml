@@ -25,6 +25,8 @@
     <!-- The studio: title, and the gesture hint that fades after 2s -->
     <string name="studio_title">Basrelief — live preview</string>
     <string name="gesture_hint">Tap: orbit center · 2-finger: pan · pinch: zoom</string>
+    <!-- The sheet's grip: spoken, not drawn, so it names the gesture. -->
+    <string name="sheet_drag_handle">Drag to move the panel</string>
 
     <!-- Sheet section headings -->
     <string name="group_relief">Standing out of the plane</string>

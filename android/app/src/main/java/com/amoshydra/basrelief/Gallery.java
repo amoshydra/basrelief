@@ -5,7 +5,6 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
@@ -34,26 +33,22 @@ import java.util.Set;
 /**
  * The gallery: every photo in the app, reached two ways.
  *
- * <p><b>Browsing is a filmstrip on the render's edge, not a takeover.</b> The
- * strip is a sibling of the sheet in the studio's root frame rather than a child
- * of it, so it survives the collapse and switching a photo is one tap while the
- * relief keeps moving behind it. A full-screen list would hide the product at
- * exactly the moment the user is choosing it, and choosing a framing is the whole
- * reason the studio and the gallery share a screen at all.
+ * <p><b>Browsing is a filmstrip inside the sheet, not a takeover.</b> The strip
+ * is a child of the sheet's panel, directly under the grip, so switching a photo
+ * is one tap while the relief keeps moving behind it. A full-screen list would
+ * hide the product at exactly the moment the user is choosing it, and choosing a
+ * framing is the whole reason the studio and the gallery share a screen at all.
  *
- * <p><b>It rides on whatever is beneath it.</b> The strip's offset from the
- * bottom is the top of the tallest thing under it, recomputed on every layout
- * pass, rather than a fraction of the screen. It used to be a fixed 40%, which
- * floated in mid-air the moment the sheet was shorter than that and sat on top of
- * the sheet when it was taller — and the sheet's height is animated and capped at
- * its content, so there is no fraction that is right.
- *
- * <p><b>Position is layout, never a transform.</b> A sibling drawn over a
- * {@code GLSurfaceView} and moved with {@code translationY} may be laid out,
- * attached, opaque, {@code isShown()} and still absent from the display — which is
- * b/7179570, and why the sheet positions itself with {@code LayoutParams}. The
- * strip's {@code bottomMargin} is a layout change for the same reason: layout runs
- * a traversal and repaints the region, a transform does not.
+ * <p><b>Gallery owns the content; the studio owns the seat.</b> The strip used
+ * to float over the render, a sibling of the sheet in the root frame, positioned
+ * by a {@code bottomMargin} recomputed from the tallest thing beneath it on
+ * every layout pass. That machinery is gone: {@link MainActivity} places the
+ * strip by calling {@link #installStrip} with the panel and the index it wants,
+ * and this class rebuilds into that one seat. There is exactly one place the
+ * strip can be, so there is no offset to keep in step with an animated sheet,
+ * no global layout listener, and no insets to carry — and a strip inside the
+ * panel cannot be positioned by a post-layout transform over the
+ * {@code GLSurfaceView}, which is b/7179570.
  *
  * <p><b>The grid is a second surface, not the gallery.</b> It is the full-screen
  * takeover the filmstrip exists to avoid, and it earns that by being for photos
@@ -81,8 +76,6 @@ final class Gallery {
 
     /** Thumb size in the filmstrip: identifiable, not choosable. Hence the grid. */
     private static final int THUMB_DP = 46;
-    /** The gap between the strip and whatever it is sitting on. */
-    private static final int STRIP_GAP_DP = 14;
     private static final int GRID_COLUMNS = 3;
     private static final int GRID_GAP_DP = 8;
     private static final int GRID_PAD_DP = 14;
@@ -116,40 +109,21 @@ final class Gallery {
     /** --accent: the one header entry that goes somewhere. */
     private static final int ACCENT = 0xFF7FD1C1;
 
-    private static final String STRIP_TAG = "basrelief-strip";
-    private static final String GRID_TAG = "basrelief-grid";
-
-    /**
-     * The open grid, so the strip can be ordered beneath it.
-     *
-     * <p>Held rather than found by tag: {@code root} also holds the sheet and the
-     * pill, and the ordering has to be right at the moment of insertion, which is
-     * before any tag search would be convenient.
-     */
-    private LinearLayout gridPanel;
-
     private final MainActivity activity;
     private final FrameLayout root;
-
     /** The strip. Null when the gallery is not up. */
     private View strip;
-    private FrameLayout.LayoutParams stripLp;
-    private int stripInsetBottom = 0;
     /**
-     * The status-bar inset, in pixels, kept so {@link #layoutStrip} can stop the
-     * strip riding up under the clock when the sheet is dragged to full height.
+     * Where the strip lives, told by the studio rather than decided here.
      *
-     * <p>Separate from {@link #stripInsetBottom} because it is not placed by a
-     * margin: the strip is bottom-anchored, so a top margin would push it further
-     * up, and a top padding on a wrap-content view cancels itself out. The inset is
-     * therefore applied twice over -- as padding for the host, and as a bound on
-     * the margin -- which is what puts the host's top edge at the screen top and its
-     * tiles one inset lower. See {@link #layoutStrip}.
+     * <p>{@link #installStrip} receives the sheet and the index it wants, and a
+     * rebuild — the ring on a selection change, a new sort order — re-adds into
+     * that same seat. The studio changes the seat and every rebuild follows it;
+     * this class never moves the strip on its own, and there is no offset to keep
+     * in step with an animated sheet because a child of the panel moves with it.
      */
-    private int stripInsetTop = 0;
-    /** The margin last written, so a re-layout with nothing to change stops. */
-    private int stripAppliedMargin = -1;
-    private ViewTreeObserver.OnGlobalLayoutListener stripListener;
+    private LinearLayout stripHost;
+    private int stripIndex = -1;
 
     /** The grid. Null when it is not up. */
     private View grid;
@@ -250,60 +224,44 @@ final class Gallery {
     // ----------------------------------------------------------------- showing
 
     /**
-     * The studio's Gallery button: the grid, on top of the filmstrip.
+     * Put the filmstrip inside the sheet, at the seat the studio names.
      *
-     * <p>The grid is the right answer to this button, because the button means
-     * "manage my photographs" — pick several, rename one, delete one — and none of
-     * those fit in a 46px tile. Browsing is the strip's job and the strip is
-     * already on the render's edge, so opening the grid over it is the takeover
-     * taken deliberately rather than by default.
-     *
-     * <p>The strip is installed first, so the button is never a dead control even
-     * before the studio has installed it at launch.
-     */
-    void show() {
-        installStrip();
-        showGrid();
-    }
-
-    /**
-     * Put the filmstrip on the render's edge.
+     * <p><b>The studio owns the seat; this class owns the strip.</b> The panel is
+     * the studio's, and so is the choice to put the strip directly under the grip,
+     * above the fix line and the scroll — that is passed in as an index and never
+     * re-derived here. What this class keeps is the content and the behaviour:
+     * which photograph is ringed, what tapping a tile does, the add and grid
+     * tiles. The split is one-way: the studio places the view, this class rebuilds
+     * into the seat it was given and never moves it.
      *
      * <p>Idempotent: the strip is studio furniture rather than a dialog, so it is
      * installed once and stays — through the sheet opening, the sheet collapsing
-     * and the grid being dismissed. Rebuilding on every press would restart every
-     * thumbnail decode for nothing, and a strip that appeared and vanished with a
-     * button would be an overlay, which is the thing it exists to stop being.
+     * and the grid being dismissed. Rebuilding on every call would restart every
+     * thumbnail decode for nothing, and a strip that appeared and vanished would
+     * be an overlay, which is the thing it exists to stop being.
      *
      * <p>Rebuilt — not patched — whenever the index changes, because the ring that
      * says which photograph is on screen is on every tile and the order may have
      * moved.
+     *
+     * @param host  the sheet's panel: the strip is added directly to it.
+     * @param index where among the panel's children it belongs. The studio
+     *              decides this once and every rebuild re-uses it, so a rebuild
+     *              cannot land somewhere a fresh install would not.
      */
-    void installStrip() {
-        if (strip != null) return;
-        strip = buildStrip();
-        // BELOW the grid, when one is open. Appending puts the strip last in root,
-        // i.e. on top of everything -- which was invisible until something refreshed
-        // the strip while the gallery was open. Changing the sort order does exactly
-        // that, so choosing a sort order replaced the gallery with a filmstrip.
-        //
-        // The ordering is therefore a property of WHERE it goes rather than of when it
-        // was built: a view whose z-order depends on whether a rebuild happened is a
-        // z-order that will be wrong again.
-        int below = gridPanel == null ? -1 : root.indexOfChild(gridPanel);
-        if (below >= 0) {
-            root.addView(strip, below);
-        } else {
-            root.addView(strip);
+    void installStrip(LinearLayout host, int index) {
+        stripHost = host;
+        stripIndex = index;
+        ensureStrip();
+    }
+
+    private void ensureStrip() {
+        if (strip != null || stripHost == null) return;
+        if (stripIndex < 0 || stripIndex > stripHost.getChildCount()) {
+            stripIndex = stripHost.getChildCount();
         }
-        // Ask for the insets now that it is attached. A listener set before
-        // attachment is never called, and requestApplyInsets on a detached view
-        // finds no ViewRootImpl to dispatch through — which is how a strip ends up
-        // laid out under a gesture pill that takes the touch before the strip ever
-        // sees it, and every tile reads as present and dead.
-        strip.requestApplyInsets();
-        layoutStrip();
-        listenForLayout();
+        strip = buildStrip();
+        stripHost.addView(strip, stripIndex);
     }
 
     /**
@@ -320,30 +278,25 @@ final class Gallery {
         return grid != null;
     }
 
-    /** Re-read the index and put the strip back. */
+    /** Re-read the index and put the strip back, in the seat the studio gave. */
     private void refreshStrip() {
-        if (strip == null) return;
-        root.removeView(strip);
+        if (strip == null || stripHost == null) return;
+        stripHost.removeView(strip);
         strip = null;
-        stripAppliedMargin = -1;
-        installStrip();
+        ensureStrip();
     }
 
     /**
      * Take the gallery down: the strip, the grid, and any half-finished
      * selection.
      *
-     * <p>The layout listener goes with it. One that outlives its views keeps the
-     * gallery reachable from a hierarchy that no longer shows it, which is the
-     * kind of leak that only shows up much later.
+     * <p>Laid out by the panel it lives in, so there is no offset, listener or
+     * inset to unwind here — removing the view is the whole teardown.
      */
     void dismiss() {
-        stopListeningForLayout();
         if (strip != null) {
-            root.removeView(strip);
+            if (stripHost != null) stripHost.removeView(strip);
             strip = null;
-            stripLp = null;
-            stripAppliedMargin = -1;
         }
         dismissGrid();
         picked.clear();
@@ -392,36 +345,16 @@ final class Gallery {
         scroll.addView(row, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.WRAP_CONTENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
-
-        FrameLayout host = new FrameLayout(activity);
-        host.setTag(STRIP_TAG);
-        host.addView(scroll, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT));
-        host.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
-            @Override
-            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                stripInsetBottom = bottomInset(insets);
-                stripInsetTop = topInset(insets);
-                // The status bar is a TOP inset on the strip, and the grid's own
-                // helper is reused so the two surfaces cannot grow a second answer.
-                // Padding rather than margin: the strip is bottom-anchored, and a top
-                // margin would move it the wrong way. See layoutStrip for the clamp
-                // that actually keeps the tiles below the clock.
-                v.setPadding(0, stripInsetTop, 0, 0);
-                layoutStrip();
-                return insets;
-            }
-        });
-        // Bottom-anchored with a margin this class owns. The offset is written by
-        // layoutStrip() rather than here, because what the strip sits on has not
-        // been measured at this point.
-        stripLp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.START);
-        host.setLayoutParams(stripLp);
-        return host;
+        // The strip IS the scroll view. There is no host FrameLayout, no insets
+        // listener and no bottom margin any more: as a child of the sheet it is
+        // laid out with the panel, so its position is the panel's position and
+        // there is nothing to recompute per frame. MATCH_PARENT so the row can be
+        // dragged across the full width; the row carries its own side padding, so
+        // the first and last tiles do not touch the panel's edges.
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return scroll;
     }
 
     /**
@@ -516,103 +449,13 @@ final class Gallery {
         return d;
     }
 
-    // ------------------------------------------------------- the strip's position
+    // ------------------------------------------------------------- the strip's seat
 
-    /**
-     * Sit the strip on top of whatever is beneath it.
-     *
-     * <p>Measured, not assumed: the margin is the gap, plus the bottom inset,
-     * plus the height of the tallest view under the strip. The sheet is animated
-     * by rewriting its own {@code LayoutParams} and is capped at its content
-     * height, so any fraction of the screen is wrong at one end or the other.
-     *
-     * <p>A {@code bottomMargin} and a re-layout, never a translation. See the
-     * class note: a transformed sibling over a {@code GLSurfaceView} can be
-     * placed correctly, opaque, attached and still not composited.
-     */
-    private void layoutStrip() {
-        if (strip == null || stripLp == null) return;
-        int margin = activity.dp(STRIP_GAP_DP) + stripInsetBottom + underlayHeight();
-        // Never let the strip ride above the status bar. At full sheet height the
-        // underlay is the whole screen, and the natural margin above would put the
-        // tiles at y=0 behind the clock. The clamp moves the host's BOTTOM edge down,
-        // which is the only direction that lowers a bottom-anchored strip's content:
-        // adding margin moves it further up. contentHeight excludes the host's own
-        // padding, because the padding is what the host wears, not the tiles.
-        int rootHeight = root.getHeight();
-        int contentHeight = strip.getHeight()
-                - strip.getPaddingTop() - strip.getPaddingBottom();
-        if (rootHeight > 0 && contentHeight > 0) {
-            int maxMargin = rootHeight - stripInsetTop - contentHeight;
-            if (margin > maxMargin) margin = maxMargin;
-        }
-        if (margin < 0) margin = 0;
-        if (margin == stripAppliedMargin) return; // converged; no second layout
-        stripAppliedMargin = margin;
-        stripLp.bottomMargin = margin;
-        strip.setLayoutParams(stripLp);
-    }
-
-    /**
-     * How much of the screen the strip has to clear.
-     *
-     * <p>Every <i>bottom-anchored</i> child of the root except this class's own
-     * views, which is the sheet when it is open and the collapsed affordance when
-     * it is not — the two states the strip is supposed to survive either way.
-     * Measuring beats asking the sheet for its height: the sheet is not this
-     * class's to instrument, and its height is exactly the thing that is animated.
-     *
-     * <p>Anchored-to-bottom is the test, and it matters. A full-height child is
-     * the backdrop or a takeover, not furniture to sit on, and counting one would
-     * push the strip off the top of the screen entirely — a strip that is
-     * correctly measured and completely invisible.
-     */
-    private int underlayHeight() {
-        int rootHeight = root.getHeight();
-        if (rootHeight <= 0) return 0;
-        int top = rootHeight;
-        for (int i = 0; i < root.getChildCount(); i++) {
-            View child = root.getChildAt(i);
-            if (child == null || child == strip) continue;
-            if (STRIP_TAG.equals(child.getTag()) || GRID_TAG.equals(child.getTag())) continue;
-            if (child.getVisibility() != View.VISIBLE) continue;
-            if (child instanceof android.opengl.GLSurfaceView) continue; // the backdrop
-            if (!isBottomAnchored(child)) continue;
-            if (child.getTop() < top) top = child.getTop();
-        }
-        return Math.max(0, rootHeight - top);
-    }
-
-    private boolean isBottomAnchored(View child) {
-        android.view.ViewGroup.LayoutParams lp = child.getLayoutParams();
-        if (!(lp instanceof FrameLayout.LayoutParams)) return false;
-        return (((FrameLayout.LayoutParams) lp).gravity & Gravity.BOTTOM) != 0;
-    }
-
-    /**
-     * Re-place the strip whenever anything beneath it is laid out.
-     *
-     * <p>A global layout listener rather than one on the sheet, because the sheet
-     * is not this class's: the studio animates it by rewriting its own params, and
-     * a global pass sees every frame of that without knowing the sheet exists.
-     */
-    private void listenForLayout() {
-        if (stripListener != null) return;
-        stripListener = new ViewTreeObserver.OnGlobalLayoutListener() {
-            @Override
-            public void onGlobalLayout() {
-                layoutStrip();
-            }
-        };
-        root.getViewTreeObserver().addOnGlobalLayoutListener(stripListener);
-    }
-
-    private void stopListeningForLayout() {
-        if (stripListener == null) return;
-        ViewTreeObserver observer = root.getViewTreeObserver();
-        if (observer.isAlive()) observer.removeOnGlobalLayoutListener(stripListener);
-        stripListener = null;
-    }
+    /* The strip used to own a whole position section here -- a measured bottom
+     * margin, a global layout listener, and top/bottom insets to keep it off the
+     * status bar. All of it existed because the strip floated as a sibling over
+     * the render. It is a child of the panel now, so the panel's layout is the
+     * strip's layout and the whole section is gone rather than left dead. */
 
     private int bottomInset(WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= 30) {
@@ -653,10 +496,6 @@ final class Gallery {
      * return to the filmstrip rather than take the filmstrip with it.
      */
     void dismissGrid() {
-        // Cleared even when there is nothing to remove: gridPanel is what installStrip
-        // orders against, and a stale reference would make a later strip build insert
-        // itself at an index that no longer means anything.
-        gridPanel = null;
         if (grid == null) return;
         root.removeView(grid);
         grid = null;
@@ -681,8 +520,6 @@ final class Gallery {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackgroundColor(0xF7080A0D);
         panel.setPadding(pad, pad, pad, pad);
-        panel.setTag(GRID_TAG);
-        gridPanel = panel;
         panel.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {

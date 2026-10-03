@@ -112,6 +112,44 @@ final class FramingRows {
                         apply(activity, key, fraction, v);
                     }
                 });
+        // Live preview, the half these four rows were missing. The store is still
+        // written once, on release, by OnChanged above; this only moves the
+        // renderer's own fields, which is what makes pan and origin follow the
+        // finger like Depth and Zoom already do. Nothing here reads or writes the
+        // index: a preview that persisted would re-read and re-validate the whole
+        // gallery once per step of travel.
+        final boolean isX = key.endsWith("X");
+        slider.setOnPreview(new BasreliefSlider.OnPreview() {
+            @Override
+            public void onPreview(int v) {
+                final float value = fraction ? v / 1000f : v;
+                // One queued event for the cancel and the write together. Queued
+                // because cancelGlide is GL-thread state (the GLSurfaceView's own
+                // touch handler queues it the same way), and one event rather than
+                // two so the cancel cannot run after the write and re-apply the
+                // glide's destination over it.
+                activity.glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.renderer.cancelGlide();
+                        if (fraction) {
+                            activity.renderer.setOrbit(
+                                    isX ? value : activity.renderer.getOrbitX(),
+                                    isX ? activity.renderer.getOrbitY() : value);
+                        } else {
+                            activity.renderer.setPan(
+                                    isX ? value : activity.renderer.getPanX(),
+                                    isX ? activity.renderer.getPanY() : value);
+                        }
+                    }
+                });
+                activity.glView.requestRender();
+            }
+        });
+        // The sheet goes to glass while the control is in use; the row stays at
+        // 60%. Installed here because these sliders are built in this class rather
+        // than by MainActivity.addSlider, and the two paths must not diverge.
+        activity.dimWhileInteracting(slider);
         activity.sliders.put(key, slider);
         return slider.view();
     }
