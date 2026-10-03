@@ -8,12 +8,19 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.Trigger;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.service.wallpaper.WallpaperService;
 import android.view.SurfaceHolder;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * The live wallpaper. The GLSurfaceView renders into the wallpaper surface
@@ -26,6 +33,145 @@ public class DepthWallpaperService extends WallpaperService {
      *  in this process, so this is the one honest answer to "what did the user just
      *  see". See DepthEngine.pendingGlideFrom for why it exists. */
     private static Surface lastVisibleSurface;
+
+    /**
+     * The engines alive under this service, in creation order.
+     *
+     * <p>Main thread only: engines are created, destroyed and re-tasked there,
+     * and so is the unlock broadcast. It exists so the unlock receiver can ask
+     * the same surface question an engine would — see {@link #surfacesForUnlock()}.
+     */
+    private final List<DepthEngine> engines = new ArrayList<DepthEngine>();
+
+    /**
+     * The one receiver for {@link Intent#ACTION_USER_PRESENT}, and why it is
+     * registered here rather than on an engine.
+     *
+     * <p><b>One process can hold two engines; one unlock is still one event.</b>
+     * On API 35+ the platform runs a second live engine for the lock screen, and
+     * a receiver registered per engine is two registrations for one broadcast —
+     * both deliveries would advance the playlist, and one unlock would step
+     * twice. Registering once for the service's own life makes "once per event"
+     * structural rather than a race between engines. The service's life is the
+     * wallpaper's life: it begins when the wallpaper is bound and ends when it is
+     * unbound, so the receiver costs nothing while no wallpaper is applied,
+     * exactly as an engine-scoped one would.
+     *
+     * <p>The moment is read once and handed to every surface asked, because it
+     * identifies the event: the playlists model treats an event at or before the
+     * last rotation as already handled, so a second surface cannot move again.
+     *
+     * <p>No permission is needed: {@code ACTION_USER_PRESENT} is a protected
+     * broadcast, and a dynamically registered receiver hears it without one.
+     */
+    private final BroadcastReceiver userPresentReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!Intent.ACTION_USER_PRESENT.equals(intent.getAction())) return;
+            SharedPreferences p = getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+            long now = System.currentTimeMillis();
+            List<Surface> surfaces = surfacesForUnlock();
+            // Logged before the ask, so a device where nothing moves can be told
+            // apart: no line means the platform never delivered the broadcast,
+            // a line with no "advanced" means it arrived and nothing was due.
+            android.util.Log.i("Basrelief", "unlock heard, asking " + surfaces);
+            for (Surface on : surfaces) {
+                advancePlaylist(p, on, Trigger.ON_UNLOCK, now);
+            }
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        IntentFilter unlock = new IntentFilter(Intent.ACTION_USER_PRESENT);
+        if (Build.VERSION.SDK_INT >= 33) {
+            // The receiver is not exported to other apps. A protected system
+            // broadcast is still delivered to it; this is only the modern form
+            // the platform requires for a dynamic registration.
+            registerReceiver(userPresentReceiver, unlock, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(userPresentReceiver, unlock);
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        unregisterReceiver(userPresentReceiver);
+        super.onDestroy();
+    }
+
+    /**
+     * Which surfaces one unlock should be asked for: the ones this process has an
+     * engine for, home first.
+     *
+     * <p>This is the same gate an engine applies to itself — a playlist for the
+     * lock screen does not rotate for the home engine, and vice versa — asked
+     * once by the service because the receiver is one. A home-only binding asks
+     * home alone; a lock-only binding asks lock; both engines ask home and then
+     * lock, and the first rotation stamps the shared moment so the second is
+     * inert. With no engine yet (the service can be bound a moment before the
+     * first one appears) home is the answer, which is also where an unlock lands.
+     */
+    private List<Surface> surfacesForUnlock() {
+        boolean home = false;
+        boolean lock = false;
+        for (DepthEngine engine : engines) {
+            if (engine.resolvedSurface().surface() == Surface.LOCK) lock = true;
+            else home = true;
+        }
+        List<Surface> surfaces = new ArrayList<Surface>();
+        if (home || !lock) surfaces.add(Surface.HOME);
+        if (lock) surfaces.add(Surface.LOCK);
+        return surfaces;
+    }
+
+    /**
+     * Advance the rotating playlist for one reason — a clock or an event — and
+     * persist the pair.
+     *
+     * <p>Rotation writes the index's OWN selection: the same two calls a user's
+     * tap makes, on the same key. The selection is the only pointer, so the
+     * engine that hears the write re-resolves from the index like any other
+     * change; there is no second "current photo" to keep in step.
+     *
+     * <p>Deliberately idempotent and stamped. {@code advance} writes the playlists
+     * blob back with a new clock, so asking twice for one reason is a no-op
+     * rather than two photos forward — which is why the pref listener can fire on
+     * its own write without a guard, and why one unlock asked of two surfaces
+     * moves once.
+     *
+     * @param on    which screen is asking; the surface gate, not a hint
+     * @param event null when a clock is asking, or the event that just happened
+     * @param now   the shared moment of the reason, so one event has one answer
+     */
+    private void advancePlaylist(SharedPreferences p, Surface on, Trigger event, long now) {
+        try {
+            Playlists playlists = Playlists.parse(p.getString(Playlists.KEY, null));
+            Library index = Library.parse(p.getString(Library.KEY, null), motionFallback(p));
+            Playlists.Result result = Playlists.advance(playlists, index, on, now, event);
+            if (result.selectedId == null) return;      // nothing was due
+            // The index is the single pointer, so this is the ONLY write.
+            LibraryStore.saveNow(p, result.library);
+            PlaylistScreen.PlaylistStore.save(p, result.playlists);
+            android.util.Log.i("Basrelief", "playlist advanced to "
+                    + result.selectedId + (event == null ? "" : " on " + event.key()));
+        } catch (Exception e) {
+            // A rotation must never take the wallpaper down with it. The engine
+            // keeps drawing whatever it already had.
+            android.util.Log.w("Basrelief", "playlist advance failed: " + e);
+        }
+    }
+
+    /** Motion's old home, needed only to migrate a pre-v3 index. Never written. */
+    private static int motionFallback(SharedPreferences p) {
+        try {
+            return p.getString(Config.KEY, null) == null ? 33
+                    : Config.parse(p.getString(Config.KEY, null)).motion;
+        } catch (Exception e) {
+            return 33;
+        }
+    }
 
     /**
      * The component a user selects, i.e. what the studio hands to the system
@@ -217,53 +363,34 @@ public class DepthWallpaperService extends WallpaperService {
         }
 
         /**
-     * Advance the rotating playlist, if one is due on this surface.
-     *
-     * <p>Rotation writes the index's OWN selection -- the same two calls a user's
-     * tap makes -- and then this engine re-resolves from that index like any other
-     * change. So there is no second "current photo" and nothing to keep in step: the
-     * playlist decides, the index records, and the engine follows.
-     *
-     * <p>Deliberately idempotent and stamped. {@code advance} writes the playlists
-     * blob back with the new clock, so calling it twice in the same interval is a
-     * no-op rather than two photos forward -- which is why the listener above can
-     * fire on its own write without a guard.
-     *
-     * <p>An event trigger is never due on a clock, so this does nothing for
-     * {@code on_pickup}; that path is deferred and the trigger stays off.
-     */
-    private void advancePlaylistIfDue(SharedPreferences p) {
-        try {
-            Playlists playlists = Playlists.parse(p.getString(Playlists.KEY, null));
-            Library index = Library.parse(p.getString(Library.KEY, null),
-                    android.content.pm.PackageManager.PERMISSION_GRANTED >= 0
-                            ? motionFallback(p) : 33);
-            SurfaceResolver which = surface;   // read once: a re-task can change it
-            Playlists.Result result = Playlists.advance(playlists, index,
-                    which.surface(), System.currentTimeMillis());
-            if (result.selectedId == null) return;      // nothing was due
-            // The index is the single pointer, so this is the ONLY write.
-            LibraryStore.saveNow(p, result.library);
-            PlaylistScreen.PlaylistStore.save(p, result.playlists);
-            android.util.Log.i("Basrelief", "playlist advanced to "
-                    + result.selectedId);
-        } catch (Exception e) {
-            // A rotation must never take the wallpaper down with it. The engine
-            // keeps drawing whatever it already had.
-            android.util.Log.w("Basrelief", "playlist advance failed: " + e);
+         * Advance the rotating playlist, if a clock says one is due on this
+         * engine's surface.
+         *
+         * <p>This is the clock path only: an event trigger is never due on a
+         * clock (see {@link Trigger#isTimed()}), so nothing a caller here does
+         * can fire an unlock playlist. The unlock itself is delivered to the
+         * service's one receiver, which hands the event to the same write.
+         *
+         * <p>Rotation writes the index's OWN selection -- the same two calls a
+         * user's tap makes -- and then this engine re-resolves from that index
+         * like any other change. So there is no second "current photo" and
+         * nothing to keep in step: the playlist decides, the index records, and
+         * the engine follows. The surface is read here, in the call, because a
+         * re-task can change it between the read and the call.
+         */
+        private void advancePlaylistIfDue(SharedPreferences p) {
+            DepthWallpaperService.this.advancePlaylist(p, surface.surface(), null,
+                    System.currentTimeMillis());
         }
-    }
 
-    /** Motion's old home, needed only to migrate a pre-v3 index. Never written. */
-    private int motionFallback(SharedPreferences p) {
-        try {
-            return p.getString(Config.KEY, null) == null ? 33
-                    : com.amoshydra.basrelief.core.store.Config
-                            .parse(p.getString(Config.KEY, null)).motion;
-        } catch (Exception e) {
-            return 33;
+        /**
+         * This engine's resolved surface. The unlock receiver asks the live ones
+         * so an event is advanced for the screens this process can actually
+         * serve, exactly as the engine would for a clock.
+         */
+        SurfaceResolver resolvedSurface() {
+            return surface;
         }
-    }
 
     /**
      * Keep the renderer's writes on the engine's own surface.
@@ -433,6 +560,9 @@ public class DepthWallpaperService extends WallpaperService {
         @Override
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
+            // Before anything can ask which surfaces are live, including an
+            // unlock that arrives between here and the first visibility change.
+            engines.add(this);
             // First, before the renderer exists and before any path can read the
             // field: a flags change that arrives between here and the first
             // applyFromPrefs would otherwise be answered from the unread default.
@@ -662,6 +792,9 @@ public class DepthWallpaperService extends WallpaperService {
 
         @Override
         public void onDestroy() {
+            // First, so an unlock arriving during teardown cannot ask a dead
+            // engine for its surface.
+            engines.remove(this);
             if (prefs != null) {
                 prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
             }

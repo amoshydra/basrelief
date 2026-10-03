@@ -300,7 +300,7 @@ public final class Playlists {
     }
 
     /**
-     * Advance the active playlist for a surface, if one is due.
+     * Advance the active playlist for a surface, if a clock says it is due.
      *
      * <p><b>The selection is written through the index and nowhere else.</b> The
      * returned {@link Result#library} differs from the one passed in by exactly
@@ -327,14 +327,38 @@ public final class Playlists {
      */
     public static Result advance(Playlists playlists, Library library, Surface surface,
                                  long now, Random random) {
+        return advance(playlists, library, surface, now, null, random);
+    }
+
+    /**
+     * Advance the active playlist because an event just happened.
+     *
+     * <p>The event is one of the non-timed {@link Trigger}s — an unlock now, a
+     * pickup when its caller lands — and only a playlist whose own trigger is
+     * that same event is due. A timed playlist is left alone however overdue it
+     * is: a clock is what advances it, and handing the event in must not become a
+     * second clock. See {@link Playlist#isDue(long, Trigger)} for both rules.
+     *
+     * <p><b>The moment identifies the event.</b> {@code now} is passed once per
+     * event and shared by everything that hears it, so two deliveries of one
+     * unlock cannot step the playlist twice; a later unlock is a later moment and
+     * does advance.
+     *
+     * <p>Everything after "is it due" is the clock path unchanged: the selection
+     * is written through the index by the same two calls a user's tap makes, the
+     * playlist stamps its own clock, and the caller persists the pair. An
+     * event-triggered rotation is a rotation, not a second kind of move.
+     */
+    public static Result advance(Playlists playlists, Library library, Surface surface,
+                                 long now, Trigger event, Random random) {
         Playlists from = playlists == null ? empty() : playlists;
         Library index = library == null ? Library.empty() : library;
         Surface on = surface == null ? Surface.HOME : surface;
         Result unmoved = new Result(index, from, null);
 
         Playlist playlist = from.rotating(on);
-        if (playlist == null) return unmoved;          // nothing is rotating here
-        if (!playlist.isDue(now)) return unmoved;     // not yet, or an event trigger
+        if (playlist == null) return unmoved;            // nothing is rotating here
+        if (!playlist.isDue(now, event)) return unmoved; // not yet, or not this event
 
         List<String> living = livingIds(playlist, index);
         // No photo to rotate to. Deliberately not stamped: leaving it due means a
@@ -351,10 +375,16 @@ public final class Playlists {
         return new Result(nextIndex, from.withAdvanced(playlist.id, now), next);
     }
 
+    /** {@link #advance} for an event, with a shared random source for shuffled playlists. */
+    public static Result advance(Playlists playlists, Library library, Surface surface,
+                                 long now, Trigger event) {
+        return advance(playlists, library, surface, now, event, null);
+    }
+
     /** {@link #advance} with a shared random source for shuffled playlists. */
     public static Result advance(Playlists playlists, Library library, Surface surface,
                                  long now) {
-        return advance(playlists, library, surface, now, null);
+        return advance(playlists, library, surface, now, null, null);
     }
 
     /**

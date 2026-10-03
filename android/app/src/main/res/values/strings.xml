@@ -299,7 +299,7 @@
     <string name="playlists_trigger_hourly">Hourly</string>
     <string name="playlists_trigger_hourly_sub">once every hour</string>
     <string name="playlists_trigger_unlock">On unlock</string>
-    <string name="playlists_trigger_unlock_sub">when you pick the phone up</string>
+    <string name="playlists_trigger_unlock_sub">when you unlock the phone</string>
     <!-- Shown, dimmed, with the reason. Hidden would read as "daily" everywhere. -->
     <string name="playlists_trigger_pickup">On pickup</string>
     <string name="playlists_trigger_pickup_sub">needs the sensor — off by default</string>

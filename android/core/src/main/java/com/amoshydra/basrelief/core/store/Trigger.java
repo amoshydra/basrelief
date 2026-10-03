@@ -46,7 +46,10 @@ public enum Trigger {
      * When the screen is unlocked.
      *
      * <p>An event, so {@link #isTimed()} is false and no timer may fire it: the
-     * caller that hears the unlock is what advances it.
+     * caller that hears the unlock is what advances it. That caller is
+     * {@code DepthWallpaperService}, which registers {@code ACTION_USER_PRESENT}
+     * while the wallpaper is applied and hands the event to
+     * {@link Playlists#advance}.
      */
     ON_UNLOCK("on_unlock", 0L),
 

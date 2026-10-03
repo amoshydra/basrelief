@@ -300,6 +300,172 @@ public class PlaylistTest {
         }
     }
 
+    // ------------------------------------------------------------ unlock events
+
+    /** One active on-unlock playlist over a library of {@code ids}. */
+    private static Playlists unlock(String playlistId, String... itemIds) {
+        return playlistsOf(playlist(playlistId, itemIds).withTrigger(Trigger.ON_UNLOCK))
+                .withActive(playlistId, true);
+    }
+
+    /**
+     * An unlock event advances an on-unlock playlist, through the same write a
+     * user's own selection makes.
+     *
+     * <p>Before this, {@code on_unlock} was a stored value nothing could reach:
+     * the engine only ever asked on a clock, and an event is never due on one, so
+     * the editor offered a trigger that could not fire. The event is a parameter
+     * now, and this is the path the wallpaper's unlock receiver takes.
+     */
+    @Test
+    public void anUnlockEventFiresAnUnlockPlaylist() {
+        Playlists p = unlock("p", "a", "b", "c");
+        Library l = lib("a", "b", "c").withSelection("a");
+
+        Playlists.Result r = Playlists.advance(p, l, Surface.HOME, DAY,
+                Trigger.ON_UNLOCK, new Random(7));
+
+        assertEquals("b", r.selectedId);
+        // The index half is byte-identical to the user write, as for a clock.
+        assertEquals(l.withSelection("b").markUsed("b", DAY).toJson(), r.library.toJson());
+        assertEquals(DAY, r.playlists.active().lastAdvancedAt);
+        assertEquals("[a, b, c]", ids(r.playlists.active()));
+    }
+
+    /**
+     * A timed trigger is never fired by an event.
+     *
+     * <p>The mirror of the test above, and the trap is a fallback that asks the
+     * clock when the event does not match its trigger. This playlist is overdue
+     * by any measure; the unlock must still leave it alone, because its rhythm is
+     * an interval and an unlock is a moment.
+     */
+    @Test
+    public void anUnlockEventDoesNotFireATimedPlaylist() {
+        for (Trigger timed : new Trigger[]{Trigger.DAILY, Trigger.HOURLY}) {
+            Playlists p = playlistsOf(playlist("p", "a", "b").withTrigger(timed))
+                    .withActive("p", true);
+            Library l = lib("a", "b").withSelection("a");
+
+            Playlists.Result r = Playlists.advance(p, l, Surface.HOME, FAR_FUTURE,
+                    Trigger.ON_UNLOCK, new Random(7));
+
+            assertFalse(timed + " rotated on an unlock", r.rotated());
+            assertEquals("the selection must be left alone", l.toJson(), r.library.toJson());
+            assertEquals("an event must not stamp the playlist's clock either",
+                    0L, r.playlists.active().lastAdvancedAt);
+        }
+    }
+
+    /**
+     * One unlock is one event: the same moment advances once.
+     *
+     * <p>An event has no interval to compare, so the temptation is for it to be
+     * due on every ask. Then every pref write the rotation itself causes — the
+     * engine's listener re-reads on its own write — would advance it again, and
+     * one unlock would walk the whole playlist. The playlist's own stamp orders
+     * events: a moment at or before the last rotation is one already handled.
+     * Two engines hearing one broadcast is the same case, which is why the
+     * delivery carries the moment rather than each receiver reading its own.
+     */
+    @Test
+    public void theSameUnlockMomentAdvancesOnce() {
+        Playlists p = unlock("p", "a", "b", "c");
+        Library l = lib("a", "b", "c").withSelection("a");
+
+        Playlists.Result first = Playlists.advance(p, l, Surface.HOME, DAY,
+                Trigger.ON_UNLOCK, new Random(7));
+        assertEquals("b", first.selectedId);
+
+        Playlists.Result again = Playlists.advance(first.playlists, first.library,
+                Surface.HOME, DAY, Trigger.ON_UNLOCK, new Random(7));
+        assertFalse("a second delivery of one unlock moved again", again.rotated());
+        assertEquals(first.library.toJson(), again.library.toJson());
+        assertEquals(first.playlists.toJson(), again.playlists.toJson());
+
+        // A later unlock is a new moment, and does move.
+        Playlists.Result later = Playlists.advance(again.playlists, again.library,
+                Surface.HOME, DAY + 1L, Trigger.ON_UNLOCK, new Random(7));
+        assertEquals("c", later.selectedId);
+    }
+
+    /**
+     * An event rotation carries every playlist and stamps only the one that moved.
+     *
+     * <p>The same two-halves rule the clock path is held to: the index is written
+     * exactly the way a user's selection writes it, and the blob comes back with
+     * the active playlist's clock advanced and every other playlist untouched.
+     */
+    @Test
+    public void anUnlockRotationCarriesEveryPlaylistAndOnlyStampsTheActiveOne() {
+        Playlists p = playlistsOf(
+                playlist("unlock", "a", "b").withTrigger(Trigger.ON_UNLOCK),
+                playlist("other", "b", "c")
+                        .withTrigger(Trigger.DAILY).advancedAt(77L))
+                .withActive("unlock", true);
+        Library l = lib("a", "b", "c").withSelection("a");
+
+        Playlists.Result r = Playlists.advance(p, l, Surface.HOME, DAY,
+                Trigger.ON_UNLOCK, new Random(7));
+
+        assertEquals("b", r.selectedId);
+        assertEquals(2, r.playlists.size());
+        assertEquals(Trigger.DAILY, r.playlists.find("other").trigger);
+        assertEquals("the playlist that did not rotate must not be restamped",
+                77L, r.playlists.find("other").lastAdvancedAt);
+        assertEquals(DAY, r.playlists.find("unlock").lastAdvancedAt);
+        assertEquals(l.withSelection("b").markUsed("b", DAY).toJson(), r.library.toJson());
+    }
+
+    /**
+     * A hand-picked photo does not consume an unlock.
+     *
+     * <p>The item's {@code lastUsedAt} moves when the user picks a photo, and it
+     * is the tempting clock for an event too — but it belongs to the photograph,
+     * not to the playlist. If the event's ordering read it, picking a photo would
+     * swallow the unlock that followed. The playlist's own stamp is the only one
+     * an event may consult.
+     */
+    @Test
+    public void aUserSelectingAPhotoDoesNotConsumeAnUnlock() {
+        Playlists p = playlistsOf(playlist("p", "a", "b")
+                .withTrigger(Trigger.ON_UNLOCK).advancedAt(DAY))
+                .withActive("p", true);
+        Library picked = lib("a", "b").withSelection("a").markUsed("a", DAY + HOUR);
+
+        assertEquals("a hand pick must not move the playlist's clock",
+                DAY, p.active().lastAdvancedAt);
+        assertEquals("b", Playlists.advance(p, picked, Surface.HOME, DAY + HOUR,
+                Trigger.ON_UNLOCK, new Random(7)).selectedId);
+    }
+
+    /**
+     * The two families answer only for their own reason.
+     *
+     * <p>One table, because the failure is a leak between the branches: an event
+     * trigger that answers the clock question, or a timed one that an event
+     * "due" fallback reaches.
+     */
+    @Test
+    public void eachTriggerFamilyAnswersOnlyForItsOwnReason() {
+        Playlist day = playlist("p", "a").withTrigger(Trigger.DAILY);
+        Playlist unlock = playlist("p", "a").withTrigger(Trigger.ON_UNLOCK);
+
+        // The clock question.
+        assertTrue(day.isDue(DAY));
+        assertFalse(unlock.isDue(DAY));
+        assertTrue(day.isDue(DAY, null));
+        assertFalse(unlock.isDue(DAY, null));
+
+        // The event question.
+        assertTrue(unlock.isDue(DAY, Trigger.ON_UNLOCK));
+        assertFalse(unlock.isDue(DAY, Trigger.ON_PICKUP));
+        assertFalse(day.isDue(DAY, Trigger.ON_UNLOCK));
+        // A timed trigger is not an event, so handing it in is not a clock read.
+        assertFalse(day.isDue(FAR_FUTURE, Trigger.DAILY));
+        assertFalse(unlock.isDue(FAR_FUTURE, Trigger.DAILY));
+    }
+
     /**
      * A shuffled playlist must show a different photo each time it fires.
      *
