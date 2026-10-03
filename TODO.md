@@ -174,3 +174,56 @@ one of them will lie.
 5. **Standing down is visible.** Only one playlist rotates per surface; using one must
    visibly stand another down on that same surface, because a silently ignored list is
    exactly the confusion being fixed.
+
+## Playlist editor — use the app's own controls (2026-10-03)
+
+The user's three complaints, and the diagnosis under them: **`PlaylistScreen.markRow` is a fourth
+row role that is none of the three `ModalSheet` defines**, so a playlist editor on the same card
+reads as a different app. A checkbox wearing a costume is why nothing matches.
+
+**The vocabulary already exists** — `ModalSheet`'s three roles, with their semantics written
+down: `switchRow` (a boolean you toggle, trailing platform `Switch`, the row owns the tap and
+the switch is a **mark, not a second tap target**), `actionRow` (something you press),
+`readingRow` (something you read).
+
+| control | what it is | role |
+|---|---|---|
+| Rotate through this list | boolean | `switchRow` |
+| Shuffle | boolean | `switchRow` |
+| Surfaces (Home, Lock) | one-or-more, two available, no third | **`switchRow` per surface** |
+| Trigger (Daily / Hourly / On unlock / On pickup) | exactly one of four | **radio group (new)** |
+| Delete | destructive | **not a row** |
+
+**Surfaces are two switches, not checkboxes**, and this is the judgement call: with only two and
+no possibility of a third, checkboxes imply a set that can grow. Two switches say what
+`Playlist.surfaces` stores — these two screens, independently on or off — and it is the same
+gesture the studio sheet's per-surface Home·Lock segment already means. Consistency with the
+app's own existing gesture beats taxonomy.
+
+**The one new component: a radio row**, built from `switchRow`'s bones — same `frameRow`
+plate, same type scale, trailing mark instead of a trailing `Switch`, same `OPT_GAP_DP`. It
+looks like its siblings because it *is* its siblings with a different trailing widget, the
+same trade the platform `Switch` already makes. Under a caption, faintly indented, selected
+row carrying a faint accent wash, so four rows read as ONE choice rather than four switches.
+The mockup already draws rotation this way (`el('div','caption','Rotate on')`), and the
+grouped caption is the mockup's, not a new invention.
+
+**THE TRAP:** trigger is single-choice and `switchRow` has no notion of exclusivity, so tapping
+one trigger must untap the others — the group owns `singleChoice()`, not the rows. Get it
+wrong and two triggers can both look chosen. With surfaces as switches, a screen where a
+boolean group silently behaves like a radio group is the specific bug to check for.
+
+**Delete leaves the footer.** Today it is a peer of Done in the same `footerRow` — the most
+reachable, highest-contrast position on the card, one pixel from the button that dismisses.
+Two actions with opposite consequences must not share a row. Delete goes **last in the scroll**,
+below a hairline, in its own quiet band, quiet styling, and **only when it can act** (a
+one-photo playlist is not worth deleting, so the row should not exist). The `ModalSheet`
+confirm stays — that is a correct second gate.
+
+**Order:** Photos → Rotation (Rotate, Shuffle) → Surfaces → When (trigger) → status line →
+Delete at the bottom. Configuration first, consequence at the end.
+
+**The test of consistency:** the playlist screen must be recognisable as the settings sheet by
+its *chrome alone* — same card, same grip, same row plates, same type scale, same Done in the
+same place, same scrim — with only the content differing. That test would have caught all three
+of the user's complaints by inspection, so it is the acceptance criterion, not the controls.
