@@ -371,6 +371,15 @@ public class DepthWallpaperService extends WallpaperService {
                     + " onScreen=" + renderer.showingSamePair(img, dep)
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             android.util.Log.i("Basrelief", "wallpaper: " + diagnostic);
+            // Recorded HERE, where onScreen is known, and not on becoming visible:
+            // an engine that has its pair on screen is one the user can actually see,
+            // and an engine created but never drawn -- which is what the platform does
+            // to the home engine at screen-on -- is not. That distinction is the whole
+            // difference between gliding from the surface the user was looking at and
+            // gliding from a window that never appeared.
+            if (visible && renderer.showingSamePair(img, dep)) {
+                DepthWallpaperService.lastVisibleSurface = resolved.surface();
+            }
             // Also into prefs, because the studio shows this on screen. Logcat
             // needs a cable and a filter; this needs only opening the app, which
             // is the difference between a diagnostic that gets read and one that
@@ -525,13 +534,16 @@ public class DepthWallpaperService extends WallpaperService {
                 // ease. A genuine ease there needs the cold load itself to arm the
                 // glide before its first frame, which is a real change and not this
                 // one.
-                if (everShown) {
-                    pendingGlideFrom = DepthWallpaperService.lastVisibleSurface;
-                } else {
-                    pendingGlideFrom = null;
-                    everShown = true;
-                }
-                DepthWallpaperService.lastVisibleSurface = surface.surface();
+                // CAPTURE only. Whether this engine is what the user is looking at
+                // is NOT decided here, because becoming visible does not mean being
+                // seen: the log shows the platform creating a HOME engine at
+                // screen-on, reporting visible=true, with onScreen=false -- the
+                // keyguard was showing the LOCK window. Claiming visibility here let
+                // that phantom engine become "the last thing showing", so the lock
+                // engine then glided from home on the lock screen: the double-take.
+                pendingGlideFrom = everShown
+                        ? DepthWallpaperService.lastVisibleSurface : null;
+                everShown = true;
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
                 // onCreate. Whether the flags are published by the time onCreate
