@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 311 tests across eighteen classes:
+it**. 314 tests across eighteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -490,8 +490,12 @@ it**. 311 tests across eighteen classes:
   line, that the two thresholds leave a dead band where nothing changes, that a
   decisive flick decides from either end by itself, and — honestly — that a
   reversal too slow to change the projection still collapses from the bottom.
-  It is in `:core` because the rule is pure arithmetic in fractions of travel,
-  so no device and no pixels are involved.
+  Its second theme is that the thresholds are a **policy**, not a rule: the
+  studio's free panel collapses only at 0.95 projected while a dialog commits at
+  0.60, and a test holds the *same* release to opposite answers under the two so
+  one host cannot quietly inherit the other's numbers. It is in `:core` because
+  the rule is pure arithmetic in fractions of travel, so no device and no pixels
+  are involved.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the

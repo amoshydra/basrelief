@@ -29,6 +29,8 @@ import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.amoshydra.basrelief.core.gesture.SheetIntent;
+
 /**
  * The mockup's {@code .scrim + .modal}, built once.
  *
@@ -78,10 +80,11 @@ import android.window.OnBackInvokedDispatcher;
  * {@link BottomSheet}. This card is its translation host — safe here because a
  * Dialog owns its own window and contains no {@code SurfaceView} — while the
  * studio sheet is the layout-height host beside a {@code GLSurfaceView}
- * (b/7179570). It also asks for a different snap policy: a dialog is transient,
+ * (b/7179570). It also asks for a different policy: a dialog is transient,
  * so {@link BottomSheet.Snap#TO_STOPS} makes every release land on open or gone,
- * never parked; the studio's persistent sheet is free. The policy is an argument
- * to the component, so the two cannot silently swap.
+ * never parked, and {@link com.amoshydra.basrelief.core.gesture.SheetIntent#DIALOG}
+ * commits a collapse at 0.60. The persistent studio sheet is free to 0.95. Both
+ * the policy and the mechanism are arguments, so the two cannot silently swap.
  */
 final class ModalSheet {
 
@@ -208,8 +211,23 @@ final class ModalSheet {
         FrameLayout scrimView = new FrameLayout(activity);
         scrimView.setBackgroundColor(scrim);
 
-        card = new LinearLayout(activity);
+        // The card is a SheetCard, not a stock LinearLayout, because it is where
+        // a vertical drag inside the scrolling content is arbitrated; see its
+        // onInterceptTouchEvent. The listener carries the gesture after the card
+        // has claimed it, the same pairing the studio's panel uses.
+        card = new SheetCard(activity);
         card.setOrientation(LinearLayout.VERTICAL);
+        // A gesture that starts on the card's own area -- its padding, the gap a
+        // row leaves -- must not fall through to whatever is beneath, and a
+        // vertical one moves the card. What a child handles never arrives here;
+        // the content drag is the SheetCard's intercept. `sheet` is installed by
+        // grip() and the body runs at touch time, after it exists.
+        card.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                return sheet != null && sheet.onTouch(v, e);
+            }
+        });
         // The mockup's .modal edge: a top hairline only, over the fill's own top
         // corners. A GradientDrawable stroke would draw four edges, putting a 1px
         // bright line down both sides and along the foot of a card that is flush
@@ -314,6 +332,11 @@ final class ModalSheet {
         card.animate().cancel();
         card.setTranslationY(0f);
         card.setAlpha(1f);
+        // The fade is per child; a card dismissed mid-drag leaves them at the
+        // alpha that drag reached, and the next open must not inherit it.
+        for (int i = 0; i < card.getChildCount(); i++) {
+            card.getChildAt(i).setAlpha(1f);
+        }
         // The scrim too: a card dismissed mid-drag leaves it brightened, and the
         // next open must not inherit a half-revealed backdrop for the frame before
         // the component's first fade callback arrives.
@@ -451,14 +474,19 @@ final class ModalSheet {
 
             @Override
             public void applyFade(float progress) {
-                // The card's contents and its glass are one view, so they fade
-                // together here; the scrim is the surface that follows, tracking
-                // the same progress so it brightens — becomes less opaque — as the
-                // card comes down and the background is revealed behind it. The
-                // drawable's own alpha is set rather than a fresh background
-                // colour, because this runs on every frame of a drag and
-                // setBackgroundColor would allocate a ColorDrawable per frame.
-                card.setAlpha(BottomSheet.contentAlpha(progress));
+                // Content only: the user's correction was to fade the content rather than the sheet. The card's background is
+                // the sheet surface here, so it keeps its constant alpha and each
+                // child carries the fade; card.setAlpha would have taken the
+                // background with it. The scrim is the surface that follows,
+                // tracking the same progress so it brightens — becomes less
+                // opaque — as the card comes down and the background is revealed
+                // behind it. The drawable's own alpha is set rather than a fresh
+                // background colour, because this runs on every frame of a drag
+                // and setBackgroundColor would allocate a ColorDrawable per frame.
+                float content = BottomSheet.contentAlpha(progress);
+                for (int i = 0; i < card.getChildCount(); i++) {
+                    card.getChildAt(i).setAlpha(content);
+                }
                 android.graphics.drawable.Drawable scrimDrawable = root.getBackground();
                 if (scrimDrawable != null) {
                     int base = Color.alpha(scrim);
@@ -468,18 +496,15 @@ final class ModalSheet {
 
             @Override
             public View scrollView() {
-                // The grip is this card's only drag surface; the content inside
-                // the scroll keeps its own gesture and is never offered to the
-                // sheet. The studio sheet is where content drags matter, because
-                // its strip and fix line sit next to the scroll.
-                return null;
+                return scroll;
             }
 
             @Override
             public void onResting(float fraction, boolean collapsed) {
                 if (collapsed) dismiss();
             }
-        }, SpringSettle.CARD, BottomSheet.Snap.TO_STOPS, slop, new Runnable() {
+        }, SpringSettle.CARD, SheetIntent.DIALOG, BottomSheet.Snap.TO_STOPS, slop,
+                new Runnable() {
             @Override
             public void run() {
                 dismiss();
@@ -488,6 +513,13 @@ final class ModalSheet {
         strip.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent e) {
+                // The grip is a control of the card's own, so the content
+                // arbitration stands down for the whole gesture rather than
+                // deciding the same drag a second time; the same pairing the
+                // studio's grip uses with its panel.
+                boolean end = e.getActionMasked() == MotionEvent.ACTION_UP
+                        || e.getActionMasked() == MotionEvent.ACTION_CANCEL;
+                card.requestDisallowInterceptTouchEvent(!end);
                 return sheet.onTouch(v, e);
             }
         });
@@ -1157,6 +1189,42 @@ final class ModalSheet {
     }
 
     /**
+     * The card, and the one place a vertical drag inside its content is
+     * arbitrated.
+     *
+     * <p>The card is only the ViewGroup the platform offers interception
+     * through; the rule itself is {@link BottomSheet#onIntercept}, the same one
+     * the studio's panel uses. A grip drag never reaches here — the grip
+     * disallows interception for its whole gesture — and a scroll that can still
+     * use the drag keeps it; everything else — a slider, a switch row, the card's
+     * own padding — hands the drag to the sheet. Because a dialog is
+     * {@link BottomSheet.Snap#TO_STOPS}, taking over still lands on open or
+     * dismissed when the finger lifts, never parked mid-way.
+     */
+    private final class SheetCard extends LinearLayout {
+
+        SheetCard(android.content.Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            return sheet != null && sheet.onIntercept(e, isInsideScroll(e.getY()));
+        }
+
+        /**
+         * Whether a card-local y lands in the scrolling content.
+         *
+         * <p>The scroll is a direct child of the card, so its top and bottom are
+         * already card coordinates and no global offset is needed.
+         */
+        private boolean isInsideScroll(float y) {
+            return scroll != null
+                    && y >= scroll.getTop() && y < scroll.getBottom();
+        }
+    }
+
+    /**
      * A ScrollView with a ceiling, which the framework has no attribute for.
      *
      * <p>It measures its child the way a ScrollView always does — the child's
@@ -1187,6 +1255,39 @@ final class ModalSheet {
             if (ceiling > 0 && getMeasuredHeight() > ceiling) {
                 setMeasuredDimension(getMeasuredWidth(), ceiling);
             }
+        }
+
+        /**
+         * Keep the card in the running for this gesture.
+         *
+         * <p>{@code ScrollView} declares itself the only vertical claimant for the
+         * rest of a drag: the moment it starts scrolling it calls
+         * {@code requestDisallowInterceptTouchEvent(true)} on its parent, so the
+         * card's arbitration is never offered another event and the nested
+         * hand-over the user asked for — scroll the content to its end, then the
+         * same drag moves the card — can never happen inside one gesture. Clearing
+         * the flag after every event puts the choice back with the card, whose
+         * rule is exactly {@code canScrollVertically}. This is the same repair as
+         * the studio's {@code BottomFadeScrollView}; the two scroll views are in
+         * different windows, so neither can share the other's subclass.
+         */
+        private void reofferGestureToParent() {
+            android.view.ViewParent parent = getParent();
+            if (parent != null) parent.requestDisallowInterceptTouchEvent(false);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            boolean intercepted = super.onInterceptTouchEvent(e);
+            reofferGestureToParent();
+            return intercepted;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            boolean handled = super.onTouchEvent(e);
+            reofferGestureToParent();
+            return handled;
         }
     }
 

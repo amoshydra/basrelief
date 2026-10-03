@@ -81,6 +81,8 @@ final class Io {
     static void decodePreview(final Activity activity, final File file,
                               final ImageView into, final int sizePx,
                               final EmbeddedDepthListener onEmbedded) {
+        android.util.Log.i("Basrelief", "PROBE decodePreview "
+                + (file == null ? "null" : file.getName()));
         run(activity, new Callable<Preview>() {
             @Override
             public Preview call() {
@@ -116,6 +118,7 @@ final class Io {
      */
     static void decodeResourcePreview(final Activity activity, final int resId,
                                       final ImageView into, final int sizePx) {
+        android.util.Log.i("Basrelief", "PROBE decodeResourcePreview " + resId);
         run(activity, new Callable<Bitmap>() {
             @Override
             public Bitmap call() {

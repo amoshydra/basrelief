@@ -52,13 +52,21 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * the dialog host into extra {@code translationY}. The height never changes
  * during an entrance; only where the laid-out surface sits.
  *
- * <p><b>The fade is alpha, never a transform.</b> One progress value — 0 at the
- * fade start, 1 at fully collapsed — drives three surfaces through
- * {@link Host#applyFade}: the content leads ({@link #contentAlpha}), the glass
- * follows ({@link #glassAlpha}), and a dialog's scrim brightens as the card comes
- * down. Alpha is a paint property, so it composites where a translation of the
- * same view would not, and the floors keep a half-collapsed sheet reading as a
- * surface with contents rather than as an empty pane.
+ * <p><b>The fade is alpha, never a transform, and it dissolves the content, not
+ * the sheet.</b> One progress value — 0 at the fade start, 1 at fully collapsed —
+ * drives {@link Host#applyFade}: the content leads ({@link #contentAlpha}), and a
+ * dialog's scrim follows it down, revealing the background behind the card. The
+ * sheet's own glass is deliberately NOT faded: the user's correction was to fade the content rather than the sheet, so the surface stays a
+ * surface and only what is written on it dissolves. Alpha is a paint property, so
+ * it composites where a translation of the same view would not, and the floor
+ * keeps a half-collapsed sheet reading as a surface with contents rather than as
+ * an empty pane.
+ *
+ * <p><b>The thresholds are the host's, the rule is not.</b> {@link
+ * SheetIntent.Policy} carries the collapse and expand lines; the studio's
+ * persistent sheet keeps a free position to 0.95 while a transient dialog commits
+ * at 0.60. The policy is an argument, so a host cannot inherit the other's feel
+ * by not mentioning it.
  */
 final class BottomSheet {
 
@@ -114,9 +122,9 @@ final class BottomSheet {
 
         /**
          * Fade by one progress value: 0 while the sheet is at or above its
-         * resting-open range, 1 at fully collapsed. Content leads, glass follows,
-         * and a dialog's scrim brightens; see {@link #contentAlpha},
-         * {@link #glassAlpha} and the host's own scrim.
+         * resting-open range, 1 at fully collapsed. The content leads, and a
+         * dialog's scrim follows; the sheet's own surface does not fade. See
+         * {@link #contentAlpha}.
          */
         void applyFade(float progress);
 
@@ -138,28 +146,24 @@ final class BottomSheet {
     /**
      * The content never goes below this, so a sheet that is half way down still
      * reads as a surface with contents rather than as an empty pane. Fully
-     * transparent at 50% is the failure this floor prevents.
+     * transparent at 50% is the failure this floor prevents. This is the only
+     * fade floor: the surface underneath the content stays fully opaque.
      */
     static final float CONTENT_ALPHA_FLOOR = 0.15f;
 
     /**
-     * The glass follows the content rather than leading it: it stays more legible
-     * than the contents all the way down, because the glass is what still says
-     * "a sheet is here" once the contents have dissolved.
+     * The fraction at which the content fade starts. It is the dialogs' own
+     * collapse line, because that is where a release would have committed, so the
+     * fade and the dialog's decision agree about when the card is on its way out.
+     * The studio's collapse line is much deeper (see {@link SheetIntent#SHEET}),
+     * and the fade is deliberately not dragged down with it: the content dissolves
+     * as the sheet goes down, while the sheet itself is free to rest there.
      */
-    static final float GLASS_ALPHA_FLOOR = 0.45f;
-
-    /**
-     * The fraction at which the fade starts. It is deliberately the same 0.60 as
-     * {@link SheetIntent#COLLAPSE_THRESHOLD}: content begins to dissolve exactly
-     * where a release would have collapsed the sheet, so the fade and the
-     * decision agree about when the sheet is on its way out, and a sheet resting
-     * below the line keeps its content fully legible.
-     */
-    static final float FADE_START = SheetIntent.COLLAPSE_THRESHOLD;
+    static final float FADE_START = 0.60f;
 
     private final Host host;
     private final SpringSettle.Profile profile;
+    private final SheetIntent.Policy policy;
     private final Snap snap;
     private final int slopPx;
     private final Runnable tapAction;
@@ -196,6 +200,7 @@ final class BottomSheet {
     /**
      * @param host the mechanism
      * @param profile the host's spring constants
+     * @param policy the host's release thresholds; see {@link SheetIntent#Policy}
      * @param snap what a release rests on; see {@link Snap}
      * @param slopPx the touch slop past which a drag claims the sheet
      * @param tapAction run when a touch releases without ever claiming; null for a
@@ -203,10 +208,11 @@ final class BottomSheet {
      *                  the view's own click listener so the drag can consume
      *                  every event and still honour a tap.
      */
-    BottomSheet(Host host, SpringSettle.Profile profile, Snap snap, int slopPx,
-                Runnable tapAction) {
+    BottomSheet(Host host, SpringSettle.Profile profile, SheetIntent.Policy policy,
+                Snap snap, int slopPx, Runnable tapAction) {
         this.host = host;
         this.profile = profile;
+        this.policy = policy;
         this.snap = snap;
         this.slopPx = slopPx;
         this.tapAction = tapAction;
@@ -526,7 +532,8 @@ final class BottomSheet {
         endTracking();
         float span = host.spanPx();
         if (span <= 0f) return;
-        SheetIntent.Decision decision = SheetIntent.decide(fraction, velocityPx / span);
+        SheetIntent.Decision decision =
+                SheetIntent.decide(fraction, velocityPx / span, policy);
         if (decision == SheetIntent.Decision.COLLAPSE) {
             settleTo(1f, velocityPx);
         } else if (snap == Snap.TO_STOPS) {
@@ -659,23 +666,14 @@ final class BottomSheet {
 
     /**
      * The content's alpha at a fade progress: 1 at the start, linearly to
-     * {@link #CONTENT_ALPHA_FLOOR} at fully collapsed. The content leads.
+     * {@link #CONTENT_ALPHA_FLOOR} at fully collapsed.
      *
      * <p>Linear is enough — the eye reads the fade as motion, not as a curve — and
      * the floor is the part that matters: transparent-at-50% would leave a sheet
-     * with visible glass and no contents while a drag is still in progress.
+     * with a visible surface and no contents while a drag is still in progress.
      */
     static float contentAlpha(float progress) {
         return 1f - (1f - CONTENT_ALPHA_FLOOR) * progress;
-    }
-
-    /**
-     * The glass's alpha at the same progress: it follows the content rather than
-     * leading it, and its floor is much higher, because the glass is what still
-     * says "a sheet is here" once the contents have dissolved.
-     */
-    static float glassAlpha(float progress) {
-        return 1f - (1f - GLASS_ALPHA_FLOOR) * progress;
     }
 
     private static float clamp01(float v) {

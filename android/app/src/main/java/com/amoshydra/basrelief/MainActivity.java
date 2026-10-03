@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
@@ -795,7 +796,8 @@ public class MainActivity extends Activity {
                 updatePillVisibility();
                 if (collapsed) dismissHintIfShown();
             }
-        }, SpringSettle.SHEET, BottomSheet.Snap.FREE, dp(DRAG_SLOP_DP), null);
+        }, SpringSettle.SHEET, SheetIntent.SHEET, BottomSheet.Snap.FREE,
+                dp(DRAG_SLOP_DP), null);
 
         // The collapsed representation of the sheet. This replaces a "+" button,
         // which could only ever mean one thing and had to guess which. The pill has
@@ -2058,19 +2060,13 @@ public class MainActivity extends Activity {
         panel.setLayoutParams(panelLp);
     }
 
-    /** The last fade progress applied, so a dim restore cannot undo the fade. */
-    private float sheetFadeProgress = 0f;
-
     /**
-     * Fade the sheet's contents and its glass by one progress value.
+     * Fade the sheet's contents by one progress value; the sheet itself stays.
      *
-     * <p>The content leads — the scroll's contents, the fix line and the strip —
-     * and the glass follows with a much higher floor, because the glass is what
-     * still says "a sheet is here" once the contents have dissolved. One progress
-     * value drives both curves; they cannot disagree about how far the drag is.
-     * The glass is the panel's own background done as a drawable alpha, not the
-     * panel's view alpha: a view alpha would take the children with it and
-     * collapse the two curves into one.
+     * <p>The user's correction was fade the content rather than the sheet: the panel's glass keeps its constant alpha, and only the
+     * scroll's contents, the fix line and the strip dissolve as the drag goes
+     * down. One progress value drives the content curve, and a dialog's host
+     * applies the same number to its scrim; nothing here scales the surface.
      *
      * <p>Alpha is a paint property, so unlike a translation of the same sibling it
      * cannot desync from the SurfaceView's transparent region. The grip is
@@ -2078,13 +2074,11 @@ public class MainActivity extends Activity {
      * legible while there is still a sheet to grab.
      */
     private void applySheetFade(float progress) {
-        sheetFadeProgress = progress;
         float content = BottomSheet.contentAlpha(progress);
         sheetContent.setAlpha(content);
         if (fixLine != null) fixLine.setAlpha(content);
         View strip = gallery == null ? null : gallery.stripView();
         if (strip != null) strip.setAlpha(content);
-        setSheetBackgroundAlpha(BottomSheet.glassAlpha(progress));
     }
 
     /**
@@ -2579,7 +2573,7 @@ public class MainActivity extends Activity {
         if (control != null && dimmedControl != control) return;
         if (dimmedControl == null && dimmedViews.isEmpty()) return;
         dimmedControl = null;
-        setSheetBackgroundAlpha(BottomSheet.glassAlpha(sheetFadeProgress));
+        setSheetBackgroundAlpha(1f);
         for (int i = 0; i < dimmedViews.size(); i++) {
             dimmedViews.get(i).setAlpha(dimmedAlphas.get(i));
         }

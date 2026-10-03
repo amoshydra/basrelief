@@ -205,10 +205,21 @@ final class Gallery {
     /**
      * Each strip thumbnail's view, by item id, so a selection can move two rings
      * without rebuilding the strip — which would drop every thumbnail and decode
-     * it again. The entry holds no active flag: the ring is the background and
-     * padding, drawn on demand by {@link #drawStripRing}.
+     * it again. The entry holds no active flag: the ring is the foreground,
+     * drawn on demand by {@link #drawStripRing}.
      */
     private final Map<String, ImageView> stripTiles = new HashMap<String, ImageView>();
+
+    /**
+     * The strip's row: every photograph's tile, then the add and grid tiles.
+     *
+     * <p>Kept because under "Recent" a selection genuinely reorders the strip,
+     * and the row is where that one position is changed. The tile view and the
+     * bitmap already decoded into it move together; rebuilding the row instead
+     * would destroy every thumbnail and decode it again, which is the whole-strip
+     * flash this map and this field exist to avoid.
+     */
+    private LinearLayout stripRow;
 
     /**
      * The grid's count/hint line and its two selection actions.
@@ -406,8 +417,12 @@ final class Gallery {
     /** Re-read the index and put the strip back, in the seat the studio gave. */
     private void refreshStrip() {
         if (strip == null || stripHost == null) return;
+        StackTraceElement from = new Throwable().getStackTrace()[1];
+        android.util.Log.i("Basrelief", "PROBE refreshStrip from "
+                + from.getMethodName() + ":" + from.getLineNumber());
         stripHost.removeView(strip);
         strip = null;
+        stripRow = null;
         ensureStrip();
     }
 
@@ -424,6 +439,7 @@ final class Gallery {
             strip = null;
         }
         stripTiles.clear();
+        stripRow = null;
         dismissGrid();
         picked.clear();
         copySourceId = null;
@@ -442,6 +458,10 @@ final class Gallery {
         row.setGravity(Gravity.CENTER_VERTICAL);
         int pad = activity.dp(GRID_PAD_DP);
         row.setPadding(pad, activity.dp(6), pad, activity.dp(6));
+        // Held so a selection under "Recent" can move one tile within it instead
+        // of the strip being rebuilt. Replaced with every build, and dropped by
+        // refreshStrip/dismiss, so it can never address a detached row.
+        stripRow = row;
 
         for (LibraryItem item : lib.sorted()) {
             row.addView(stripThumb(item, item.id.equals(activeId)));
@@ -551,6 +571,43 @@ final class Gallery {
         ImageView tile = stripTiles.get(id);
         if (tile == null) return;
         tile.setForeground(tileRing(active, false));
+    }
+
+    /**
+     * Move one photograph's tile to wherever the current order puts it, in place.
+     *
+     * <p>Under "Recent" the selection is the sort key, so choosing a photograph
+     * changes the order — the row genuinely moves, which is why the old code
+     * rebuilt it through {@link #refreshStrip}. That rebuild threw away every
+     * tile and re-decoded every thumbnail, so a reorder of one photograph
+     * flashed the whole strip. Here the tile keeps its view and the bitmap
+     * already decoded into it; only its position among the row's children
+     * changes, which is exactly the difference the user can see.
+     *
+     * <p>The destination comes from the index rather than from "move it to the
+     * front". The two agree today, because selecting stamps a fresh
+     * {@code lastUsedAt} and the comparator sorts on it first — but a hard-coded
+     * front insert is a second copy of the sort rule, and the index is the only
+     * authority on order. An id that is not in the index, or a tile the strip
+     * has not built, is a no-op: this is only ever reached for a selection the
+     * current index already names.
+     */
+    private void moveStripTile(String id) {
+        if (stripRow == null || id == null) return;
+        ImageView tile = stripTiles.get(id);
+        if (tile == null) return;
+        List<LibraryItem> rows = AppState.load(activity.prefs, activity.getFilesDir())
+                .library.sorted();
+        int at = -1;
+        for (int i = 0; i < rows.size(); i++) {
+            if (rows.get(i).id.equals(id)) {
+                at = i;
+                break;
+            }
+        }
+        if (at < 0 || stripRow.indexOfChild(tile) == at) return;
+        stripRow.removeView(tile);
+        stripRow.addView(tile, at);
     }
 
     /**
@@ -730,6 +787,7 @@ final class Gallery {
         // The marks and the selection controls are the views the build below is
         // about to create; anything left from the previous grid addresses views
         // that are no longer on screen, so the maps start empty on every build.
+        android.util.Log.i("Basrelief", "PROBE buildGrid");
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;

@@ -50,29 +50,33 @@ final class SpringSettle {
     // ------------------------------------------------------- tuning: the sheet
 
     /**
-     * The studio sheet's own motion. This is deliberately slower and looser than
-     * {@link #CARD}: about a 10.7% overshoot and a 250–500 ms tail, which is what
-     * makes the entrance from below and a collapse read as a spring rather than
-     * as a slide. The sheet is large and the user is looking at it, so the
-     * overshoot is the product; the dialogs are small and one-shot, so they stay
-     * tighter.
+     * The studio sheet's own motion, tuned to settle rather than bounce.
      *
-     * <p>{@code damping} sets the overshoot alone: the first peak of this
-     * normalized curve is {@code e^(-pi*z/sqrt(1-z^2))}, so 0.58 is ~10.7% and
-     * 0.60 — the cards — is ~9.5%. {@code omega} only decides how settled the
-     * curve is by t=1; at 12 the residual is ~0.1%, so the animation ends on the
-     * value instead of jumping.
+     * <p>The user's correction: tone the bounce down and settle quickly." The previous 0.58 damped the sheet's first peak to ~10.7%, which
+     * on a surface this large read as a wobble; 0.90 puts it at ~0.15%, which is
+     * below what an eye can see as an overshoot while still being a spring curve
+     * with velocity in it rather than the platform's fixed ease. A damping of
+     * exactly 1.0 is the other candidate and is deliberately not used: the
+     * normalized curve is what the interpolator computes, and at 1.0 the
+     * underdamped form divides by a zero damped frequency — the maths would need
+     * a second branch for a difference nobody can see.
+     *
+     * <p>{@code damping} sets the peak alone: the first peak is
+     * {@code e^(-pi*z/sqrt(1-z^2))}, so 0.90 is ~0.15% and 0.60 — the cards — is
+     * ~9.5%. {@code omega} only decides how settled the curve is by t=1; at 12
+     * the residual is ~0.1%, so the animation ends on the value instead of
+     * jumping. A higher damping also decays the envelope faster within the same
+     * time base, so the settle reads sooner, not later; there is no reason to
+     * shorten the range to compensate.
      *
      * <p>{@code minSettleSpeed} is the floor under the measured release speed so
      * a dead-still release still moves: 0.9 travels/s, which for this sheet's
      * roughly 1800px height is about the old 1500px/s the dialog used, but
-     * screen-independent the way every other number here is. The 250ms floor is
-     * the shortest settle that shows the overshoot for more than a couple of
-     * frames on a 60Hz panel, and 500ms is the point where it starts to read as
-     * slow rather than as springy.
+     * screen-independent the way every other number here is. 250–500 ms is the
+     * range the sheet has always had; the curve change is what the user felt.
      */
     static final Profile SHEET = new Profile(
-            /* damping */ 0.58f,
+            /* damping */ 0.90f,
             /* omega */ 12f,
             /* durationFactor */ 1.0f,
             /* minSettleSpeed, travels/s */ 0.9f,
@@ -86,12 +90,19 @@ final class SpringSettle {
      * one-gesture surface — a drag either dismisses it or returns it — and a long
      * tail would leave the user waiting on a window that is already decided.
      *
-     * <p>Same curve family, 0.60 damping (~9.5% overshoot), but a 0.9 duration
-     * factor, a 140ms floor and a 420ms ceiling: the constants this app shipped
-     * for the modal grip, kept deliberately rather than inflated along with the
-     * sheet. {@code minSettleSpeed} 2.0 travels/s is about 1500px/s on a card of
-     * this size — the old pixel floor — expressed the same screen-independent way
-     * as the sheet's.
+     * <p>The correction allowed this profile to follow the sheet or stay, and it
+     * stays at 0.60 damping (~9.5% overshoot) deliberately: the sheet's complaint
+     * was a large persistent surface wobbling as it settled, while a small
+     * transient card returning from a partial drag is where a visible spring
+     * still reads as feedback rather than as imprecision, and its 140 ms floor
+     * keeps the overshoot from lingering. If the user wants one motion language
+     * everywhere, this is the one number to change.
+     *
+     * <p>Same curve family, but a 0.9 duration factor, a 140ms floor and a 420ms
+     * ceiling: the constants this app shipped for the modal grip, kept rather
+     * than inflated along with the sheet. {@code minSettleSpeed} 2.0 travels/s is
+     * about 1500px/s on a card of this size — the old pixel floor — expressed the
+     * same screen-independent way as the sheet's.
      */
     static final Profile CARD = new Profile(
             /* damping */ 0.60f,
