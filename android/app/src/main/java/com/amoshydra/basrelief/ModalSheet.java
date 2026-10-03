@@ -159,6 +159,23 @@ final class ModalSheet {
 
     /** Present. */
     void show(Activity activity) {
+        // The root is built once, in the constructor, and kept in a field so the
+        // card's children — the title, the rows, the fields a settings screen
+        // rebuilds around — survive a dismiss. That only works if the window
+        // attachment is severed when the window goes away, and dismissing a
+        // Dialog does NOT detach its content view. Without this line the SECOND
+        // show() re-adds a view that still has a parent and throws
+        // "The specified child already has a parent" out of
+        // ViewGroup.addViewInner via Dialog.setContentView. The Depth AI panel
+        // is the live path: it is built once and reopened, so the second open
+        // crashed. Detach rather than build a fresh root per show, because a
+        // fresh root would discard every child the constructor and body()/
+        // footerRow() added — the panel's blocks and the settings toggles carry
+        // state, and rebuilding them per show is the "second place that has to
+        // agree" this class exists to remove.
+        if (root.getParent() instanceof ViewGroup) {
+            ((ViewGroup) root.getParent()).removeView(root);
+        }
         dialog = new Dialog(activity,
                 android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
         // Transparent, so the scrim is ours to draw and the platform's dim is not

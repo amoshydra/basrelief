@@ -316,6 +316,20 @@ final class Gallery {
         listenForLayout();
     }
 
+    /**
+     * Whether the full-screen grid is up, which is the one gallery state BACK
+     * should dismiss.
+     *
+     * <p>A query rather than the host reaching into {@link #grid}: the strip is
+     * studio furniture and is always up, so "is the gallery showing" is a
+     * question about the grid specifically. Exposing the field instead would let
+     * the host silently keep a second copy of this class's state, and the two
+     * would disagree the moment this class changed when it builds the grid.
+     */
+    boolean isGridShowing() {
+        return grid != null;
+    }
+
     /** Re-read the index and put the strip back. */
     private void refreshStrip() {
         if (strip == null) return;
@@ -617,7 +631,17 @@ final class Gallery {
         grid.requestApplyInsets();
     }
 
-    private void dismissGrid() {
+    /**
+     * Take the grid down, leaving the strip.
+     *
+     * <p>Package-visible because the system BACK handler on the Activity is where
+     * the decision to call it lives (the gallery is a sibling view, not a dialog,
+     * so back does not reach this class on its own). It is deliberately not
+     * {@link #dismiss}, which also removes the strip: the strip is studio
+     * furniture that survives the grid by design, and back out of the grid should
+     * return to the filmstrip rather than take the filmstrip with it.
+     */
+    void dismissGrid() {
         // Cleared even when there is nothing to remove: gridPanel is what installStrip
         // orders against, and a stale reference would make a later strip build insert
         // itself at an index that no longer means anything.

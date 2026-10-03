@@ -29,6 +29,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -37,6 +38,8 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
 import java.util.List;
@@ -380,7 +383,24 @@ public class MainActivity extends Activity {
         sheetScroll.setVerticalFadingEdgeEnabled(true);
         // The sheet itself has no padding, so the content carries it: 14dp sides, and
         // the bottom inset lives here so it scrolls away rather than eating height.
-        sheetScroll.setPadding(dp(14), 0, dp(14), dp(14));
+        final int sheetPadLeft = dp(14);
+        final int sheetPadBottom = dp(14);
+        sheetScroll.setPadding(sheetPadLeft, 0, sheetPadLeft, sheetPadBottom);
+        // Fold the navigation-bar inset into the bottom padding, the same way every
+        // modal does. It was safe to omit while the bar was always hidden; API 35+
+        // shows it over the wallpaper (see applySystemUi), and without this the
+        // sheet's foot -- "Copy settings", "Settings" -- is drawn under the bar.
+        // ModalSheet.insetBottom is reused rather than re-derived so all five
+        // surfaces resolve the bar identically.
+        sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                v.setPadding(sheetPadLeft, 0, sheetPadLeft,
+                        sheetPadBottom + ModalSheet.insetBottom(insets));
+                return insets;
+            }
+        });
+        sheetScroll.requestApplyInsets();
         sheetContent = new LinearLayout(this);
         sheetContent.setOrientation(LinearLayout.VERTICAL);
         sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
@@ -671,6 +691,11 @@ public class MainActivity extends Activity {
 
         applySystemUi(); // decor view exists only after setContentView
 
+        // Back must close the gallery grid and collapse the sheet before it can
+        // leave the studio. Installed here, once the window exists, and after
+        // setContentView so the dispatcher this registers on is final.
+        installBackHandler();
+
         tilt = new TiltController(getApplicationContext(), new TiltController.Listener() {
             @Override
             public void onTiltChanged() {
@@ -939,6 +964,21 @@ public class MainActivity extends Activity {
      * the navigation bar is hidden, and the layout flags are stable — so
      * nothing here ever triggers a window resize. Minimise/expand only toggles
      * our own panel and never touches the system bars.
+     *
+     * <p><b>The navigation bar is visible-and-transparent on Android 15+, and
+     * hidden below it, deliberately.</b> The bar is the system's own back
+     * affordance, and the request is to composite it over the wallpaper where the
+     * OS supports that. API 35 is the level where the affordance exists as a
+     * back gesture that can be shown over a live wallpaper; pretending it does on
+     * older levels would be a lie, so 26–34 keep the immersive flags they had. The
+     * consequence is handled where {@code sheetScroll} is built: once a bar can be
+     * visible, the sheet's foot can be occluded by it, so the bar inset is folded
+     * into the sheet's bottom padding — the same fix the modals already carry.
+     *
+     * <p>{@code setDecorFitsSystemWindows(false)} is API 30+ and is what makes the
+     * transparent bar actually overlay our content rather than reserve a strip;
+     * below 30 the layout flags do the equivalent. Both are guarded, because
+     * minSdk is 26 and neither call may run on a level that does not have it.
      */
     private void applySystemUi() {
         Window window = getWindow();
@@ -947,12 +987,95 @@ public class MainActivity extends Activity {
             window.setStatusBarColor(Color.TRANSPARENT);
             window.setNavigationBarColor(Color.TRANSPARENT);
         }
+        if (Build.VERSION.SDK_INT >= 35) {
+            // Edge-to-edge with the bar ON TOP of our content. No HIDE_NAVIGATION
+            // and no IMMERSIVE_STICKY: an affordance that is hidden cannot composite.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.setDecorFitsSystemWindows(false);
+            }
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+            return;
+        }
         window.getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                         | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+    }
+
+    // --------------------------------------------------------------------- back
+
+    /**
+     * The studio's own back handling, for the two things that are not dialogs.
+     *
+     * <p><b>Why the Activity needs one at all.</b> The gallery grid is a sibling
+     * view in this Activity's root, and the sheet is this class's own panel — so
+     * neither registers a back callback the way every {@link Dialog} does through
+     * {@link ModalSheet#dismissOnBack}. Without this, the system back reaches the
+     * Activity and finishes the app with the gallery open.
+     *
+     * <p><b>Why it is split by API level.</b> The app targets SDK 36 and the
+     * manifest sets {@code android:enableOnBackInvokedCallback="true"}, so from
+     * Android 13 a back press is delivered as an {@link OnBackInvokedCallback},
+     * never as {@code KEYCODE_BACK}. {@link #onBackPressed()} is the complement on
+     * 26–32 and is dead on a modern device. Exactly one branch is live per level;
+     * the two must not both run.
+     *
+     * <p><b>Why the callback itself is not static state consumed elsewhere.</b>
+     * It is registered on this Activity's own dispatcher and lives exactly as long
+     * as the window does, which is the whole lifetime of these two views.
+     */
+    private void installBackHandler() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    new OnBackInvokedCallback() {
+                        @Override
+                        public void onBackInvoked() {
+                            if (!handleBack()) finish();
+                        }
+                    });
+        }
+    }
+
+    /**
+     * Consume one back press, in the order the user sees the layers.
+     *
+     * <p>The gallery grid is the topmost takeover, so it goes first. The sheet is
+     * next: back with it expanded collapses it — one step, from open to put away —
+     * using {@link #collapseSheet}, which is exactly what a drag to the bottom
+     * does. That keeps one notion of "collapsed" rather than a second state.
+     *
+     * <p>Returns false when nothing on this screen wanted the press, which is what
+     * lets the caller fall through to finishing the app — the correct outcome for
+     * a root screen with nothing open.
+     */
+    private boolean handleBack() {
+        if (gallery != null && gallery.isGridShowing()) {
+            gallery.dismissGrid();
+            return true;
+        }
+        if (sheetFraction < SHEET_COLLAPSE_FRACTION) {
+            // "Expanded" is the drag's own threshold — the same constant a live drag
+            // compares against — rather than a second one that could disagree about
+            // what "open" means. One back press puts the sheet away; a second, with
+            // nothing else open, leaves the app.
+            collapseSheet();
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        // The API 26–32 complement of installBackHandler's callback. On 33+ this is
+        // never called because the callback supersedes it; see installBackHandler.
+        if (!handleBack()) super.onBackPressed();
     }
 
     /**
