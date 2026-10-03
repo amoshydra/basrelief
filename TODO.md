@@ -82,8 +82,16 @@ need storing separately.
   APV is the wrong tool. So define our own: **colour video + a separate grayscale depth
   video**, both ordinary files `MediaExtractor` reads.
 - **Depth source:** generate it **offline at import** on the ComfyUI server. Temporal flicker
-  is the trap; **2.5D (one depth map per clip)** is the cheap honest mode and is right for
-  live-photo-style footage.
+  is the trap.
+- **The user requires DEPTH PER FRAME** (2026-10-03), not one map per clip — the 2.5D
+  "cheap honest mode" is **rejected**. What that commits us to: (a) a per-frame depth pass
+  with **temporal smoothing** in the offline step, or the wallpaper strobes; (b) playback
+  decodes colour and depth **in lockstep**; (c) per-frame displacement cannot be a CPU mesh
+  rebuild (`ReliefMesh.build` measured 6.6 ms at grid 256 on the host — no chance at 30 Hz
+  on a phone), so the relief moves into the **fragment shader** (relief mapping over a depth
+  texture) — a real renderer change; (d) two decoders run whenever the item is visible, so it
+  is opt-in per item and battery is **not** ≈ today; (e) spike the fragment-shader relief
+  over two synchronized videos on the OnePlus before promising the feature.
 - **Battery:** a video wallpaper **can never sleep while visible** (the still path's real win
   is that it does). ~30–80 mA for the decoder alone. Phases: **0** stills-from-video;
   **1** studio-only; **2** pre-decoded "living photo" loop (recommended — battery ≈ today);
