@@ -311,6 +311,8 @@ public class MainActivity extends Activity {
      * not alpha, is the right channel.
      */
     private android.widget.Space slack;
+    /** The sheet's grip bar, hidden once the strip has become the pill. */
+    private LinearLayout gripBand;
 
     /**
      * The strip's glass. The mockup's rgba(28,32,38,.72) with a hairline edge, and
@@ -2015,8 +2017,23 @@ public class MainActivity extends Activity {
         if (step == stripDrawnPillness) return;
         stripDrawnPillness = step;
         float p = step / 8f;
+        // The OUTLINE is the pill's, so it is absent -- not transparent -- when the pill
+        // is: "dont draw outline when expanded". A zero-alpha stroke is still a stroke
+        // that a compositor may anti-alias into a faint hairline, and the open sheet has
+        // its OWN top hairline from the panel. Draw it only once there is a pill, and
+        // reset the stroke when there is not, or the last colour stays on the drawable.
+        if (step == 0) {
+            stripBackground.setStroke(0, 0);
+            stripBackground.setColor(Color.TRANSPARENT);
+        } else {
+            applyStripState(true);
+        }
         ((LinearLayout.LayoutParams) pillRow.getLayoutParams()).weight = p;
         ((LinearLayout.LayoutParams) slack.getLayoutParams()).weight = 1f - p;
+        // The grip bar is the SHEET's handle, and the pill does not want one: the whole
+        // pill is already the drag target, so a bar inside it advertises a handle for a
+        // thing that is entirely handle. It fades out as the pill appears.
+        if (gripBand != null) gripBand.setAlpha(1f - p);
         pillRow.getLayoutParams().height = 0;
         (slack.getLayoutParams()).height = 0;
         pillRow.getLayoutParams().width = LinearLayout.LayoutParams.MATCH_PARENT;
@@ -2024,7 +2041,29 @@ public class MainActivity extends Activity {
         slack.requestLayout();
     }
 
+    /**
+     * Set the strip's outline and keep its fill.
+     *
+     * <p><b>Because {@code GradientDrawable.setStroke} clears the fill.</b> AOSP's
+     * implementation writes {@code setColor(TRANSPARENT)} and installs a new stroke
+     * paint, so the setStroke calls in {@link #applyStripState} had been silently
+     * erasing the strip's plate on every state change. What showed through was the
+     * PANEL's plate underneath, so the pill was opaque whatever {@code PILL_PLATE} said
+     * -- two reports of "not translucent at all", and the number was never the reason.
+     * One helper, because the failure is invisible and will happen again otherwise.
+     */
+    private void setStripStroke(int colour) {
+        if (stripBackground == null) return;
+        // The outline exists only where the pill does; see applyStripPillness.
+        stripBackground.setStroke(dp(1), colour);
+        stripBackground.setColor(stripFillBase);
+    }
+
     private void applyStripState() {
+        applyStripState(false);
+    }
+
+    private void applyStripState(boolean force) {
         if (sheetStrip == null) return;
         // A run in progress outranks the condition. This is the one thing worth
         // showing while the sheet is away: it is the only feedback a user gets for a
@@ -2042,14 +2081,14 @@ public class MainActivity extends Activity {
         // applyStripPillness's job, decided by whether a pill exists at all. Blending
         // the colour here as well was doing the same job in two places.
         int shape = Math.round(SheetMorph.shapeProgress(lastSheetFraction) * 16f);
-        if (stripDrawnState == drawn && stripDrawnPercent == percent) return;
+        if (!force && stripDrawnState == drawn && stripDrawnPercent == percent) return;
         stripDrawnState = drawn;
         stripDrawnPercent = percent;
         switch (drawn) {
             case IDLE:
                 stripLabel.setText(R.string.pill_controls);
                 stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                setStripStroke(0x33FFFFFF);
                 setStripMark(false);
                 break;
             case ATTENTION:
@@ -2060,7 +2099,7 @@ public class MainActivity extends Activity {
                 // opposite of the point -- the border is what you see first. It is
                 // also why the fill never blends toward the old PILL_DIM: a 55%
                 // white plate has no room for a 55% white border on it.
-                stripBackground.setStroke(dp(1), WARN_COLOUR);
+                setStripStroke(WARN_COLOUR);
                 setStripMark(false);
                 break;
             case PROGRESS:
@@ -2124,8 +2163,13 @@ public class MainActivity extends Activity {
         android.graphics.drawable.GradientDrawable d =
                 new android.graphics.drawable.GradientDrawable();
         d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        d.setColor(PILL_PLATE);
+        // setColor AFTER setStroke, always. GradientDrawable.setStroke CLEARS the fill
+        // (AOSP: it writes setColor(TRANSPARENT) then sets a new stroke paint), so the
+        // original order left every strip with NO fill at all and the panel's own plate
+        // showing through -- which is why the pill was solid no matter what PILL_PLATE
+        // said, and why the user had to report it twice.
         d.setStroke(dp(1), stroke);
+        d.setColor(PILL_PLATE);
         return d;
     }
 
@@ -2212,7 +2256,7 @@ public class MainActivity extends Activity {
         // band so the pill's row below gets exactly the strip's leftover height.
         // No band fill — a full-width translucent band across the sheet's top edge
         // reads as a header, which is what the mockup deliberately does not draw.
-        LinearLayout gripBand = new LinearLayout(this);
+        gripBand = new LinearLayout(this);
         gripBand.setOrientation(LinearLayout.VERTICAL);
         gripBand.setGravity(android.view.Gravity.CENTER);
         View grip = new View(this);
