@@ -130,30 +130,19 @@ public class MainActivity extends Activity {
     private static final int STRIP_GRIP_DP = 22;
 
     /**
-     * The collapsed pill's <b>total width, as a fraction of the screen's</b>.
+     * How far the pill may come from the screen's edges, in dp, TOTAL -- the design's
+     * {@code max-width:calc(100% - 56px)}.
      *
-     * <p><b>This replaced a 28dp side margin, and a margin was never going to read as
-     * a capsule.</b> The 28dp was itself recovered from the pre-morph pill's holder
-     * ({@code 227a53f^}), so the first version of this fix was faithful to history
-     * and still wrong: on this phone, which is 483dp wide, 28dp a side leaves the
-     * pill 427dp of 483dp — <b>88% of the width</b>. The user: <i>the capsule's width should be smaller too</i> A margin is a rounding of
-     * whatever screen it is measured on, so it cannot express "narrower" as a shape
-     * at all; a total width is the thing the eye reads.
-     *
-     * <p><b>0.72, and a fraction rather than dp is the argument.</b> The sheet is
-     * edge-to-edge on every phone the app supports, so a fixed dp width would be
-     * nearly the whole screen on a compact one and a floating lozenge on a large one
-     * — the same shape failing in two directions, untunable without picking a phone
-     * to tune it on. A fraction is one number that reads as a capsule on both, and it
-     * is also the quantity the panel's own width is measured against, so
-     * {@link SheetMorph#pillSideMarginFor} is a subtraction rather than a guess.
-     *
-     * <p>0.72 leaves the dot, the label and the 18dp row padding ample room on a
-     * narrow phone while being unmistakably narrower than the sheet: at this phone's
-     * density the collapsed pill is 348dp of 483dp, a 6:1 lozenge rather than a bar.
-     * It is one constant, so the shape is one edit.
+     * <p><b>The pill is content-width, and this is the cap.</b> It was a fixed fraction
+     * of the screen (0.72) and read as a bar with a label in it rather than as a pill:
+     * the design wraps its text, so a two-word label makes a small pill and a long
+     * filename makes a wide one, up to this cap. the pill was still too wide is that
+     * difference, and the fraction could never have produced it.
      */
-    private static final float PILL_WIDTH_FRACTION = 0.72f;
+    private static final int PILL_MAX_INSET_DP = 56;
+    /** A floor, so a one-character label is still a pill rather than a lozenge. */
+    private static final int PILL_MIN_WIDTH_DP = 96;
+
 
     /**
      * How far the collapsed pill floats above the window's bottom edge.
@@ -299,7 +288,29 @@ public class MainActivity extends Activity {
      * sheet). The pill is now {@link #sheetStrip} at {@code fraction = 1}: same
      * view, same touch listener, same gesture. See {@link SheetMorph}.
      */
+    /**
+     * The quantised pill-ness the strip was last laid out at, so a drag does not call
+     * requestLayout every frame. Eight steps: the row is either clipped or not, and the
+     * only thing resolution buys in between is how abruptly it appears.
+     */
+    private int stripDrawnPillness = -1;
+
     private LinearLayout sheetStrip;
+    /**
+     * The pill's own row inside the strip: the status dot and the label, and nothing
+     * else. At {@code f = 0} it measures to ZERO HEIGHT, because the grip band takes
+     * the strip and this is a weighted child with its minimum cleared -- so the open
+     * sheet has no pill text by layout rather than by alpha. That is the design's own
+     * behaviour: the pill is an element BELOW the sheet, which an open sheet covers.
+     */
+    private LinearLayout pillRow;
+    /**
+     * {@code layout_weight} released to the grip band as the pill appears, so the bar
+     * keeps the pill's vertical centre instead of sitting at the top of the tall strip.
+     * Weight is a layout property and this is the one place in the morph where layout,
+     * not alpha, is the right channel.
+     */
+    private android.widget.Space slack;
 
     /**
      * The strip's glass. The mockup's rgba(28,32,38,.72) with a hairline edge, and
@@ -1979,19 +1990,38 @@ public class MainActivity extends Activity {
      * <p>Also skips the work when the state has not changed. This runs on every
      * refresh of the fix line, and each draw allocated a fresh drawable and ring.
      */
+    /**
+     * Give the strip its pill-ness: the row's SHARE of the height, not its alpha.
+     *
+     * <p><b>This is layout, and it is the right channel for once.</b> The fade's rule
+     * runs the other way -- an alpha change is a paint and cannot desync the
+     * {@code GLSurfaceView}'s transparent region, so the content below is faded. But the
+     * pill's row is a child of the strip, which is a SIBLING of the surface, and changing
+     * a {@code LinearLayout} child's weight calls {@code requestLayout} on a layout whose
+     * position and size do not change. That is a re-measure inside a fixed box, never a
+     * post-layout transform, so it is not the b/7179570 hazard.
+     *
+     * <p>What it buys is that the open sheet has NO pill row at all rather than an
+     * invisible one. The design's pill is a separate element that an open sheet covers,
+     * so an open sheet never showed a pill; the morph moved the pill's contents up into
+     * the sheet's top edge, and clipping the row to nothing is how that stays true. An
+     * alpha of 0 would still be a row that is there.
+     */
     private void applyStripPillness(float pillness) {
-        if (sheetStrip == null) return;
-        // Alpha, not visibility: the strip's height is the pill's height and must not
-        // change with this, and a GONE view would take the drag target with it.
-        //
-        // These are the design's pill palette, applied to whatever the state chose, so
-        // an amber attention pill is amber only where a pill exists. A snapshot caught
-        // the amber border on an open sheet: the state had not changed and was correct,
-        // and only its SCOPE was wrong -- the kind of bug no bounds check can see.
-        stripLabel.setAlpha(pillness);
-        if (stripMark != null) stripMark.setAlpha(pillness);
-        if (stripRing != null) stripRing.setAlpha((int) (pillness * 255f));
-        if (stripBackground != null) stripBackground.setAlpha((int) (pillness * 255f));
+        if (pillRow == null || slack == null) return;
+        // Quantised, because this calls requestLayout and a per-frame re-measure on a
+        // temperature-sensitive GL surface is not worth one pixel of smoothness.
+        int step = Math.round(pillness * 8f);
+        if (step == stripDrawnPillness) return;
+        stripDrawnPillness = step;
+        float p = step / 8f;
+        ((LinearLayout.LayoutParams) pillRow.getLayoutParams()).weight = p;
+        ((LinearLayout.LayoutParams) slack.getLayoutParams()).weight = 1f - p;
+        pillRow.getLayoutParams().height = 0;
+        (slack.getLayoutParams()).height = 0;
+        pillRow.getLayoutParams().width = LinearLayout.LayoutParams.MATCH_PARENT;
+        pillRow.requestLayout();
+        slack.requestLayout();
     }
 
     private void applyStripState() {
@@ -2188,14 +2218,28 @@ public class MainActivity extends Activity {
         View grip = new View(this);
         grip.setBackgroundColor(0x6BFFFFFF);   // the mockup's rgba(255,255,255,.42)
         gripBand.addView(grip, new LinearLayout.LayoutParams(dp(38), dp(4)));
+        // The grip band takes the height the pill row does not. With the panel at
+        // MATCH_PARENT the two split the strip, at f = 0 the row has nothing and is
+        // gone by MEASUREMENT rather than by alpha, and with `slack` freed the grip
+        // band takes the strip itself so the bar stays vertically centred in the pill.
+        slack = new android.widget.Space(this);
         strip.addView(gripBand, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(STRIP_GRIP_DP)));
+        strip.addView(slack, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 0f));
 
         // The pill's row: the status dot (or a progress ring) and a label that
         // carries the ellipsis. Weight 1 so it takes precisely the leftover.
-        LinearLayout row = new LinearLayout(this);
+        final LinearLayout row = new LinearLayout(this);
+        pillRow = row;
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        // Weight 1 with a ZERO minimum: the row takes whatever the grip band leaves, so
+        // at f = 0 it is exactly nothing and the pill's text is not on the sheet at all.
+        // Android honours a 0dp weighted child down to zero and only then applies
+        // minimumHeight, which is why the minimum has to be cleared -- the default 25dp
+        // would have left the label occupying a header the open sheet must not have.
+        row.setMinimumHeight(0);
         // Side padding so the dot is not hard against the panel's edge when the
         // panel's own corners round over it.
         row.setPadding(dp(18), 0, dp(18), 0);
@@ -2355,6 +2399,33 @@ public class MainActivity extends Activity {
         return getResources().getDisplayMetrics().widthPixels;
     }
 
+    /**
+     * The pill's collapsed width in px: what its label actually needs, capped.
+     *
+     * <p><b>Measured, not a fraction of the screen.</b> The pill wraps its content, so
+     * the width is the label's own measurement plus the row's padding and the status
+     * mark, held to {@link #PILL_MAX_INSET_DP} of the screen's edges. A fixed share of
+     * the screen was the "too wide" the user reported: with a two-word label it was the
+     * same size as with a long filename, and neither bore any relation to the text.
+     *
+     * <p>Falls back to the cap while the label has not been measured yet, which is the
+     * first frame. That is the safe direction -- the cap is the widest the pill may be,
+     * so a wrong first frame is a pill that is briefly too wide rather than one that is
+     * narrower than its own text.
+     */
+    private float pillWidthPx() {
+        float cap = screenWidthPx() - dp(PILL_MAX_INSET_DP);
+        if (pillRow == null) return cap;
+        // The row's own padding, then the mark and its gap, then the label.
+        int chrome = pillRow.getPaddingLeft() + pillRow.getPaddingRight();
+        if (stripMark != null) chrome += stripMark.getWidth() + dp(10);
+        float text = stripLabel == null ? 0f : stripLabel.getPaint().measureText(
+                stripLabel.getText() == null ? "" : stripLabel.getText().toString());
+        float width = chrome + text;
+        // Never wider than the cap, and never so narrow that the pill is a dot.
+        return Math.min(cap, Math.max(width, dp(PILL_MIN_WIDTH_DP)));
+    }
+
     /** The first-launch fraction: a third of the phone, capped at the whole panel. */
     private float peekFraction() {        int peek = Math.round(SHEET_PEEK_FRACTION
                 * getResources().getDisplayMetrics().heightPixels);
@@ -2423,7 +2494,7 @@ public class MainActivity extends Activity {
         int bottom = Math.round(SheetMorph.insetFor(fraction,
                 dp(PILL_BOTTOM_INSET_DP) + navBarInsetPx)) - Math.round(belowPx);
         int side = Math.round(SheetMorph.pillSideMarginFor(fraction,
-                screenWidthPx(), PILL_WIDTH_FRACTION));
+                screenWidthPx(), pillWidthPx()));
         // The radius is compared against the last one applied, because it changes
         // with the height and would otherwise be re-set on every frame of a drag
         // whose height had not moved. setCornerRadii invalidates the drawable: a

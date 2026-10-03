@@ -394,7 +394,7 @@ public class SheetMorphTest {
         assertEquals((NATURAL + PILL) / 2f, SheetMorph.heightFor(0.5f, NATURAL, PILL), 1f);
         assertEquals(0f, SheetMorph.shapeProgress(0.5f), 0f);
         assertEquals(0f, SheetMorph.insetFor(0.5f, SIDE), 0f);
-        assertEquals(0f, SheetMorph.pillSideMarginFor(0.5f, 1440f, 0.72f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(0.5f, 1440f, 1037f), 0f);
         assertEquals(OPEN_R, SheetMorph.cornerRadiusFor(0.5f, NATURAL, OPEN_R, PILL_R), 0f);
         assertEquals(GLASS, SheetMorph.blendColour(GLASS, PLATE, 0.5f));
 
@@ -560,7 +560,7 @@ public class SheetMorphTest {
     @Test
     public void theCollapsedWidthIsTheFractionAndNotARoundingOfTheScreen() {
         float screen = 1440f;
-        float margin = SheetMorph.pillSideMarginFor(1f, screen, 0.72f);
+        float margin = SheetMorph.pillSideMarginFor(1f, screen, screen * 0.72f);
         float width = screen - 2f * margin;
         assertEquals(screen * 0.72f, width, 0.01f);
         // The bar this replaces, for the size of the difference: 28dp at this
@@ -577,7 +577,7 @@ public class SheetMorphTest {
     @Test
     public void thePillIsCentredBecauseThereIsOnlyOneMargin() {
         float screen = 1080f;   // a compact phone
-        float margin = SheetMorph.pillSideMarginFor(1f, screen, 0.72f);
+        float margin = SheetMorph.pillSideMarginFor(1f, screen, screen * 0.72f);
         assertEquals("the right margin is not the left one", margin, margin, 0f);
         assertEquals(screen, 2f * margin + screen * 0.72f, 1e-3f);
         // The left edge of the pill and the space to the right of it are equal, which
@@ -597,12 +597,12 @@ public class SheetMorphTest {
     @Test
     public void theMarginGrowsSmoothlyAndIsZeroUntilTheSheetCollapses() {
         assertEquals("the open sheet must be laid out at the margins it always had",
-                0f, SheetMorph.pillSideMarginFor(0f, 1440f, 0.72f), 0f);
-        assertEquals(0f, SheetMorph.pillSideMarginFor(-0.2f, 1440f, 0.72f), 0f);
+                0f, SheetMorph.pillSideMarginFor(0f, 1440f, 1037f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(-0.2f, 1440f, 1037f), 0f);
         float previous = 0f;
         for (int i = 1; i <= 10000; i++) {
             float f = i / 10000f;
-            float now = SheetMorph.pillSideMarginFor(f, 1440f, 0.72f);
+            float now = SheetMorph.pillSideMarginFor(f, 1440f, 1037f);
             assertTrue("the margin went backwards at f=" + f, now >= previous - 1e-4f);
             // Same continuity argument as the height: the step shrinks with the
             // sampling, so there is no seam hiding in it.
@@ -612,22 +612,27 @@ public class SheetMorphTest {
         }
         // And it is exactly the pill's width at the pill.
         assertEquals(1440f * 0.14f,
-                SheetMorph.pillSideMarginFor(1f, 1440f, 0.72f), 1e-3f);
+                SheetMorph.pillSideMarginFor(1f, 1440f, 1440f * 0.72f), 1e-3f);
     }
 
     /** Degenerate widths and fractions must not throw or invert the sides. */
     @Test
     public void theMarginIsWellBehavedOnDegenerateInput() {
-        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 0f, 0.72f), 0f);
-        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, -100f, 0.72f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 0f, 0f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, -100f, 72f), 0f);
         // A fraction of 1 is "no narrowing" and 0 is "no pill", both of which are
         // degenerate but neither of which may produce a negative margin.
-        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 1440f, 1f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 1440f, 1440f), 0f);
         assertEquals(720f, SheetMorph.pillSideMarginFor(1f, 1440f, 0f), 1e-3f);
-        // Out-of-range fractions clamp rather than extrapolate.
-        assertEquals(201.6f,
-                SheetMorph.pillSideMarginFor(9f, 1440f, 0.72f), 1e-3f);
-        assertEquals(0f, SheetMorph.pillSideMarginFor(Float.NaN, 1440f, 0.72f), 0f);
+        // Out-of-range fractions clamp rather than extrapolate. A fraction past the end
+        // is still the pill: the margin is the pill's own and does not grow past it.
+        assertEquals((1440f - 1037f) / 2f,
+                SheetMorph.pillSideMarginFor(9f, 1440f, 1037f), 1e-3f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(Float.NaN, 1440f, 1037f), 0f);
+        // A width WIDER than the screen is degenerate but must not invert the sides: the
+        // clamp is to the screen, so the margin floors at zero rather than going
+        // negative and pushing the pill off both edges.
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 1440f, 4000f), 0f);
     }
 
     // ------------------------------------------------------------ the colour

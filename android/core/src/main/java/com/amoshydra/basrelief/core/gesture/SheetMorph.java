@@ -364,11 +364,14 @@ public final class SheetMorph {
      * @return the margin in px for each side, never negative
      */
     public static float pillSideMarginFor(float fraction, float screenWidthPx,
-                                          float pillWidthFraction) {
+                                          float pillWidthPx) {
         float screen = Math.max(0f, screenWidthPx);
-        float width = Math.min(1f, Math.max(0f, pillWidthFraction));
-        // Half of what is left over, which is what makes the sides equal.
-        return insetFor(fraction, screen * (1f - width) * 0.5f);
+        float width = Math.min(screen, Math.max(0f, pillWidthPx));
+        // Half of what is left over, which is what makes the sides equal -- and the
+        // reason this takes a WIDTH rather than a fraction of the screen: the design's
+        // pill wraps its label ({@code max-width:calc(100% - 56px)}) and is not a fixed
+        // share of anything. Callers measure the text and pass the answer.
+        return insetFor(fraction, (screen - width) * 0.5f);
     }
 
     /**
