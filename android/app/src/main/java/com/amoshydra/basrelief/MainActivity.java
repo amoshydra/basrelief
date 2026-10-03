@@ -149,6 +149,16 @@ public class MainActivity extends Activity {
      * is what makes the sheet draggable in the first place.
      */
     private LinearLayout sheetContent;
+    /**
+     * The panel's scroll view.
+     *
+     * <p>A field rather than a local because the navigation-bar inset has to be
+     * re-read from outside {@code onCreate}: the bar is shown or hidden as the
+     * sheet collapses (see {@link #applySystemUi}), and hiding it changes the
+     * bottom inset, so the padding that keeps the foot clear of the bar has to be
+     * recomputed. {@link #requestSheetInsets} is the one place that asks.
+     */
+    private ScrollView sheetScroll;
     /** The one dashed line under the grip. See {@link #buildFixLine}. */
     private LinearLayout fixLine;
     /** The pill that replaces the sheet when it is collapsed. See {@link #setPillState}. */
@@ -373,7 +383,7 @@ public class MainActivity extends Activity {
         fixLine = buildFixLine();
         panel.addView(fixLine, 1);
 
-        ScrollView sheetScroll = new ScrollView(this);
+        sheetScroll = new ScrollView(this);
         sheetScroll.setFillViewport(true);
         sheetScroll.setClipToPadding(false);
         // The mockup masks the last 22px so a control below the fold is visibly
@@ -400,7 +410,22 @@ public class MainActivity extends Activity {
                 return insets;
             }
         });
-        sheetScroll.requestApplyInsets();
+        // The listener has to be asked once there is a window. A listener installed
+        // before attachment is not called, and requestApplyInsets on a detached view
+        // has no ViewRootImpl to dispatch through -- the same trap the gallery strip
+        // documents at installStrip(). This was the reason the inset "took" in the
+        // code and never on the device: the request below used to run here, while
+        // sheetScroll was still detached and not even added to the panel.
+        sheetScroll.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                v.requestApplyInsets();
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+            }
+        });
         sheetContent = new LinearLayout(this);
         sheetContent.setOrientation(LinearLayout.VERTICAL);
         sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
@@ -581,18 +606,17 @@ public class MainActivity extends Activity {
         // caller, so the whole screen was dead code. The wireframe puts it here and
         // not in the gallery header because app-level settings answer "is this
         // costing me battery", and this is where someone looks when they suspect it.
-        TextView settingsEntry = new TextView(this);
-        settingsEntry.setText(R.string.settings_title);
-        settingsEntry.setTextSize(13);
-        settingsEntry.setTextColor(0x8CFFFFFF);
-        settingsEntry.setPadding(0, dp(12), 0, dp(2));
-        settingsEntry.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openSettings();
-            }
-        });
-        sheetContent.addView(settingsEntry);
+        //
+        // A makeButton rather than the padded TextView it used to be: it is one of
+        // the two things in the foot someone taps, so it has to read as a control
+        // and carry the same 48dp target, plate and pressed state as Copy settings.
+        sheetContent.addView(makeButton(getString(R.string.settings_title),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        openSettings();
+                    }
+                }));
 
         panelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -965,15 +989,22 @@ public class MainActivity extends Activity {
      * nothing here ever triggers a window resize. Minimise/expand only toggles
      * our own panel and never touches the system bars.
      *
-     * <p><b>The navigation bar is visible-and-transparent on Android 15+, and
-     * hidden below it, deliberately.</b> The bar is the system's own back
-     * affordance, and the request is to composite it over the wallpaper where the
-     * OS supports that. API 35 is the level where the affordance exists as a
-     * back gesture that can be shown over a live wallpaper; pretending it does on
-     * older levels would be a lie, so 26–34 keep the immersive flags they had. The
-     * consequence is handled where {@code sheetScroll} is built: once a bar can be
-     * visible, the sheet's foot can be occluded by it, so the bar inset is folded
-     * into the sheet's bottom padding — the same fix the modals already carry.
+     * <p><b>The navigation bar follows the sheet on Android 15+, and is hidden
+     * below it.</b> The bar is the system's own back affordance, and API 35 is the
+     * level where it composites over a live wallpaper, so 26–34 keep the immersive
+     * flags they always had. On 35+ the bar is visible while the sheet is expanded
+     * — back is discoverable while working — and hidden when the sheet is collapsed,
+     * so the wallpaper is full-bleed and the collapsed pill is not sitting under a
+     * bar. The decision is a function of the sheet's position and nothing else, so
+     * the system's resulting inset change cannot feed back into it; see
+     * {@link #updatePillVisibility} for where it is driven and why that cannot
+     * oscillate.
+     *
+     * <p>The consequence of a visible bar is handled where {@code sheetScroll} is
+     * built: once a bar can be visible, the sheet's foot can be occluded by it, so
+     * the bar inset is folded into the sheet's bottom padding — the same fix the
+     * modals already carry. When the bar is hidden the same padding recomputes to
+     * zero, which {@link #requestSheetInsets} asks for after every change.
      *
      * <p>{@code setDecorFitsSystemWindows(false)} is API 30+ and is what makes the
      * transparent bar actually overlay our content rather than reserve a strip;
@@ -988,15 +1019,36 @@ public class MainActivity extends Activity {
             window.setNavigationBarColor(Color.TRANSPARENT);
         }
         if (Build.VERSION.SDK_INT >= 35) {
-            // Edge-to-edge with the bar ON TOP of our content. No HIDE_NAVIGATION
-            // and no IMMERSIVE_STICKY: an affordance that is hidden cannot composite.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
             }
+            // Keep the window edge-to-edge; the bar's own visibility is decided
+            // below. LAYOUT_HIDE_NAVIGATION is the layout half and is still the
+            // flag path.
             window.getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+            // Show or hide the bar through the controller, which is the supported
+            // path on API 30+. The deprecated HIDE_NAVIGATION flag is not reliable
+            // under Android 15's enforced edge-to-edge, and hiding is exactly what
+            // the collapsed state asks for. Collapsed is the SAME threshold the pill
+            // and the drag use, so "away" means one thing rather than three.
+            android.view.WindowInsetsController controller =
+                    window.getDecorView().getWindowInsetsController();
+            if (controller != null) {
+                // A swipe may reveal the bar transiently; otherwise it stays gone,
+                // which is what "fully invisible" means.
+                controller.setSystemBarsBehavior(
+                        android.view.WindowInsetsController
+                                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                if (sheetFraction >= SHEET_COLLAPSE_FRACTION) {
+                    controller.hide(WindowInsets.Type.navigationBars());
+                } else {
+                    controller.show(WindowInsets.Type.navigationBars());
+                }
+            }
+            requestSheetInsets();
             return;
         }
         window.getDecorView().setSystemUiVisibility(
@@ -1005,6 +1057,19 @@ public class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+    }
+
+    /**
+     * Re-read the bottom system-bar inset into the sheet's foot.
+     *
+     * <p>The bar is shown or hidden as the sheet collapses, so the inset the
+     * padding is built from is not constant. Asking again is what keeps the foot
+     * clear on a three-button bar — the tallest case, and the one that was
+     * reported — where the bar covers the last ~48dp of the screen. It is safe on
+     * every API: on 26–34 the bar never appears and the inset stays zero.
+     */
+    private void requestSheetInsets() {
+        if (sheetScroll != null) sheetScroll.requestApplyInsets();
     }
 
     // --------------------------------------------------------------------- back
@@ -1453,6 +1518,15 @@ public class MainActivity extends Activity {
         if (pill == null) return;
         boolean collapsed = sheetFraction >= SHEET_COLLAPSE_FRACTION;
         pill.setVisibility(collapsed ? View.VISIBLE : View.GONE);
+        // The navigation bar is part of the same decision, driven by the one value
+        // that decides "collapsed" here. Expanded, back is discoverable and the bar
+        // composites over the render; collapsed, the wallpaper must be full-bleed.
+        // 26–34 keep their always-immersive flags. Guarded on attachment so a
+        // position resolved before the window exists cannot force the decor early;
+        // onWindowFocusChanged applies the same state once there is one.
+        if (Build.VERSION.SDK_INT >= 35 && panel != null && panel.isAttachedToWindow()) {
+            applySystemUi();
+        }
         if (!collapsed) return;
 
         // A run in progress outranks the condition. This is the one thing worth
@@ -2697,19 +2771,21 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
-        b.setMinimumHeight(dp(36));
+        // 48dp is the platform's minimum touch target. The foot of the sheet lived
+        // on 36dp buttons, which the device report read as text rather than as
+        // buttons, and a three-button navigation bar made the miss worse.
+        b.setMinimumHeight(dp(48));
+        // Horizontal only: the 48dp minimum is what gives the tappable plate its
+        // height, and the plate is the background, so what is drawn and what is
+        // tappable are the same rectangle.
+        b.setPadding(dp(12), 0, dp(12), 0);
         // The manifest theme is LIGHT (Theme.DeviceDefault.NoActionBar, no values-night),
         // so an unstyled Button arrives as a raised platform button with near-black
         // text -- invisible on a dark sheet. Every button sets its colours explicitly
         // rather than the app flipping a global theme, which would restyle the GL
         // surface's transparency and every platform dialog at once.
         b.setTextColor(0xFFFFFFFF);
-        android.graphics.drawable.GradientDrawable btnBg =
-                new android.graphics.drawable.GradientDrawable();
-        btnBg.setColor(0x1FFFFFFF);
-        btnBg.setCornerRadius(dp(11));
-        btnBg.setStroke(dp(1), 0x24FFFFFF);
-        b.setBackground(btnBg);
+        b.setBackground(buttonPlate(0x1FFFFFFF, 0x33FFFFFF, 11));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 width, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.weight = weight;
@@ -2717,6 +2793,39 @@ public class MainActivity extends Activity {
         b.setLayoutParams(lp);
         b.setOnClickListener(listener);
         return b;
+    }
+
+    /**
+     * A button plate with a pressed state.
+     *
+     * <p>{@code setBackground} replaces the {@code StateListDrawable} the platform
+     * Button would have used for its own feedback, so a plain
+     * {@link android.graphics.drawable.GradientDrawable} leaves a button that looks
+     * identical whether or not it is being pressed. This is the smallest state list
+     * that answers a tap -- a brighter fill while {@code state_pressed} -- without a
+     * second button style: the same plate is used by every {@code makeButton}.
+     *
+     * @param fill       the resting fill
+     * @param pressed    the fill while the finger is down
+     * @param radiusDp   corner radius, so a row of buttons can keep the sheet's 11dp
+     */
+    private android.graphics.drawable.StateListDrawable buttonPlate(
+            int fill, int pressed, int radiusDp) {
+        android.graphics.drawable.StateListDrawable states =
+                new android.graphics.drawable.StateListDrawable();
+        android.graphics.drawable.GradientDrawable down =
+                new android.graphics.drawable.GradientDrawable();
+        down.setColor(pressed);
+        down.setCornerRadius(dp(radiusDp));
+        down.setStroke(dp(1), 0x24FFFFFF);
+        states.addState(new int[]{android.R.attr.state_pressed}, down);
+        android.graphics.drawable.GradientDrawable up =
+                new android.graphics.drawable.GradientDrawable();
+        up.setColor(fill);
+        up.setCornerRadius(dp(radiusDp));
+        up.setStroke(dp(1), 0x24FFFFFF);
+        states.addState(new int[]{}, up);
+        return states;
     }
 
     // ------------------------------------------------------------------ picking
