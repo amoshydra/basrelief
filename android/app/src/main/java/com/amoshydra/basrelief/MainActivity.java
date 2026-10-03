@@ -2,6 +2,7 @@ package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.render.Framing;
+import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
@@ -629,6 +630,31 @@ public class MainActivity extends Activity {
         sheetContent.addView(addSlider("shadow",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
+
+        // Light is its own group, and the first one the mockup did not draw: it
+        // postdates that file. The two rows are angles, not tone, so they share
+        // nothing with Picture but the fact that both change how the photograph
+        // renders -- and the light is the thing a basrelief IS, so burying it as a
+        // third Picture row would hide the one lever that shows the depth at all.
+        // Placed after Picture and before framing because the renderer applies
+        // them in that order: tone first, then the shading multiplied over it.
+        //
+        // The bounds are read from LightDirection rather than typed, because the
+        // store normalises through that same class and a control that commands a
+        // value the model rewrites is the trap this project has already paid for
+        // twice (the Origin range at twice ORIGIN_LIMIT, pan at an invented +/-4000).
+        // Azimuth's canonical domain is [0, 360) and its unit here is whole
+        // degrees, so the row's top is (int) AZIMUTH_MAX - 1: 360 is not an end to
+        // clamp at, it is the same light as 0, which the other end already offers.
+        sectionLabel(heading(R.string.group_light, R.string.group_light_surface));
+        sheetContent.addView(addSlider("light_azimuth",
+                azimuthForSlider(s == null
+                        ? SurfaceSettings.DEFAULT_LIGHT_AZIMUTH : s.lightAzimuth),
+                (int) LightDirection.AZIMUTH_MIN, (int) LightDirection.AZIMUTH_MAX - 1));
+        sheetContent.addView(addSlider("light_elevation",
+                elevationForSlider(s == null
+                        ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation),
+                (int) LightDirection.ELEVATION_MIN, (int) LightDirection.ELEVATION_MAX));
 
         sectionLabel(heading(R.string.group_framing, R.string.group_framing_surface));
         sheetContent.addView(FramingRows.build(this));
@@ -2381,6 +2407,19 @@ public class MainActivity extends Activity {
     private int shownShadow = 0;
 
     /**
+     * What the two light rows currently feed the preview.
+     *
+     * <p>Floats, unlike Brightness and Shadow, because the stored angle is a
+     * float: the defaults are 124.992° and 50.862° and the whole point of those
+     * non-round constants is that an existing wallpaper does not get relit on
+     * upgrade. The rows print whole degrees; the untouched angle keeps its
+     * stored value, so a drag on one row previews the light that is actually
+     * stored rather than a rounded version of it.
+     */
+    private float shownAzimuth = SurfaceSettings.DEFAULT_LIGHT_AZIMUTH;
+    private float shownElevation = SurfaceSettings.DEFAULT_LIGHT_ELEVATION;
+
+    /**
      * One of the -/+ buttons beside a slider.
      *
      * <p>Goes through {@link #setBar} rather than writing the store directly, so a
@@ -2405,13 +2444,66 @@ public class MainActivity extends Activity {
             renderer.setAdjust(
                     "brightness".equals(key) ? value : shownBrightness,
                     "shadow".equals(key) ? value : shownShadow);
+        } else if ("light_azimuth".equals(key) || "light_elevation".equals(key)) {
+            // Both angles go in one call, because setLight's angle and vector must
+            // never be updated apart; the angle this key is not moving comes from
+            // the same shown field a drag maintains, exactly as the adjustment
+            // pair above does. One call, not two setters.
+            renderer.setLight(
+                    "light_azimuth".equals(key) ? value : shownAzimuth,
+                    "light_elevation".equals(key) ? value : shownElevation);
         } else renderer.setDepth(value / 100f);
+    }
+
+    /**
+     * A stored azimuth as the whole degree its row shows.
+     *
+     * <p>Rounded rather than truncated, so the default 124.992° reads 125° and
+     * not 124° -- the same reason the constants are exact: the number on screen
+     * should be the nearest degree to the light being drawn. Re-normalising
+     * through {@link LightDirection} keeps the result inside the row's
+     * {@code [AZIMUTH_MIN, AZIMUTH_MAX)} domain: rounding 359.6° gives 360,
+     * which is the same light as 0 and must show as 0, not as a value the row's
+     * own maximum cannot represent.
+     */
+    private static int azimuthForSlider(float degrees) {
+        return (int) LightDirection.normaliseAzimuth(Math.round(degrees));
+    }
+
+    /**
+     * A stored elevation as the whole degree its row shows. See
+     * {@link #azimuthForSlider}; elevation clamps, so there is no seam to fold.
+     */
+    private static int elevationForSlider(float degrees) {
+        return Math.round(LightDirection.normaliseElevation(degrees));
+    }
+
+    /**
+     * Record the light angle a row is now showing, so the sibling row's next
+     * preview sends the light the user is looking at.
+     *
+     * <p>Called from the preview <b>and</b> from the release path, because a
+     * nudge never previews -- it is already a complete gesture. Without the
+     * second call the value a nudge wrote would be missing from the next drag of
+     * the other row, and that drag would flash the pre-nudge angle back onto the
+     * photograph until its own release re-read the store.
+     */
+    private void noteShownLight(String key, int value) {
+        if ("light_azimuth".equals(key)) shownAzimuth = value;
+        else if ("light_elevation".equals(key)) shownElevation = value;
     }
 
     private String formatValue(String key, int value) {
         if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
         if (key.equals("motion")) return value + "%";
+        // The light's two rows print their own unit, and only their own unit: the
+        // convention (azimuth counter-clockwise from the right, elevation 0
+        // grazing) lives in the caption above them, because neither number means
+        // anything without knowing what is being measured.
+        if (key.equals("light_azimuth") || key.equals("light_elevation")) {
+            return getString(R.string.slider_degrees, value);
+        }
         // Signed and bare: "40" on a -100..100 control already reads as an offset,
         // and a "%" here would be a lie -- neither is a percentage of anything.
         return value > 0 ? "+" + value : String.valueOf(value);
@@ -2446,6 +2538,11 @@ public class MainActivity extends Activity {
                         // The renderer already followed the finger through onPreview;
                         // this is the store, once, on release.
                         final int v = value;
+                        // A nudge is a complete gesture with no preview, so the shown
+                        // angle is recorded here as well: without it the next drag of
+                        // the sibling row would preview with the angle the nudge
+                        // replaced. See noteShownLight.
+                        noteShownLight(key, v);
                         glView.queueEvent(new Runnable() {
                             @Override
                             public void run() {
@@ -2466,6 +2563,7 @@ public class MainActivity extends Activity {
                 final int v = value;
                 if ("brightness".equals(key)) shownBrightness = v;
                 else if ("shadow".equals(key)) shownShadow = v;
+                else noteShownLight(key, v);
                 glView.queueEvent(new Runnable() {
                     @Override
                     public void run() {
@@ -2679,6 +2777,17 @@ public class MainActivity extends Activity {
                             "brightness".equals(key) ? value : other.brightness,
                             "shadow".equals(key) ? value : other.shadow);
                 }
+                if ("light_azimuth".equals(key) || "light_elevation".equals(key)) {
+                    // Same rule as the adjustment pair: the angle this key does not
+                    // name is read from the SAME surface, unrounded, so dragging
+                    // elevation cannot snap the stored 124.992° azimuth to the 125°
+                    // the row displays. withLight wraps and clamps through
+                    // SurfaceSettings, which is the one place that happens.
+                    SurfaceSettings other = item.settings(editSurface);
+                    return item.withLight(editSurface,
+                            "light_azimuth".equals(key) ? value : other.lightAzimuth,
+                            "light_elevation".equals(key) ? value : other.lightElevation);
+                }
                 return item.withMotion(editSurface, value);
             }
         });
@@ -2727,6 +2836,18 @@ public class MainActivity extends Activity {
             shownShadow = s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow;
             setBar("brightness", shownBrightness, true);
             setBar("shadow", shownShadow, true);
+            // The light, repopulated from the same one read as every other row.
+            // This is the row the "previous surface's values" bug must not skip:
+            // the stored angle is a float and the row shows whole degrees, so the
+            // shown values keep the stored precision while the bars get the
+            // rounded form -- precision for the sibling row's preview, rounding
+            // for the number the user reads.
+            shownAzimuth = s == null
+                    ? SurfaceSettings.DEFAULT_LIGHT_AZIMUTH : s.lightAzimuth;
+            shownElevation = s == null
+                    ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation;
+            setBar("light_azimuth", azimuthForSlider(shownAzimuth), true);
+            setBar("light_elevation", elevationForSlider(shownElevation), true);
         }
         // The four framing rows are sliders on this same sheet and must follow the
         // same one resolution. They live in FramingRows and register under different

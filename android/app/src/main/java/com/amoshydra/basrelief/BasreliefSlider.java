@@ -697,6 +697,11 @@ final class BasreliefSlider extends LinearLayout {
         else if ("zoom".equals(key)) res = R.string.slider_zoom;
         else if ("brightness".equals(key)) res = R.string.slider_brightness;
         else if ("shadow".equals(key)) res = R.string.slider_shadow;
+        // The light's two angles. They are sheet rows like the tone controls above
+        // them, so they resolve a label the same way; a key drawn as itself would
+        // read "light_azimuth" in the fixed name column.
+        else if ("light_azimuth".equals(key)) res = R.string.slider_azimuth;
+        else if ("light_elevation".equals(key)) res = R.string.slider_elevation;
         // The framing axes. They are rows in the sheet like every other adjustment,
         // so they resolve a label the same way -- which they could not while they were
         // four EditTexts behind a disclosure line.

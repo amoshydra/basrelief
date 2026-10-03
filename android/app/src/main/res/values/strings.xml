@@ -33,6 +33,14 @@
     <string name="group_motion">How it moves</string>
     <string name="group_depth">This photo’s map</string>
     <string name="group_picture">Picture</string>
+    <!--
+      Light is the one group the mockup predates. Its own caption rather than a
+      third Picture row: Picture's two are signed tone offsets, while these two
+      are the direction the relief's one light comes from, which is what makes
+      the relief read at all. A user looking for "lighting" has to find a
+      caption named for it.
+    -->
+    <string name="group_light">Light</string>
     <string name="group_framing">Where it sits</string>
     <string name="group_axis">%1$s (%2$s)</string>
     <string name="axis_origin">Origin</string>
@@ -46,6 +54,15 @@
     <string name="slider_zoom">Zoom</string>
     <string name="slider_brightness">Brightness</string>
     <string name="slider_shadow">Shadow</string>
+    <!--
+      The light. Two angles, each printed with its unit; the caption above them
+      names the group, because "Azimuth 125°" alone does not say what is being
+      turned. Whole degrees: the convention in LightDirection is degrees, and a
+      tenth of a degree is a fraction of the 8-bit output step of 1/255.
+    -->
+    <string name="slider_azimuth">Azimuth</string>
+    <string name="slider_elevation">Elevation</string>
+    <string name="slider_degrees">%1$d°</string>
     <string name="slider_glide">Glide</string>
     <!-- Framing axes. Two captions naming the unit, then one row per axis. The
          wireframe gives Pan the same treatment as Origin: two axes, one slider each.
@@ -122,6 +139,7 @@
     <string name="group_zoom_surface">Zoom — %1$s</string>
     <string name="group_framing_surface">Where it sits — %1$s</string>
     <string name="group_picture_surface">Picture — %1$s</string>
+    <string name="group_light_surface">Light — %1$s</string>
 
     <!-- Apply: the surface chooser, shown only at apply time -->
     <string name="apply_title">Set as wallpaper</string>
