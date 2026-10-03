@@ -137,7 +137,7 @@ public final class DepthGenDialog {
     /** {@code .modal{max-height:88%}}. */
     private static final float MAX_HEIGHT = 0.88f;
     /**
-     * The depth screen's own scrim, {@code rgba(0,0,0,.80)} — lighter than the
+     * The depth screen's own scrim, {@code rgba(0,0,0,.90)} — lighter than the
      * {@link ModalSheet#SCRIM} the other modals use, and a difference in the design
      * rather than an accident: this is a form, and a heavier scrim over a
      * photograph makes it harder to read without making it more modal.

@@ -144,9 +144,13 @@ final class ModalSheet {
     // The mockup's tokens. --scrim is rgba(0,0,0,.62); the depth screen deliberately
     // passes a lighter one, which is a difference in the design and not an accident.
     //
-    // ONE scrim for every device. It was two, and the split is gone because it was
-    // built on an assumption that measurement disproved -- see BLUR_RADIUS_DP.
-    static final int SCRIM = 0xD9000000;
+    // ONE scrim for every device, and it is now the whole backdrop mechanism rather
+    // than a fallback for one: a Dialog cannot have its background blurred, so this
+    // alpha IS the separation. .94 is opaque enough that nothing behind a modal
+    // competes with it, and deliberately short of solid -- the design's objection to
+    // a black rectangle still holds, just weakly, and at .94 the photograph is a
+    // suggestion rather than an absence.
+    static final int SCRIM = 0xF0000000;
 
     /**
      * {@code SCRIM_UNBLURRED_STEP}, {@link #SCRIM_UNBLURRED} and {@link #darker} were
