@@ -365,7 +365,22 @@ already cost real time.
   `MATCH_PARENT` params silently undid), each on the theory that the blur was *nearly*
   working. What a view in one window can have is **painted** glass — transparency, a
   gradient, a lit rim — and that is a mimic, not the effect: it cannot sample what is
-  behind it.
+  behind it. **And a spike has now closed the last door**, because three passes were spent
+  reasoning about this instead of testing it: the studio sheet was moved into its own
+  `Dialog` window, made translucent, and made **floating** by sizing its content to the
+  display minus 8 pixels — every condition the AOSP rule names, held at once. The sheet
+  rendered perfectly in that window (all controls present in the accessibility tree), the
+  request went through (`isCrossWindowBlurEnabled()` true, `setBackgroundBlurRadius(25dp)`
+  called), and `dumpsys SurfaceFlinger` still reported **zero `blurRadius` regions
+  device-wide**. So the gate is the window TYPE — `BASE_APPLICATION` cannot be made to
+  blur by any sizing, fill or radius — and `TYPE_APPLICATION_OVERLAY` with
+  `SYSTEM_ALERT_WINDOW` is the only remaining route. The spike was reverted; it proved the
+  point and would have cost the sheet its place in `root`, which the morph, the strip and
+  the panel's layout all assume. **Two traps in the sizing, for anyone who repeats it:**
+  `setContentView(..., MATCH_PARENT, MATCH_PARENT)` overrides `setLayout` on the window, so
+  the window still requested the full display and was never floating; and a spike that
+  renders is not a spike that is *correct* — this one left the sheet outside `root` where
+  every layout calculation expects it, which looks fine and is not.
 - **`setStroke` on a `GradientDrawable` clears the fill.** AOSP writes
   `setColor(TRANSPARENT)` and installs a new stroke paint, so a stroke change after a fill
   silently leaves no fill at all — which reads as a *design choice* rather than as a bug,
