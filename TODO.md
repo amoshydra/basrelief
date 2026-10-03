@@ -436,3 +436,50 @@ justify; what is not a choice is that plain `scrollY` must not drive the height.
 content and does not grow); the grip and footer never moving; the hand-over from content to
 card drag; `OPEN_FRACTION`'s opening height; `SOFT_INPUT_ADJUST_RESIZE` with a keyboard up;
 the 120dp floor; and the depth form's fields still being typeable.
+
+## The studio sheet must MORPH into the pill, not swap with it (2026-10-04)
+
+**The user:** *the pill should double as the drag handle, so that dragging the sheet down morphs it into the pill and
+    dragging up morphs it back, seamlessly*
+
+**Why it cannot be seamless today, measured in the code.** There are **two views with two
+lifecycles**: `applySheetPosition` maps `showing = 1 - fraction`, so the panel's height reaches
+**zero**, and a *separate* `pill` view (`MainActivity.java:842`, with its own `pillLabel`,
+`pillMark`, `pillRing` and `updatePillVisibility()`) goes VISIBLE. Two state changes driven by
+one gesture is a pop by construction. It also explains why the pill is not a drag handle: it is
+a different view with its own touch handling, so dragging it cannot be dragging the sheet.
+
+**The plan — one view, one axis, no second view.**
+
+1. **The pill IS the panel at `fraction = 1`.** The height mapping becomes
+   `lerp(panelNaturalHeight, PILL_HEIGHT, f)` instead of `(1-f) * natural`, so the panel never
+   reaches zero and at `f = 1` it *is* a 56dp pill. Put this mapping in `:core` as a pure
+   `SheetMorph.heightFor` with tests — exact endpoints, monotonic, never below `PILL_HEIGHT`.
+   `:core` is where a resolution into numbers belongs, and it is the only way this is testable
+   without a device.
+2. **The morph region is the panel's top strip.** The pill's contents move **into the row that
+   already holds the grip**. Expanded, the strip is grip + title and the scroll area takes the
+   rest; collapsed, the scroll area's height is 0 and only the strip remains. So the label is
+   *clipped into existence* rather than faded in — which is what keeps the standing rule that
+   the studio sheet is **never faded**. Nothing fades; geometry reveals.
+3. **The pill is a drag handle by construction**, because it is the same view with the same
+   listener. Give the collapsed strip a ≥48dp target (56dp pill) so the whole pill drags.
+4. **Corner radius interpolates** from the sheet's 22dp top corners to fully rounded. A
+   drawable property, so no relayout and no transform.
+5. **One continuous gesture both ways.** Expanding is the same interpolation reversed, so a
+   reversal mid-drag is seamless for free — which also settles the older "reversal at 98%"
+   question rather than adding a rule to it.
+6. **The release policy does not change.** `SheetIntent` (studio `FREE`, commits at 0.95) still
+   decides *open or pill*; only the rendering of the destination changes. `sheet_pos = 1.0`
+   still means the pill, so there is no stored-state migration.
+7. **Falls out for free:** store the last expanded fraction, so tapping the pill returns to
+   where the user left it instead of snapping fully open — the known gap recorded earlier.
+
+**The one decision that is not mine: how the content leaves.** Nothing may fade, so the content
+below the strip must be *removed* by geometry, and there are two honest ways:
+- **(a) slice** — the panel just gets shorter and the content is cut off. Cheapest, no motion
+  inside the panel, reads as the sheet being squashed.
+- **(b) slide out** — the strip holds still and the content below is translated down and away,
+  clipped by the panel's own bounds. Smooths better; still layout + a child transform, never a
+  transform of the panel itself, so it does not touch the `b/7179570` hazard — **but that is
+  exactly the kind of claim this project verifies on a device rather than reasons about.**
