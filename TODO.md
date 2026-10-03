@@ -16,6 +16,19 @@ primary store** — `AppState.load` runs on the GL thread at cold start and must
 synchronously, and a binder (possibly cloud) round trip there makes "folder unavailable"
 indistinguishable from "photo deleted".
 
+**Question answered — mirror, not external-as-truth.** Internal `filesDir` stays the single
+source of truth; the SAF folder is a write-through copy with an explicit "Back up now" /
+"Restore". In failure order: the wallpaper must render at cold start on the GL thread, and
+SAF is a binder call to a folder Android may have revoked (user removed it, SD unmounted,
+cloud provider offline); with internal as truth those events only pause the mirror, with
+external as truth **every render path needs an "unavailable" state** and a missing folder
+becomes a blank wallpaper. **Do not ask on first launch** — the app is fully functional
+without it, and a permission wall for a feature that can be set up later is hostile; ask when
+the user chooses "Set up backup folder". Revoking can never wipe anything because nothing
+lives there; re-map by choosing again and the mirror re-writes. If the real goal is "the
+folder IS the library" (sync through the user's own NAS), external-as-truth plus an internal
+cache is possible but pays the availability complexity above — confirm before building it.
+
 **Reversal rule at the bottom.** Today the release decision is projection-based, so a
 *decisive* upward reversal from 98% stays open but a slow creep still collapses. If the user
 wants "past ~90% down, any upward movement means stay", that is a direction-change rule on
