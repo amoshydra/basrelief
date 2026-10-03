@@ -659,7 +659,15 @@ final class ModalSheet {
         // leaves the background transparent when the device reports no support — so the
         // unblurred look has to come from the scrim, which is why scrim was resolved
         // from the same answer in the constructor.
-        if (blurSupported(activity)) {
+        boolean blur = blurSupported(activity);
+        // Which branch actually ran, because "no blur is visible" is a symptom with
+        // at least three causes and they need different fixes: the call never made
+        // (capability), the call made and dropped (window shape), or the call made,
+        // honoured and buried under our own scrim. Logged rather than guessed.
+        android.util.Log.i("Basrelief", "ModalSheet blur=" + blur + " sdk="
+                + android.os.Build.VERSION.SDK_INT + " radius="
+                + (blur ? dp(activity, BLUR_RADIUS_DP) : 0) + " scrim=" + Integer.toHexString(scrim));
+        if (blur) {
             dialog.getWindow().setBackgroundBlurRadius(dp(activity, BLUR_RADIUS_DP));
         }
         dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
