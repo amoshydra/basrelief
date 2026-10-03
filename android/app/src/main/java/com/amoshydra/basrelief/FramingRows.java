@@ -42,6 +42,11 @@ final class FramingRows {
      * Pan is in pixels and has no natural ceiling — the camera can travel further
      * than a screen is wide. This is the reachable range of the control, not a limit
      * on what may be stored.
+     *
+     * <p>The row is built with {@link BasreliefSlider#createScreenPixels} because a
+     * pan unit already is a screen pixel: the camera applies pan after the
+     * projection, so a drag of D pixels changes pan by D and the picture by D, at
+     * every zoom. Zoom is deliberately not passed to the row.
      */
     private static final int PAN_MIN = -4000;
     private static final int PAN_MAX = 4000;
@@ -94,24 +99,29 @@ final class FramingRows {
     /** One axis as a slider row. */
     private static View axis(final MainActivity activity, final String key,
                              final boolean fraction) {
-        BasreliefSlider slider = BasreliefSlider.create(activity, key,
-                read(activity, key, fraction),
-                fraction ? ORIGIN_MIN : PAN_MIN,
-                fraction ? ORIGIN_MAX : PAN_MAX,
-                new BasreliefSlider.ValueFormatter() {
-                    @Override
-                    public String format(int v) {
-                        return fraction
-                                ? String.format(java.util.Locale.US, "%.2f", v / 1000f)
-                                : String.valueOf(v);
-                    }
-                },
-                new BasreliefSlider.OnChanged() {
-                    @Override
-                    public void onChanged(int v) {
-                        apply(activity, key, fraction, v);
-                    }
-                });
+        BasreliefSlider.ValueFormatter fmt = new BasreliefSlider.ValueFormatter() {
+            @Override
+            public String format(int v) {
+                return fraction
+                        ? String.format(java.util.Locale.US, "%.2f", v / 1000f)
+                        : String.valueOf(v);
+            }
+        };
+        BasreliefSlider.OnChanged changed = new BasreliefSlider.OnChanged() {
+            @Override
+            public void onChanged(int v) {
+                apply(activity, key, fraction, v);
+            }
+        };
+        // Pan's unit is a screen pixel, so its row drags 1:1. Origin is a fraction
+        // of the camera's own travel and its screen meaning does scale with zoom,
+        // so it keeps the range-scaled rule like every other key; see
+        // BasreliefSlider.createScreenPixels for the camera reasoning.
+        BasreliefSlider slider = fraction
+                ? BasreliefSlider.create(activity, key, read(activity, key, true),
+                        ORIGIN_MIN, ORIGIN_MAX, fmt, changed)
+                : BasreliefSlider.createScreenPixels(activity, key, read(activity, key, false),
+                        PAN_MIN, PAN_MAX, fmt, changed);
         // Live preview, the half these four rows were missing. The store is still
         // written once, on release, by OnChanged above; this only moves the
         // renderer's own fields, which is what makes pan and origin follow the

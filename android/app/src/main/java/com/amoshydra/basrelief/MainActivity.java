@@ -2601,7 +2601,13 @@ public class MainActivity extends Activity {
      */
     private static final float DIM_ALPHA = 0.05f;
 
-    /** The held control's row. Always applied on a view already at full alpha. */
+    /**
+     * The held control's row.
+     *
+     * <p>Its previous alpha is recorded before this is applied, like every other
+     * view the dim touches: the off-path walk stops at the held control, so this
+     * write is the only one with no other record behind it.
+     */
     private static final float HELD_ALPHA = 0.60f;
 
     /**
@@ -2656,7 +2662,11 @@ public class MainActivity extends Activity {
         setSheetBackgroundAlpha(DIM_ALPHA);
         dimOffPath(panel, control);
         // After the walk, so the held row's own value is 60% and not multiplied by
-        // a dim it never received.
+        // a dim it never received -- and RECORDED, because the walk returns at the
+        // held control and never records it. Without this the one view the dim
+        // changes is the one view the restore forgets, and the row stays at 60%
+        // after the finger lifts. See recordAlpha.
+        recordAlpha(control);
         control.setAlpha(HELD_ALPHA);
     }
 
@@ -2702,9 +2712,22 @@ public class MainActivity extends Activity {
     }
 
     private void dimView(View view) {
+        recordAlpha(view);
+        view.setAlpha(DIM_ALPHA);
+    }
+
+    /**
+     * Remember a view's alpha, before the dim changes it, for the restore.
+     *
+     * <p>Every view whose alpha this dim writes must come through here. The held
+     * control is the case that is easy to miss: {@link #dimOffPath} returns at the
+     * held control, so it never reaches {@link #dimView}, and a restore driven
+     * only by the walk leaves the row it was holding at {@link #HELD_ALPHA}
+     * forever -- the reported "opacity does not come back on release".
+     */
+    private void recordAlpha(View view) {
         dimmedViews.add(view);
         dimmedAlphas.add(view.getAlpha());
-        view.setAlpha(DIM_ALPHA);
     }
 
     private static boolean isAncestorOf(View maybeAncestor, View view) {

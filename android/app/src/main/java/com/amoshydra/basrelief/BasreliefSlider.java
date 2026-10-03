@@ -120,6 +120,16 @@ final class BasreliefSlider extends LinearLayout {
     private static final int STEP = 1;
 
     /**
+     * Finger travel one unit of a screen-pixel key asks for.
+     *
+     * <p>One, and in device pixels rather than dp: the unit is already a surface
+     * pixel and a touch delta is measured in the same pixels, so density does not
+     * enter. Scaling this by density would introduce a second ~3x error in the
+     * opposite direction.
+     */
+    private static final float PIXEL_UNIT_TRAVEL_PX = 1f;
+
+    /**
      * How much finger travel a full sweep of the range asks for, when the range is
      * wide enough that the cap below does not bind.
      *
@@ -130,6 +140,11 @@ final class BasreliefSlider extends LinearLayout {
      * gesture per row. 420dp is a little over a phone's width, so a sweep is one
      * deliberate drag with the finger still on the screen, and the 0..100 rows land
      * at 4.2dp per unit.
+     *
+     * <p><b>It does not apply to a key whose unit is a screen pixel.</b> Spreading
+     * Pan's ±4000 over a sweep is the defect that made pan unusable; such a key
+     * uses {@link #createScreenPixels} instead, and the rule there is 1:1 by the
+     * unit itself. This constant is the default only.
      */
     private static final float FULL_SWEEP_DP = 420f;
 
@@ -216,7 +231,12 @@ final class BasreliefSlider extends LinearLayout {
      * end closes the pair and a second start is already covered.
      */
     private boolean interacting;
-    /** Finger travel per unit. Range-scaled; see {@link #FULL_SWEEP_DP}. */
+    /**
+     * Finger travel per unit, in surface pixels.
+     *
+     * <p>Range-scaled by default; {@link #PIXEL_UNIT_TRAVEL_PX} for a key built
+     * with {@link #createScreenPixels}. See {@link #FULL_SWEEP_DP}.
+     */
     private final float pxPerUnit;
     /** The platform's threshold, so a tap that shivers is still a tap. */
     private final int touchSlop;
@@ -244,11 +264,38 @@ final class BasreliefSlider extends LinearLayout {
      */
     static BasreliefSlider create(MainActivity a, String key, int value, int min, int max,
                                   ValueFormatter fmt, OnChanged onChanged) {
-        return new BasreliefSlider(a, key, value, min, max, fmt, onChanged);
+        return new BasreliefSlider(a, key, value, min, max, fmt, onChanged, false);
+    }
+
+    /**
+     * Create a row whose unit is a screen pixel, so one unit is one pixel of drag.
+     *
+     * <p>The range-scaled sweep cannot serve such a key, and that is why the class
+     * has a second rule at all: the sweep asks "how wide is a comfortable full
+     * drag", then spreads min..max over it, which is right for an abstract unit
+     * (Depth's percent) but wrong for one the camera already measures in screen
+     * pixels. There the finger and the picture move in the same quantity, so the
+     * only scale that makes the picture follow the finger is 1:1 — and no choice
+     * of sweep constant fixes a range-scaled rule, because the error grows with
+     * the range. Pan's 8000 units asked for 420dp to cross, which on the Pixel 7
+     * Pro is 6.4x too fast and is the reported "pan sliding is too sensitive".
+     *
+     * <p><b>Zoom does not factor in, and this is the whole answer to that
+     * question.</b> The camera adds pan to the projection, after the view and the
+     * model scale ({@code CameraModel.frame}: {@code projPanned = panMat * proj}),
+     * so one pan unit is one pixel of picture travel at every zoom. A rule that
+     * divided by zoom here would be a second bug. (Origin is the opposite case —
+     * it moves the camera before projection, so its screen meaning does scale with
+     * zoom — and that is exactly why only the pan keys use this factory.)
+     */
+    static BasreliefSlider createScreenPixels(MainActivity a, String key, int value,
+                                              int min, int max,
+                                              ValueFormatter fmt, OnChanged onChanged) {
+        return new BasreliefSlider(a, key, value, min, max, fmt, onChanged, true);
     }
 
     private BasreliefSlider(MainActivity a, String key, int value, int min, int max,
-                            ValueFormatter fmt, OnChanged onChanged) {
+                            ValueFormatter fmt, OnChanged onChanged, boolean unitIsScreenPixel) {
         super(a);
         this.activity = a;
         this.name = labelFor(a, key);
@@ -258,10 +305,13 @@ final class BasreliefSlider extends LinearLayout {
         this.onChanged = onChanged;
         // dp per unit, then pixels. The cap is in dp too, so the feel is the same
         // at any density. Math.max(1, ..) covers a one-value range, which is a
-        // slider that cannot move but must not divide by zero.
+        // slider that cannot move but must not divide by zero. A screen-pixel key
+        // skips the whole derivation: its unit already is the drag's own unit.
         int range = Math.max(1, this.max - this.min);
-        this.pxPerUnit = Math.min(MAX_STEP_DP, FULL_SWEEP_DP / range)
-                * a.getResources().getDisplayMetrics().density;
+        this.pxPerUnit = unitIsScreenPixel
+                ? PIXEL_UNIT_TRAVEL_PX
+                : Math.min(MAX_STEP_DP, FULL_SWEEP_DP / range)
+                        * a.getResources().getDisplayMetrics().density;
         this.touchSlop = ViewConfiguration.get(a).getScaledTouchSlop();
 
         setOrientation(HORIZONTAL);
