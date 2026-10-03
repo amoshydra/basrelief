@@ -150,6 +150,50 @@ public final class SheetMorph {
         return fraction;
     }
 
+    /**
+     * When the sheet's <b>shape</b> starts becoming the pill's shape.
+     *
+     * <p><b>This band is the point, and it is on the shape and not on the height.</b>
+     * Two instructions, two properties, and an earlier version of this file got them
+     * the wrong way round: the height was banded and the shape ramped, which made a
+     * sheet that changed shape while its size stood still; then the band was moved onto
+     * the wrong property again and the height snapped shut instead. Both were reported
+     * as the sheet "not working".
+     *
+     * <p>What the sheet actually is:
+     * <ul>
+     * <li><b>The height follows your hand the whole way</b>, because it is a bottom
+     * sheet — *a bottom sheet's height should not always be full*
+     * <li><b>The shape stays the sheet's own until the very end</b> and then becomes
+     * the capsule — *the width should stay unchanged until the very end* A full-width panel
+     * that is 40% of its height is still a sheet, and rounding its corners and tinting
+     * it towards the pill while it is plainly a sheet reads as two objects.
+     * </ul>
+     *
+     * <p>So the geometry has two named ramps, both in this file, and a test holds each
+     * to its own. {@code 0.9} is a judgement and it is one number: late enough that the
+     * sheet is recognisably a sheet for almost the whole drag, early enough that the
+     * last tenth is a morph and not a cut.
+     */
+    public static final float SHAPE_BAND_START = 0.9f;
+
+    /**
+     * The shape's progress: <b>the sheet's own shape until
+     * {@link #SHAPE_BAND_START}, then a straight ramp to the capsule.</b>
+     *
+     * <p>Read by the side margins, the bottom lift, the corner radius and the fill.
+     * <b>Not</b> by the height — {@link #morphProgress} is that one, and the difference
+     * between the two functions is the whole design.
+     *
+     * @param fraction the collapse fraction, as {@link #heightFor} takes it
+     * @return 0 while the sheet is still shaped like a sheet, 1 once it is a capsule
+     */
+    public static float shapeProgress(float fraction) {
+        float f = morphProgress(fraction);
+        if (f <= SHAPE_BAND_START) return 0f;
+        return (f - SHAPE_BAND_START) / (1f - SHAPE_BAND_START);
+    }
+
     public static float heightFor(float fraction, float naturalPx, float pillPx) {
         float pill = Math.max(0f, pillPx);
         float natural = Math.max(pill, naturalPx);
@@ -237,7 +281,7 @@ public final class SheetMorph {
         // The same shared progress as the height, so the corners do not start rounding
         // the moment the drag does. Both pairs are read from one place below, so the
         // top and bottom cannot arrive at the capsule's radius at different moments.
-        float radius = open + (pill - open) * morphProgress(fraction);
+        float radius = open + (pill - open) * shapeProgress(fraction);
         // The ceiling is applied to the RESULT, so no fraction and no panel size can
         // produce a radius larger than the box it rounds. Swept by the test.
         return Math.min(radius, ceiling);
@@ -280,7 +324,7 @@ public final class SheetMorph {
         // sheet is laid out at exactly the margins it always had and there is no seam
         // to see. This used to be a plain `inset * fraction`, which narrowed and
         // lifted the sheet across the whole drag while its height was still whole.
-        return Math.max(0f, pillInsetPx) * morphProgress(fraction);
+        return Math.max(0f, pillInsetPx) * shapeProgress(fraction);
     }
 
     /**
@@ -357,7 +401,7 @@ public final class SheetMorph {
         // A NaN fraction is 0 here, which is the sheet's own glass -- a NaN reaching
         // Math.round would come back as a channel of 0, i.e. a fully transparent
         // strip, the one outcome that would be silently invisible on screen.
-        float f = morphProgress(fraction);
+        float f = shapeProgress(fraction);
         if (f <= 0f) return from;
         if (f >= 1f) return to;
         int a = lerpChannel(from >>> 24, to >>> 24, f);

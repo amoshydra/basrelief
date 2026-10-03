@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 379 tests across twenty-one classes:
+it**. 378 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -591,6 +591,18 @@ has run.**
   `theHeightIsNotHeldAndNotSnapped` walks the travel asserting every intermediate
   fraction is a real intermediate height -- no plateau, no cliff -- which is the bug that
   had to be reported twice before it was fixed.
+  **TWO RAMPS, ON TWO PROPERTIES, AND THE BAND IS ON THE SHAPE.** The final shape of
+  the answer: `morphProgress` is the collapse fraction and drives the **height** the whole
+  way, because *a bottom sheet's height should not always be full*; `shapeProgress`
+  holds the sheet's own shape and drives the **width, insets, radius and fill** only in
+  the last tenth, because *the width should stay unchanged until the very end* A full-width
+  panel at 40% of its height is still a sheet, and rounding and tinting it towards a pill
+  while it is plainly a sheet reads as two objects. **This file got this wrong in BOTH
+  directions** — banded height and ramped shape ("illogical"), then banded height left in
+  place after moving the band (the height did not reduce and then it collapsed) —
+  so the two functions are named for what each drives and one test holds each to its own.
+  `SHAPE_BAND_START` is 0.9 and is a judgement in one number; the content's opacity keeps
+  its own separate band at `EDGE_BAND_START`, which is about a different property again.
   **The pill's shape is a width, not a margin.**
   version of this fix specified it as 28dp a side -- faithful to the pre-morph pill,
   and still a bar, because on a 483dp phone that leaves 88% of the width. The token
