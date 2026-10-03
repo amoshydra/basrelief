@@ -363,3 +363,44 @@ Requirements:
   dismiss on a stray scrim tap — that is the tap that should do least. Read each caller and
   decide deliberately; the safe default is that a confirm ignores scrim taps, and that
   decision must be visible in the code rather than accidental.
+
+## Every sheet scrolls to expand, like the settings sheet (2026-10-04)
+
+**The user, correcting a misreading:** *the settings sheet was the right model because its content's scroll expands and collapses it, and the
+    other sheets were expected to behave the same way.* And: **do not touch the studio sheet** — *it was an entirely different UI that required the background to stay visible, with free positioning*
+
+**Ruled out by measurement, so nobody re-derives it: it is not `maxHeightFraction`.** Every
+screen already passes `0.88f` — Settings (`SettingsSheet.java:136`), ApplyChooser
+(`ApplyChooser.java:57`), DepthGenDialog (`DepthGenDialog.java:138`) and PlaylistScreen
+(`PlaylistScreen.java:110`). The cap is not the divergence.
+
+**The divergence is that the card has a fixed ceiling and the content scrolls inside it.**
+`CappedScroll.onMeasure` clamps itself to `ceiling`, set by `applyHeight()` from
+`maxHeightFraction - chromeHeight()`. So a long form scrolls within a card of constant height,
+and a short one shrink-wraps. **The card's height is not a function of scroll position** — which
+is exactly what the studio panel does, and the thing being asked for.
+
+**So the fix is in `CappedScroll`/`applyHeight`, and it must not regress the three things the
+fixed ceiling currently buys:**
+1. **Chrome stays put.** The grip and the footer must not scroll away — they are the
+   dismissal handle and the Done button.
+2. **A card shorter than the screen shrink-wraps** and is not stretched by the weighted child
+   (see the `onMeasure` javadoc: the old version could never shrink-wrap).
+3. **The hand-over still works.** Scroll to the content's end and the *same* drag moves the
+   card; `reofferGestureToParent` exists precisely because `ScrollView` otherwise claims the
+   gesture permanently. A growing card must not make the content reach its end early and
+   then feel stuck.
+
+**Acceptance test, on every sheet:** open it, scroll, and the card **grows with the content
+up to the fraction ceiling** and shrinks back on the way down — one behaviour, not four.
+Report each of the four screens measured, including a short one (shrink-wrap) and a long one
+(grow to ceiling). `AGENTS.md` records the shrink-wrap regression once already; that is the
+trap this lands in.
+
+## Backdrop: blur everywhere it is supported, dim further where it is not
+
+Applies to **every** modal sheet — settings, depth AI, playlist, apply, confirms. The user's
+rule: **blur + dim when blur is supported; when it is not, dim the background further**
+(much darker, not the same alpha). Already recorded above as two constants from one
+derivation, both scrim variants, with `BottomSheet` (the studio sheet) explicitly **out of
+scope** — its background must stay visible for free positioning.
