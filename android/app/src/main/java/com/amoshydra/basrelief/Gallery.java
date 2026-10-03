@@ -135,6 +135,18 @@ final class Gallery {
     private View strip;
     private FrameLayout.LayoutParams stripLp;
     private int stripInsetBottom = 0;
+    /**
+     * The status-bar inset, in pixels, kept so {@link #layoutStrip} can stop the
+     * strip riding up under the clock when the sheet is dragged to full height.
+     *
+     * <p>Separate from {@link #stripInsetBottom} because it is not placed by a
+     * margin: the strip is bottom-anchored, so a top margin would push it further
+     * up, and a top padding on a wrap-content view cancels itself out. The inset is
+     * therefore applied twice over -- as padding for the host, and as a bound on
+     * the margin -- which is what puts the host's top edge at the screen top and its
+     * tiles one inset lower. See {@link #layoutStrip}.
+     */
+    private int stripInsetTop = 0;
     /** The margin last written, so a re-layout with nothing to change stops. */
     private int stripAppliedMargin = -1;
     private ViewTreeObserver.OnGlobalLayoutListener stripListener;
@@ -412,6 +424,13 @@ final class Gallery {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 stripInsetBottom = bottomInset(insets);
+                stripInsetTop = topInset(insets);
+                // The status bar is a TOP inset on the strip, and the grid's own
+                // helper is reused so the two surfaces cannot grow a second answer.
+                // Padding rather than margin: the strip is bottom-anchored, and a top
+                // margin would move it the wrong way. See layoutStrip for the clamp
+                // that actually keeps the tiles below the clock.
+                v.setPadding(0, stripInsetTop, 0, 0);
                 layoutStrip();
                 return insets;
             }
@@ -536,6 +555,20 @@ final class Gallery {
     private void layoutStrip() {
         if (strip == null || stripLp == null) return;
         int margin = activity.dp(STRIP_GAP_DP) + stripInsetBottom + underlayHeight();
+        // Never let the strip ride above the status bar. At full sheet height the
+        // underlay is the whole screen, and the natural margin above would put the
+        // tiles at y=0 behind the clock. The clamp moves the host's BOTTOM edge down,
+        // which is the only direction that lowers a bottom-anchored strip's content:
+        // adding margin moves it further up. contentHeight excludes the host's own
+        // padding, because the padding is what the host wears, not the tiles.
+        int rootHeight = root.getHeight();
+        int contentHeight = strip.getHeight()
+                - strip.getPaddingTop() - strip.getPaddingBottom();
+        if (rootHeight > 0 && contentHeight > 0) {
+            int maxMargin = rootHeight - stripInsetTop - contentHeight;
+            if (margin > maxMargin) margin = maxMargin;
+        }
+        if (margin < 0) margin = 0;
         if (margin == stripAppliedMargin) return; // converged; no second layout
         stripAppliedMargin = margin;
         stripLp.bottomMargin = margin;

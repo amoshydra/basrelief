@@ -190,6 +190,16 @@ public class MainActivity extends Activity {
      * Lock segment. A sibling that is always present cannot go stale that way.
      */
     private View reliefCaption;
+    /**
+     * The second group caption, "How it moves".
+     *
+     * <p>A field only so its top gap can follow the depth caption's presence: when
+     * the depth caption is hidden because its row is absent, this becomes the first
+     * caption in the scroll and takes the mockup's {@code .caption:first-child} 2px;
+     * when it is not, it keeps the 16px of an inter-group heading. {@link
+     * #layOutCaption} applies whichever is true at the moment.
+     */
+    private TextView motionCaption;
     private TextView fixText;
     private LinearLayout fixActions;
     /**
@@ -430,7 +440,7 @@ public class MainActivity extends Activity {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 v.setPadding(sheetPadLeft, 0, sheetPadLeft,
-                        sheetPadBottom + ModalSheet.insetBottom(insets));
+                        sheetPadBottom + sheetFootInset(insets));
                 return insets;
             }
         });
@@ -485,14 +495,16 @@ public class MainActivity extends Activity {
         sheetContent.addView(surfaceSegment);
         refreshSurfaceSegment();
 
-        // The first caption sits 2px down when the switch is above it, per the
-        // mockup's .caption:first-child -- and 16px when it is not, which is the
-        // state this build starts in. Decided once, at build time: moving the caption
-        // as well as the switch on every refresh is a layout pass an apply does not
-        // need.
+        // The caption is always the first thing in the scroll, whether or not the
+        // Home / Lock segment sits above it on the panel, so the mockup's
+        // .caption:first-child 2px is the right top gap in both cases. The old
+        // condition (2px only when the segment was absent, 16px otherwise) was
+        // inverted and is the uneven fix-line -> segment -> caption gap that read too
+        // large: 10px of segment margin plus 16px of caption made 26 where the
+        // mockup draws 12.
         reliefCaption = sectionLabel(
                 heading(R.string.group_relief, R.string.group_relief_surface),
-                surfaceForSegment() == null);
+                true);
 
         // 0..100 = fraction of the maximum depth the camera allows at the
         // current zoom. Was 0..200, but the top half was a silent no-op at
@@ -505,6 +517,12 @@ public class MainActivity extends Activity {
         // something nobody can see.
         final AppState initial = AppState.load(prefs, getFilesDir());
         final LibraryItem initialItem = initial.activeItem();
+        // The caption and the depth row are one thing. The row below is built
+        // conditionally from the same fact, and syncDepthRow keeps the two in step
+        // after a selection change; deciding the launch state here means a photo
+        // with no map never shows its heading for a moment (or until the next
+        // selection) with nothing under it.
+        reliefCaption.setVisibility(initialItemHasMap(initial) ? View.VISIBLE : View.GONE);
         final SurfaceSettings s = initialItem == null
                 ? null : initialItem.settings(Surface.HOME);
         // Depth exists only for a photo that HAS a depth map (R-D1). It used to be
@@ -518,7 +536,11 @@ public class MainActivity extends Activity {
         // Immediately after the caption it belongs under, derived here rather than
         // saved: see depthInsertIndex for the bug a saved index caused.
         if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
-        sectionLabel(heading(R.string.group_motion, R.string.group_motion_surface));
+        motionCaption = sectionLabel(
+                heading(R.string.group_motion, R.string.group_motion_surface));
+        // The launch state of the first-caption rule: without a depth row the caption
+        // above Depth is absent, so this is the first caption the scroll shows.
+        layOutCaption(motionCaption, !initialItemHasMap(initial));
         sheetContent.addView(addSlider("motion",
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider("zoom",
@@ -577,6 +599,15 @@ public class MainActivity extends Activity {
                         }
                     }), new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
+            // one control with a doubled border; the gap is what makes them two, and
+            // it is set on the surviving child rather than passed to addView because
+            // each makeButton already carries the right plate and pressed state.
+            View regenButton = mapRow.getChildAt(0);
+            LinearLayout.LayoutParams regenLp =
+                    (LinearLayout.LayoutParams) regenButton.getLayoutParams();
+            regenLp.rightMargin = dp(8);
+            regenButton.setLayoutParams(regenLp);
             LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -621,7 +652,10 @@ public class MainActivity extends Activity {
         statusView.setTextColor(0x57FFFFFF);
         statusView.setTextSize(10);
         statusView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        statusView.setPadding(0, dp(7), 0, 0);
+        // .debug { margin-top:14px; padding-top:9px } over the hairline above. The
+        // same 9px at the bottom is what keeps the debug line and the Settings plate
+        // from reading as one cramped block at the very foot of the sheet.
+        statusView.setPadding(0, dp(9), 0, dp(9));
         sheetContent.addView(statusView);
 
         // Settings, in the foot. It was unreachable: openSettings() existed with no
@@ -1100,7 +1134,32 @@ public class MainActivity extends Activity {
      * every API: on 26–34 the bar never appears and the inset stays zero.
      */
     private void requestSheetInsets() {
-        if (sheetScroll != null) sheetScroll.requestApplyInsets();
+        if (sheetScroll == null) return;
+        sheetScroll.requestApplyInsets();
+    }
+
+    /**
+     * How much room the sheet's foot must leave for the navigation bar.
+     *
+     * <p>Not just {@link ModalSheet#insetBottom}: that reports the bar's CURRENT
+     * visibility, and on 35+ the bar is hidden until the system applies our
+     * {@code show()} request. The dispatch that follows the request can therefore
+     * carry 0 while the bar is about to appear, and no later dispatch is
+     * guaranteed -- which is exactly why the foot was still under a three-button
+     * bar: the listener ran once with inset 0 and the padding was never
+     * recomputed. The bar's height REGARDLESS of visibility is the right number on
+     * 35+, because the bar is visible whenever the sheet is expanded and the sheet
+     * has no height whenever the bar is hidden, so reserving it can never be wasted
+     * space. Below 35 the app hides the bar outright with the immersive flags and
+     * the current visibility is the honest value.
+     */
+    private int sheetFootInset(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT >= 35) {
+            return Math.max(ModalSheet.insetBottom(insets),
+                    insets.getInsetsIgnoringVisibility(
+                            WindowInsets.Type.navigationBars()).bottom);
+        }
+        return ModalSheet.insetBottom(insets);
     }
 
     // --------------------------------------------------------------------- back
@@ -2161,9 +2220,22 @@ public class MainActivity extends Activity {
         tv.setAllCaps(true);
         tv.setLetterSpacing(0.09f);
         tv.setTypeface(null, android.graphics.Typeface.BOLD);
-        tv.setPadding(dp(4), first ? dp(2) : dp(16), dp(4), dp(7));
+        layOutCaption(tv, first);
         sheetContent.addView(tv);
         return tv;
+    }
+
+    /**
+     * The mockup's {@code .caption} padding.
+     *
+     * <p>A method rather than an inline call because which caption is "first" can
+     * change: hiding the depth caption when its row is absent makes "How it moves"
+     * the first caption in the scroll, and it has to take the 2px top gap rather
+     * than the 16px of an inter-group heading. Two captions cannot both be first,
+     * and the depth row's presence is the one thing that decides which is.
+     */
+    private void layOutCaption(TextView tv, boolean first) {
+        tv.setPadding(dp(4), first ? dp(2) : dp(16), dp(4), dp(7));
     }
 
     /**
@@ -2412,6 +2484,19 @@ public class MainActivity extends Activity {
      */
     private void syncDepthRow(AppState state) {
         boolean want = initialItemHasMap(state);
+        // The heading goes with the control, and this is the one place that decides
+        // both. The caption is not deleted when the map is absent: it is the anchor
+        // the row is re-inserted after, so hiding it and bringing it back is what
+        // makes "no map, no heading" and "map, heading" the same decision. A caption
+        // over nothing is a group heading for a control that is not there.
+        if (reliefCaption != null) {
+            reliefCaption.setVisibility(want ? View.VISIBLE : View.GONE);
+        }
+        if (motionCaption != null) {
+            // When the depth caption goes, this one becomes the scroll's first
+            // caption and must take the 2px gap instead of the 16px inter-group one.
+            layOutCaption(motionCaption, !want);
+        }
         if (want && depthBarRow == null) {
             LibraryItem item = state.activeItem();
             SurfaceSettings s = item == null ? null : item.settings(editSurface);
@@ -2612,6 +2697,17 @@ public class MainActivity extends Activity {
             Button b = new Button(this);
             b.setAllCaps(false);
             b.setTextSize(12.5f);
+            // The mockup's .seg button, not the platform Button: 8px sides, a 7px
+            // radius, and NO 48dp minimum. The theme's minimum is what made the
+            // segment read as a heavy control -- a 48dp plate around a 12.5sp
+            // label -- when the design draws a ~30px pill. An explicit height beats
+            // the theme minimum where setMinHeight did not, and matches the fixed
+            // heights the rest of the sheet already uses (the 34dp slider track).
+            b.setMinWidth(0);
+            b.setMinHeight(0);
+            b.setPadding(dp(8), 0, dp(8), 0);
+            b.setIncludeFontPadding(false);
+            b.setGravity(Gravity.CENTER);
             b.setText(surface == Surface.HOME
                     ? getString(R.string.surface_home) : getString(R.string.surface_lock));
             boolean on = surface == current;
@@ -2667,8 +2763,14 @@ public class MainActivity extends Activity {
             });
             if (surface == Surface.HOME) segHome = b; else segLock = b;
             setSegmentButton(b, surface == current);
-            seg.addView(b, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            // .seg { gap:2px } -- the two buttons sit in the same track with a
+            // hairline of track between them rather than sharing an edge. The fixed
+            // height is the mockup's button box; see above for why it is not
+            // WRAP_CONTENT and left to the platform Button's minimum.
+            LinearLayout.LayoutParams segLp = new LinearLayout.LayoutParams(0,
+                    dp(30), 1f);
+            if (surface == Surface.LOCK) segLp.leftMargin = dp(2);
+            seg.addView(b, segLp);
         }
         LinearLayout.LayoutParams outer = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
