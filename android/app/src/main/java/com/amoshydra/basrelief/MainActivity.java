@@ -505,27 +505,38 @@ public class MainActivity extends Activity {
         sheetScroll.setFadingEdgeLength(dp(22));
         sheetScroll.setVerticalFadingEdgeEnabled(true);
         // The sheet itself has no padding, so the content carries it: 14dp sides, and
-        // the bottom inset lives here so it scrolls away rather than eating height.
+        // the bottom gap lives on the CONTENT, not on the scroll. Android draws a
+        // scroll view's fading edge over getFadeHeight(), which is height minus
+        // paddingBottom -- so the last 14dp of the scroll is the one strip the fade
+        // can never cover. Measured before this change: fadeLen 43px with padBottom
+        // 27px on the OnePlus (inset 0), and 143px of bar plus the same 14dp on the
+        // Pixel, leaving unfaded content/glass between the fade's end and the bar on
+        // BOTH devices -- the reported gap. On the content it spaces the last control
+        // by the same 14dp and leaves the fade free to reach the view's bounds.
         final int sheetPadLeft = dp(14);
         final int sheetPadBottom = dp(14);
-        sheetScroll.setPadding(sheetPadLeft, 0, sheetPadLeft, sheetPadBottom);
+        sheetScroll.setPadding(sheetPadLeft, 0, sheetPadLeft, 0);
         // Fold the navigation-bar inset into a bottom MARGIN, the same way every
         // modal does -- except the modals fold it into padding, and padding is
         // wrong here for one reason: the scroll view's fading edge is drawn at
         // the view's BOUNDS. Padding lives inside the bounds, so padding moves
         // the content away from the edge while the edge itself stays at the
-        // window's bottom, underneath the bar -- which is exactly the reported
-        // bug: an unfaded strip of sheet between the fade and the bar, with the
-        // fade itself invisible behind the bar. A margin moves the bounds, and
-        // therefore the fade, to sit just above the bar. The margin region below
-        // it shows the panel's own glass, which is what the bar then composites
-        // over. ModalSheet.insetBottom is reused rather than re-derived so all
-        // five surfaces resolve the bar identically.
+        // window's bottom, underneath the bar. A margin moves the bounds, and
+        // therefore the fade, to sit just above the bar; the region below shows
+        // the panel's own glass, which is what the bar then composites over.
+        //
+        // The margin is only half of the fix. The fade is also bounded by
+        // View.getFadeHeight(), which is the view's height MINUS its padding:
+        // any bottom padding on the scroll is the one strip the fade can never
+        // cover. That strip was the gap still visible after the margin change,
+        // on both devices -- 27px of unfaded panel below the fade on the OnePlus
+        // (inset 0, so the margin does nothing there) and 42px above the bar on
+        // the Pixel. The 14dp gap therefore lives on sheetContent and the scroll
+        // carries no bottom padding at all. ModalSheet.insetBottom is reused
+        // rather than re-derived so all five surfaces resolve the bar identically.
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                // The design's 14dp gap is content spacing, so it stays padding.
-                v.setPadding(sheetPadLeft, 0, sheetPadLeft, sheetPadBottom);
                 LinearLayout.LayoutParams lp =
                         (LinearLayout.LayoutParams) v.getLayoutParams();
                 int bar = sheetFootInset(insets);
@@ -557,6 +568,9 @@ public class MainActivity extends Activity {
         });
         sheetContent = new LinearLayout(this);
         sheetContent.setOrientation(LinearLayout.VERTICAL);
+        // The 14dp foot gap the mockup draws, on the content so the scroll's fade
+        // reaches its own bounds. See sheetScroll's padding above.
+        sheetContent.setPadding(0, 0, 0, sheetPadBottom);
         sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));

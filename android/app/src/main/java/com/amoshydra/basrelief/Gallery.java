@@ -26,8 +26,10 @@ import com.amoshydra.basrelief.core.store.Surface;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -160,6 +162,71 @@ final class Gallery {
      * end the mode.
      */
     private final Set<String> picked = new LinkedHashSet<String>();
+
+    /**
+     * Each grid cell's picked decoration, by item id.
+     *
+     * <p>A pick changes one cell's wash, badge and description — and the count
+     * line and two foot actions. Rebuilding the grid to draw that re-created
+     * every cell and re-ran every thumbnail decode, which is the whole-gallery
+     * flash this map exists to remove. The wash and badge are built with every
+     * cell and only their visibility changes, so a toggle is a visibility write
+     * on views that already exist.
+     *
+     * <p>Cleared and refilled by each build, because a mark addresses views that
+     * must be in the hierarchy; an entry that outlived its cell would toggle a
+     * removed view while the cell on screen stayed stale.
+     */
+    private final Map<String, PickedCell> cellMarks = new HashMap<String, PickedCell>();
+
+    /**
+     * Each strip thumbnail's view, by item id, so a selection can move two rings
+     * without rebuilding the strip — which would drop every thumbnail and decode
+     * it again. The entry holds no active flag: the ring is the background and
+     * padding, drawn on demand by {@link #drawStripRing}.
+     */
+    private final Map<String, StripTile> stripTiles = new HashMap<String, StripTile>();
+
+    /**
+     * The grid's count/hint line and its two selection actions.
+     *
+     * <p>They are part of the picked state and must change with it, so they are
+     * found once at build time instead of re-read through the hierarchy on every
+     * toggle.
+     */
+    private TextView selectionLineView;
+    private final List<Button> selectionActions = new ArrayList<Button>();
+
+    /**
+     * One grid cell's picked mark: the wash and the checkmark badge, plus the
+     * cell whose description names the state.
+     */
+    private static final class PickedCell {
+        final LibraryItem item;
+        final View cell;
+        final View tint;
+        final View badge;
+        final boolean active;
+
+        PickedCell(LibraryItem item, View cell, View tint, View badge, boolean active) {
+            this.item = item;
+            this.cell = cell;
+            this.tint = tint;
+            this.badge = badge;
+            this.active = active;
+        }
+    }
+
+    /** One strip thumbnail, so its ring can be drawn again without a rebuild. */
+    private static final class StripTile {
+        final LibraryItem item;
+        final ImageView view;
+
+        StripTile(LibraryItem item, ImageView view) {
+            this.item = item;
+            this.view = view;
+        }
+    }
 
     /**
      * Where a copied set of settings came from, or null if nothing has been
@@ -321,6 +388,7 @@ final class Gallery {
             if (stripHost != null) stripHost.removeView(strip);
             strip = null;
         }
+        stripTiles.clear();
         dismissGrid();
         picked.clear();
         copySourceId = null;
@@ -329,6 +397,7 @@ final class Gallery {
     // ------------------------------------------------------------- the filmstrip
 
     private View buildStrip() {
+        stripTiles.clear();
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         Library lib = state.library;
         String activeId = lib.activeId();
@@ -422,7 +491,27 @@ final class Gallery {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
         lp.setMargins(activity.dp(3), 0, activity.dp(3), 0);
         thumb.setLayoutParams(lp);
+        stripTiles.put(item.id, new StripTile(item, thumb));
         return thumb;
+    }
+
+    /**
+     * Redraw one strip tile's ring, in place.
+     *
+     * <p>The ring is the background plus the padding that lets a stroke show
+     * under the picture, so it is both writes here. A missing tile is a no-op:
+     * the strip may not have been installed yet, and a selection arriving with
+     * no strip to update is not an error.
+     *
+     * @param active whether this photograph is now the one on screen
+     */
+    private void drawStripRing(String id, boolean active) {
+        if (id == null) return;
+        StripTile tile = stripTiles.get(id);
+        if (tile == null) return;
+        tile.view.setBackground(thumbBackground(tile.item, active));
+        int ring = active ? activity.dp(2) : 0;
+        tile.view.setPadding(ring, ring, ring, ring);
     }
 
     /**
@@ -536,6 +625,9 @@ final class Gallery {
         // outlived its screen would come back with checkmarks nobody remembers
         // making — and a mode the user cannot see is a mode they cannot leave.
         picked.clear();
+        cellMarks.clear();
+        selectionActions.clear();
+        selectionLineView = null;
         root.removeView(grid);
         grid = null;
     }
@@ -549,6 +641,12 @@ final class Gallery {
      * one do, and none of them fit in a 46px tile.
      */
     private View buildGrid() {
+        // The marks and the selection controls are the views the build below is
+        // about to create; anything left from the previous grid addresses views
+        // that are no longer on screen, so the maps start empty on every build.
+        cellMarks.clear();
+        selectionActions.clear();
+        selectionLineView = null;
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         final Library lib = state.library;
         final List<LibraryItem> rows = lib.sorted();
@@ -790,22 +888,26 @@ final class Gallery {
         picture.addView(thumb, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
-        if (isPicked) {
-            // The wash is the at-a-glance answer to "how many are picked" that
-            // does not need the count line to be read: a checked cell is one the
-            // next paste or playlist will include.
-            View tint = new View(activity);
-            tint.setBackgroundColor(PICK_TINT);
-            picture.addView(tint, new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT));
-        }
+        // The wash and the badge are built on every cell and only their
+        // visibility changes. Building them conditionally is what made a pick a
+        // rebuild: the grid could not show a mark it had never created, so the
+        // rebuild threw every cell away and decoded every thumbnail again.
+        //
+        // The wash is the at-a-glance answer to "how many are picked" that does
+        // not need the count line to be read: a checked cell is one the next
+        // paste or playlist will include.
+        View tint = new View(activity);
+        tint.setBackgroundColor(PICK_TINT);
+        tint.setVisibility(isPicked ? View.VISIBLE : View.GONE);
+        picture.addView(tint, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
         View chip = depthChip(item);
         picture.addView(chip, chipParams());
         picture.addView(menuButton(item), menuParams());
-        if (isPicked) {
-            picture.addView(selectedBadge(), badgeParams());
-        }
+        View badge = selectedBadge();
+        badge.setVisibility(isPicked ? View.VISIBLE : View.GONE);
+        picture.addView(badge, badgeParams());
         if (!item.isBundled()) {
             File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
             if (f != null) watchForEmbeddedDepth(f, item, thumb, chip);
@@ -833,10 +935,14 @@ final class Gallery {
                 // what toggles, so a hold on something already picked does not
                 // undo the very thing the user is holding to keep.
                 if (item.isBundled()) return true;
-                if (picked.add(item.id)) postGridRebuild();
+                if (picked.add(item.id)) {
+                    drawPicked(item.id, true);
+                    refreshSelectionUi();
+                }
                 return true;
             }
         });
+        cellMarks.put(item.id, new PickedCell(item, cell, tint, badge, isActive));
         cell.setContentDescription(stateDescription(item, isActive, isPicked));
         return cell;
     }
@@ -844,10 +950,12 @@ final class Gallery {
     /**
      * Toggle one row's membership in the pick set, and redraw the marks.
      *
-     * <p>Rebuilt rather than patched: every visible fact about picking — the
-     * wash, the badge, the count line and whether the foot's actions are live —
-     * is derived from this one set, and patching four views is four chances to
-     * disagree with it.
+     * <p>Patched, not rebuilt: a pick changes one cell's wash and badge, the
+     * count line, and whether the two foot actions are live — values already on
+     * screen. The grid used to be thrown away and rebuilt, which re-created
+     * every cell and re-decoded every thumbnail, and that is the whole-gallery
+     * flash the user reported. All of it is derived from the same {@link #picked}
+     * set here, so the four writes cannot disagree about it.
      *
      * <p>The bundled row is never a member: it has no file to delete and no
      * settings of its own, so a checkmark on it would promise an action the
@@ -856,24 +964,60 @@ final class Gallery {
     private void togglePick(LibraryItem item) {
         if (item.isBundled()) return;
         if (!picked.remove(item.id)) picked.add(item.id);
-        postGridRebuild();
+        drawPicked(item.id, picked.contains(item.id));
+        refreshSelectionUi();
     }
 
     /**
-     * Rebuild the grid after this touch sequence, not during it.
+     * Show or hide one cell's picked mark, and say the new state to a screen
+     * reader.
      *
-     * <p>Tearing a view out of the hierarchy from inside its own touch dispatch
-     * works until it does not, and the rebuild removes the very cell whose
-     * listener is running.
+     * <p>A no-op without a mark: the grid may be down, and a toggle that raced
+     * its own dismissal has nothing left to draw on.
      */
-    private void postGridRebuild() {
-        if (grid == null) return;
-        grid.post(new Runnable() {
-            @Override
-            public void run() {
-                rebuildGrid();
-            }
-        });
+    private void drawPicked(String id, boolean on) {
+        PickedCell mark = cellMarks.get(id);
+        if (mark == null) return;
+        mark.tint.setVisibility(on ? View.VISIBLE : View.GONE);
+        mark.badge.setVisibility(on ? View.VISIBLE : View.GONE);
+        mark.cell.setContentDescription(stateDescription(mark.item, mark.active, on));
+    }
+
+    /**
+     * How the grid's count line and its two selection actions follow the pick
+     * set.
+     *
+     * <p>One method because they are one state: the line reports how many are
+     * picked and the actions are live exactly while that count is not zero.
+     * Writing them at the toggle separately is how a live Paste ends up beside
+     * "Select photos to paste onto".
+     */
+    private void refreshSelectionUi() {
+        boolean picking = !picked.isEmpty();
+        if (selectionLineView != null) {
+            selectionLineView.setText(picking
+                    ? activity.getString(R.string.gallery_selection_count, picked.size())
+                    : activity.getString(R.string.gallery_selection_hint));
+            selectionLineView.setTextColor(picking ? ACCENT : 0x99FFFFFF);
+        }
+        for (Button b : selectionActions) refreshSelectionAction(b);
+    }
+
+    /**
+     * One foot action's enabled state, dimming and description, from the pick
+     * set.
+     *
+     * <p>A disabled action carries the string that says what would enable it,
+     * and a live one goes back to its own label — the same "not available yet"
+     * appearance the sheet gives a locked row.
+     */
+    private void refreshSelectionAction(Button b) {
+        boolean live = !picked.isEmpty();
+        b.setEnabled(live);
+        b.setAlpha(live ? 1f : 0.4f);
+        Object reason = b.getTag();
+        b.setContentDescription(live || !(reason instanceof Integer)
+                ? null : activity.getString((Integer) reason));
     }
 
     /**
@@ -1047,6 +1191,8 @@ final class Gallery {
         TextView line = text(s, 12);
         line.setTextColor(picking ? ACCENT : 0x99FFFFFF);
         line.setPadding(0, activity.dp(6), 0, activity.dp(2));
+        // Kept so a toggle can rewrite it without rebuilding the grid it is in.
+        selectionLineView = line;
         return line;
     }
 
@@ -1068,10 +1214,11 @@ final class Gallery {
     private Button selectionAction(String label, int reasonRes,
                                    View.OnClickListener listener) {
         Button b = compact(label, listener);
-        boolean live = !picked.isEmpty();
-        b.setEnabled(live);
-        b.setAlpha(live ? 1f : 0.4f);
-        if (!live) b.setContentDescription(activity.getString(reasonRes));
+        // The reason is carried on the button itself so one update method can
+        // restore either state without a parallel list to keep in step.
+        b.setTag(reasonRes);
+        selectionActions.add(b);
+        refreshSelectionAction(b);
         return b;
     }
 
@@ -1242,6 +1389,11 @@ final class Gallery {
      * for, and a photo chosen from a list should leave the list behind it.
      */
     private void select(String id) {
+        // Read before the write: the old ring has to be lifted, and under the
+        // "Recent" order the write itself moves the row.
+        AppState before = AppState.load(activity.prefs, activity.getFilesDir());
+        String was = before.library.activeId();
+        SortOrder order = before.library.sort();
         LibraryStore.select(activity.prefs, id);
         // The sheet repopulates itself through the guarded path, so a switch does
         // not write: refreshSliders sets syncingZoom around every setProgress
@@ -1252,11 +1404,19 @@ final class Gallery {
         activity.refreshSliders();
         activity.applyFiles();
         dismissGrid();
-        // The strip's ring moves with the selection, so it is rebuilt rather than
-        // patched — and the grid closes, because the render is the thing the user
-        // came for and a photograph chosen from a list should leave the list
-        // behind it.
-        refreshStrip();
+        // The ring is the only thing in the strip that a selection changes, and
+        // under a fixed order the row cannot move — so the two rings are repainted
+        // instead of the whole strip rebuilt, which would drop every thumbnail and
+        // decode it again. "Recent" is the exception: the selection IS the sort
+        // key there, so the row genuinely moves and the strip is rebuilt. The grid
+        // closes either way, because the render is the thing the user came for and
+        // a photograph chosen from a list should leave the list behind it.
+        if (order == SortOrder.RECENTLY_USED) {
+            refreshStrip();
+        } else {
+            drawStripRing(was, false);
+            drawStripRing(id, true);
+        }
     }
 
     private void addPhoto() {
