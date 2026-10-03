@@ -2356,7 +2356,14 @@ public class MainActivity extends Activity {
                     // lying still: no sensor, no frames, a frozen preview. Pump.
                     pumpGlideFrames();
                     refreshSliders();
-                    applyFiles();
+                    // NOT applyFiles(). A surface switch changes no file -- same photo,
+                    // same depth map -- and applyFiles queues renderer.apply(), which
+                    // ends a glide in flight. Queued after the glide's own event, it
+                    // cancelled the glide microseconds after arming it, every time,
+                    // which is why the switch never animated: the arm and the cancel
+                    // were both in the click handler. The foot line is the only other
+                    // thing applyFiles did that this switch needs.
+                    refreshStatus();
                     setSegmentActive(surface);
                 }
             });
