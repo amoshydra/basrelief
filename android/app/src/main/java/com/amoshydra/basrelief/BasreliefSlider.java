@@ -17,6 +17,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -51,11 +52,28 @@ import android.widget.TextView;
  * only the caller knows. A stored value the renderer does not read is a lie, and
  * this class refuses to store one it cannot vouch for.
  *
+ * <p><b>A wheel, not a place on the bar.</b> A drag moves the value by how far the
+ * finger travels — right raises it, left lowers it, and the travel accumulates for
+ * the whole gesture — instead of mapping the touch x to an absolute value. A bound
+ * resets the measure, so hitting the end and continuing does not wind up: reversing
+ * moves the value on the first unit back, the way a wheel at its stop behaves. The
+ * bar is a readout, not a thumb: there is no x that means "half depth", so a tap is
+ * not a value selection and deliberately changes nothing; a tap has no direction to
+ * take a step in, and inventing one is a guess. The −/＋ pair is the step.
+ *
  * <p><b>Preview while dragging, commit on release.</b> {@link OnPreview} is
- * optional and fires per pixel of travel; {@link OnChanged} fires once, when the
- * finger lifts, or when a nudge is tapped. A drag that persisted as it moved would
- * re-read and re-validate the whole gallery once per pixel, for a few hundred stat
- * calls to end up with one value.
+ * optional and fires for every step of travel, for every key; {@link OnChanged}
+ * fires once, when the finger lifts, or when a nudge is tapped. A drag that
+ * persisted as it moved would re-read and re-validate the whole gallery once per
+ * step, for a few hundred stat calls to end up with one value. Preview is also the
+ * only way an adjustment with no cheap write path — pan and origin rewrite the
+ * whole index — can follow the finger at all.
+ *
+ * <p><b>The host is told when the work starts and stops.</b> {@link OnInteraction}
+ * is optional and fires once when a gesture begins — a track touch-down, or a nudge
+ * press — and once when it ends, so a host can make the sheet see-through while the
+ * user is adjusting. {@link #setValue} cannot fire it, for the same reason it cannot
+ * fire anything else: it has no listener to fire.
  *
  * <p><b>Nothing here is moved with a transform.</b> The fill is painted, not
  * translated. That is the ordinary reason — a translation would need a layout pass
@@ -101,6 +119,30 @@ final class BasreliefSlider extends LinearLayout {
     /** One nudge is one unit. Enough to aim with, and every key's range is an integer. */
     private static final int STEP = 1;
 
+    /**
+     * How much finger travel a full sweep of the range asks for, when the range is
+     * wide enough that the cap below does not bind.
+     *
+     * <p>Scaled to the range rather than fixed, because one class serves every
+     * control: Depth is 100 units wide and Pan is 8000, and a fixed px-per-unit
+     * would make Pan untraversable and Depth twitchy. Range-scaling gives every key
+     * the same feel — a full sweep is one comfortable drag instead of a different
+     * gesture per row. 420dp is a little over a phone's width, so a sweep is one
+     * deliberate drag with the finger still on the screen, and the 0..100 rows land
+     * at 4.2dp per unit.
+     */
+    private static final float FULL_SWEEP_DP = 420f;
+
+    /**
+     * The most travel one unit may demand.
+     *
+     * <p>For a short range the sweep rule would make each step absurdly long: Output
+     * has six resolutions, so 420dp over its five-unit range would be 84dp per step
+     * and the bar could not be crossed in one drag. The cap keeps one step a
+     * deliberate press-and-drag without letting a short row hijack the sheet.
+     */
+    private static final float MAX_STEP_DP = 40f;
+
     /** The accent at the {@code opacity:.85} the mockup draws the fill at. */
     private static final int ACCENT_FILL = 0xD97FD1C1;
     /** The name, and any text off the fill. */
@@ -132,12 +174,29 @@ final class BasreliefSlider extends LinearLayout {
      * A value being moved, for the renderer to follow.
      *
      * <p>Optional, and separate from {@link OnChanged} because the two cost
-     * different things: this one runs per pixel of travel and must stay cheap
+     * different things: this one runs per step of travel and must stay cheap
      * (nothing may read the index in it), while that one writes and may afford a
-     * read-modify-write of the whole library.
+     * read-modify-write of the whole library. It is the hook pan and origin use to
+     * follow the finger without writing on every step.
      */
     interface OnPreview {
         void onPreview(int value);
+    }
+
+    /**
+     * A gesture beginning and ending, for a host to hang transient UI on.
+     *
+     * <p>One touch is one pair: {@code onStart} on the track's touch-down or a
+     * nudge's press, {@code onEnd} when the finger lifts or the gesture is taken
+     * away. A host uses this to lower the sheet's opacity while the user is working
+     * and restore it on release. Separate from {@link OnChanged} because it is not
+     * about the value: it fires for a tap that changes nothing, and it must not fire
+     * for {@link #setValue}, which is why {@link #setValue} has nothing to call.
+     */
+    interface OnInteraction {
+        void onStart();
+
+        void onEnd();
     }
 
     private final MainActivity activity;
@@ -149,6 +208,18 @@ final class BasreliefSlider extends LinearLayout {
 
     /** Optional. Null is a slider that only paints, which is a legitimate use. */
     private OnPreview onPreview;
+    /** Optional. A host that does not dim the sheet simply never installs one. */
+    private OnInteraction onInteraction;
+    /**
+     * True between {@link #beginInteraction} and {@link #endInteraction}, so the
+     * pair fires exactly once even if two fingers land on the control: the first
+     * end closes the pair and a second start is already covered.
+     */
+    private boolean interacting;
+    /** Finger travel per unit. Range-scaled; see {@link #FULL_SWEEP_DP}. */
+    private final float pxPerUnit;
+    /** The platform's threshold, so a tap that shivers is still a tap. */
+    private final int touchSlop;
 
     private final TrackFace face;
     private final Track track;
@@ -185,6 +256,13 @@ final class BasreliefSlider extends LinearLayout {
         this.max = Math.max(min, max);
         this.formatter = fmt;
         this.onChanged = onChanged;
+        // dp per unit, then pixels. The cap is in dp too, so the feel is the same
+        // at any density. Math.max(1, ..) covers a one-value range, which is a
+        // slider that cannot move but must not divide by zero.
+        int range = Math.max(1, this.max - this.min);
+        this.pxPerUnit = Math.min(MAX_STEP_DP, FULL_SWEEP_DP / range)
+                * a.getResources().getDisplayMetrics().density;
+        this.touchSlop = ViewConfiguration.get(a).getScaledTouchSlop();
 
         setOrientation(HORIZONTAL);
         setGravity(Gravity.CENTER_VERTICAL);
@@ -273,6 +351,11 @@ final class BasreliefSlider extends LinearLayout {
         this.onPreview = preview;
     }
 
+    /** Hear a gesture begin and end. Optional; see {@link OnInteraction}. */
+    void setOnInteraction(OnInteraction listener) {
+        this.onInteraction = listener;
+    }
+
     /**
      * Grey the row out, or bring it back.
      *
@@ -322,6 +405,25 @@ final class BasreliefSlider extends LinearLayout {
         if (v == value) return;
         show(v);
         if (onPreview != null) onPreview.onPreview(v);
+    }
+
+    /**
+     * The gesture started. Idempotent, so a second finger cannot open a second pair.
+     */
+    private void beginInteraction() {
+        if (interacting) return;
+        interacting = true;
+        if (onInteraction != null) onInteraction.onStart();
+    }
+
+    /**
+     * The gesture ended. Paired with {@link #beginInteraction}; see it for why the
+     * guard is here rather than at each call site.
+     */
+    private void endInteraction() {
+        if (!interacting) return;
+        interacting = false;
+        if (onInteraction != null) onInteraction.onEnd();
     }
 
     /**
@@ -389,6 +491,29 @@ final class BasreliefSlider extends LinearLayout {
                 nudge(direction);
             }
         });
+        // The press, not the completed click, is the interaction: a nudge is a
+        // hold-then-release like a drag, and a host dimming the sheet wants the dim
+        // for as long as the finger is down. Returning false everywhere leaves the
+        // view's own tracking, ripple and click untouched -- this listener only
+        // observes. A disabled nudge is never dispatched to, so the pair cannot fire
+        // for a control that is switched off.
+        t.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        beginInteraction();
+                        break;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        endInteraction();
+                        break;
+                    default:
+                        break;
+                }
+                return false;
+            }
+        });
         return t;
     }
 
@@ -454,21 +579,34 @@ final class BasreliefSlider extends LinearLayout {
     // ----------------------------------------------------------------- the track
 
     /**
-     * The bar, and the drag.
+     * The bar, and the wheel.
      *
      * <p>One owner reference rather than a listener, because the touch and the paint
-     * are the same arithmetic: a touch says <i>what fraction</i>, and the face that
-     * paints the fraction has to hear about it. Routing both through the row means
-     * there is one place a value moves — preview, nudge, release and a programmatic
-     * set all go through it, and none of them can leave the bar disagreeing with the
-     * number printed on it.
+     * are the same arithmetic: a touch says <i>how far</i>, which becomes a value,
+     * and the face that paints the value has to hear about it. Routing both through
+     * the row means there is one place a value moves — preview, nudge, release and a
+     * programmatic set all go through it, and none of them can leave the bar
+     * disagreeing with the number printed on it.
      */
     private static final class Track extends View {
 
         private final BasreliefSlider owner;
 
+        /** Where the finger landed, so travel starts from the touch that began it. */
+        private float downX;
         /** The value when this gesture began — what a cancelled drag returns to. */
         private int pressedAt;
+        /** True once horizontal travel crossed the slop and this is a drag. */
+        private boolean dragging;
+        /**
+         * The x the drag measures from, and the value it had there.
+         *
+         * <p>Anchored at the slop boundary rather than at {@link #downX}, so the
+         * dead zone is the slop and nothing more: no jump when the drag is claimed,
+         * and the travel carried by the claiming event itself is not lost.
+         */
+        private float anchorX;
+        private int anchorValue;
 
         Track(Context c, BasreliefSlider owner) {
             super(c);
@@ -486,21 +624,48 @@ final class BasreliefSlider extends LinearLayout {
                     // pixels downward belongs to the scroll rather than to the bar.
                     // Claiming the gesture here is the touch-level way to say so.
                     getParent().requestDisallowInterceptTouchEvent(true);
+                    downX = event.getX();
                     pressedAt = owner.value;
-                    // Set the value on the way down, so a tap is tap-to-set. The
-                    // release that follows writes it once, down the same one-write
-                    // path a drag takes, so tap-to-set costs nothing extra.
-                    owner.preview(valueAt(event.getX()));
+                    dragging = false;
+                    owner.beginInteraction();
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    owner.preview(valueAt(event.getX()));
+                    if (!dragging) {
+                        float dx = event.getX() - downX;
+                        // Below the platform's own slop this is still a tap with a
+                        // shiver, and a wheel that moved on it would drift a value
+                        // the user only touched to read.
+                        if (Math.abs(dx) < owner.touchSlop) return true;
+                        dragging = true;
+                        // The dead zone is the slop and nothing more. Measuring from
+                        // the point the finger crossed it keeps the travel carried by
+                        // this very event -- a batched ACTION_MOVE can contain a whole
+                        // gesture -- while still leaving no jump at the boundary.
+                        anchorX = downX + (dx > 0 ? owner.touchSlop : -owner.touchSlop);
+                        anchorValue = owner.value;
+                    }
+                    int next = anchorValue
+                            + Math.round((event.getX() - anchorX) / owner.pxPerUnit);
+                    if (next < owner.min || next > owner.max) {
+                        // A stop, not a wind-up: discard the travel past the end and
+                        // measure from the end itself, so reversing moves the value
+                        // at once instead of first unwinding an invisible overrun.
+                        // preview() still clamps, so the value stops at the bound.
+                        anchorValue = next < owner.min ? owner.min : owner.max;
+                        anchorX = event.getX();
+                        next = anchorValue;
+                    }
+                    owner.preview(next);
                     return true;
                 case MotionEvent.ACTION_UP:
                     // Done before the release, so a click on a bar has the same
                     // accessibility event a click anywhere else has.
                     performClick();
                     getParent().requestDisallowInterceptTouchEvent(false);
+                    // release() itself declines to write when the value never left
+                    // where the gesture found it, so the tap path costs nothing.
                     owner.release(pressedAt);
+                    owner.endInteraction();
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     getParent().requestDisallowInterceptTouchEvent(false);
@@ -509,6 +674,7 @@ final class BasreliefSlider extends LinearLayout {
                     // was never stored would be a second thing on screen the store
                     // does not agree with.
                     owner.cancelTo(pressedAt);
+                    owner.endInteraction();
                     return true;
                 default:
                     return super.onTouchEvent(event);
@@ -518,18 +684,6 @@ final class BasreliefSlider extends LinearLayout {
         @Override
         public boolean performClick() {
             return super.performClick();
-        }
-
-        /** The value at an x, clamped into the range. */
-        private int valueAt(float x) {
-            int usable = getWidth() - getPaddingLeft() - getPaddingRight();
-            // Before the first layout there is no width to divide by, and a
-            // division by it here would put the bar at NaN and never come back.
-            if (usable <= 0) return owner.value;
-            float fraction = (x - getPaddingLeft()) / usable;
-            if (fraction < 0f) fraction = 0f;
-            else if (fraction > 1f) fraction = 1f;
-            return owner.min + Math.round(fraction * (owner.max - owner.min));
         }
     }
 
