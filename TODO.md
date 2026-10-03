@@ -573,3 +573,49 @@ keeps paying for.
 **Not a regression from the file-backing work**: the bundled demo now correctly stores
 `"depth":"item-bundled-depth.png"` and reports `FILE`. This is the embedded case, which no
 code path consulted until now.
+
+## The pill should be the design's pill: 38dp, content-width, 48dp of touch (2026-10-04)
+
+**The user:** *the pill should be much smaller, matching the original design* — and
+*do it* after the touch-target conflict below was put to them.
+
+**The design's numbers, from `.design/prototype/final.html:113`:**
+```css
+.pill{ left:50%; transform:translateX(-50%); bottom:26px;
+       min-height:38px; max-width:calc(100% - 56px);
+       padding:8px 18px; border-radius:999px; font-size:13.5px; }
+```
+So: **38dp tall**, and **content-width** — it wraps its label and centres, capped at
+screen minus 56dp with the filename ellipsised. Ours is 56dp tall and **72% of the screen
+wide**, which is why it reads as a bar with a label in it rather than a pill.
+
+**THE TOUCH CONFLICT, and the answer the user approved:** the design's 38dp is below the
+48dp minimum touch target this project set. **38dp of visible pill inside a 48dp touch
+area** — the pill's fill moves from the panel onto the strip, so the extra 10dp is
+transparent padding and not a taller bar.
+
+**What has to change, in order:**
+1. **The pill fill moves from the panel to the strip.** Today the *panel* is the pill: it
+   gets the side margins, the bottom lift and the capsule radius, and `panelBackground`
+   paints it. The panel must instead go **transparent** as `shapeProgress` reaches 1 and
+   `stripBackground` (which already exists and already animates a stroke) becomes the
+   fill. Both cross-fade across the band, which is the morph.
+2. **Heights:** `STRIP_HEIGHT_DP` 56 → **38** for the visible strip; the collapsed *panel*
+   height becomes **48** so the whole thing is still a ≥48dp drag target, with the 38dp
+   strip sitting at the panel's top and 10dp of transparent padding below it.
+3. **Width becomes content-width.** The strip is `wrap_content`, `maxWidth` = screen −
+   56dp, centred; its measured width becomes the pill's target.
+4. **`:core` signature change:** `SheetMorph.pillSideMarginFor(fraction, screenWidthPx,
+   pillWidthFraction)` takes the **content width** instead of a fraction — the margin is
+   still half the leftover, so the sides cannot differ, and the function stays the one
+   place the narrowing is derived. Do **not** leave it unused: a tested derivation with no
+   caller is the dead-code smell this repo treats as a bug.
+5. **Radius** targets half the *visible* strip (19dp), not half the 48dp touch area.
+
+**Must not regress:** the height ramp (whole travel), the shape band (the collapse
+threshold), the content fade band, the pill remaining a drag handle that drags the sheet,
+`SheetIntent`, and the panel never being transformed (b/7179570 — it is inset by
+`LayoutParams`).
+
+**Verification is a photo.** The width and height of this object have been right and the
+appearance wrong three times; `screencap` cannot judge it.
