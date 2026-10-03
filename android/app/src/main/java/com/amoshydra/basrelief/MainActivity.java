@@ -345,6 +345,13 @@ public class MainActivity extends Activity {
      * under the user's finger. One base, one writer.
      */
     private int stripFillBase = SHEET_GLASS;
+    /**
+     * The fill {@link #applySheetTone} last wrote to the strip, so a stroke change can
+     * restore it. {@code GradientDrawable.setStroke} CLEARS the fill, and the repair
+     * used to restore the sheet's base rather than the current blend -- which repainted
+     * the pill opaque after every state change.
+     */
+    private int pillFillNow = PILL_PLATE;
 
     /** The last fill written, so an unchanged blend is not re-set. */
     private int lastSheetFill = -1;
@@ -2010,35 +2017,47 @@ public class MainActivity extends Activity {
      * alpha of 0 would still be a row that is there.
      */
     private void applyStripPillness(float pillness) {
-        if (pillRow == null || slack == null) return;
-        // Quantised, because this calls requestLayout and a per-frame re-measure on a
-        // temperature-sensitive GL surface is not worth one pixel of smoothness.
+        if (pillRow == null || slack == null || gripBand == null) return;
         int step = Math.round(pillness * 8f);
         if (step == stripDrawnPillness) return;
         stripDrawnPillness = step;
         float p = step / 8f;
-        // The OUTLINE is the pill's, so it is absent -- not transparent -- when the pill
-        // is: "dont draw outline when expanded". A zero-alpha stroke is still a stroke
-        // that a compositor may anti-alias into a faint hairline, and the open sheet has
-        // its OWN top hairline from the panel. Draw it only once there is a pill, and
-        // reset the stroke when there is not, or the last colour stays on the drawable.
         if (step == 0) {
             stripBackground.setStroke(0, 0);
             stripBackground.setColor(Color.TRANSPARENT);
         } else {
             applyStripState(true);
         }
-        ((LinearLayout.LayoutParams) pillRow.getLayoutParams()).weight = p;
-        ((LinearLayout.LayoutParams) slack.getLayoutParams()).weight = 1f - p;
-        // The grip bar is the SHEET's handle, and the pill does not want one: the whole
-        // pill is already the drag target, so a bar inside it advertises a handle for a
-        // thing that is entirely handle. It fades out as the pill appears.
-        if (gripBand != null) gripBand.setAlpha(1f - p);
-        pillRow.getLayoutParams().height = 0;
-        (slack.getLayoutParams()).height = 0;
-        pillRow.getLayoutParams().width = LinearLayout.LayoutParams.MATCH_PARENT;
+        // THE GRIP BAND'S HEIGHT GOES TO ZERO AND THE ROW TAKES THE STRIP. It was left at
+        // its constructed dp(STRIP_GRIP_DP) for the whole travel, so the row was laid out
+        // BELOW an invisible band and the label sat at the foot of the capsule -- measured
+        // on the device: pill [571,2733][869,2900], text [679,2825][815,2872], text centre
+        // 32px below the pill's. An invisible view that still occupies space is the whole
+        // failure, and the fix is its height, not the row's gravity.
+        LinearLayout.LayoutParams bandLp = (LinearLayout.LayoutParams) gripBand.getLayoutParams();
+        bandLp.height = Math.round(dp(STRIP_GRIP_DP) * (1f - p));
+        bandLp.weight = 0f;
+        gripBand.setLayoutParams(bandLp);
+        // The row is WRAP_CONTENT and must STAY wrap_content: a MATCH_PARENT row measures
+        // to whatever the panel offers rather than to its own text, so "measure the row"
+        // returned the panel's width and the label was sized to the wrong number.
+        LinearLayout.LayoutParams rowLp = (LinearLayout.LayoutParams) pillRow.getLayoutParams();
+        rowLp.width = LinearLayout.LayoutParams.WRAP_CONTENT;
+        rowLp.height = LinearLayout.LayoutParams.MATCH_PARENT;
+        rowLp.weight = 0f;
+        rowLp.gravity = Gravity.CENTER;
+        pillRow.setLayoutParams(rowLp);
+        // The slack is retired entirely: the row's MATCH_PARENT height already centres it,
+        // and a weighted spacer beside it would fight that.
+        LinearLayout.LayoutParams slackLp = (LinearLayout.LayoutParams) slack.getLayoutParams();
+        slackLp.height = 0;
+        slackLp.weight = 0f;
+        slack.setLayoutParams(slackLp);
+        gripBand.setAlpha(1f - p);
+        // The strip is the row's parent; there is no field for it and one is not needed,
+        // because every child that changed height has already been given its new params
+        // and any one of them can carry the request up.
         pillRow.requestLayout();
-        slack.requestLayout();
     }
 
     /**
@@ -2056,7 +2075,13 @@ public class MainActivity extends Activity {
         if (stripBackground == null) return;
         // The outline exists only where the pill does; see applyStripPillness.
         stripBackground.setStroke(dp(1), colour);
-        stripBackground.setColor(stripFillBase);
+        // THE CURRENT BLEND, not the base. This wrote `stripFillBase` -- the SHEET's
+        // glass at 0xEB -- and so repainted the pill opaque on every state change,
+        // right after applySheetTone had made it translucent. The pill therefore looked
+        // glassy only in the window between a drag and the next state update, which is
+        // exactly what the user reported and what three passes failed to explain.
+        // getColor() on the drawable is the value applySheetTone last wrote.
+        stripBackground.setColor(pillFillNow);
     }
 
     private void applyStripState() {
@@ -2169,10 +2194,34 @@ public class MainActivity extends Activity {
         // showing through -- which is why the pill was solid no matter what PILL_PLATE
         // said, and why the user had to report it twice.
         d.setStroke(dp(1), stroke);
-        d.setColor(PILL_PLATE);
+        d.setColors(new int[]{PILL_PLATE_TOP, PILL_PLATE_BOTTOM});
+        // A GRADIENT, because a flat fill reads as a plate and a gradient reads as glass.
+        // This is the largest single tell available to us and it costs nothing: the fill
+        // is already being set, only with one colour instead of two. Light at the top,
+        // marginally darker at the foot, the way a real pane catches the sky.
+        d.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM);
         return d;
     }
 
+    /**
+     * The pill's fill, top and bottom.
+     *
+     * <p><b>What "liquid glass" can and cannot be here, decided by measurement rather
+     * than taste.</b> Apple's effect refracts and samples the backdrop; both need the
+     * backdrop BLURRED, and a window background blur is composited only for a translucent
+     * <i>floating</i> window. Our sheet is a sibling of the {@code GLSurfaceView} in the
+     * same window and a Dialog is {@code ty=BASE_APPLICATION}, so that is unavailable at
+     * any radius — measured twice, and the reason three passes of turning the fill down
+     * never produced glass. What IS available is everything painted: transparency, a
+     * gradient, a lit top rim and a shaded foot. That is a static glass, and over a
+     * photograph it reads convincingly; over a high-contrast test pattern it will still
+     * look like a tinted pane, because it cannot sample what is behind it.
+     *
+     * <p>Both ends are the same hue; only the alpha moves, and only by a little. A wider
+     * spread would read as a UI gradient rather than as glass.
+     */
+    private static final int PILL_PLATE_TOP = 0x5E1C2026;
+    private static final int PILL_PLATE_BOTTOM = 0x4A1C2026;
     /**
      * Write the strip's fill for the collapse it is currently at.
      *
@@ -2508,13 +2557,26 @@ public class MainActivity extends Activity {
     private float pillWidthPx() {
         float cap = screenWidthPx() - dp(PILL_MAX_INSET_DP);
         if (pillRow == null) return cap;
-        int widthSpec = View.MeasureSpec.makeMeasureSpec((int) cap, View.MeasureSpec.AT_MOST);
+        // MEASURE GENEROUSLY, THEN CLAMP -- not the other way round. The spec used to be
+        // AT_MOST cap, where cap is the PANEL's target width; but the row lives INSIDE
+        // the panel with its own padding and the status mark, so it was measured against
+        // one width and laid out in a narrower one. A label that measures 299px inside a
+        // 292px panel ellipsises, and no amount of moving the cap fixes that -- the two
+        // numbers have to be the same number.
+        //
+        // So the row is measured UNSPECIFIED in width, which is what "what does this text
+        // need" means, and the answer is clamped to the cap afterwards.
+        int widthSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
         int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
         pillRow.measure(widthSpec, heightSpec);
-        // At least the pill's floor, never more than the cap, and never wider than the
-        // screen on a device where the cap itself is under the floor.
         float measured = pillRow.getMeasuredWidth();
-        return Math.min(Math.max(measured, dp(PILL_MIN_WIDTH_DP)), cap);
+        // A pixel of rounding slack. The panel's width is screen - 2*margin, and rounding
+        // the margin UP by half a pixel leaves the panel a pixel short of what the row
+        // measured -- measured on the device as measured=299 against panelWidth=298, which
+        // ellipsised the final glyph. The slack belongs here, where the measurement is,
+        // and never as a guessed inset somewhere else.
+        float wanted = Math.min(Math.max(measured + 2f, dp(PILL_MIN_WIDTH_DP)), cap);
+        return wanted;
     }
 
     /** The first-launch fraction: a third of the phone, capped at the whole panel. */
@@ -2648,6 +2710,8 @@ public class MainActivity extends Activity {
         // Same reasoning as the fade's line, and bounded by this method's own guard:
         // this is reached only when one of the numbers moved, so it is one line per
         // real change rather than one per frame.
+        android.util.Log.i("Basrelief", "pill measured=" + pillWidthPx()
+                + " side=" + side + " panelWidth=" + (screenWidthPx() - 2 * side));
         android.util.Log.i("Basrelief", "morph f=" + fraction
                 + " height=" + target + "px (natural=" + panelNaturalHeight
                 + " pill=" + dp(STRIP_HEIGHT_DP) + ")"
@@ -2719,6 +2783,7 @@ public class MainActivity extends Activity {
         // half-finished blend and leave the strip at the wrong tone.
         if (stripBackground != null && lastSheetFill != fill) {
             lastSheetFill = fill;
+            pillFillNow = fill;
             stripBackground.setColor(fill);
         }
         // THE PANEL MUST GIVE UP ITS FILL AS THE STRIP BECOMES THE PILL, or the two
