@@ -1498,20 +1498,6 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------ framing fields
 
     /**
-     * Exact numeric control of the origin and the pan.
-     *
-     * <p>Collapsed to a single readout line, because the panel is already taller
-     * than the preview it exists to frame. The collapsed row is not just a
-     * disclosure: it shows the values, so most visits never need to open it.
-     *
-     * <p>Disabled wholesale for the bundled demo, and that is not tidiness.
-     * {@code Framing.of} returns zeroed orbit and pan for the bundled item, so
-     * The demo's framing is editable too. It used to be disabled here, for the same
-     * reason the sliders were: Framing discarded what was typed, so a live field
-     * silently did nothing. Framing reads it now.
-     */
-
-    /**
      * The dashed box under the grip: at most one sentence and at most two actions.
      *
      * <p><b>This is the only signal that a photo has no depth map</b> (R-F3). There
@@ -2872,11 +2858,11 @@ public class MainActivity extends Activity {
      * so a slider left over from a previous selection writes to whatever is on
      * screen now -- which is what the user was looking at when they let go.
      *
-     * <p>Depth and Zoom are refused for the bundled demo, and Motion is not. The
-     * demo renders its framing at the defaults regardless of what the index holds,
-     * so a stored zoom there would be a number the renderer never uses -- but
-     * Motion is honoured on the demo, and refusing it would leave a live slider
-     * that silently does nothing. See {@link Framing} for the same asymmetry.
+     * <p>Every value is written for the bundled demo too. Depth and Zoom used to
+     * be refused there because {@code Framing} forced the demo to its defaults,
+     * so a stored value would have been one the renderer never read. The fix was
+     * to make {@code Framing} read the item, so there is nothing left to refuse;
+     * only the demo's IMAGE still comes from res/raw.
      */
     private void persist(final String key, final int value) {
         final boolean isDepth = "intensity".equals(key);
@@ -3021,10 +3007,15 @@ public class MainActivity extends Activity {
      * <p>The bundled demo does -- it is the one asset pair in res/raw, and shipping
      * one without wiring the other renders correctly with no relief and no
      * explanation. See AGENTS.md.
+     *
+     * <p>A null item counts too. It means no row is selected, which is the state a
+     * deleted last row leaves and the state a fresh install starts in before the
+     * seed lands; renderer-wise it is the same res/raw pair, so hiding the Depth
+     * control there would hide it on a marble bust that visibly has relief.
      */
     private boolean initialItemHasMap(AppState state) {
         LibraryItem item = state.activeItem();
-        return item != null && (item.isBundled() || item.depthName != null);
+        return item == null || item.isBundled() || item.depthName != null;
     }
 
     /**
@@ -3603,6 +3594,62 @@ public class MainActivity extends Activity {
         SettingsSheet.show(this);
     }
 
+    /**
+     * Clear the app's stored state, back to what a fresh install starts with.
+     *
+     * <p><b>Prefs and files together, because they are one dataset.</b> The
+     * blobs in {@code depthwall} are the library, the playlists, the config and
+     * the settings toggles; the files in {@code filesDir} are what the library
+     * rows name. Clearing one without the other leaves either rows that render
+     * nothing or files nothing can reach — and a reset is the one gesture that
+     * says "start over", so it removes the whole thing. That is also why it
+     * deletes orphan files: filesDir is the app's private photo store, and a
+     * rule that kept "referenced" files would have to know which orphans were
+     * once referenced.
+     *
+     * <p><b>Removing the key is what makes the next launch fresh.</b>
+     * {@link AppState#load} preloads the bundled demo only when no index has
+     * ever been stored, so clearing the key brings the demo back; writing an
+     * empty index instead would be an emptied gallery, and the demo would stay
+     * gone. That distinction is the whole reason Settings can restore the demo
+     * and Delete cannot.
+     *
+     * <p>Files go last and off the UI thread: the blobs are the truth, so a
+     * crash between the two leaves orphan files, which are invisible, rather
+     * than an index pointing at files that are gone.
+     */
+    void resetApp() {
+        prefs.edit().clear().commit();
+        // Bitmaps of the photos that are about to be deleted. Nothing looks
+        // them up again, but holding megabytes of a deleted photo is the kind
+        // of leak that only shows up as an OOM on someone else's device later.
+        PairCache.clear();
+        final File dir = getFilesDir();
+        Io.run(new Callable<Void>() {
+            @Override
+            public Void call() {
+                File[] files = dir.listFiles();
+                if (files != null) {
+                    for (File f : files) f.delete();
+                }
+                return null;
+            }
+        });
+        // Back to the home surface. A reset that left the sheet editing a lock
+        // override would show a screen the fresh index cannot render, and the
+        // segment would offer to edit values that no longer exist.
+        editSurface = Surface.HOME;
+        if (gallery != null) gallery.setSurface(Surface.HOME);
+        renderer.setEditSurface(Surface.HOME);
+        // The clear() removed the index key, so this load is a genuine first
+        // run: it preloads the demo and writes it under the same rule every
+        // other surface reads.
+        applyFiles();
+        refreshSliders();
+        refreshSurfaceSegment();
+        if (gallery != null) gallery.reindex();
+    }
+
     /** Re-read the diagnostics block. Called when it is tapped, not per gyro sample. */
     void refreshDiagnostics() {
         refreshStatus();
@@ -3739,10 +3786,11 @@ public class MainActivity extends Activity {
         final String pickedName = isImage ? displayNameOf(data.getData()) : null;
         String active = isImage ? null : AppState.load(prefs, getFilesDir()).activeId();
         if (!isImage && (active == null || Library.BUNDLED_ID.equals(active))) {
-            // The bundled demo ships with its own depth map, and it is not
-            // deletable or editable -- so a depth map picked here would have
-            // nowhere to live. Saying so is better than silently writing a file
-            // no row will ever read.
+            // The bundled demo renders res/raw/image.png with res/raw/depth.png,
+            // so a depth map picked here would be stored on the item and never
+            // read by the renderer. Saying so is better than silently writing a
+            // file no render will ever use. The guard is about that fixed pair,
+            // not about the row being special -- the demo is editable now.
             Toast.makeText(this, R.string.toast_pick_photo_first,
                     Toast.LENGTH_LONG).show();
             return;

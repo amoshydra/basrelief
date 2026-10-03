@@ -96,6 +96,55 @@ final class Io {
         });
     }
 
+    /**
+     * Decode a small preview of a packaged resource into a view, off the UI
+     * thread, at the same size and sample scale as the file form above.
+     *
+     * <p>The bundled demo is the reason this exists. It is an ordinary gallery
+     * row with no file on disk — that filelessness is exactly what makes it the
+     * bundled row — so the file path cannot serve it and its thumbnail drew a
+     * flat placeholder while every other row showed its photograph. Its bytes
+     * live in {@code res/raw} at import size, so it takes the same two-line
+     * sample calculation: a full-size decode for a 46px tile is tens of
+     * megabytes of heap, and a resource decode is no more free than a file one,
+     * which is why it runs on the same worker thread.
+     *
+     * <p>No embedded-depth listener here. The demo's map is a separate
+     * {@code res/raw/depth.png} rather than a chunk inside these bytes, so
+     * there is nothing in them to find; the grid's chip comes from
+     * {@code canStandOut} instead.
+     */
+    static void decodeResourcePreview(final Activity activity, final int resId,
+                                      final ImageView into, final int sizePx) {
+        run(activity, new Callable<Bitmap>() {
+            @Override
+            public Bitmap call() {
+                return resourcePreview(activity, resId, sizePx);
+            }
+        }, new Callback<Bitmap>() {
+            @Override
+            public void onDone(Bitmap bitmap, Exception error) {
+                if (bitmap != null) into.setImageBitmap(bitmap);
+            }
+        });
+    }
+
+    private static Bitmap resourcePreview(Activity activity, int resId, int sizePx) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeResource(activity.getResources(), resId, bounds);
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sampleSize(
+                    Math.max(bounds.outWidth, bounds.outHeight), sizePx);
+            return BitmapFactory.decodeResource(activity.getResources(), resId, opts);
+        } catch (Throwable ignored) {
+            // Missing or unreadable resource: the tile keeps its background,
+            // exactly as a missing file does on the file path.
+            return null;
+        }
+    }
+
     /** Told whether a PNG carries an embedded depth map. Always on the UI thread. */
     interface EmbeddedDepthListener {
         void onFound(boolean embedded);
@@ -125,17 +174,30 @@ final class Io {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-            int sample = 1;
-            int longest = Math.max(bounds.outWidth, bounds.outHeight);
-            while (longest / (sample * 2) >= sizePx) sample *= 2;
             BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = sample;
+            opts.inSampleSize = sampleSize(
+                    Math.max(bounds.outWidth, bounds.outHeight), sizePx);
             out.bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
         } catch (Throwable ignored) {
             // Out of memory, or an unreadable file. Either way the row still
             // works: no picture, and the depth answer falls back to "no file".
         }
         return out;
+    }
+
+    /**
+     * The power-of-two sub-sample that keeps the longest side at or above
+     * {@code sizePx}.
+     *
+     * <p>Shared by the file and resource decodes so the bundled demo's thumbnail
+     * is built at exactly the scale of every other tile — the two paths are one
+     * implementation with two byte sources, not two sizes that have to be kept
+     * in step by hand.
+     */
+    private static int sampleSize(int longest, int sizePx) {
+        int sample = 1;
+        while (longest / (sample * 2) >= sizePx) sample *= 2;
+        return sample;
     }
 
     private static byte[] readAll(File file) throws Exception {

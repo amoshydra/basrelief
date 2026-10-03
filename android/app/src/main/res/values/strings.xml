@@ -151,7 +151,6 @@
     <string name="gallery_paste_onto_selected">Paste onto selected</string>
     <string name="gallery_add_to_playlist">Add to playlist</string>
     <string name="gallery_settings_reset">Settings reset</string>
-    <string name="gallery_bundled_name">Marble bust</string>
 
     <!--
       The two ways in and out of the gallery's browsing surfaces. The filmstrip
@@ -161,13 +160,17 @@
     -->
     <string name="gallery_add_photo">Add photo</string>
     <string name="gallery_all_photos">All photos</string>
+    <!--
+      The grid's empty state. An emptied gallery is legitimate, so it gets the fix
+      line's shape rather than the lone add tile: the condition, then the action.
+    -->
+    <string name="gallery_empty">No photos</string>
     <string name="gallery_rename_save">Save</string>
     <!-- Glyphs still get names, so a screen reader says what the dot does. -->
     <string name="gallery_more_glyph">⋯</string>
     <string name="gallery_more_photos">More photos</string>
     <string name="gallery_thumb_use">Use %1$s</string>
     <string name="gallery_has_depth_map">Has a depth map</string>
-    <string name="gallery_bundled_note">The built-in demo. Its photo and depth map ship inside the app rather than on this device, so it cannot be deleted — it is the way back to the default.</string>
 
     <!--
       The selection line, and the one sentence that makes hold-to-select
@@ -364,6 +367,14 @@
          no screen reader can interpret, so the state has to be named. -->
     <string name="settings_state_on">On</string>
     <string name="settings_state_off">Off</string>
+    <!--
+      Reset. Destructive, so it is confirmed on the app's own card like Delete in
+      the gallery. The consequence names what goes and what comes back, because a
+      reset that only said "reset" would ask the user to guess both.
+    -->
+    <string name="settings_reset">Reset</string>
+    <string name="settings_reset_title">Reset the app?</string>
+    <string name="settings_reset_message">Deletes every photo, playlist and setting. The demo comes back.</string>
 
     <!--
       Depth AI. One screen: server, model, resolution. Three screens for one

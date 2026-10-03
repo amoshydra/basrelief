@@ -67,9 +67,33 @@ final class LibraryStore {
 
     // ------------------------------------------------------------ operations
 
+    /**
+     * The index as every mutating path sees it: the stored blob, with the
+     * bundled demo seeded only when nothing has ever been stored.
+     *
+     * <p>This is the "genuinely fresh install" test, and it is about the stored
+     * blob rather than about the parsed library. An index that parses to zero
+     * items is a gallery the user emptied; seeding it again would resurrect the
+     * bundled row on every later write, so deleting it as the last row could
+     * never stick. A missing blob means no index has ever been written -- a
+     * fresh install, or the state a reset leaves behind -- and that is the one
+     * state that gets the preload.
+     *
+     * <p>Every write path goes through here rather than through {@link #load}.
+     * A write that skipped the seed would persist the unseeded index and destroy
+     * the fresh state for every later read, which is the same class of mistake
+     * as re-seeding an emptied gallery: both come from asking what the library
+     * holds instead of asking what has been stored.
+     */
+    private static Library loadForWrite(SharedPreferences prefs) {
+        Library lib = load(prefs);
+        String stored = prefs.getString(Library.KEY, null);
+        return stored == null || stored.trim().isEmpty() ? lib.withBundled() : lib;
+    }
+
     /** Select an item, or pass null for the bundled demo. */
     static Library select(SharedPreferences prefs, String id) {
-        Library next = load(prefs).withSelection(id).withBundled();
+        Library next = loadForWrite(prefs).withSelection(id);
         if (id != null) next = next.markUsed(id, System.currentTimeMillis());
         saveNow(prefs, next);
         return next;
@@ -93,7 +117,7 @@ final class LibraryStore {
                            String label) {
         LibraryItem item = LibraryItem.of(LibraryItem.newId(), imageName, depthName,
                 System.currentTimeMillis()).withLabel(label);
-        Library next = load(prefs).withItem(item).withSelection(item.id).withBundled();
+        Library next = loadForWrite(prefs).withItem(item).withSelection(item.id);
         saveNow(prefs, next);
         return item;
     }
@@ -114,7 +138,7 @@ final class LibraryStore {
      * gone.
      */
     static Library remove(SharedPreferences prefs, String id) {
-        Library next = load(prefs).remove(id).withBundled();
+        Library next = loadForWrite(prefs).remove(id);
         saveNow(prefs, next);
         return next;
     }
@@ -139,7 +163,7 @@ final class LibraryStore {
      * @return the labels of the dropped rows, for a message the user can read
      */
     static List<String> repairDuplicateImages(SharedPreferences prefs) {
-        Library lib = load(prefs);
+        Library lib = loadForWrite(prefs);
         List<String> doomed = lib.itemsSharingAnImageName();
         if (doomed.isEmpty()) return Collections.emptyList();
         List<String> labels = new ArrayList<String>();
@@ -148,9 +172,10 @@ final class LibraryStore {
             labels.add(item == null ? id : item.displayName());
             lib = lib.remove(id);
         }
-        // One write for the whole repair, and withBundled so the bundled row
-        // cannot be the thing that went missing.
-        saveNow(prefs, lib.withBundled());
+        // One write for the whole repair. The read went through loadForWrite, so
+        // a fresh install keeps its preload and an emptied gallery stays empty;
+        // the repair itself never seeds.
+        saveNow(prefs, lib);
         return labels;
     }
 
@@ -165,7 +190,7 @@ final class LibraryStore {
     }
 
     static Library setSort(SharedPreferences prefs, SortOrder order) {
-        Library next = load(prefs).withSort(order);
+        Library next = loadForWrite(prefs).withSort(order);
         saveNow(prefs, next);
         return next;
     }

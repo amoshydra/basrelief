@@ -84,7 +84,10 @@ public final class Library {
      * trip -- {@link LibraryItem#fromJson} exempts it from "no image means no
      * item" -- and what lets a cleanup pass keep it when the index lists it. It
      * is not a delete guard: the only thing that puts the row back is
-     * {@link #withBundled}, and that seeds only an otherwise-empty library.
+     * {@link #withBundled}, and the caller calls that only when no index has
+     * ever been stored -- a fresh install, or the state a reset leaves behind.
+     * A stored index that parses to zero items is an emptied gallery, not a
+     * fresh one, and stays empty.
      */
     public static final String BUNDLED_ID = "bundled";
 
@@ -331,13 +334,18 @@ public final class Library {
      * that has lost it cannot rebuild it from {@code filesDir} -- which is why
      * it is seeded at first run rather than being baked into the grid.
      *
-     * <p><b>Only when the library is otherwise empty.</b> That is the
-     * difference between a preload and a resurrection. A fresh install (or a
-     * factory state after every other row is gone) gets the demo so the gallery
-     * is never an empty room; a non-empty gallery is authoritative, and a row
-     * the user deleted from it stays deleted however many times a load runs.
-     * Every load calls this, so binding the seed to the empty state is what
-     * makes a delete stick through a restart.
+     * <p><b>Only when the library is otherwise empty, and only the caller can
+     * know whether empty means fresh.</b> This method seeds any empty library;
+     * that is a preload only because the app's load path calls it when the
+     * stored index is ABSENT rather than when the parsed library happens to
+     * have no items. An index that was written and parses to zero items is a
+     * gallery the user emptied -- seeding it would resurrect the row they
+     * deleted, on the very next load, no matter how many other photos they
+     * deleted first. A missing blob is a first run, or the state a reset
+     * leaves, and that is the one state that gets the demo so the gallery is
+     * never an empty room before the user has done anything. The two
+     * questions are deliberately not the same one, and asking the wrong one is
+     * exactly how a delete stops sticking.
      *
      * <p>Where it lands is decided by its zero timestamps, not by where it is
      * inserted: every time-based order puts it last, which is right, because a
@@ -363,9 +371,10 @@ public final class Library {
      * <p><b>The bundled row is not an exception.</b> It is a preloaded photo
      * with no file, not an unremovable one, so removing it drops it and clears
      * the selection exactly as for any other id. The seeding rule that keeps a
-     * first run from showing an empty gallery lives in {@link #withBundled} and
-     * fires only on an empty library, so a delete from a non-empty gallery
-     * sticks; deleting the last row returns to the preloaded demo by design.
+     * first run from showing an empty gallery lives in {@link #withBundled},
+     * which the app's load path calls only when no index has ever been stored
+     * -- so deleting the last row leaves a stored-but-empty gallery, an empty
+     * room is a legitimate state, and the row stays gone.
      *
      * <p><b>This touches the index only, never the files.</b> Delete the files
      * <i>after</i> persisting the result, so a crash in between leaves orphan

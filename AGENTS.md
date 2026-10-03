@@ -131,11 +131,14 @@ already cost real time.
   the signal the renderer already used to read
   `android/app/src/main/res/raw/image.png`, and that is all the reserved
   `Library.BUNDLED_ID` is for. It can be selected, renamed, edited, put in a
-  playlist and deleted like anything else. What keeps it from vanishing forever
-  is not a delete guard but **where it is seeded**: `withBundled` adds it only
-  when the library is otherwise empty — a fresh install, or the factory state
-  after the last row is gone — and never into a non-empty gallery, so a delete
-  sticks through the load every surface performs. `retainExisting` keeps it when
+  playlist and deleted like anything else. What keeps a delete stuck is not a
+  delete guard but **when the seed runs**: `withBundled` adds it only into an
+  empty library, and the callers invoke it only when the stored index blob is
+  **absent** — a genuinely fresh install, or the state Settings' Reset leaves
+  behind by clearing the key. A stored blob with zero items is an emptied
+  gallery, not a fresh one, so it stays empty however many rows were deleted
+  before the last. Settings therefore restores the demo and Delete cannot.
+  `retainExisting` keeps it when
   the index lists it and never adds it, because the index is the authority over
   a fileless row; `fromJson` keeps its exemption so such a row survives a round
   trip, which is parsing, not resurrection. `Playlists.afterRemoving` removes the

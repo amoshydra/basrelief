@@ -11,6 +11,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 /**
  * The settings screen. Four groups, and nothing else.
@@ -150,6 +151,56 @@ final class SettingsSheet {
         }
     }
 
+    /**
+     * Ask before resetting, on the app's own card.
+     *
+     * <p>Delete in the gallery is the model: a destructive action asks first, in
+     * the same dialog family every other question uses, and nothing about the
+     * question is drawn with a platform {@code AlertDialog} whose theme this app
+     * deliberately does not flip. Reset is worth a question because nothing it
+     * removes is recoverable — every photo and its file, every playlist and
+     * every setting.
+     *
+     * <p>{@link ModalSheet#show} installs the back handling itself
+     * ({@code dismissOnBack}), so BACK closes the question instead of leaving
+     * the Activity; closing means "do not reset", which is the safe direction.
+     */
+    private void confirmReset() {
+        final ModalSheet confirm = new ModalSheet(activity, 0.88f);
+        LinearLayout body = new LinearLayout(activity);
+        body.setOrientation(LinearLayout.VERTICAL);
+        TextView title = ModalSheet.title(activity,
+                activity.getString(R.string.settings_reset_title));
+        // The family's 10dp under the title, the same gap the gallery's modals
+        // put under theirs with no subtitle.
+        title.setPadding(0, 0, 0, ModalSheet.dp(activity, 10));
+        body.addView(title);
+        body.addView(ModalSheet.subtitle(activity,
+                activity.getString(R.string.settings_reset_message)));
+        confirm.body(body);
+        Button cancel = ModalSheet.button(activity,
+                activity.getString(R.string.action_cancel), false, true);
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirm.dismiss();
+            }
+        });
+        // Primary, because it is the reason this modal exists -- the same weight
+        // the gallery gives the delete it confirms.
+        Button reset = ModalSheet.button(activity,
+                activity.getString(R.string.settings_reset), true, true);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirm.dismiss();
+                activity.resetApp();
+            }
+        });
+        confirm.footerRow(cancel, reset);
+        confirm.show(activity);
+    }
+
     // ---------------------------------------------------------------------- body
 
     /**
@@ -205,6 +256,24 @@ final class SettingsSheet {
         box.addView(ModalSheet.option(activity,
                 activity.getString(R.string.app_name) + " " + versionName(),
                 activity.getString(R.string.settings_licence), false, false, null));
+
+        // ---- Reset. The one destructive action here, so it asks first (see
+        // confirmReset). A ghost plate, like the playlist editor's Delete: it is
+        // not this screen's leading action, and it must not look like the switch
+        // rows above it, because it is the one row that cannot be undone.
+        Button reset = ModalSheet.button(activity,
+                activity.getString(R.string.settings_reset), false, true);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmReset();
+            }
+        });
+        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        resetLp.topMargin = ModalSheet.dp(activity, 8);
+        box.addView(reset, resetLp);
 
         // Diagnostics last, with no heading of its own. It is a panel of values rather
         // than a control, and the mockup puts it at the bottom on purpose: debug text

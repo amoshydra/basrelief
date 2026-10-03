@@ -58,11 +58,13 @@ final class AppState {
     }
 
     /**
-     * The selected item's id, or null for the bundled demo.
+     * The selected item's id, or null when nothing is selected.
      *
      * <p>Exposed because a caller about to <i>write</i> a per-item setting has to
-     * know whether there is an item to write it to, and null is the honest answer
-     * for the demo: it has settings of its own, but they are not editable.
+     * know whether there is an item to write it to. The bundled demo has an id
+     * and settings like any other row -- its only reserved property is that its
+     * image comes from res/raw -- so null here means exactly what it says: no
+     * selection, which is the state an emptied gallery leaves behind.
      */
     String activeId() {
         LibraryItem active = activeItem();
@@ -144,12 +146,20 @@ final class AppState {
             }
         }
 
-        // 2. Drop rows whose photo is not on this device, and make sure the
-        //    bundled item is there. Both self-heal, so a restored backup cannot
-        //    leave a gallery of photos that render as nothing.
-        Library cleaned = library
-                .retainExisting(existsIn(filesDir))
-                .withBundled();
+        // 2. Drop rows whose photo is not on this device. Self-heals, so a
+        //    restored backup cannot leave a gallery of photos that render as
+        //    nothing.
+        Library cleaned = library.retainExisting(existsIn(filesDir));
+        // 3. Preload the bundled demo, but only for a genuinely fresh install.
+        //    "Fresh" is the ABSENCE of an index, not an empty one. The user may
+        //    legitimately empty their gallery, and re-seeding a stored-but-empty
+        //    index would resurrect the row they deleted on the very next load,
+        //    however many other photos they deleted first. A reset clears the
+        //    key, so the load after it sees null here and the demo comes back.
+        //    See Library.withBundled for why the caller owns this question.
+        if (libraryBlob == null || libraryBlob.trim().isEmpty()) {
+            cleaned = cleaned.withBundled();
+        }
         if (!cleaned.toJson().equals(library.toJson())) {
             library = cleaned;
             libraryDirty = true;

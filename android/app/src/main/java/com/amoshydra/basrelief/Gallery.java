@@ -185,7 +185,7 @@ final class Gallery {
      * it again. The entry holds no active flag: the ring is the background and
      * padding, drawn on demand by {@link #drawStripRing}.
      */
-    private final Map<String, StripTile> stripTiles = new HashMap<String, StripTile>();
+    private final Map<String, ImageView> stripTiles = new HashMap<String, ImageView>();
 
     /**
      * The grid's count/hint line and its two selection actions.
@@ -214,17 +214,6 @@ final class Gallery {
             this.tint = tint;
             this.badge = badge;
             this.active = active;
-        }
-    }
-
-    /** One strip thumbnail, so its ring can be drawn again without a rebuild. */
-    private static final class StripTile {
-        final LibraryItem item;
-        final ImageView view;
-
-        StripTile(LibraryItem item, ImageView view) {
-            this.item = item;
-            this.view = view;
         }
     }
 
@@ -461,7 +450,7 @@ final class Gallery {
         final int size = activity.dp(THUMB_DP);
         ImageView thumb = new ImageView(activity);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumb.setBackground(thumbBackground(item, isActive));
+        thumb.setBackground(thumbBackground(isActive));
         // The ring is on the background, and an ImageView draws its picture over
         // its own background — so an active thumb is padded just enough to let
         // the stroke show instead of being painted out from under the bitmap.
@@ -474,7 +463,12 @@ final class Gallery {
         // there is no view recycling in this app, so that is a per-photo cost for
         // a cosmetic edge.
         thumb.setClipToOutline(true);
-        if (!item.isBundled()) {
+        if (item.isBundled()) {
+            // No file to resolve: the bundled row's photograph is the one asset
+            // pair in res/raw, so it decodes through the resource path at the
+            // same size as every other tile rather than showing a flat fill.
+            Io.decodeResourcePreview(activity, R.raw.image, thumb, size);
+        } else {
             File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
             if (f != null) Io.decodePreview(activity, f, thumb, size);
         }
@@ -491,7 +485,7 @@ final class Gallery {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
         lp.setMargins(activity.dp(3), 0, activity.dp(3), 0);
         thumb.setLayoutParams(lp);
-        stripTiles.put(item.id, new StripTile(item, thumb));
+        stripTiles.put(item.id, thumb);
         return thumb;
     }
 
@@ -507,23 +501,26 @@ final class Gallery {
      */
     private void drawStripRing(String id, boolean active) {
         if (id == null) return;
-        StripTile tile = stripTiles.get(id);
+        ImageView tile = stripTiles.get(id);
         if (tile == null) return;
-        tile.view.setBackground(thumbBackground(tile.item, active));
+        tile.setBackground(thumbBackground(active));
         int ring = active ? activity.dp(2) : 0;
-        tile.view.setPadding(ring, ring, ring, ring);
+        tile.setPadding(ring, ring, ring, ring);
     }
 
     /**
      * The background behind one thumbnail: rounded, and ringed when this is the
      * photograph on screen.
      *
-     * <p>The bundled demo gets its own fill. It has no file to decode, so a
-     * transparent tile would be a hole in the strip — and a hole where the
-     * photograph on screen should be is a claim the row cannot back up.
+     * <p>One fill for every row, including the bundled demo. The old
+     * demo-specific brown was standing in for a photograph the tile could not
+     * decode; now that the bundled row decodes its real res/raw image through
+     * the same preview path as any other, a second fill would be a colour the
+     * user sees for one frame — and the "not a solid brown colour" the demo's
+     * thumbnail was reported as.
      */
-    private GradientDrawable thumbBackground(LibraryItem item, boolean isActive) {
-        int fill = item.isBundled() ? 0xFF4A423A : 0xFF2E3B44;
+    private GradientDrawable thumbBackground(boolean isActive) {
+        int fill = 0xFF2E3B44;
         int ring = isActive ? 0xFFFFFFFF : 0x00000000;
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.RECTANGLE);
@@ -698,7 +695,11 @@ final class Gallery {
 
         // The count and the hint share one line: they are the same question at two
         // moments, and two lines would be one too many on a screen this size.
-        panel.addView(selectionLine());
+        // Absent with no photographs: "tap a photo" is a hint about something that
+        // is not there, and the empty state below already answers the question.
+        if (!rows.isEmpty()) {
+            panel.addView(selectionLine());
+        }
 
         // ---- the photographs
         //
@@ -732,12 +733,24 @@ final class Gallery {
         // stack with no gap at all: the horizontal 8dp read as the grid's only
         // gutter, and a row of photographs touched the row below it.
         boolean first = true;
-        for (int start = 0; start < rows.size(); start += GRID_COLUMNS) {
-            cells.addView(cellRow(rows, start, activeId), rowSpacing(first));
-            first = false;
+        if (rows.isEmpty()) {
+            // An empty gallery is legitimate now -- the last row can be deleted
+            // and nothing re-seeds it -- so the cell area must say so rather than
+            // draw the lone ＋ of a grid with nothing in it. The placeholder is
+            // the fix line's shape: name the condition, then the one action that
+            // answers it.
+            cells.addView(emptyGallery());
+        } else {
+            // The add tile is a CELL in this flow, not a row of its own. It takes
+            // the column after the last photograph, so it is a sibling of the
+            // cells -- same width arithmetic, same gutter, same row gap -- and
+            // {@code addCellRow} is gone rather than kept beside this.
+            int count = rows.size() + 1;
+            for (int start = 0; start < count; start += GRID_COLUMNS) {
+                cells.addView(cellRow(rows, start, activeId), rowSpacing(first));
+                first = false;
+            }
         }
-        // The add tile is a row like any photograph row, so it takes the same gap.
-        cells.addView(addCellRow(rows.size()), rowSpacing(first));
         scroll.addView(cells, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
@@ -799,7 +812,8 @@ final class Gallery {
     }
 
     /**
-     * One row of {@link #GRID_COLUMNS} cells, the last one padded with blanks.
+     * One row of {@link #GRID_COLUMNS} slots: photographs, then the add tile in
+     * the next free column, the rest padded with blanks.
      *
      * <p>Fixed rows rather than a wrapping container, because a grid that measures
      * itself against variable-width children produces rows of differing heights,
@@ -811,6 +825,10 @@ final class Gallery {
      * panel's own 14dp edge, in the same column as the header and the hint line.
      * Every column used to carry the 8dp, which indented the whole grid by one
      * gap and made it ragged against the text above it.
+     *
+     * <p>The add tile is handled here, at index {@code rows.size()}, because a
+     * row of its own put it at the left edge under a row of zero-height blanks --
+     * floating rather than sitting beside the last photograph.
      */
     private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId) {
         LinearLayout line = new LinearLayout(activity);
@@ -820,6 +838,9 @@ final class Gallery {
             if (at < rows.size()) {
                 LibraryItem item = rows.get(at);
                 line.addView(cell(item, item.id.equals(activeId), i == 0));
+            } else if (at == rows.size()) {
+                // Exactly the slot the next photograph would take.
+                line.addView(addCell(i == 0));
             } else {
                 // A spacer, and deliberately zero-height: it exists only to hold a
                 // column open so the last row keeps the first row's column widths,
@@ -835,21 +856,15 @@ final class Gallery {
         return line;
     }
 
-    private LinearLayout addCellRow(int taken) {
-        LinearLayout line = new LinearLayout(activity);
-        line.setOrientation(LinearLayout.HORIZONTAL);
-        // The columns already used on the last row, held open at the same widths.
-        // A blank after the first column carries the gutter, exactly as a
-        // photograph in that column would.
-        int blanks = taken % GRID_COLUMNS;
-        for (int i = 0; i < blanks; i++) {
-            View blank = new View(activity);
-            LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(
-                    cellPx, 0);
-            if (i > 0) blankLp.leftMargin = activity.dp(GRID_GAP_DP);
-            blank.setLayoutParams(blankLp);
-            line.addView(blank);
-        }
+    /**
+     * The one tile that is not a photograph: the next free grid slot.
+     *
+     * <p>Geometry is the cells' own, from the same {@link #cellPx} arithmetic the
+     * photograph columns use, with the same gutter rule and the same row spacing
+     * via the row it is in. That is what makes it a sibling: it occupies a grid
+     * slot rather than a position computed separately from one.
+     */
+    private View addCell(boolean firstInRow) {
         TextView add = text(activity.getString(R.string.add_photo_glyph), 22);
         add.setTextColor(0x99FFFFFF);
         add.setGravity(Gravity.CENTER);
@@ -862,12 +877,48 @@ final class Gallery {
             }
         });
         LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(cellPx, cellPx);
-        // A gutter only when it is not the first column; the add tile is in the
-        // first free column, not after a gap that does not exist there.
-        if (blanks > 0) addLp.leftMargin = activity.dp(GRID_GAP_DP);
+        // The first column starts at the panel's own edge; every other one
+        // carries the gutter, exactly as a photograph in that column does.
+        if (!firstInRow) addLp.leftMargin = activity.dp(GRID_GAP_DP);
         add.setLayoutParams(addLp);
-        line.addView(add);
-        return line;
+        return add;
+    }
+
+    /**
+     * The grid's empty state: a short line and the action that answers it.
+     *
+     * <p>An empty gallery is legitimate now — the last row can be deleted and
+     * nothing re-seeds it — so the cell area must say what it is rather than show
+     * the lone ＋ of a grid with nothing in it. The wording is the fix line's
+     * shape: name the condition, then offer the one action, because that is how
+     * this app already says "there is nothing here yet".
+     *
+     * <p>The filmstrip keeps its own ＋, so the door is reachable at the peek;
+     * this is the grid's version of the same door, not a second route.
+     */
+    private View emptyGallery() {
+        LinearLayout box = new LinearLayout(activity);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.setPadding(0, activity.dp(40), 0, activity.dp(40));
+        TextView line = text(activity.getString(R.string.gallery_empty), 14);
+        line.setTextColor(0x99FFFFFF);
+        line.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.addView(line);
+        Button add = ModalSheet.button(activity,
+                activity.getString(R.string.gallery_add_photo), false, true);
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                addPhoto();
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = activity.dp(12);
+        box.addView(add, lp);
+        return box;
     }
 
     /**
@@ -897,7 +948,7 @@ final class Gallery {
      */
     private View cell(final LibraryItem item, final boolean isActive,
                       boolean firstInRow) {
-        final boolean isPicked = !item.isBundled() && picked.contains(item.id);
+        final boolean isPicked = picked.contains(item.id);
         LinearLayout cell = new LinearLayout(activity);
         cell.setOrientation(LinearLayout.VERTICAL);
         // Fixed, not weighted: cellPx is the column width the buildGrid arithmetic
@@ -913,7 +964,7 @@ final class Gallery {
         // mark and the wash is the picked one on purpose: "what the wallpaper is
         // showing" and "what the next action will touch" are different facts,
         // and drawing both with one ring is what made the old state unreadable.
-        picture.setBackground(thumbBackground(item, isActive));
+        picture.setBackground(thumbBackground(isActive));
         // Padded only when active, because the ImageView fills its parent and a
         // stroke drawn behind it is a stroke nobody sees. The cost of the ring
         // is paid only where the ring exists: no ring, no inset.
@@ -951,7 +1002,15 @@ final class Gallery {
         View badge = selectedBadge();
         badge.setVisibility(isPicked ? View.VISIBLE : View.GONE);
         picture.addView(badge, badgeParams());
-        if (!item.isBundled()) {
+        if (item.isBundled()) {
+            // The one row with no file: its photograph is res/raw, decoded at
+            // this cell's own size through the resource path so the marble
+            // shows its real image rather than a flat fill. The embedded-depth
+            // watcher is deliberately skipped — the demo's map is the separate
+            // res/raw/depth.png, not a chunk in these bytes, and canStandOut
+            // has already made the chip visible for it.
+            Io.decodeResourcePreview(activity, R.raw.image, thumb, cellPx);
+        } else {
             File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
             if (f != null) watchForEmbeddedDepth(f, item, thumb, chip);
         }
@@ -977,7 +1036,6 @@ final class Gallery {
                 // A hold only ever adds. It is what starts the mode; a tap is
                 // what toggles, so a hold on something already picked does not
                 // undo the very thing the user is holding to keep.
-                if (item.isBundled()) return true;
                 if (picked.add(item.id)) {
                     drawPicked(item.id, true);
                     refreshSelectionUi();
@@ -1000,12 +1058,13 @@ final class Gallery {
      * flash the user reported. All of it is derived from the same {@link #picked}
      * set here, so the four writes cannot disagree about it.
      *
-     * <p>The bundled row is never a member: it has no file to delete and no
-     * settings of its own, so a checkmark on it would promise an action the
-     * data layer refuses.
+     * <p>The bundled row is a member like any other. It used to be excluded
+     * because the data layer refused to delete it and it had no settings of its
+     * own — a checkmark would have promised actions that did not exist. Both
+     * refusals are gone: it is an ordinary preloaded photo, and the marks now
+     * match what the actions will really do.
      */
     private void togglePick(LibraryItem item) {
-        if (item.isBundled()) return;
         if (!picked.remove(item.id)) picked.add(item.id);
         drawPicked(item.id, picked.contains(item.id));
         refreshSelectionUi();
@@ -1649,22 +1708,23 @@ final class Gallery {
      * stale, and "you deleted three photographs" when you expected one is not a
      * recoverable kind of surprise even with a confirmation in front of it.
      *
-     * <p>The bundled row is never a target. It has no file to recreate it from, so
-     * {@code Library.remove} refuses it — but refusing at the data layer is a back
-     * stop, not a reason to offer the action, and a delete button that cannot
-     * delete is a control that cannot do anything. {@link #togglePick} also
-     * refuses it, so it can never be counted in the first place.
+     * <p>The bundled row is a target like any other. The data layer used to
+     * refuse to remove it, and a delete button that cannot delete is a control
+     * that cannot do anything — so the refusal was mirrored here. The refusal is
+     * gone, so the mirror is gone with it: the bundled row is a preloaded photo
+     * that can be copied, pasted onto, added to a playlist, renamed and deleted
+     * like any other.
      */
     private List<LibraryItem> targetsFor(LibraryItem row) {
         List<LibraryItem> out = new ArrayList<LibraryItem>();
         if (picked.isEmpty()) {
-            if (row != null && !row.isBundled()) out.add(row);
+            if (row != null) out.add(row);
             return out;
         }
         Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
         for (String id : picked) {
             LibraryItem item = lib.find(id);
-            if (item != null && !item.isBundled()) out.add(item);
+            if (item != null) out.add(item);
         }
         return out;
     }
@@ -1737,9 +1797,10 @@ final class Gallery {
      */
     private void performDelete(List<LibraryItem> targets, boolean deletesActive) {
         // AppState.load rather than LibraryStore.load: the read has to come
-        // through the single read path, so the bundled row is guaranteed present
-        // and any row whose file has gone is dropped before the delete is derived
-        // from what is actually there.
+        // through the single read path, so any row whose file has gone is
+        // dropped before the delete is derived from what is actually there, and
+        // the bundled row is read under the same fresh-install seed rule as
+        // everywhere else.
         Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
         Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
         for (LibraryItem item : targets) {
@@ -1804,19 +1865,6 @@ final class Gallery {
      * change meaning depending on state the user cannot see.
      */
     private void showRowMenu(final LibraryItem item) {
-        if (item.isBundled()) {
-            // The bundled row's sheet is a note rather than a list: it cannot
-            // be a target (see targetsFor), so the honest menu is the reason
-            // why, with the one button that leaves.
-            final ModalSheet sheet = new ModalSheet(activity, 0.88f);
-            LinearLayout body = modalBody(activity.getString(R.string.gallery_bundled_name));
-            body.addView(ModalSheet.subtitle(activity,
-                    activity.getString(R.string.gallery_bundled_note)));
-            sheet.body(body);
-            sheet.footerRow(closeButton(activity.getString(R.string.action_done), sheet));
-            sheet.show(activity);
-            return;
-        }
         final boolean many = !picked.isEmpty();
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
         LinearLayout body = modalBody(item.displayName());
