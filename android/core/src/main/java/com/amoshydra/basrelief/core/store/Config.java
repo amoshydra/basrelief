@@ -10,8 +10,9 @@ import org.json.JSONObject;
  * Depth, Zoom and the framing, on top of Motion. All of those are properties of
  * <i>a photograph</i> rather than of the app, so they now live on
  * {@link LibraryItem} -- otherwise every photo in a gallery would share one
- * framing. What is left is Motion, which describes how this device is held and
- * moved.
+ * framing. What is left is Motion, and it is a migration source rather than a
+ * live value: it is read from an old blob once, by the library's v2 to v3
+ * migration, and never written back.
  *
  * <p><b>Why the selection is not here either.</b> An earlier draft of this shrink
  * kept {@code activeItemId} in both this class and {@link Library}. That is two
@@ -31,8 +32,8 @@ public final class Config {
     /**
      * v2: the per-photograph settings left this blob, so it now holds only Motion.
      * v3 of the *library* took even that away -- Motion became a property of a
-     * photograph -- so this blob is written no further and read once per load, by
-     * the library's migration, to give a pre-v3 photo the Motion its owner chose.
+     * photograph -- so Motion is read once per load, by the library's migration,
+     * to give a pre-v3 photo the Motion its owner chose, and is never written.
      * A v1 blob is still readable; see {@link #migrate}.
      */
     public static final int VERSION = 2;
@@ -47,10 +48,12 @@ public final class Config {
     /**
      * 0..100, and now read-only in practice.
      *
-     * <p>Nothing writes it. It is the one value the library blob cannot supply,
-     * because it never lived there, and dropping it would silently reset every
-     * user's wallpaper speed on upgrade — a change nobody can file a bug about,
-     * because the wallpaper still moves.
+     * <p>Nothing writes it, {@link #toJson} included. It is the one value the
+     * library blob cannot supply, because it never lived there, and dropping it
+     * would silently reset every user's wallpaper speed on upgrade — a change
+     * nobody can file a bug about, because the wallpaper still moves. A reader
+     * that still needs it reads the old blob before any rewrite; see
+     * {@link #toJson} for why removing the write cannot break that.
      */
     public final int motion;
 
@@ -65,11 +68,24 @@ public final class Config {
 
     // ------------------------------------------------------------ serialise
 
+    /**
+     * The version, and nothing else.
+     *
+     * <p><b>Motion is read but not written.</b> It is a migration source, so a
+     * blob that still carries it must keep parsing -- but new writes dropping it
+     * cannot lose the value, because by the time anything rewrites this blob the
+     * library's v2 to v3 migration has already copied Motion onto every item and
+     * been saved in the same pass. {@code AppState.load} parses the old config
+     * first, migrates the library, saves it, and only then runs the config
+     * housekeeping; and {@code AppState.update} calls {@code load} before it
+     * writes. So a motionless config and a pre-v3 library cannot coexist, and a
+     * downgrade reads Motion from the library, which owns it now. What remains
+     * here would be a render value nothing reads, persisted for no reader.
+     */
     public String toJson() {
         JSONObject o = new JSONObject();
         try {
             o.put("version", VERSION);
-            o.put("motion", motion);
         } catch (JSONException e) {
             throw new AssertionError("Config.toJson cannot fail", e);
         }

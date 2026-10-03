@@ -62,6 +62,15 @@ import java.util.Set;
  * photograph cannot answer by looking at it: can this one stand out of the plane
  * at all.
  *
+ * <p><b>The active photograph and the picked set are two facts, drawn as two
+ * marks.</b> Active is a persistent white ring, because it answers "what is on
+ * the wallpaper right now" and must survive every other state. Picked is an
+ * accent tint and a checkmark badge, because it answers "what will the next
+ * action touch" and is a mode the user can leave. They compose: a picked
+ * photograph can also be the one on screen, and then it wears both. Drawing
+ * both with one ring was how the previous version made the question
+ * unanswerable.
+ *
  * <p><b>Rows and cells are built by hand</b> because there is no AndroidX
  * anywhere in this app, and that is a deliberate constraint rather than an
  * accident: it is what keeps the APK free of third-party runtime code, and the
@@ -104,6 +113,14 @@ final class Gallery {
     private static final int CELL_DP_FALLBACK = 96;
     /** The depth chip. A dot, because a chip that needs reading is a label. */
     private static final int CHIP_DP = 10;
+    /** The checkmark badge: big enough to read at a glance over a photograph. */
+    private static final int BADGE_DP = 22;
+    /**
+     * The picked cell's wash. The accent at 30%, so the photograph is visibly
+     * claimed without being hidden — the user still has to be able to tell
+     * which photographs they picked by looking at them.
+     */
+    private static final int PICK_TINT = 0x4D7FD1C1;
     /** --dim: a header entry that is a reading rather than an action. */
     private static final int DIM = 0x8CFFFFFF;
     /** --accent: the one header entry that goes somewhere. */
@@ -135,6 +152,12 @@ final class Gallery {
      * user's and re-sorting a selection is its own surprise. Deliberately not
      * persisted: it is a gesture in progress, and a selection that survived a
      * restart would name photographs the user has forgotten picking.
+     *
+     * <p>The set is also the mode. Empty means browsing, where a tap uses the
+     * photograph; non-empty means picking, where a tap toggles membership and
+     * must not touch the wallpaper. There is no second boolean that could
+     * disagree with the marks on screen, and clearing the set is the one way to
+     * end the mode.
      */
     private final Set<String> picked = new LinkedHashSet<String>();
 
@@ -370,6 +393,13 @@ final class Gallery {
         ImageView thumb = new ImageView(activity);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
         thumb.setBackground(thumbBackground(item, isActive));
+        // The ring is on the background, and an ImageView draws its picture over
+        // its own background — so an active thumb is padded just enough to let
+        // the stroke show instead of being painted out from under the bitmap.
+        // The same cover-up is why the old grid's single background ring could
+        // never read as a selection mark.
+        int ring = isActive ? activity.dp(2) : 0;
+        thumb.setPadding(ring, ring, ring, ring);
         // A rounded background plus clipToOutline is the framework's own rounded
         // thumbnail. The alternative is a second bitmap pass per photograph, and
         // there is no view recycling in this app, so that is a per-photo cost for
@@ -475,6 +505,10 @@ final class Gallery {
 
     private void showGrid() {
         if (grid != null) return;
+        // Both surfaces are one list read twice. The grid is rebuilt from the
+        // index right below, so the strip is brought along rather than left
+        // showing an order or a row the grid no longer agrees with.
+        refreshStrip();
         grid = buildGrid();
         root.addView(grid);
         // The grid is a full-screen takeover, so "added last" is not good enough:
@@ -497,6 +531,11 @@ final class Gallery {
      */
     void dismissGrid() {
         if (grid == null) return;
+        // Leaving the grid ends the picking gesture rather than just hiding it.
+        // The set is the mode (see {@link #picked}), so a selection that
+        // outlived its screen would come back with checkmarks nobody remembers
+        // making — and a mode the user cannot see is a mode they cannot leave.
+        picked.clear();
         root.removeView(grid);
         grid = null;
     }
@@ -598,11 +637,13 @@ final class Gallery {
 
         // ---- the many-at-once actions
         //
-        // Copy settings / Paste onto selected stay as the design's first foot
-        // row. Set as wallpaper used to lead the second row and has moved to the
-        // studio sheet's foot, which the user asked for, so this is the one route
-        // rather than two. Add to playlist and Done remain -- both answer
-        // questions about the gallery's own bookkeeping.
+        // The two actions that act on the picked set are live only while there
+        // is a set. A disabled button is visibly unavailable, which is honest:
+        // nothing is selected to paste onto, and promising the action and then
+        // toasting is the silently-does-nothing failure this design removes.
+        // Copy settings stays live because it acts on a source, not on the
+        // selection; Done stays live because leaving the grid must never be
+        // gated on picking. Set as wallpaper lives on the studio sheet's foot.
         panel.addView(actionRow(
                 compact(activity.getString(R.string.gallery_copy_settings),
                         new View.OnClickListener() {
@@ -611,31 +652,26 @@ final class Gallery {
                                 showCopySourcePicker();
                             }
                         }),
-                compact(activity.getString(R.string.gallery_paste_onto_selected),
+                selectionAction(
+                        activity.getString(R.string.gallery_paste_onto_selected),
+                        R.string.gallery_paste_needs_selection,
                         new View.OnClickListener() {
                             @Override
                             public void onClick(View v) {
-                                pasteOnto(picksOrToast());
+                                pasteOnto(targetsFor(null));
                             }
                         })));
         panel.addView(actionRow(
-                compact(activity.getString(R.string.gallery_add_to_playlist),
+                selectionAction(
+                        activity.getString(R.string.gallery_add_to_playlist),
+                        R.string.gallery_playlist_needs_selection,
                         new View.OnClickListener() {
                             @Override
                             public void onClick(View v) {
                                 showPlaylistPicker(null);
                             }
                         }),
-                compact(activity.getString(R.string.action_done),
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                // Done is the way out, not a save. Every action here wrote
-                                // the moment it was tapped, so there is nothing to commit
-                                // and a button that said Save would imply otherwise.
-                                dismissGrid();
-                            }
-                        })));
+                doneButton()));
         return panel;
     }
 
@@ -711,15 +747,19 @@ final class Gallery {
     }
 
     /**
-     * One cell: the picture, a depth chip that is present or absent, the name,
-     * and the menu.
+     * One cell: the picture, the active ring, the picked wash and badge, the
+     * depth chip, and the menu.
      *
-     * <p>Tap uses the photograph; a hold picks it for a many-at-once action. Two
-     * gestures rather than one because the two answers are different, and
-     * combining them would make picking several impossible to discover and
-     * impossible to escape.
+     * <p><b>Tap uses the photograph; a hold starts picking; a tap while picking
+     * toggles.</b> While picking, a tap deliberately cannot change the
+     * wallpaper: two answers on one gesture is how a user trying to unpick a
+     * photograph ends up replacing the wallpaper instead. The marks make the
+     * mode visible — white ring for what is on screen, accent wash and a
+     * checkmark for what is picked — so "which mode am I in" is answered by the
+     * grid rather than remembered.
      */
     private View cell(final LibraryItem item, final boolean isActive) {
+        final boolean isPicked = !item.isBundled() && picked.contains(item.id);
         LinearLayout cell = new LinearLayout(activity);
         cell.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(0,
@@ -728,11 +768,16 @@ final class Gallery {
         cell.setLayoutParams(cellLp);
 
         FrameLayout picture = new FrameLayout(activity);
-        // Ringed when it is on screen OR picked. Two questions, one mark: a cell
-        // that is the wallpaper and a cell queued for a paste are not the same
-        // fact, but both are "this one is marked", and a second colour for the
-        // second question is a legend nobody learns.
-        picture.setBackground(thumbBackground(item, isActive || picked.contains(item.id)));
+        // Ring behind the image, wash in front of it. The ring is the active
+        // mark and the wash is the picked one on purpose: "what the wallpaper is
+        // showing" and "what the next action will touch" are different facts,
+        // and drawing both with one ring is what made the old state unreadable.
+        picture.setBackground(thumbBackground(item, isActive));
+        // Padded only when active, because the ImageView fills its parent and a
+        // stroke drawn behind it is a stroke nobody sees. The cost of the ring
+        // is paid only where the ring exists: no ring, no inset.
+        int ring = isActive ? activity.dp(2) : 0;
+        picture.setPadding(ring, ring, ring, ring);
         picture.setClipToOutline(true);
         // Square by arithmetic, not by measurement: cellPx is the column's width, so
         // using it as the height is what makes the cell a square. MATCH_PARENT width
@@ -745,9 +790,22 @@ final class Gallery {
         picture.addView(thumb, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        if (isPicked) {
+            // The wash is the at-a-glance answer to "how many are picked" that
+            // does not need the count line to be read: a checked cell is one the
+            // next paste or playlist will include.
+            View tint = new View(activity);
+            tint.setBackgroundColor(PICK_TINT);
+            picture.addView(tint, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+        }
         View chip = depthChip(item);
         picture.addView(chip, chipParams());
         picture.addView(menuButton(item), menuParams());
+        if (isPicked) {
+            picture.addView(selectedBadge(), badgeParams());
+        }
         if (!item.isBundled()) {
             File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
             if (f != null) watchForEmbeddedDepth(f, item, thumb, chip);
@@ -755,35 +813,84 @@ final class Gallery {
         cell.addView(picture);
         // No name under the cell. The mockup draws none, and with square cells a
         // caption would be a quarter of the cell's height spent on a label -- the
-        // depth chip and the selected ring already say which photograph this is.
+        // depth chip and the two selection marks already say which photograph
+        // this is.
 
         cell.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                if (!picked.isEmpty()) {
+                    togglePick(item);
+                    return;
+                }
                 select(item.id);
             }
         });
         cell.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                if (!picked.remove(item.id)) picked.add(item.id);
-                // Rebuilt rather than patched: every cell carries its own picked
-                // state and its own chip, and a partial update is a second place
-                // that has to agree with the set. Posted, because tearing a view
-                // out of the hierarchy from inside its own touch dispatch is the
-                // kind of thing that works until it does not.
-                v.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        rebuildGrid();
-                    }
-                });
+                // A hold only ever adds. It is what starts the mode; a tap is
+                // what toggles, so a hold on something already picked does not
+                // undo the very thing the user is holding to keep.
+                if (item.isBundled()) return true;
+                if (picked.add(item.id)) postGridRebuild();
                 return true;
             }
         });
-        cell.setContentDescription(activity.getString(R.string.gallery_thumb_use,
-                item.displayName()));
+        cell.setContentDescription(stateDescription(item, isActive, isPicked));
         return cell;
+    }
+
+    /**
+     * Toggle one row's membership in the pick set, and redraw the marks.
+     *
+     * <p>Rebuilt rather than patched: every visible fact about picking — the
+     * wash, the badge, the count line and whether the foot's actions are live —
+     * is derived from this one set, and patching four views is four chances to
+     * disagree with it.
+     *
+     * <p>The bundled row is never a member: it has no file to delete and no
+     * settings of its own, so a checkmark on it would promise an action the
+     * data layer refuses.
+     */
+    private void togglePick(LibraryItem item) {
+        if (item.isBundled()) return;
+        if (!picked.remove(item.id)) picked.add(item.id);
+        postGridRebuild();
+    }
+
+    /**
+     * Rebuild the grid after this touch sequence, not during it.
+     *
+     * <p>Tearing a view out of the hierarchy from inside its own touch dispatch
+     * works until it does not, and the rebuild removes the very cell whose
+     * listener is running.
+     */
+    private void postGridRebuild() {
+        if (grid == null) return;
+        grid.post(new Runnable() {
+            @Override
+            public void run() {
+                rebuildGrid();
+            }
+        });
+    }
+
+    /**
+     * What a screen reader should say about one cell.
+     *
+     * <p>Both marks are drawn as colour and a glyph, which nobody can hear, so
+     * the state is spelled out. The plain case keeps the action wording, because
+     * using the photograph is what a bare cell offers.
+     */
+    private String stateDescription(LibraryItem item, boolean isActive, boolean isPicked) {
+        String name = item.displayName();
+        if (isActive && isPicked) {
+            return activity.getString(R.string.gallery_talk_active_selected, name);
+        }
+        if (isActive) return activity.getString(R.string.gallery_talk_active, name);
+        if (isPicked) return activity.getString(R.string.gallery_talk_selected, name);
+        return activity.getString(R.string.gallery_thumb_use, name);
     }
 
     /** Top-LEFT, clear of the row menu, which is top-right. */
@@ -805,6 +912,37 @@ final class Gallery {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 activity.dp(19), activity.dp(19), Gravity.TOP | Gravity.END);
         lp.setMargins(0, activity.dp(5), activity.dp(5), 0);
+        return lp;
+    }
+
+    /**
+     * The checkmark badge: picked, at a glance, on top of the wash.
+     *
+     * <p>Bottom-RIGHT because the three other corners already carry a fact: the
+     * depth chip top-left, the row menu top-right, and the photograph itself
+     * everywhere else. A fourth mark in either top corner would be one of the
+     * two invisible, which is the collision the chip and the menu were moved
+     * apart to avoid in the first place.
+     */
+    private View selectedBadge() {
+        TextView badge = text(activity.getString(R.string.gallery_selected_mark), 13);
+        badge.setGravity(Gravity.CENTER);
+        GradientDrawable circle = new GradientDrawable();
+        circle.setShape(GradientDrawable.OVAL);
+        circle.setColor(ACCENT);
+        badge.setBackground(circle);
+        // Near-black on the accent, the same ink the primary buttons use, so the
+        // tick reads on the smallest phone this app runs on.
+        badge.setTextColor(0xFF08110F);
+        return badge;
+    }
+
+    /** Bottom-right, clear of the chip's and the menu's corners. */
+    private FrameLayout.LayoutParams badgeParams() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                activity.dp(BADGE_DP), activity.dp(BADGE_DP),
+                Gravity.BOTTOM | Gravity.END);
+        lp.setMargins(0, 0, activity.dp(6), activity.dp(6));
         return lp;
     }
 
@@ -877,9 +1015,9 @@ final class Gallery {
      * One row of the foot's buttons: equal shares, any count.
      *
      * <p>Buttons rather than label-and-listener pairs, because the foot is no
-     * longer all pairs — the apply button joined the second row — and a
-     * builder that could only take two could not hold three without a second
-     * builder drifting from this one.
+     * longer all pairs — {@link #doneButton} is a primary plate and the rest are
+     * quiet ones — and a builder that could only take two could not hold a
+     * mixed pair without a second builder drifting from this one.
      */
     private LinearLayout actionRow(Button... buttons) {
         LinearLayout row = new LinearLayout(activity);
@@ -893,19 +1031,71 @@ final class Gallery {
     }
 
     /**
-     * The line that says how many photographs are picked, or how to pick several.
+     * One line, two states: the gesture when nothing is picked, the count when
+     * something is.
      *
      * <p>It changes text rather than appearing and disappearing, so the row it
-     * occupies does not jump under a finger that is mid-gesture.
+     * occupies does not jump under a finger that is mid-gesture. The accent
+     * colour arrives with the count, matching the checkmark badges below it, so
+     * "there is a selection" is visible before the sentence is read.
      */
     private TextView selectionLine() {
-        String s = picked.isEmpty()
-                ? activity.getString(R.string.gallery_selection_hint)
-                : activity.getString(R.string.gallery_selection_count, picked.size());
+        boolean picking = !picked.isEmpty();
+        String s = picking
+                ? activity.getString(R.string.gallery_selection_count, picked.size())
+                : activity.getString(R.string.gallery_selection_hint);
         TextView line = text(s, 12);
-        line.setTextColor(0x99FFFFFF);
+        line.setTextColor(picking ? ACCENT : 0x99FFFFFF);
         line.setPadding(0, activity.dp(6), 0, activity.dp(2));
         return line;
+    }
+
+    /**
+     * A foot action that acts on the picked set and is live only while one
+     * exists.
+     *
+     * <p>Disabled rather than hidden, deliberately: hiding re-flows the foot
+     * under the finger that just picked the first photograph, and a control that
+     * is absent at the moment its answer is "nothing yet" cannot teach how to
+     * make it live. A dimmed, unclickable plate is the same treatment
+     * {@link ModalSheet} gives a locked row, so "not available" has one
+     * appearance in the app. The content description names the unlock, because
+     * a disabled button is exactly the one a screen reader user cannot
+     * experiment with.
+     *
+     * @param reasonRes the string that says what would enable this action
+     */
+    private Button selectionAction(String label, int reasonRes,
+                                   View.OnClickListener listener) {
+        Button b = compact(label, listener);
+        boolean live = !picked.isEmpty();
+        b.setEnabled(live);
+        b.setAlpha(live ? 1f : 0.4f);
+        if (!live) b.setContentDescription(activity.getString(reasonRes));
+        return b;
+    }
+
+    /**
+     * The grid's one primary button: leaving is the reason the grid is up.
+     *
+     * <p>Primary, not another plate, because while picking it is also the exit
+     * from the mode — the visible answer to "how do I stop picking". It clears
+     * the set through {@link #dismissGrid}, the same exit BACK takes, so there is
+     * one way out rather than two that could disagree.
+     */
+    private Button doneButton() {
+        Button done = ModalSheet.button(activity,
+                activity.getString(R.string.action_done), true, false);
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Done is the way out, not a save. Every action here wrote the
+                // moment it was tapped, so there is nothing to commit and a
+                // button that said Save would imply otherwise.
+                dismissGrid();
+            }
+        });
+        return done;
     }
 
     private void rebuildGrid() {
@@ -924,8 +1114,14 @@ final class Gallery {
      * twice and a sort change that redraws one of them leaves the other showing
      * an order the index no longer holds. The grid call no-ops when the grid is
      * down, so a strip-only session pays nothing for the seam.
+     *
+     * <p>Package-visible because not every write to the index happens in this
+     * class: importing a photo is the activity's, since the picker and the file
+     * copy are. The activity has to call this after such a write, or the strip
+     * keeps showing the row the imported photo replaced — the photo is selected
+     * and missing from the gallery, which looks like the import failed.
      */
-    private void reindex() {
+    void reindex() {
         rebuildGrid();
         refreshStrip();
     }
@@ -1241,7 +1437,8 @@ final class Gallery {
      * <p>The bundled row is never a target. It has no file to recreate it from, so
      * {@code Library.remove} refuses it — but refusing at the data layer is a back
      * stop, not a reason to offer the action, and a delete button that cannot
-     * delete is a control that cannot do anything.
+     * delete is a control that cannot do anything. {@link #togglePick} also
+     * refuses it, so it can never be counted in the first place.
      */
     private List<LibraryItem> targetsFor(LibraryItem row) {
         List<LibraryItem> out = new ArrayList<LibraryItem>();
@@ -1255,15 +1452,6 @@ final class Gallery {
             if (item != null && !item.isBundled()) out.add(item);
         }
         return out;
-    }
-
-    /** The picks, or nothing, with the reason said out loud. */
-    private List<LibraryItem> picksOrToast() {
-        if (picked.isEmpty()) {
-            Toast.makeText(activity, R.string.toast_select_first, Toast.LENGTH_LONG).show();
-            return new ArrayList<LibraryItem>();
-        }
-        return targetsFor(null);
     }
 
     // ------------------------------------------------------------------ delete

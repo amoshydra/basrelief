@@ -91,9 +91,29 @@
     <string name="action_replace">Replace</string>
     <string name="action_reset_view">Reset view</string>
 
+    <!--
+      The photo line: one line at the top of the scroll that says what the
+      wallpaper is doing with this photograph. Three states, one view — the
+      surface it is on (R-U2), the fact that it is on none yet (R-U3), and the
+      playlist that is rotating it (R-PL3). The name is the <b>first</b>
+      argument in every form, so the caller can ink it differently from the
+      state; see MainActivity.setPhotoLine.
+    -->
+    <string name="photo_line_surface">%1$s — %2$s</string>
+    <string name="photo_line_not_on_screen">%1$s · not on a screen yet</string>
+    <string name="photo_line_playlist">%1$s · playlist: %2$s · %3$d of %4$d</string>
+
     <!-- Surfaces. The segment appears ONLY when the photo is on both. -->
     <string name="surface_home">Home</string>
     <string name="surface_lock">Lock</string>
+    <!--
+      R-U5/R-U6. The lock screen mirrors home until it is edited, so this line
+      under the segment is either the fact (inheriting) or the action that
+      restores it (overridden). They cannot both be true, so they share one
+      view: a state and its own undo do not need two rows.
+    -->
+    <string name="surface_same_as_home">same as home</string>
+    <string name="surface_revert_to_home">Revert to same as home</string>
     <string name="group_relief_surface">Standing out of the plane — %1$s</string>
     <string name="group_motion_surface">How it moves — %1$s</string>
     <string name="group_zoom_surface">Zoom — %1$s</string>
@@ -152,10 +172,27 @@
     <!--
       The selection line, and the one sentence that makes hold-to-select
       discoverable. It reads as the count once there is a count, so it is one
-      text view answering two questions rather than two views.
+      text view answering two questions rather than two views. "Selected" is the
+      word every other surface uses for this state, so the line, the badges and
+      the actions cannot drift into three words for one thing.
     -->
-    <string name="gallery_selection_hint">Tap a photo to use it · hold to pick several</string>
-    <string name="gallery_selection_count">%1$d picked</string>
+    <string name="gallery_selection_hint">Tap a photo to use it · hold to select several</string>
+    <string name="gallery_selection_count">%1$d selected</string>
+    <!--
+      The checkmark on a picked cell. Drawn, so the state is carried by the wash
+      and the glyph together; a screen reader gets the cell's own description
+      below instead of this character.
+    -->
+    <string name="gallery_selected_mark">✓</string>
+    <!--
+      Spoken state of a cell. The ring, the wash and the badge are all colour and
+      shape, which nobody can hear, so the three combinations are spelled out.
+      The plain case keeps the action wording, because using the photograph is
+      what a bare cell offers.
+    -->
+    <string name="gallery_talk_active">%1$s, on screen</string>
+    <string name="gallery_talk_selected">%1$s, selected</string>
+    <string name="gallery_talk_active_selected">%1$s, on screen, selected</string>
 
     <!-- Copy settings: what a copy takes, and where it goes. The source picker
           is a two-line row, so the surface a paste writes and what a copy takes
@@ -165,9 +202,18 @@
     <string name="gallery_copy_source_row_sub">%1$s · %2$s</string>
     <string name="gallery_settings_copied">Copied settings from %1$s</string>
 
-    <!-- Bulk actions, worded for the selection they act on. -->
+    <!-- Bulk actions, worded for the selection they act on. The two that act on
+         the picked set are disabled while it is empty, and their content
+         description (below) says what would enable them. -->
     <string name="gallery_paste_onto_this">Paste onto this photo</string>
-    <string name="gallery_delete_selected">Delete picked</string>
+    <string name="gallery_delete_selected">Delete selected</string>
+    <!--
+      The disabled foot actions' content descriptions. A disabled button is the
+      one control a screen reader user cannot experiment with, so it says how to
+      make it live rather than only that it is off.
+    -->
+    <string name="gallery_paste_needs_selection">Select photos to paste onto first</string>
+    <string name="gallery_playlist_needs_selection">Select photos to add first</string>
     <string name="gallery_delete_one">Delete</string>
     <string name="gallery_delete_one_message">Delete %1$s? Its file goes with it.</string>
     <string name="gallery_delete_many_message">Delete %1$d photos? Their files go with them.</string>
@@ -196,7 +242,7 @@
     <!-- Bulk paste outcomes -->
     <string name="toast_settings_pasted">Pasted onto %1$d photos</string>
     <string name="toast_copy_first">Copy settings from a photo first</string>
-    <string name="toast_select_first">Hold a photo to pick several first</string>
+    <string name="toast_select_first">Hold a photo to select several first</string>
 
     <!-- Playlists. The screen is two states, a list and an editor. -->
     <string name="playlists_title">Playlists</string>
@@ -213,6 +259,9 @@
       the editor's radio cannot disagree about what a trigger is called.
     -->
     <string name="playlists_row_summary">%1$s · %2$s · %3$s</string>
+    <!-- Shuffle is on for this playlist; the list row says so, because how it
+         rotates is part of what identifies it. -->
+    <string name="playlists_row_summary_shuffled">%1$s · %2$s · %3$s · shuffled</string>
     <string name="playlists_surfaces_both">%1$s + %2$s</string>
     <!--
       For a playlist whose stored surface list this build could not read. It
@@ -223,6 +272,13 @@
     <string name="playlists_rotation">Rotation</string>
     <string name="playlists_rotate_row">Rotate through this list</string>
     <string name="playlists_rotate_row_sub">the wallpaper moves to the next photo</string>
+    <!--
+      Shuffle is how the rotation picks, so it sits under the same Rotation
+      caption as the row that turns rotation on. Both states are reachable: an
+      edit that could only switch it on would be a stored value with no way back.
+    -->
+    <string name="playlists_shuffle_row">Shuffle</string>
+    <string name="playlists_shuffle_row_sub">pick the next photo at random</string>
     <!--
       Triggers are two families and are not interchangeable: a timed one is due
       when a clock says so, an event one when something happens. Grouping them is
@@ -254,6 +310,17 @@
     <string name="playlists_remove_glyph">×</string>
     <string name="playlists_remove_photo">Take %1$s out of this list</string>
     <string name="playlists_remove_missing">Take the missing photo out of this list</string>
+    <!--
+      Reordering: arrows in the same plate as the remove mark. The descriptions
+      name the photo, and the missing-photo variants exist because a hole is a row
+      the user can move too.
+    -->
+    <string name="playlists_move_up_glyph">↑</string>
+    <string name="playlists_move_down_glyph">↓</string>
+    <string name="playlists_move_up">Move %1$s up</string>
+    <string name="playlists_move_down">Move %1$s down</string>
+    <string name="playlists_move_missing_up">Move the missing photo up</string>
+    <string name="playlists_move_missing_down">Move the missing photo down</string>
     <string name="playlists_delete_message">Delete %1$s? The photos stay in the gallery.</string>
     <!--
       Accessibility. Every row here draws its state as a coloured corner dot, which

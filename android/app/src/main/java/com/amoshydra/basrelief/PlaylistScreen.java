@@ -1,6 +1,5 @@
 package com.amoshydra.basrelief;
 
-import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -14,6 +13,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -126,10 +126,12 @@ final class PlaylistScreen {
     private EditText nameField;
     /** The navigation-bar inset, folded into the modal's bottom padding. */
     private int bottomInset;
-    // This screen builds its own window rather than using ModalSheet -- it
+    // The editor builds its own window rather than using ModalSheet -- it
     // predates it, and its capped scroll and per-state rebuild are its own -- so
     // it carries the inset itself. It shares ModalSheet.insetBottom so the two
-    // cannot resolve the bar differently.
+    // cannot resolve the bar differently. The delete confirm is the one
+    // ModalSheet here: it is a question rather than a state of this editor, and
+    // it should look like the questions the gallery asks.
 
     private PlaylistScreen(MainActivity activity) {
         this.activity = activity;
@@ -626,8 +628,10 @@ final class PlaylistScreen {
 
     /** {@code 4 photos · Daily · Home + Lock} — the row's whole answer, on one line. */
     private String summary(Playlist p) {
-        return activity.getString(R.string.playlists_row_summary, photos(p.size()),
-                p.trigger.label(), surfaces(p));
+        return activity.getString(p.shuffle
+                        ? R.string.playlists_row_summary_shuffled
+                        : R.string.playlists_row_summary,
+                photos(p.size()), p.trigger.label(), surfaces(p));
     }
 
     private String photos(int count) {
@@ -697,6 +701,11 @@ final class PlaylistScreen {
         // a fact nothing can change is a control displaying a value this build
         // never acts on.
         box.addView(rotationGroup(p));
+
+        // ---- how it picks. Shuffle is a rotation behaviour, so it lives in the
+        // same group as the switch that turns rotation on; a shuffled playlist
+        // that is not rotating still shuffles nothing.
+        box.addView(shuffleRow(p));
 
         // ---- when. The two families are grouped, not listed flat: a timed
         // trigger and an event one are not interchangeable, and a list that put
@@ -833,6 +842,37 @@ final class PlaylistScreen {
     }
 
     /**
+     * Shuffle: whether the next photo is random or the next one in the list.
+     *
+     * <p>{@link Playlist#shuffle} and the rotation have carried this flag since
+     * they were written, and until now nothing in the app could set it — a stored
+     * capability no control reached, which is the failure this project's
+     * constitution rules out. It goes through the same store as every other
+     * edit, so it is derived from what is on disk and cannot reset the fields it
+     * does not name.
+     *
+     * <p>Both directions are here. A control that could only turn shuffle on
+     * would be a value with no way back, and the state word beside the row says
+     * which state it is in for anyone who cannot see the corner dot.
+     */
+    private View shuffleRow(final Playlist p) {
+        return markRow(p.shuffle, str(R.string.playlists_shuffle_row),
+                str(R.string.playlists_shuffle_row_sub), markState(p.shuffle),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
+                            @Override
+                            public Playlist edit(Playlist current) {
+                                return current.withShuffle(!current.shuffle);
+                            }
+                        });
+                        showEditor();
+                    }
+                }, false);
+    }
+
+    /**
      * One of the four triggers.
      *
      * <p>{@link Trigger#ON_PICKUP} is drawn dimmed, with the reason under it and a
@@ -913,14 +953,27 @@ final class PlaylistScreen {
      * <p>Not tappable, and there is nothing behind the tap. Choosing a photo from
      * here would be a second way to write the selection, and the index owns it; a
      * playlist has no cursor either, so there would be nothing truthful to show
-     * as "the one you are on". The only edit is taking a photo out, which is a
-     * playlists edit and leaves the gallery exactly as it was.
+     * as "the one you are on". The edits are taking a photo out and changing its
+     * place, both of which are playlists edits and leave the gallery exactly as
+     * it was.
+     *
+     * <p><b>Reordering is up/down buttons, not a drag handle.</b> The list already
+     * lives in a scroll view, and a drag inside a scroll view is the same gesture
+     * as a scroll: the framework's own arbitration resolves that in the scroll's
+     * favour, so a drag only works after a long press — an interaction with no
+     * visible affordance, on the one control this screen added for itself. A
+     * button has no ambiguity, the row's own edge is where the move is, and one
+     * press is one {@link Playlist#moved} call. The edge button is absent — an
+     * INVISIBLE plate, so rows still line up — rather than present and inert,
+     * because a control that does nothing is the failure this screen goes out of
+     * its way to avoid.
      *
      * <p>A hole is shown rather than dropped. A playlist can name a photograph the
      * gallery no longer holds — the restore case, or a delete that arrived from
      * somewhere else — and rotation steps over it. Hiding the row would make the
      * count above quietly wrong with nothing to explain why, and that count is
-     * the thing that makes a playlist's length worth trusting.
+     * the thing that makes a playlist's length worth trusting. A hole is movable
+     * too: moving it changes where it would reappear, and never makes it resolve.
      */
     private View photoList(Playlist p) {
         LinearLayout box = column();
@@ -932,8 +985,10 @@ final class PlaylistScreen {
             return box;
         }
         Library lib = library();
-        for (final String id : p.itemIds) {
+        for (int i = 0; i < p.itemIds.size(); i++) {
+            final String id = p.itemIds.get(i);
             final LibraryItem item = lib.find(id);
+            final String label = item == null ? null : item.displayName();
             LinearLayout r = option();
             Row texts;
             if (item == null) {
@@ -948,41 +1003,95 @@ final class PlaylistScreen {
             }
             r.addView(texts.box, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            r.addView(removePhoto(id, item == null ? null : item.displayName()));
+            r.addView(movePhoto(id, label, -1, i == 0));
+            r.addView(movePhoto(id, label, 1, i == p.itemIds.size() - 1));
+            r.addView(removePhoto(id, label));
             box.addView(r);
         }
         return box;
     }
 
-    private View removePhoto(final String id, String label) {
-        TextView x = new TextView(activity);
-        x.setText(str(R.string.playlists_remove_glyph));
-        x.setTextSize(15);
-        x.setTextColor(0xCCFFFFFF);
-        x.setGravity(Gravity.CENTER);
-        // A plate behind the mark, for the reason the gallery's row menu has one:
-        // a dark glyph on a dark card is a control that is present and unreadable.
-        x.setBackground(plain(0x99000000, dp(14)));
-        x.setContentDescription(label == null
-                ? str(R.string.playlists_remove_missing)
-                : activity.getString(R.string.playlists_remove_photo, label));
-        x.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // The playlists blob only. The photograph is still in the gallery,
-                // and the other half of a real delete — Playlists.afterRemoving —
-                // belongs to whoever deletes the row.
-                PlaylistStore.edit(activity.prefs, openId, new PlaylistStore.Editor() {
+    /**
+     * A move button: the arrow, its description, and the reorder.
+     *
+     * <p>{@link Playlist#moved} rather than rebuilding the order here, so a photo
+     * that arrived from another writer is not dropped as junk and a hole is
+     * carried along rather than filled. See {@code photoList} for why this is a
+     * button and not a drag.
+     *
+     * @param atEdge true for the first/last photo, where the arrow has nowhere to
+     *               go and the button is made invisible rather than inert
+     */
+    private View movePhoto(final String id, final String label, final int delta,
+                           boolean atEdge) {
+        String description = label == null
+                ? str(delta < 0 ? R.string.playlists_move_missing_up
+                        : R.string.playlists_move_missing_down)
+                : activity.getString(delta < 0 ? R.string.playlists_move_up
+                        : R.string.playlists_move_down, label);
+        TextView b = glyphPlate(str(delta < 0 ? R.string.playlists_move_up_glyph
+                        : R.string.playlists_move_down_glyph),
+                description, new View.OnClickListener() {
                     @Override
-                    public Playlist edit(Playlist p) {
-                        return p.excluding(id);
+                    public void onClick(View v) {
+                        PlaylistStore.edit(activity.prefs, openId, new PlaylistStore.Editor() {
+                            @Override
+                            public Playlist edit(Playlist p) {
+                                return p.moved(id, delta);
+                            }
+                        });
+                        showEditor();
                     }
                 });
-                showEditor();
-            }
-        });
-        x.setLayoutParams(new LinearLayout.LayoutParams(dp(SWATCH_DP), dp(SWATCH_DP)));
-        return x;
+        if (atEdge) b.setVisibility(View.INVISIBLE);
+        return b;
+    }
+
+    /**
+     * A glyph on a dark plate, the row's small control.
+     *
+     * <p>The plate exists for the reason the gallery's row menu has one: a dark
+     * glyph on a dark card is a control that is present and unreadable. Building
+     * it once is also why the remove mark and the two arrows cannot drift apart.
+     */
+    private TextView glyphPlate(String glyph, String description,
+                                View.OnClickListener tap) {
+        TextView t = new TextView(activity);
+        t.setText(glyph);
+        t.setTextSize(15);
+        t.setTextColor(0xCCFFFFFF);
+        t.setGravity(Gravity.CENTER);
+        t.setBackground(plain(0x99000000, dp(14)));
+        t.setContentDescription(description);
+        t.setOnClickListener(tap);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                dp(SWATCH_DP), dp(SWATCH_DP));
+        lp.leftMargin = dp(6);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private View removePhoto(final String id, String label) {
+        return glyphPlate(str(R.string.playlists_remove_glyph),
+                label == null
+                        ? str(R.string.playlists_remove_missing)
+                        : activity.getString(R.string.playlists_remove_photo, label),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        // The playlists blob only. The photograph is still in the
+                        // gallery, and the other half of a real delete —
+                        // Playlists.afterRemoving — belongs to whoever deletes the
+                        // row.
+                        PlaylistStore.edit(activity.prefs, openId, new PlaylistStore.Editor() {
+                            @Override
+                            public Playlist edit(Playlist p) {
+                                return p.excluding(id);
+                            }
+                        });
+                        showEditor();
+                    }
+                });
     }
 
     // ------------------------------------------------------------------ actions
@@ -996,33 +1105,56 @@ final class PlaylistScreen {
                 Playlist.create(Playlist.newId(), null, null)));
     }
 
-    private void confirmDelete(String id) {
+    /**
+     * Ask before unlinking, in the app's own modal.
+     *
+     * <p>This was the last platform {@code AlertDialog} in the app: a white
+     * Material card inside a near-black screen, drawn by a different design
+     * system from every other question one gesture away. {@link ModalSheet} is
+     * the app's card, so the question looks like the rest of them. The sheet
+     * registers its own back handling, which is why this does not call
+     * {@code dismissOnBack} itself.
+     *
+     * <p>The playlist is read again here rather than carried in from the editor,
+     * because a rotation or an edit may have landed while the sheet was up; the
+     * row being confirmed is the one on disk.
+     */
+    private void confirmDelete(final String id) {
         Playlist p = PlaylistStore.load(activity.prefs).find(id);
         if (p == null) {
             showList();
             return;
         }
-        final AlertDialog confirm = new AlertDialog.Builder(activity)
-                .setTitle(R.string.gallery_delete_title)
-                .setMessage(activity.getString(R.string.playlists_delete_message, p.displayName()))
-                .setPositiveButton(R.string.playlist_delete, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
-                        PlaylistStore.remove(activity.prefs, id);
-                        showList();
-                    }
-                })
-                .setNegativeButton(R.string.action_cancel, null)
-                .create();
-        // A confirm is a dialog too: back dismisses it, never the studio. See
-        // ModalSheet.dismissOnBack.
-        ModalSheet.dismissOnBack(confirm, new Runnable() {
+        final ModalSheet sheet = new ModalSheet(activity, MODAL_MAX_FRACTION);
+        LinearLayout body = column();
+        TextView head = ModalSheet.title(activity, str(R.string.gallery_delete_title));
+        // The gap the other modals get from their subtitle; see Gallery.modalBody.
+        head.setPadding(0, 0, 0, dp(10));
+        body.addView(head);
+        body.addView(ModalSheet.subtitle(activity,
+                activity.getString(R.string.playlists_delete_message, p.displayName())));
+        sheet.body(body);
+
+        Button cancel = ModalSheet.button(activity, str(R.string.action_cancel), false, true);
+        cancel.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void run() {
-                confirm.dismiss();
+            public void onClick(View v) {
+                sheet.dismiss();
             }
         });
-        confirm.show();
+        Button delete = ModalSheet.button(activity, str(R.string.playlist_delete), true, true);
+        delete.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Close first, then act: the editor is what is left when the
+                // question goes, and the same order the gallery's confirm uses.
+                sheet.dismiss();
+                PlaylistStore.remove(activity.prefs, id);
+                showList();
+            }
+        });
+        sheet.footerRow(cancel, delete);
+        sheet.show(activity);
     }
 
     private void dismiss() {

@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.json.JSONObject;
@@ -758,6 +759,97 @@ public class PlaylistTest {
         assertEquals("[a, b]", ids(added));
         assertEquals("adding what is there changes nothing",
                 ids(added), ids(added.including("b")));
+    }
+
+    // ------------------------------------------------------------- reordering
+
+    /**
+     * A reorder moves one photo and leaves every other one in order.
+     *
+     * <p>This is the editor's up/down control as the model sees it. The UI moves
+     * by a button press rather than a drag -- see {@code PlaylistScreen.photoList}
+     * for why -- and one press is exactly one call here.
+     */
+    @Test
+    public void reorderingMovesAPhotoByWholePlaces() {
+        Playlist p = playlist("p", "a", "b", "c", "d");
+        assertEquals("[b, a, c, d]", ids(p.moved("a", 1)));
+        assertEquals("[a, c, b, d]", ids(p.moved("b", 1)));
+        assertEquals("[a, c, d, b]", ids(p.moved("b", 2)));
+        assertEquals("[d, a, b, c]", ids(p.moved("d", -3)));
+        assertEquals("[a, d, b, c]", ids(p.moved("d", -2)));
+    }
+
+    /**
+     * A move past either end changes nothing, and a no-op is not a copy.
+     *
+     * <p>Clamping rather than wrapping is the honest answer for a button at an
+     * edge: the first photo has no "up". Returning {@code this} means the
+     * editor's store can skip the write outright, not merely write an equal blob.
+     */
+    @Test
+    public void aMovePastEitherEndChangesNothing() {
+        Playlist p = playlist("p", "a", "b", "c");
+        assertEquals(ids(p), ids(p.moved("a", -1)));
+        assertEquals(ids(p), ids(p.moved("a", -50)));
+        assertEquals(ids(p), ids(p.moved("c", 1)));
+        assertEquals(ids(p), ids(p.moved("c", 50)));
+        assertSame("a zero move must not mint an equal copy", p, p.moved("b", 0));
+    }
+
+    /** An absent photo has no place to move from, and a null id is not a crash. */
+    @Test
+    public void movingAPhotoThatIsNotInTheListChangesNothing() {
+        Playlist p = playlist("p", "a", "b");
+        assertEquals(ids(p), ids(p.moved("z", 1)));
+        assertEquals(ids(p), ids(p.moved(null, 1)));
+        assertEquals(ids(p), ids(p.moved("", -1)));
+    }
+
+    /**
+     * A reorder carries every setting, exactly like the other photo edits.
+     *
+     * <p>Reorder is an itemIds edit and nothing else: the name, the trigger, the
+     * surfaces, shuffle, the active flag and the playlist's own clock all have to
+     * survive it, or moving a photo quietly changes when the wallpaper moves.
+     * The selection pointer is out of reach structurally -- {@link Playlist} has
+     * no field for it -- and this is the assertion that keeps the edit from
+     * acquiring one.
+     */
+    @Test
+    public void aReorderCarriesEverySetting() {
+        Playlist full = playlist("p", "a", "b", "c")
+                .withName("Favourites")
+                .withTrigger(Trigger.HOURLY)
+                .withShuffle(true)
+                .withSurfaces(Arrays.asList(Surface.HOME, Surface.LOCK))
+                .withActive(true)
+                .advancedAt(4242L);
+
+        Playlist moved = full.moved("b", -1);
+        assertEquals("[b, a, c]", ids(moved));
+        assertOnlyChanges(full, moved, "moved", "itemIds");
+    }
+
+    /**
+     * A hole is moved, not filled.
+     *
+     * <p>A playlist can name a photo the gallery no longer holds. Reordering
+     * rearranges ids that are already in the list and cannot add one, so a
+     * deleted photo stays deleted and the photo count stays honest. The same
+     * property has to hold for a hole the delete left behind, which is the path
+     * that creates it.
+     */
+    @Test
+    public void aReorderCannotResurrectADeletedPhoto() {
+        Playlist withHole = playlistsOf(playlist("p", "a", "b", "c"))
+                .withoutItem("b").find("p");
+        assertEquals("[a, c]", ids(withHole));
+
+        Playlist moved = withHole.moved("c", -1);
+        assertEquals("[c, a]", ids(moved));
+        assertFalse("the deleted id must not come back", moved.contains("b"));
+        assertEquals(2, moved.size());
     }
 
     /** A blank name is no name, and there is always something to show in a list. */

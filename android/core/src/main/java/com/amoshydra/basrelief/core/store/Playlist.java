@@ -265,6 +265,36 @@ public final class Playlist {
         return withItemIds(next);
     }
 
+    /**
+     * Move one photo by whole places, keeping every other photo in order.
+     *
+     * <p><b>A model operation rather than a list rebuilt in the editor.</b> The
+     * editor could hand {@link #withItemIds(List)} a freshly constructed order,
+     * but that path re-derives the whole list from a value the UI computed, so an
+     * id that arrived from another writer between the read and the write would be
+     * dropped as junk rather than moved. Moving by id touches only that id and
+     * leaves every other position exactly as it was.
+     *
+     * <p>A photo that is not in the list, a zero delta, and a move past either
+     * end all return {@code this}, so an editor's edge button cannot produce a
+     * write that only exists to be undone. This never adds or removes an id -- a
+     * hole is moved, not filled -- and it cannot reach the index's selection,
+     * because a {@link Playlist} holds no pointer to it.
+     *
+     * @param itemId the photo to move; null or unknown changes nothing
+     * @param delta  negative moves it towards the front, positive towards the back
+     */
+    public Playlist moved(String itemId, int delta) {
+        int at = indexOf(itemId);
+        if (at < 0 || delta == 0) return this;
+        int to = at + delta;
+        if (to < 0 || to >= itemIds.size()) return this;
+        List<String> next = new ArrayList<String>(itemIds);
+        next.remove(at);
+        next.add(to, itemId);
+        return withItemIds(next);
+    }
+
     public Playlist withTrigger(Trigger next) {
         return copy(name, itemIds, next, surfaces, shuffle, active, lastAdvancedAt);
     }

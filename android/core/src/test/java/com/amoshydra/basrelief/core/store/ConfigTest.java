@@ -31,12 +31,22 @@ public class ConfigTest {
 
     // ------------------------------------------------------------ round trip
 
+    /**
+     * Motion is a migration source now: read from an old blob, never written by a
+     * new one.
+     *
+     * <p>The write was the last place a render value nothing reads was being
+     * persisted. The read has to stay, because a blob written before the library
+     * took Motion over is the only copy of that install's speed.
+     */
     @Test
-    public void roundTripsMotion() {
+    public void motionIsReadFromAnOldBlobAndNotWritten() {
         for (int motion : new int[]{0, 1, 33, 66, 100}) {
-            Config c = new Config(motion);
-            assertEquals("motion " + motion, motion, Config.parse(c.toJson()).motion);
+            assertEquals("old blob: motion " + motion, motion,
+                    Config.parse("{\"version\":2,\"motion\":" + motion + "}").motion);
         }
+        assertFalse("a new write must not persist Motion",
+                new Config(66).toJson().contains("motion"));
     }
 
     @Test
@@ -45,15 +55,19 @@ public class ConfigTest {
         assertEquals(String.valueOf(Config.VERSION), version.get("version"));
     }
 
-    /** The blob is one small number, and nothing that used to be global rode along. */
+    /**
+     * The blob holds no render value any more: everything that used to be global
+     * moved onto the photograph, and Motion -- the last survivor -- is now
+     * read-only, so writing it would keep a dead field alive.
+     */
     @Test
-    public void theBlobHoldsNothingButMotion() {
+    public void theBlobHoldsNoValueThatMovedOntoAPhotograph() {
         String json = new Config(42).toJson();
         assertFalse("a dead field is a promise to migrate it later",
                 json.contains("intensity") || json.contains("zoom")
                         || json.contains("orbit") || json.contains("pan")
                         || json.contains("image") || json.contains("depth")
-                        || json.contains("active"));
+                        || json.contains("motion") || json.contains("active"));
     }
 
     // --------------------------------------------------------------- nothing

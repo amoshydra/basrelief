@@ -216,8 +216,13 @@ final class BasreliefSlider extends LinearLayout {
 
     private final MainActivity activity;
     private final String name;
-    private final int min;
-    private final int max;
+    /**
+     * The range, in the key's own units. Not final: a key whose bound belongs to
+     * something else — pan, bounded by the renderer's surface — has to be able to
+     * follow that bound without being rebuilt. See {@link #setRange}.
+     */
+    private int min;
+    private int max;
     private final ValueFormatter formatter;
     private final OnChanged onChanged;
 
@@ -235,9 +240,12 @@ final class BasreliefSlider extends LinearLayout {
      * Finger travel per unit, in surface pixels.
      *
      * <p>Range-scaled by default; {@link #PIXEL_UNIT_TRAVEL_PX} for a key built
-     * with {@link #createScreenPixels}. See {@link #FULL_SWEEP_DP}.
+     * with {@link #createScreenPixels}. See {@link #FULL_SWEEP_DP}. Recomputed by
+     * {@link #setRange} because the sweep rule is a function of the range.
      */
-    private final float pxPerUnit;
+    private float pxPerUnit;
+    /** Whether this key's unit is itself a pixel, which fixes the travel rule. */
+    private final boolean unitIsScreenPixel;
     /** The platform's threshold, so a tap that shivers is still a tap. */
     private final int touchSlop;
 
@@ -303,15 +311,10 @@ final class BasreliefSlider extends LinearLayout {
         this.max = Math.max(min, max);
         this.formatter = fmt;
         this.onChanged = onChanged;
-        // dp per unit, then pixels. The cap is in dp too, so the feel is the same
-        // at any density. Math.max(1, ..) covers a one-value range, which is a
-        // slider that cannot move but must not divide by zero. A screen-pixel key
-        // skips the whole derivation: its unit already is the drag's own unit.
-        int range = Math.max(1, this.max - this.min);
-        this.pxPerUnit = unitIsScreenPixel
-                ? PIXEL_UNIT_TRAVEL_PX
-                : Math.min(MAX_STEP_DP, FULL_SWEEP_DP / range)
-                        * a.getResources().getDisplayMetrics().density;
+        this.unitIsScreenPixel = unitIsScreenPixel;
+        // A screen-pixel key skips the whole sweep derivation: its unit already
+        // is the drag's own unit.
+        this.pxPerUnit = pxPerUnitFor();
         this.touchSlop = ViewConfiguration.get(a).getScaledTouchSlop();
 
         setOrientation(HORIZONTAL);
@@ -396,6 +399,30 @@ final class BasreliefSlider extends LinearLayout {
         show(clamp(next, min, max));
     }
 
+    /**
+     * Replace the range in place, silently.
+     *
+     * <p>For a key whose bound is owned by something this class cannot see. Pan is
+     * the case: {@code ReliefRenderer.setPan} clamps pan to the surface's own
+     * larger dimension, so the row has to follow that number as the surface is
+     * laid out or resized — and rebuilding the sheet for a resize is not an option.
+     *
+     * <p>Inert, like {@link #setValue} and for the same reason: a range change
+     * that clamped the displayed value and then fired {@link OnChanged} would
+     * write the clamp to storage as if the user had moved the control. It also
+     * restates the value through {@link #show}, so a value outside the new range
+     * is shown for what the bound actually is rather than printed as stored.
+     */
+    void setRange(int nextMin, int nextMax) {
+        int lo = Math.min(nextMin, nextMax);
+        int hi = Math.max(nextMin, nextMax);
+        if (lo == min && hi == max) return;
+        min = lo;
+        max = hi;
+        pxPerUnit = pxPerUnitFor();
+        show(clamp(value, min, max));
+    }
+
     /** Let the renderer follow a drag. Optional; see {@link OnPreview}. */
     void setOnPreview(OnPreview preview) {
         this.onPreview = preview;
@@ -441,6 +468,21 @@ final class BasreliefSlider extends LinearLayout {
         // lie about a range that does not exist; drawing it empty is a lie about
         // the one value it does.
         return max > min ? (v - min) / (float) (max - min) : 0f;
+    }
+
+    /**
+     * Finger travel one unit asks for, for the current range.
+     *
+     * <p>The cap is in dp so the feel is the same at any density, and
+     * {@code Math.max(1, range)} covers a one-value range — a slider that cannot
+     * move but must not divide by zero.
+     */
+    private float pxPerUnitFor() {
+        int range = Math.max(1, max - min);
+        return unitIsScreenPixel
+                ? PIXEL_UNIT_TRAVEL_PX
+                : Math.min(MAX_STEP_DP, FULL_SWEEP_DP / range)
+                        * activity.getResources().getDisplayMetrics().density;
     }
 
     /**

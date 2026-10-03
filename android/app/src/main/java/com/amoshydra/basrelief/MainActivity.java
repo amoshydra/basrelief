@@ -3,11 +3,14 @@ package com.amoshydra.basrelief;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.Playlist;
+import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
+import android.app.WallpaperInfo;
 import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -187,8 +190,14 @@ public class MainActivity extends Activity {
      * <p>A field rather than a local because the navigation-bar inset has to be
      * re-read from outside {@code onCreate}: the bar is shown or hidden as the
      * sheet collapses (see {@link #applySystemUi}), and hiding it changes the
-     * bottom inset, so the padding that keeps the foot clear of the bar has to be
-     * recomputed. {@link #requestSheetInsets} is the one place that asks.
+     * bottom inset, so the margin that keeps the foot — and the fade — clear of
+     * the bar has to be recomputed. {@link #requestSheetInsets} is the one place
+     * that asks.
+     *
+     * <p>The inset is a <b>margin</b>, not padding, and that is load-bearing:
+     * Android draws a scroll view's fading edge at the view's bounds, so the
+     * only way to move the fade above a navigation bar is to move the bounds.
+     * See the inset listener in {@code onCreate} and {@link BottomFadeScrollView}.
      */
     private ScrollView sheetScroll;
     /** The one dashed line under the grip. See {@link #buildFixLine}. */
@@ -271,6 +280,21 @@ public class MainActivity extends Activity {
     /** The Home / Lock switch. Always built; shown by {@link #refreshSurfaceSegment}. */
     private LinearLayout surfaceSegment;
     private Button segHome, segLock;
+
+    /**
+     * The photo line: the photograph's name and what the wallpaper is doing with
+     * it. One view carrying R-U2, R-U3 and R-PL3; see {@link #refreshPhotoLine}.
+     */
+    private TextView photoLine;
+
+    /**
+     * The line under the Home / Lock segment that is either the inheritance fact
+     * ("same as home", R-U5) or the action that restores it (R-U6). One view,
+     * because a surface either owns its settings or it does not — the two states
+     * cannot both hold, and a disabled button beside a fact would be a second
+     * control for one truth.
+     */
+    private TextView surfaceNote;
 
     /**
      * The container the gallery overlay is added to.
@@ -485,17 +509,33 @@ public class MainActivity extends Activity {
         final int sheetPadLeft = dp(14);
         final int sheetPadBottom = dp(14);
         sheetScroll.setPadding(sheetPadLeft, 0, sheetPadLeft, sheetPadBottom);
-        // Fold the navigation-bar inset into the bottom padding, the same way every
-        // modal does. It was safe to omit while the bar was always hidden; API 35+
-        // shows it over the wallpaper (see applySystemUi), and without this the
-        // sheet's foot -- the gear and "Set as wallpaper" -- is drawn under the bar.
-        // ModalSheet.insetBottom is reused rather than re-derived so all five
-        // surfaces resolve the bar identically.
+        // Fold the navigation-bar inset into a bottom MARGIN, the same way every
+        // modal does -- except the modals fold it into padding, and padding is
+        // wrong here for one reason: the scroll view's fading edge is drawn at
+        // the view's BOUNDS. Padding lives inside the bounds, so padding moves
+        // the content away from the edge while the edge itself stays at the
+        // window's bottom, underneath the bar -- which is exactly the reported
+        // bug: an unfaded strip of sheet between the fade and the bar, with the
+        // fade itself invisible behind the bar. A margin moves the bounds, and
+        // therefore the fade, to sit just above the bar. The margin region below
+        // it shows the panel's own glass, which is what the bar then composites
+        // over. ModalSheet.insetBottom is reused rather than re-derived so all
+        // five surfaces resolve the bar identically.
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                v.setPadding(sheetPadLeft, 0, sheetPadLeft,
-                        sheetPadBottom + sheetFootInset(insets));
+                // The design's 14dp gap is content spacing, so it stays padding.
+                v.setPadding(sheetPadLeft, 0, sheetPadLeft, sheetPadBottom);
+                LinearLayout.LayoutParams lp =
+                        (LinearLayout.LayoutParams) v.getLayoutParams();
+                int bar = sheetFootInset(insets);
+                if (lp.bottomMargin != bar) {
+                    lp.bottomMargin = bar;
+                    // A layout change, not a transform: the fade has to be
+                    // re-laid-out to move, and this is also the shape that
+                    // reliably repaints over the GLSurfaceView (b/7179570).
+                    v.setLayoutParams(lp);
+                }
                 return insets;
             }
         });
@@ -549,6 +589,16 @@ public class MainActivity extends Activity {
         surfaceSegment = buildSurfaceSegment(editSurface);
         sheetContent.addView(surfaceSegment);
         refreshSurfaceSegment();
+
+        // The inheritance note belongs to the segment it explains, so it follows
+        // it directly. The photo line is under the same pair: the design puts it
+        // near the top of the sheet as the first thing you read, and both live
+        // inside the scroll because the segment scrolls with the controls it
+        // changes.
+        surfaceNote = buildSurfaceNote();
+        sheetContent.addView(surfaceNote);
+        photoLine = buildPhotoLine();
+        sheetContent.addView(photoLine);
 
         // The caption is always the first thing in the scroll, whether or not the
         // Home / Lock segment sits above it on the panel, so the mockup's
@@ -2806,6 +2856,11 @@ public class MainActivity extends Activity {
         AppState state = AppState.load(prefs, getFilesDir());
         LibraryItem item = state.activeItem();
         refreshFixLine(state);
+        // The photo line and the lock note answer "what is the wallpaper doing",
+        // which changes exactly when the selection does, so they are refreshed
+        // from the same one read as everything else here.
+        refreshPhotoLine(state);
+        refreshSurfaceNote(state);
         syncDepthRow(state);
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
@@ -2908,9 +2963,19 @@ public class MainActivity extends Activity {
      * and a run that failed. Unreachable-server and failed-generation are the SAME
      * condition to a user, so they are one line and one pair of actions.
      *
-     * <p>The fourth -- gyro neutral drifted -- is not. It needs a TiltController
-     * reading of drift that exists, and a line that says a thing that may be wrong is
-     * worse than a line that does not.
+     * <p><b>The fourth -- gyro neutral drifted -- is deliberately absent, and this
+     * is an audit rather than an omission.</b> No drift value exists to read:
+     * {@code TiltController} exposes tilt, sleep and battery state and nothing
+     * about the neutral's stability, and its only slow-moving number,
+     * {@code idleBaseX/Y}, is a baseline of where the phone is being <i>held</i> —
+     * it tracks a deliberate angle exactly as readily as a drifting neutral,
+     * which is the ambiguity the controller's own note says a timer cannot
+     * resolve ("a timer cannot tell 'the user is holding an angle' from 'the
+     * sensor has drifted'"). It is also private to that class, which this file
+     * does not own, so there is no honest way to read it from here. A fix line
+     * that fires on a held pose would report a condition nothing measures, so the
+     * condition is dropped rather than faked; drift is corrected where it is
+     * observed instead, by the recalibration on every wake and visibility change.
      *
      * <p>With a map present this shows NOTHING (R-F4). Not an empty box: a dashed
      * border left on screen trains the eye to stop reading it, which is how a real
@@ -2998,6 +3063,213 @@ public class MainActivity extends Activity {
                     }
                 });
     }
+
+    // ----------------------------------------------------------- the photo line
+
+    /**
+     * The line that says what the wallpaper is doing with this photograph.
+     *
+     * <p>Three states, one view, exactly as the PRD asks:
+     * <ul>
+     *   <li>a playlist is rotating it — {@code playlist: Favourites · 3 of 6}
+     *       (R-PL3). A wallpaper that changes on its own must never look like a
+     *       bug, and only the list that is actually rotating the surface being
+     *       edited counts;</li>
+     *   <li>no surface is showing it — {@code not on a screen yet} (R-U3);</li>
+     *   <li>otherwise the surface it is on, which is the surface the sheet is
+     *       editing when the photo is on both ({@code — lock}, R-U2).</li>
+     * </ul>
+     *
+     * <p><b>Why "on a screen" is a platform question.</b> The index's
+     * applied-surfaces record is the source for <i>which</i> surfaces were
+     * applied to, but it cannot answer <i>whether</i> any is: it defaults to
+     * {@code {HOME}} so every never-applied photo in the gallery would claim the
+     * home screen, and a home-only apply writes nothing new to it (see
+     * {@code Library.withAppliedTo} and {@code withSelection}). What can answer
+     * it is whether this app's own wallpaper component is currently bound, which
+     * changes at exactly the apply moment the line has to report. See
+     * {@link #ourWallpaperIsBound}.
+     */
+    private TextView buildPhotoLine() {
+        TextView t = new TextView(this);
+        t.setTextSize(12);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        t.setPadding(dp(4), dp(2), dp(4), dp(6));
+        return t;
+    }
+
+    private void refreshPhotoLine(AppState state) {
+        if (photoLine == null) return;
+        LibraryItem item = state.activeItem();
+        if (item == null) {
+            photoLine.setVisibility(View.GONE);
+            return;
+        }
+        photoLine.setVisibility(View.VISIBLE);
+        String name = item.displayName();
+
+        Playlists lists = Playlists.parse(prefs.getString(Playlists.KEY, null));
+        Playlist rotating = lists.rotating(editSurface);
+        if (rotating != null) {
+            int at = rotating.indexOf(item.id);
+            // A playlist that does not contain the current photo is not rotating
+            // THIS photo. Naming it with a position would put a count on screen
+            // that is sometimes false, which is the one thing a rotation status
+            // may never be.
+            if (at >= 0) {
+                setPhotoLine(name, getString(R.string.photo_line_playlist,
+                        name, rotating.displayName(), at + 1, rotating.size()));
+                return;
+            }
+        }
+
+        if (!ourWallpaperIsBound()) {
+            setPhotoLine(name, getString(R.string.photo_line_not_on_screen, name));
+            return;
+        }
+
+        // The surface named is the one being edited when it can differ (the photo
+        // is on both), and Home otherwise. Reading it from editSurface rather
+        // than picking a label in advance is what makes the line and the segment
+        // agree by construction.
+        Surface named = state.library.isOnBothSurfaces() && editSurface == Surface.LOCK
+                ? Surface.LOCK : Surface.HOME;
+        setPhotoLine(name, getString(R.string.photo_line_surface, name,
+                getString(named == Surface.LOCK
+                        ? R.string.surface_lock : R.string.surface_home)));
+    }
+
+    /**
+     * Show the name and the state on one line, the name inked brighter.
+     *
+     * <p>The mockup draws a solid name box beside a dim state box. One
+     * {@link android.text.Spannable} rather than two TextViews because the line
+     * is one sentence that has to ellipsize as a whole; two views cannot
+     * truncate text that would cross between them, and a long label would push
+     * the state off the edge instead.
+     */
+    private void setPhotoLine(String name, String text) {
+        android.text.SpannableString line = new android.text.SpannableString(text);
+        int end = Math.min(name == null ? 0 : name.length(), text.length());
+        line.setSpan(new android.text.style.ForegroundColorSpan(0xFFFFFFFF), 0, end, 0);
+        photoLine.setText(line);
+        photoLine.setTextColor(0x8CFFFFFF);
+    }
+
+    /**
+     * Whether this app's own live wallpaper is the one currently bound.
+     *
+     * <p>The platform is the authority on what is actually on a screen — the
+     * app's own record is a statement of intent (see the class note on
+     * {@code Library.appliedSurfaces}). Compared against this service's
+     * component so a different live wallpaper cannot make this photo claim a
+     * screen it is not on. The lock query is API 34+, where a lock-only binding
+     * becomes expressible; below that the home query is the whole answer.
+     *
+     * <p>Never throws: {@code getWallpaperInfo} rethrows a dead system server's
+     * {@code DeadSystemException} as an unchecked exception, and a line that took
+     * the studio down with it would be worse than a line that says the
+     * pessimistic thing.
+     */
+    private boolean ourWallpaperIsBound() {
+        WallpaperManager wm = WallpaperManager.getInstance(this);
+        if (wm == null) return false;
+        android.content.ComponentName ours = DepthWallpaperService.wallpaperComponent(this);
+        try {
+            WallpaperInfo home = wm.getWallpaperInfo();
+            if (home != null && ours.equals(home.getComponent())) return true;
+            if (Build.VERSION.SDK_INT >= 34) {
+                WallpaperInfo lock = wm.getWallpaperInfo(WallpaperManager.FLAG_LOCK);
+                return lock != null && ours.equals(lock.getComponent());
+            }
+        } catch (Exception e) {
+            // No wallpaper service, or no visibility of whatever is bound. The
+            // honest reading of "cannot tell" is the state that claims nothing.
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------- same as home / revert
+
+    /**
+     * The line under the Home / Lock segment. See {@link #refreshSurfaceNote}.
+     */
+    private TextView buildSurfaceNote() {
+        TextView t = new TextView(this);
+        t.setTextSize(11);
+        t.setTextColor(0x8CFFFFFF);
+        // The mockup's .segnote hugs the segment: no top padding, and the gap
+        // below it is what separates the note from the photo line.
+        t.setPadding(dp(4), 0, dp(4), dp(8));
+        t.setVisibility(View.GONE);
+        return t;
+    }
+
+    /**
+     * Show what Lock is inheriting, or offer to restore it (R-U5, R-U6).
+     *
+     * <p>{@code hasOwnLockSettings()} is the single source for whether the lock
+     * screen has settings of its own; the app did not read it anywhere before
+     * this, which is how the lock screen came to mirror home with nothing on
+     * screen saying so and no way back once it did not.
+     *
+     * <p>Only rendered where the segment itself can appear. Below 35 there is no
+     * second live engine, so a note describing Lock's inheritance would be a
+     * promise about a surface whose values are never rendered.
+     */
+    private void refreshSurfaceNote(AppState state) {
+        if (surfaceNote == null) return;
+        LibraryItem item = state.activeItem();
+        if (item == null || surfaceForSegment() == null || editSurface != Surface.LOCK) {
+            surfaceNote.setVisibility(View.GONE);
+            return;
+        }
+        boolean own = item.hasOwnLockSettings();
+        surfaceNote.setVisibility(View.VISIBLE);
+        surfaceNote.setText(own
+                ? R.string.surface_revert_to_home : R.string.surface_same_as_home);
+        // Dim while it is a fact, accent while it is an action, so the one state
+        // that can be tapped reads as the one that can be tapped.
+        surfaceNote.setTextColor(own ? 0xFF7FD1C1 : 0x8CFFFFFF);
+        surfaceNote.setClickable(own);
+        surfaceNote.setFocusable(own);
+        surfaceNote.setOnClickListener(own ? revertLockSettings : null);
+    }
+
+    /**
+     * Clear Lock's override so it follows Home again (R-U6).
+     *
+     * <p>{@code withSettings(Surface.LOCK, null)} is the clearing call: null is
+     * not "no settings", it is the model's own representation of inheritance, and
+     * {@code settings(LOCK)} falls back to Home for every reader. The write goes
+     * through {@code LibraryStore.editItem}, which is a read-modify-write of the
+     * one item and nothing else — the selection lives in the index and is not
+     * touched, and an id that is no longer in the index is refused by
+     * {@code editItem}'s first check, so a deleted photo cannot be resurrected
+     * by a stale click. The item is re-read at click time rather than captured,
+     * for the same reason every other write here is.
+     */
+    private final View.OnClickListener revertLockSettings = new View.OnClickListener() {
+        @Override
+        public void onClick(View v) {
+            final String id = state().activeId();
+            if (id == null) return;
+            LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+                @Override
+                public LibraryItem edit(LibraryItem item) {
+                    return item.withSettings(Surface.LOCK, null);
+                }
+            });
+            // The sheet is editing Lock, so the numbers on it must re-resolve:
+            // clearing does not change Home's stored values, but it does change
+            // what LOCK renders, and leaving the old override on screen would be
+            // a control showing values nothing renders. applyFiles re-resolves
+            // the framing; refreshSliders repopulates every control and the note.
+            applyFiles();
+            refreshSliders();
+        }
+    };
 
     /**
      * The surface this photo can be switched between, or null when it cannot.
@@ -3184,6 +3456,12 @@ public class MainActivity extends Activity {
         // that a control which cannot change anything is absent. GONE is absent.
         surfaceSegment.setVisibility(show ? View.VISIBLE : View.GONE);
         if (show) setSegmentActive(editSurface);
+        // Called on resume, which is also where a just-finished apply lands: the
+        // photo line's "on a screen" answer can change while the app was behind
+        // the system picker, so re-read it here rather than only on a selection.
+        AppState state = state();
+        refreshPhotoLine(state);
+        refreshSurfaceNote(state);
     }
 
     /**
@@ -3610,6 +3888,24 @@ public class MainActivity extends Activity {
      * the "not aligned correctly" the user reported. Suppressing the top
      * <i>strength</i> is the one supported hook for a bottom-only fade; the bottom
      * edge is untouched and still uses {@code setFadingEdgeLength}.
+     *
+     * <p><b>Does the fade actually render? Yes, and it is worth saying why,
+     * because the usual answer is misleading.</b> Android's fading edge changes
+     * mechanism on {@code View.getSolidColor()}: a non-zero value would let it
+     * draw the gradient as a src-over fill, and this view's is 0 — {@code View}'s
+     * default implementation returns 0, and the panel's GradientDrawable belongs
+     * to the panel, not to this view. The zero case is not the dead one: the edge
+     * is drawn as a DST_OUT gradient over the content (API 28+ saves the edge
+     * region with {@code saveUnclippedLayer} / {@code restoreUnclippedLayer};
+     * 26–27 use an alpha {@code saveLayer}), which erases the content through the
+     * gradient and reveals whatever is behind this view — the panel's own glass,
+     * because the panel drew its background before its children. So the fade
+     * lands on {@code 0xEB161A20}, exactly as the mockup's CSS mask lands on
+     * {@code --panel}, with no background required on the scroll itself.
+     *
+     * <p>What that mechanism does imply is that the fade is anchored to these
+     * view <b>bounds</b>: padding is inside the bounds and cannot move it, which
+     * is why the navigation-bar inset is applied as a margin in {@code onCreate}.
      *
      * <p>This is a child effect, not a transform, so it is safe over the
      * {@code GLSurfaceView} -- the same reason the sheet positions itself by layout

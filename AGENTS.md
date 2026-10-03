@@ -367,7 +367,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 266 tests across sixteen classes:
+it**. 271 tests across sixteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -439,7 +439,9 @@ it**. 266 tests across sixteen classes:
   edit rather than an accident. Also pinned: a delete removes the id from every
   playlist in the same derivation; a corrupt or future blob yields no rotation and
   does not throw; a playlist naming a deleted photo cannot resurrect it and a hole
-  does not cost the playlist; an event trigger is never due on a clock; and a user's
+  does not cost the playlist; a reorder moves one photo by whole places, refuses to
+  wrap past either end, carries every setting, and cannot grow the list or fill a
+  hole; an event trigger is never due on a clock; and a user's
   hand-picked selection does not move a playlist's own clock. Note the trap in its
   own making — a "migration is idempotent" test that only re-parses the
   re-serialised blob **skips the migration entirely** and so cannot test it.
