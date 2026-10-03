@@ -665,6 +665,13 @@ public final class DepthGenDialog {
         });
 
         ModalSheet modal = new ModalSheet(activity, MAX_HEIGHT, ModalSheet.SCRIM);
+        // Every ModalSheet carries a handle bar. On this form it matters more
+        // than on a short one: the sheet is tall, the content scrolls, and the
+        // Cancel/Generate footer is a commit and not a dismissal -- so before the
+        // bar this screen's only way out was Cancel, which reads as "give up on
+        // the run". The bar closes without committing anything, which is the
+        // truth: a run started is a run that continues. See depth_close.
+        modal.grip(activity.getString(R.string.depth_close));
         modal.body(root);
         modal.footerRow(cancel, generateBtn);
         return modal;

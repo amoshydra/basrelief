@@ -4,6 +4,7 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
@@ -258,6 +259,34 @@ public class MainActivity extends Activity {
     private StripState stripState = StripState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
     private View depthBarRow;
+
+    /**
+     * Whether each item's image carries an embedded depth chunk, by item id.
+     *
+     * <p><b>Absent means "not read yet", which is not the same as false.</b> That
+     * distinction is the whole of this fix: a PNG can carry its depth map inside
+     * itself, in a {@code dePH}/{@code dEPt} chunk, and for such a photo
+     * {@code depthName} is null — so asking the index alone answered "no" and the
+     * fix line printed <b>"No depth"</b> over a photograph whose relief was visibly
+     * playing. Deciding it needs a file read, so there is a window on every
+     * selection, and answering "no depth" inside that window is the bug. The window
+     * maps to {@link DepthSource.Kind#UNKNOWN}, which claims nothing.
+     *
+     * <p><b>Keyed by id and read on delivery, never captured.</b> Two selections in
+     * quick succession queue two reads, and each delivery puts its own answer under
+     * its own key and then re-derives from whatever is selected <i>now</i>. So a slow
+     * read for a photo the user has already moved away from cannot apply its answer
+     * to the photo on screen — the race this cache would otherwise have.
+     *
+     * <p>Only read for an item with <b>no</b> separate depth file: an item that names
+     * one is {@link DepthSource.Kind#FILE} from the index alone, so its line never
+     * passes through the window at all.
+     */
+    private final java.util.Map<String, Boolean> embeddedDepthById =
+            new java.util.HashMap<>();
+
+    /** Ids with a read already in flight, so a refresh cannot queue the same one twice. */
+    private final java.util.Set<String> embeddedReadInFlight = new java.util.HashSet<>();
     /**
      * The first group caption, "Standing out of the plane".
      *
@@ -3313,20 +3342,137 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Whether this item has a depth map at all.
+     * <b>The one answer to "where does this photo's depth come from".</b>
      *
-     * <p>The bundled demo does -- it is the one asset pair the seed copies out of
-     * {@code res/raw}, and shipping one without wiring the other renders
-     * correctly with no relief and no explanation. See AGENTS.md.
+     * <p>Every caller goes through here, and the gallery's chip should too — which
+     * is the fix and not a tidy-up. The gallery derives it from {@code Io}'s
+     * embedded callback and this used to derive it from {@code depthName != null},
+     * and the two disagreed on exactly the photographs this app's own
+     * {@code dePH} format exists to produce. Two answers to one question is the
+     * class of bug this project keeps paying for, so there is one function now.
      *
-     * <p>A null item counts too. It means no row is selected, which is the state a
-     * deleted last row leaves and the state a fresh install starts in before the
-     * seed lands; renderer-wise it is the same packaged pair, so hiding the Depth
-     * control there would hide it on a marble bust that visibly has relief.
+     * <p>Also <b>starts the read when the answer needs one</b>, which is why it is
+     * called rather than merely consulted: an item with no separate depth file cannot
+     * be answered from the index, and until the file has been read the answer is
+     * {@link DepthSource.Kind#UNKNOWN} — silent, offering nothing. See
+     * {@link #embeddedDepthById}.
+     */
+    private DepthSource.Answer depthSourceFor(AppState state) {
+        LibraryItem item = state.activeItem();
+        DepthSource.Answer answer =
+                DepthSource.forItem(item, embeddedAnswerOf(item));
+        // Only a photo the index cannot answer needs the file, so this is the only
+        // case that can open the window — and an item with a depth file therefore
+        // never flickers through "unknown" on a selection.
+        if (answer.isUnknown()) requestEmbeddedDepth(item);
+        return answer;
+    }
+
+    /** The cached embedded flag for an item, or null while it has not been read. */
+    private Boolean embeddedAnswerOf(LibraryItem item) {
+        if (item == null) return null;
+        return embeddedDepthById.get(item.id);
+    }
+
+    /**
+     * Read one image's PNG and remember whether it carries a depth chunk.
+     *
+     * <p><b>Off the UI thread, on the shared {@link Io} worker</b>, because it is a
+     * whole-file read. It must never run inline: this is reached from the fix line,
+     * which runs on the UI thread, and the wallpaper parses state on the GL thread
+     * at cold start where a blocking read is a stalled wallpaper.
+     *
+     * <p><b>The delivery's only effect is the cache, then a re-derive.</b> It does
+     * not carry the answer to whichever line asked for it — it is keyed by the id it
+     * read, and the refresh that follows resolves the <i>current</i> selection from
+     * the cache. That is what makes two selections in quick succession safe: the
+     * slower read cannot land on the newer photo.
+     */
+    private void requestEmbeddedDepth(final LibraryItem item) {
+        if (item == null) return;
+        synchronized (embeddedReadInFlight) {
+            if (embeddedDepthById.containsKey(item.id)) return;   // already answered
+            if (!embeddedReadInFlight.add(item.id)) return;       // already reading
+        }
+        final String id = item.id;
+        final File image = PrefFiles.resolve(getFilesDir(), item.imageName);
+        Io.run(this, new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                return image != null && readEmbeddedDepth(image);
+            }
+        }, new Io.Callback<Boolean>() {
+            @Override
+            public void onDone(Boolean embedded, Exception error) {
+                synchronized (embeddedReadInFlight) {
+                    embeddedReadInFlight.remove(id);
+                }
+                // An unreadable file answers false, not "unknown": it is a settled
+                // answer and it is what the gallery already does for the same file.
+                // Leaving it unknown would keep the line silent for ever.
+                embeddedDepthById.put(id, embedded != null && embedded);
+                // Re-derive rather than assume: by now the selection may be
+                // somewhere else entirely, and this refresh reads whatever is
+                // selected NOW. If the selection has not moved, this is the frame
+                // on which the line stops being blank and starts telling the truth.
+                refreshSliders();
+            }
+        });
+    }
+
+    /**
+     * Whether one PNG carries a depth chunk in a {@code dePH}/{@code dEPt} chunk.
+     *
+     * <p>The whole file is read, because {@link DepthPng#extract} walks the chunk
+     * list and a chunk written after {@code IDAT} would be missed by a truncated
+     * read — and answering "no embedded depth" for a photograph that has one is this
+     * bug pointing the other way. Correctness over the cost of a buffered read that
+     * happens off the UI thread, once per photo.
+     *
+     * <p>Never throws: a missing or unreadable file is "no", which is the gallery's
+     * answer for it too.
+     */
+    private static boolean readEmbeddedDepth(File file) {
+        java.io.FileInputStream in = null;
+        try {
+            in = new java.io.FileInputStream(file);
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[32768];
+            int n;
+            while ((n = in.read(buf)) > 0) bytes.write(buf, 0, n);
+            return DepthPng.extract(bytes.toByteArray()) != null;
+        } catch (Throwable ignored) {
+            // OOM on a very large image, or an I/O error. Either way the honest
+            // answer is "no embedded chunk", which is what the renderer will find.
+            return false;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether this item has a depth map, from the one derivation.
+     *
+     * <p>The Depth slider's whole reason for existing, and the caption's. It used to
+     * be {@code item == null || item.depthName != null}, which knew only about a
+     * separate depth file and so hid the control for a photograph whose depth was
+     * inside its own PNG — the same knowledge gap that put "No depth" on screen.
+     *
+     * <p><b>Unknown counts as "no slider", not as "no depth".</b> The slider's
+     * absence is the signal that there is nothing to adjust, and a momentary absence
+     * while a file is being read is a far smaller lie than a control offering to
+     * adjust a map that may not be there. It is restored the frame the answer lands.
+     * The <i>line</i> is the opposite choice, because a line claiming absence is the
+     * reported bug; see {@link #refreshFixLine}.
      */
     private boolean initialItemHasMap(AppState state) {
-        LibraryItem item = state.activeItem();
-        return item == null || item.depthName != null;
+        DepthSource.Answer answer = depthSourceFor(state);
+        return answer.isUnknown() ? false : answer.hasDepth();
     }
 
     /**
@@ -3375,18 +3521,20 @@ public class MainActivity extends Activity {
                     }, null, null, false);
             return;
         }
-        // The item may be null -- nothing is selected -- so it is asked about
-        // defensively here. The old form short-circuited on a `bundled` flag that
-        // was true for the demo AND for no selection at all; dropping the flag
-        // without noticing that it had been carrying the null case would have left
-        // a dereference on the one state with no item, reachable by deleting the
-        // last row while a previous run's failure was still on the last result.
+        // The one derivation, so this line and the gallery's chip cannot disagree
+        // about the same photograph. It may also start the file read that resolves an
+        // embedded map, which is why it is consulted rather than looked up.
+        DepthSource.Answer depth = depthSourceFor(state);
+        // A failed run outranks "there is a map", because the sentence reports what
+        // SURVIVED and a failure is the thing the user has to act on. Kept above the
+        // depth answer and deliberately keyed on the item's own file rather than on
+        // hasDepth(): the question is whether anything is left to lose, and an
+        // embedded map cannot be the thing a regeneration just destroyed.
         if (DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
                 && ((item != null && item.depthName != null)
                     || !DepthGenDialog.failureCause().isEmpty())) {
-            // The sentence says what SURVIVED. An error that does not leaves the user
-            // unable to tell whether their depth is gone, which is the worst outcome
-            // this app has -- and it is the outcome the PRD named.
+            // An error that does not say what survived leaves the user unable to tell
+            // whether their depth is gone, which is the worst outcome this app has.
             setFixBorderColour(BAD_COLOUR);
             setFixLine(getString(R.string.fix_no_answer),
                     getString(R.string.fix_try_again), new View.OnClickListener() {
@@ -3403,15 +3551,23 @@ public class MainActivity extends Activity {
                     });
             return;
         }
-        if (item == null || item.depthName != null) {
-            // Nothing to report, and that is a state rather than a gap. The old
-            // "Bundled demo / Add a photo" sentence was stale guidance either way:
-            // adding a photo is the filmstrip's add tile. A demo whose map was
-            // replaced, or replaced back with nothing, now gets the same "No depth"
-            // line and the same two actions as any other photograph, because it is
-            // one -- the fix line used to stay silent for it, which was a second
-            // place carrying the demo's specialness rather than the only place
-            // carrying a condition.
+        if (!depth.reportsNoDepth()) {
+            // Nothing to report, and that is a state rather than a gap. Three
+            // different photographs land here and all of them are fine:
+            //
+            //  - the packaged pair, when nothing is selected;
+            //  - a photo with a separate depth file, the ordinary case;
+            //  - a photo whose depth is INSIDE its own PNG, which is the reported
+            //    bug — this used to fall through to "No depth" and print it over a
+            //    relief that was visibly playing.
+            //
+            // and a fourth that is not a photograph at all: the window while an
+            // embedded map is still being read. UNKNOWN lands here too, which is the
+            // point of it — the line says <b>nothing</b> rather than claiming an
+            // absence it has not established, and the next refresh fills it in.
+            //
+            // The old "Bundled demo / Add a photo" sentence was stale guidance in any
+            // case: adding a photo is the filmstrip's add tile.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;

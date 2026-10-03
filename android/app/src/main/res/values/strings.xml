@@ -582,4 +582,19 @@
     <string name="apply_set_as_wallpaper">Set as wallpaper</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_done">Done</string>
+    <!-- The grip of every sheet that had none. The bar is now on all of them
+         (the user asked for it on the small gallery popups too: without a handle
+         a modal had no discoverable way out at all), and the description has to
+         name WHICH sheet it closes, because one generic "Close" would make a
+         screen reader announce the same control on eight different screens while
+         the two that already existed say which sheet they belong to. Spoken,
+         never drawn: the bar is a drawn line and needs no label on screen. -->
+    <string name="gallery_sort_close">Close the sort sheet</string>
+    <string name="gallery_copy_from_close">Close the copy-settings sheet</string>
+    <string name="gallery_delete_close">Close the delete question</string>
+    <string name="gallery_rename_close">Close the rename sheet</string>
+    <string name="gallery_playlist_pick_close">Close the playlist sheet</string>
+    <string name="gallery_playlist_new_close">Close the new-playlist sheet</string>
+    <string name="apply_close">Close the set-as-wallpaper sheet</string>
+    <string name="depth_close">Close the depth sheet</string>
 </resources>

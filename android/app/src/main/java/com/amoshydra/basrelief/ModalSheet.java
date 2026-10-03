@@ -64,6 +64,20 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * card cannot drift into four different ones — which is how this class came to
  * exist.
  *
+ * <p><b>Every sheet gets a grip. No exceptions.</b> {@link #grip} is the sheet's
+ * discoverable way out, and ten of the twelve modals shipped without one: the
+ * discoverable ways out were BACK, a drag on content that only hands over at a
+ * specific edge, and a footer button that often <i>commits</i> rather than closes
+ * (Generate, Save). A sheet with none of those obvious is a sheet a user cannot
+ * get out of without knowing the platform. The user's answer to whether the small gallery popups should carry one too was that they should, so this is a rule and not a
+ * per-screen decision &mdash; and it costs every one of them {@code dp(22)} of
+ * chrome, which is why {@link #chromeHeight} adds the strip's height only when
+ * there is one.
+ *
+ * <p><b>Each grip's description names its own sheet</b>, so a screen reader
+ * announces "Close the delete question" rather than the same word on eight
+ * screens. That is why {@link #grip} takes the label instead of hard-coding one.
+ *
  * <p><b>Three row roles, and no fourth.</b> A row is one of three things, and
  * each has its own factory here: a {@link #switchRow} carries a state you can
  * flip, an {@link #actionRow} is a plate you can press (with a chevron when it

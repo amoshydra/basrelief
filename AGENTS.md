@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 350 tests across twenty classes:
+it**. 363 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -535,6 +535,17 @@ has run.**
   5% of the range. The radius test exists because interpolating toward
   `panelHeight / 2` gave a 2400px panel a **611px** corner half way down a drag —
   a stadium — so the panel's half-height is a ceiling, never the target.
+- `DepthSourceTest` — whether a photo has depth at all, and **where that depth
+  lives**, which are two different questions the app had been answering with one. The
+  bug it exists for: `hasDepth()` asked only whether a separate depth *file* exists, so a
+  PNG carrying its map inside itself in a `dePH`/`dEPt` chunk reported **"No depth" while
+  the renderer was drawing the embedded map** — the status line lied about the photo on
+  screen, and the gallery, which reads the file, got it right. Three kinds, not two:
+  `NONE`, `FILE`, `EMBEDDED`. Its traps are the user's decisions rather than the
+  author's: an embedded map reports **has depth** and offers **neither** Regenerate nor
+  Replace, because there is no depth file to replace. And the window where the embedded
+  flag is still being read must NOT answer `NONE` — defaulting an unknown to "no depth"
+  *is* the bug, so there is a third answer for it and a test that says so.
 - `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
   a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
   for. The trap is reading a *position* when the user changed *direction*: the

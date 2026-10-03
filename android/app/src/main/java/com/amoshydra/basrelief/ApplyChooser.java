@@ -174,6 +174,10 @@ final class ApplyChooser {
         updateLockNote(chosen);
 
         sheet = new ModalSheet(activity, MAX_FRACTION);
+        // Every ModalSheet carries a handle bar; this one is the sheet that
+        // answers "which surface", and a chooser with no handle had no
+        // discoverable way out. Named, because it closes this sheet and no other.
+        sheet.grip(activity.getString(R.string.apply_close));
         sheet.body(body);
 
         // Cancel / Continue. One ModalSheet footer, so the plate colours, the 8dp

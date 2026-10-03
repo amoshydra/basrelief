@@ -105,7 +105,7 @@ function checkDocLinks() {
  */
 function checkTestCounts() {
   const doc = readFileSync(join(root, 'AGENTS.md'), 'utf8');
-  const claimed = doc.match(/(\d+)\s+tests across (\w+)\s+classes/);
+  const claimed = doc.match(/(\d+)\s+tests across ([\w-]+)\s+classes/);
   if (!claimed) {
     failures.push(
       'AGENTS.md no longer states "N tests across M classes" — update this script'
@@ -131,15 +131,33 @@ function checkTestCounts() {
   // to keep going or the check breaks on the eleventh class -- and a guard that
   // breaks when the thing it guards grows is a guard that gets disabled, which is
   // how a hand-maintained count comes back.
-  const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+  //
+  // DERIVED, not a list. This was a hardcoded array ending at "twenty", so the
+  // twenty-first class made the regex fail to match at all and the guard reported
+  // "AGENTS.md no longer states N tests across M classes" -- a guard that breaks
+  // when the thing it guards grows is a guard that gets disabled, which is how a
+  // hand-maintained count comes back. Spelling it out keeps the sentence readable
+  // and removes the ceiling; digits are accepted too, so the file may switch.
+  const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
     'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
-    'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
+    'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+  const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+    'eighty', 'ninety'];
+  const spell = (n) => {
+    if (n < ONES.length) return ONES[n];
+    if (n < 100) {
+      const tens = TENS[Math.floor(n / 10)];
+      const ones = n % 10;
+      return ones ? `${tens}-${ONES[ones]}` : tens;
+    }
+    return String(n);
+  };
   if (+claimed[1] !== methods) {
     failures.push(
       `AGENTS.md says ${claimed[1]} tests but the tree has ${methods} @Test methods`
     );
   }
-  if (words[classes.length] !== claimed[2]) {
+  if (claimed[2] !== String(classes.length) && claimed[2] !== spell(classes.length)) {
     failures.push(
       `AGENTS.md says ${claimed[2]} test classes but the tree has ${classes.length}: ` +
         classes.sort().join(', ')

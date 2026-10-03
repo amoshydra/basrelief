@@ -1690,6 +1690,11 @@ final class Gallery {
         final SortOrder current = AppState.load(activity.prefs,
                 activity.getFilesDir()).library.sort();
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_sort_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_sort));
         for (final SortOrder pick : SortOrder.values()) {
             body.addView(ModalSheet.option(activity, pick.label(), "",
@@ -1734,6 +1739,11 @@ final class Gallery {
         final String what = activity.getString(R.string.gallery_copy_source_row_sub,
                 surfaceLabel(), activity.getString(R.string.gallery_copy_takes));
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_copy_from_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_copy_from));
         for (final LibraryItem item : items) {
             body.addView(ModalSheet.option(activity, item.displayName(), what,
@@ -1886,6 +1896,11 @@ final class Gallery {
         // read-and-decide to a stray tap is the wrong trade for "delete this
         // photograph". Cancel and Delete are the ways out; the backdrop is not.
         sheet.setDismissOnScrimTap(false);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_delete_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_delete_title));
         // The modal family's own .sub line: the question is the whole content
         // of this modal, and the family's second line is what the design draws
@@ -2068,6 +2083,11 @@ final class Gallery {
         // there the hint is the whole question.
         final EditText field = ModalSheet.field(activity, item.displayName(), null);
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_rename_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_rename));
         body.addView(field);
         sheet.body(body);
@@ -2129,6 +2149,11 @@ final class Gallery {
                 activity.prefs.getString(Playlists.KEY, null));
         final List<Playlist> existing = lists.playlists();
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_playlist_pick_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_playlist_pick));
         for (int i = 0; i < existing.size(); i++) {
             final Playlist chosen = existing.get(i);
@@ -2162,6 +2187,11 @@ final class Gallery {
         final EditText field = ModalSheet.field(activity, "",
                 activity.getString(R.string.gallery_playlist_name));
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // Every ModalSheet carries a handle bar: it is the sheet's
+        // discoverable way out, and without one this modal had none at all.
+        // The description names THIS sheet, so a screen reader does not
+        // announce the same control on six different screens.
+        sheet.grip(activity.getString(R.string.gallery_playlist_new_close));
         LinearLayout body = modalBody(activity.getString(R.string.gallery_playlist_new));
         body.addView(field);
         sheet.body(body);
