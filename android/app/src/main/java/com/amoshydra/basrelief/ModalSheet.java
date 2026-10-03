@@ -18,6 +18,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.CompoundButton;
@@ -99,6 +100,25 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * four screens: scrolling a modal reaches more of the form instead of moving text
  * inside a fixed box.
  *
+ * <p><b>The backdrop is blurred where the platform can blur, and darker where it
+ * cannot.</b> This card is a real Dialog window, so on API 31+ it can ask the
+ * compositor to blur what is behind it — the studio's render, the wallpaper, whatever
+ * app is under — with {@link Window#setBackgroundBlurRadius}, gated on
+ * {@link #blurSupported(Context)}. Below 31 there is no such call and some 31+ devices report
+ * no cross-window blur support at all, in which case WMS draws nothing and leaves the
+ * window background transparent. So the scrim carries the difference instead:
+ * {@link #SCRIM} is the blurred value and {@link #darker} adds
+ * {@link #SCRIM_UNBLURRED_STEP} for every device that gets no blur, because a blurred
+ * backdrop reads darker than a sharp one at the same alpha. <b>None of this touches
+ * the studio sheet</b> — it is a view beside the {@code GLSurfaceView} in the same
+ * window, which cannot be blurred from inside itself without a per-frame screenshot.
+ *
+ * <p><b>The backdrop is the fourth dismissal, and a confirm opts out.</b> Tapping
+ * outside the card closes it, through {@link #dismiss()} so it animates like the grip
+ * and still runs {@link #onDismiss}. A destructive confirm does not: a tap on inert
+ * dimming is very often a mis-aimed tap meant for the card, and losing the question
+ * costs the user the whole read-and-decide. See {@link #setDismissOnScrimTap}.
+ *
  * <p><b>The grip runs on the shared sheet component; the mechanism is injected.</b>
  * The drag, the entrance, the release rule and the fade live in
  * {@link BottomSheet}. This card is its translation host — safe here because a
@@ -114,7 +134,64 @@ final class ModalSheet {
 
     // The mockup's tokens. --scrim is rgba(0,0,0,.62); the depth screen deliberately
     // passes a lighter one, which is a difference in the design and not an accident.
+    //
+    // SCRIM is the BLURRED backdrop, and there is a second, much darker one for the
+    // devices that cannot blur -- see SCRIM_UNBLURRED_STEP for why "the same alpha"
+    // would be wrong there, and darker() for how both variants darken together.
     static final int SCRIM = 0x9E000000;
+
+    /**
+     * How much darker the backdrop goes when nothing is blurring it: {@code +51} of
+     * alpha, so {@code .62 → .82} on the standard scrim.
+     *
+     * <p><b>Why the fallback is darker and not equal.</b> A window blur does two
+     * things to what is behind a scrim: it removes competing detail, and it lowers
+     * apparent brightness, because a blurred image has less contrast for the eye to
+     * resolve and reads darker at the same mean level. {@code .62} over a blurred
+     * photograph therefore looks like a <i>heavier</i> backdrop than {@code .62} over
+     * a sharp one. Handing the unsupported devices the same alpha would give them a
+     * visibly lighter, flatter wash on exactly the photographs where the modal has
+     * most to separate itself from — the user's words for it were "make the
+     * background much darker", and they were right about the mechanism.
+     *
+     * <p><b>Twenty percent, measured by eye on the OnePlus (API 35) and reasoned for
+     * the rest.</b> Enough that the card is unmistakably the subject; not so much that
+     * the photograph behind is gone, which would be a black rectangle with a card on
+     * it rather than a modal over something.
+     */
+    static final int SCRIM_UNBLURRED_STEP = 0x33;
+
+    /**
+     * The no-blur counterpart of {@link #SCRIM}: {@code 0xD1000000},
+     * {@code rgba(0,0,0,.82)}. Derived, not picked, so the two paths cannot drift.
+     */
+    static final int SCRIM_UNBLURRED = darker(SCRIM);
+
+    /**
+     * The same backdrop with {@link #SCRIM_UNBLURRED_STEP} more alpha, for a window
+     * that cannot blur what is behind it.
+     *
+     * <p><b>One step applied to whatever scrim it is given, which is what keeps the
+     * two variants related.</b> The depth screen passes a lighter scrim than the
+     * standard ({@code rgba(0,0,0,.55)} against {@code .62}) because it is a form and
+     * a heavier backdrop makes it harder to read. If the unblurred path were two
+     * hand-picked constants, that gap would have to be re-guessed for the dark pair
+     * and the depth screen would drift toward the standard's darkness on exactly the
+     * devices where legibility matters most. Applying the same step to both keeps the
+     * design's difference a difference: {@code .55 → .75} and {@code .62 → .82}.
+     *
+     * <p>Package-visible and static so the derivation is checkable rather than
+     * asserted, and so a screen with its own scrim gets the fallback without having to
+     * know the step.
+     */
+    static int darker(int scrim) {
+        int alpha = (scrim >>> 24) + SCRIM_UNBLURRED_STEP;
+        // Clamped, because a caller may pass an opaque scrim and 0xFF + step wraps to
+        // a transparent one, which would silently invert the whole comparison.
+        if (alpha > 0xFF) alpha = 0xFF;
+        return (alpha << 24) | (scrim & 0x00FFFFFF);
+    }
+
     static final int CARD = 0xFF171B21;
     static final int LINE = 0x24FFFFFF;
     static final int INK = 0xFFFFFFFF;
@@ -148,6 +225,33 @@ final class ModalSheet {
     static final int FOOTER_TOP_DP = 14;
     /** {@code .btnrow{gap:8px}} — between two buttons, and only between them. */
     static final int FOOTER_GAP_DP = 8;
+
+    /**
+     * How far the dialog's window blurs what is behind it, in dp.
+     *
+     * <p><b>Chosen for legibility, not for taste: at this radius text behind the card
+     * is unreadable, which is the property that makes it a backdrop rather than a
+     * decoration.</b> Words are made illegible by destroying the high-frequency detail
+     * a letter is — its strokes' edges — and 25dp on a 2.8-density screen is past that
+     * for the 12–14sp text this app's own rows and the studio's fix line use. Below
+     * about 15dp a word stays legible and the modal reads as glass laid over
+     * something you are being invited to read, which is the wrong invitation: the
+     * photograph is not part of this screen.
+     *
+     * <p><b>25dp rather than more, deliberately.</b> The platform clamps a background
+     * blur radius to the device's own maximum, so a larger number here is a request
+     * some devices will quietly reduce — which would make this constant mean different
+     * things on different phones. 25dp is a value devices accept as-is, so the
+     * backdrop looks the same everywhere the blur exists at all. It is also the
+     * strongest value that still lets the photograph read as a photograph.
+     *
+     * <p><b>Not the same property as the scrim's alpha.</b> This is a window
+     * attribute, so it blurs the studio's GL surface and the wallpaper behind the
+     * dialog as well as any app underneath; the scrim then darkens what comes
+     * through. Both are needed and neither substitutes for the other, which is why
+     * {@link #SCRIM_UNBLURRED_STEP} exists rather than one scrim doing both jobs.
+     */
+    private static final int BLUR_RADIUS_DP = 25;
 
     // The grip: .grip{height:22px} and its 38x4 bar, rgba(255,255,255,.42).
     private static final int GRIP_HEIGHT_DP = 22;
@@ -249,27 +353,97 @@ final class ModalSheet {
     private final int scrim;
 
     /**
+     * Whether a tap on the backdrop dismisses this modal. Set by the constructor and
+     * changeable by {@link #setDismissOnScrimTap} before {@link #show}.
+     */
+    private boolean dismissOnScrimTap;
+
+    /**
+     * Whether this device can blur one window's content into another.
+     *
+     * <p><b>API 31 is where {@code Window.setBackgroundBlurRadius} exists at all</b> —
+     * there is nothing to call below it, and nothing on 26–30 does this job: a window
+     * can only be blurred by the compositor if the platform has a compositor path for
+     * it, which is what arrived in Android 12. Below 31 the answer is a flat no and
+     * the caller must not reflect around it.
+     *
+     * <p><b>And 31 does not promise the blur either.</b> Some devices report cross-
+     * window blur disabled: the GPU cannot do it, a battery-saver mode switches it
+     * off, or the platform is asked for minimal post-processing. The AOSP javadoc for
+     * {@link Window#setBackgroundBlurRadius} is explicit that in those cases no blur
+     * is computed or drawn and the window background is simply left transparent. So
+     * this is a real capability question and not a version check dressed up as one —
+     * which is exactly why the scrim is decided from the same answer, so a device that
+     * says no gets the darker backdrop instead of a transparent gap.
+     *
+     * <p><b>Where this must not be used:</b> the studio sheet. It is a view over the
+     * {@code GLSurfaceView} in the <i>same</i> window, and a window cannot be blurred
+     * from inside itself without a per-frame screenshot, which is both a stall and the
+     * thing AGENTS.md forbids as an appearance check. That is why this lives here, on
+     * the Dialog, and why {@code BottomSheet} has no equivalent.
+     */
+    static boolean blurSupported(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false;
+        // An INSTANCE method on the system WindowManager service, and the exact name
+        // matters: it is isCrossWindowBlurEnabled, not isCrossWindowBlurSupported,
+        // and there is no static form of either. Reaching it through the service is
+        // also the only honest way to ask — the answer is a property of the device's
+        // compositor, not of this app.
+        android.view.WindowManager wm = (android.view.WindowManager)
+                context.getSystemService(Context.WINDOW_SERVICE);
+        // Null is a real answer on a device with no window service to ask, and it must
+        // read as "no blur" rather than throwing inside a constructor.
+        return wm != null && wm.isCrossWindowBlurEnabled();
+    }
+
+    /**
      * A modal on the standard scrim: {@code .scrim} at {@code rgba(0,0,0,.62)}, which
-     * is what the mockup draws behind three of its four modals.
+     * is what the mockup draws behind three of its four modals — or its much darker
+     * counterpart on a device that cannot blur; see {@link #darker}.
      */
     ModalSheet(Activity activity, float maxHeightFraction) {
-        this(activity, maxHeightFraction, SCRIM);
+        this(activity, maxHeightFraction, SCRIM, true);
     }
 
     /**
      * A modal on a chosen scrim.
      *
-     * @param scrim the colour behind the card. One screen in the design is drawn on a
-     *     lighter one — the depth panel is a form, and .62 over a photograph is
-     *     enough to make it hard to read — so this is a parameter rather than a
-     *     constant, but only because the mockup says so.
+     * @param scrim the colour behind the card, <b>as it looks with a blur behind
+     *     it</b>. One screen in the design is drawn on a lighter one — the depth panel
+     *     is a form, and .62 over a photograph is enough to make it hard to read — so
+     *     this is a parameter rather than a constant, but only because the mockup says
+     *     so. The no-blur counterpart is derived from it, not passed, so a caller
+     *     cannot supply a value that is correct on one path and wrong on the other.
      */
     ModalSheet(Activity activity, float maxHeightFraction, int scrim) {
+        this(activity, maxHeightFraction, scrim, true);
+    }
+
+    /**
+     * A modal on a chosen scrim, saying whether a stray tap on the backdrop closes it.
+     *
+     * @param dismissOnScrimTap false for a question whose answer is destructive. A
+     *     scrim tap is the least deliberate tap in the app — the finger lands on
+     *     nothing, on a region that looks like inert backdrop — so it is the one that
+     *     should do least. See {@link #setDismissOnScrimTap} for the callers and the
+     *     full reasoning; this constructor exists so the choice is made at the call
+     *     site where the modal's purpose is known, rather than inferred from whether
+     *     anyone remembered.
+     */
+    ModalSheet(Activity activity, float maxHeightFraction, int scrim,
+               boolean dismissOnScrimTap) {
         this.maxHeightFraction = maxHeightFraction;
-        this.scrim = scrim;
+        // Resolved ONCE, here, and stored — not asked again in show(). The scrim has to
+        // be a single colour for the lifetime of the window because the drag fade
+        // drives its alpha as a fraction of this value; a value that could change
+        // under a running drag would make the fade non-deterministic. A device does
+        // not gain or lose cross-window blur mid-window (battery saver can turn it off,
+        // which WMS applies to new windows), and the dialog is short-lived regardless.
+        this.scrim = blurSupported(activity) ? scrim : darker(scrim);
+        this.dismissOnScrimTap = dismissOnScrimTap;
 
         FrameLayout scrimView = new FrameLayout(activity);
-        scrimView.setBackgroundColor(scrim);
+        scrimView.setBackgroundColor(this.scrim);
 
         // The card is a SheetCard, not a stock LinearLayout, because it is where
         // a vertical drag inside the scrolling content is arbitrated; see its
@@ -330,6 +504,32 @@ final class ModalSheet {
         scrimView.addView(card, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
+
+        // A tap on the backdrop is the dismissal gesture users reach for first, and
+        // until now it did nothing at all. It lives on the ROOT, not the card, because
+        // the root is the only view that covers the area outside the card.
+        //
+        // Which means the card must consume every touch that lands on IT, or a tap on
+        // the card's own padding would fall through the LinearLayout (not clickable by
+        // default) to this listener and close the modal the user just touched. The
+        // card's own touch listener above only claims when a grip installed a sheet,
+        // so a grip-less card — the apply chooser, every gallery modal — returned
+        // false and leaked. setClickable is the one line that closes that: a clickable
+        // View returns true from onTouchEvent, so the DOWN is consumed here and the
+        // root never sees it. It adds no listener, so the click itself does nothing.
+        card.setClickable(true);
+        scrimView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // dismiss(), never dialog.cancel(). cancel() would also fire
+                // onDismiss, but it takes the window down through the platform's own
+                // path rather than this class's: no sheet.cancel(), so an entrance or
+                // settle can still be running against a window that is going away, and
+                // any future work in dismiss() is skipped. One dismissal path is the
+                // whole point of the component.
+                if (dismissOnScrimTap) dismiss();
+            }
+        });
 
         // The card is anchored to the bottom of the screen, so its footer would be
         // drawn under the gesture/navigation bar on a full-screen dialog window.
@@ -415,6 +615,22 @@ final class ModalSheet {
         // why this is here and not after.
         dialog.getWindow().setSoftInputMode(
                 android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        // Blur what is behind this window, where the platform can. It is a property of
+        // the WINDOW, which is why this works at all: the studio behind the card is a
+        // GLSurfaceView in another window, and the compositor is what reaches across
+        // and softens it. Set before show() because the radius is read when the
+        // surface is created; setting it afterwards leaves the window unblurred until
+        // something else triggers a relayout, which is the kind of silence that looks
+        // like the API not working.
+        //
+        // Without the guard this is a no-op on two kinds of device and a bug on one:
+        // below API 31 the method does not exist, and on 31+ WMS draws no blur and
+        // leaves the background transparent when the device reports no support — so the
+        // unblurred look has to come from the scrim, which is why scrim was resolved
+        // from the same answer in the constructor.
+        if (blurSupported(activity)) {
+            dialog.getWindow().setBackgroundBlurRadius(dp(activity, BLUR_RADIUS_DP));
+        }
         dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(DialogInterface d) {
@@ -773,6 +989,41 @@ final class ModalSheet {
             if (footer.getParent() == null) card.addView(footer);
         }
         applyHeight();
+    }
+
+    /**
+     * Whether a tap on the backdrop dismisses this modal. True unless a caller says
+     * otherwise.
+     *
+     * <p><b>The decision, and why a destructive confirm is the exception.</b> A
+     * backdrop tap is the least deliberate gesture in the app: the finger lands on a
+     * region that looks like inert dimming, with nothing under it to aim at and no
+     * highlight to confirm against. That is exactly why it is a good dismissal for a
+     * modal that is only <i>displaying</i> something — settings, the depth form, the
+     * apply chooser, a picker, where closing loses nothing and the gesture the user
+     * meant is the one they made.
+     *
+     * <p>It is a poor dismissal for a modal whose whole content is a question whose
+     * answer destroys something: "Delete this photo and its file?", "Reset
+     * everything?". There, a backdrop tap is very often a <i>mis-aimed</i> tap meant
+     * for the card — the thumb slid off the top of a short card, or the user reached
+     * for a row they could not see was covered. Reading such a tap as "no" is safe,
+     * but reading it as "dismiss the question" means the user has to find the
+     * question again, re-read it, and re-open it — and on a short confirm card the
+     * region above the card is large and inviting, so this is not a rare mis-aim.
+     * A destructive confirm therefore ignores backdrop taps and waits for Cancel, the
+     * back gesture, or the destructive button itself.
+     *
+     * <p><b>Deliberate, not an omission.</b> The flag defaults to true and the three
+     * confirms pass false, so the safe behaviour is a stated decision at each call
+     * site rather than something that happens because nobody added a listener. A new
+     * destructive question has to make the choice, which is the point.
+     *
+     * <p>Call before {@link #show}; it is read by the click listener, which is
+     * installed in the constructor.
+     */
+    void setDismissOnScrimTap(boolean dismiss) {
+        this.dismissOnScrimTap = dismiss;
     }
 
     void dismiss() {
