@@ -179,6 +179,12 @@ final class SettingsSheet {
      */
     private void confirmReset() {
         final ModalSheet confirm = new ModalSheet(activity, 0.88f);
+        // The most destructive question in the app opts out of scrim-tap
+        // dismissal. A tap on inert dimming is very often a mis-aimed tap meant for
+        // the card, and this dialog's answer empties the gallery and restores the
+        // demo -- losing the read-and-decide to a stray tap is not an acceptable
+        // cost. Cancel and Reset are the ways out; the backdrop is not.
+        confirm.setDismissOnScrimTap(false);
         LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);
         TextView title = ModalSheet.title(activity,

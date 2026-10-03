@@ -1397,6 +1397,11 @@ final class PlaylistScreen {
             return;
         }
         final ModalSheet confirm = new ModalSheet(activity, MODAL_MAX_FRACTION);
+        // A question whose answer is destructive opts out of scrim-tap dismissal.
+        // A tap on inert dimming is very often a mis-aimed tap meant for the card,
+        // and losing the question costs the user the whole read-and-decide -- so on
+        // THIS dialog the backdrop is not an exit. Its own Cancel and Delete are.
+        confirm.setDismissOnScrimTap(false);
         LinearLayout body = column();
         TextView head = ModalSheet.title(activity, str(R.string.gallery_delete_title));
         // The gap the other modals get from their subtitle; see Gallery.modalBody.

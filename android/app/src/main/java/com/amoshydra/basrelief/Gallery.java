@@ -1881,6 +1881,11 @@ final class Gallery {
                     R.string.gallery_delete_active_note, deletingActiveName);
         }
         final ModalSheet sheet = new ModalSheet(activity, 0.88f);
+        // A destructive question opts out of scrim-tap dismissal: a tap on inert
+        // dimming is very often a mis-aimed tap meant for the card, and losing the
+        // read-and-decide to a stray tap is the wrong trade for "delete this
+        // photograph". Cancel and Delete are the ways out; the backdrop is not.
+        sheet.setDismissOnScrimTap(false);
         LinearLayout body = modalBody(activity.getString(R.string.gallery_delete_title));
         // The modal family's own .sub line: the question is the whole content
         // of this modal, and the family's second line is what the design draws
