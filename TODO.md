@@ -516,3 +516,21 @@ content is correct; if they can park well inside it, the constant is wrong.
 **Alpha is a paint property**, which is why this is safe where a transform would not be: it
 cannot desync the `GLSurfaceView`'s transparent region (`AGENTS.md`), and it needs no relayout
 per frame. The height is still set by `LayoutParams`, never by translating the panel.
+
+## A sheet with the handle bar closes directly; it does not shrink first (2026-10-04)
+
+**The user, asked plainly after I said it in jargon:** *close directly*
+
+So the measured behaviour stays: **Settings, Playlists and Depth AI — the sheets with the
+little drag bar at the top — close on a downward pull and never shrink in place.** The bar is
+also the sheet's drag handle, so it claims that gesture before the content can over-scroll.
+Only sheets *without* the bar (Apply, and the small Delete/Rename popups) shrink in place.
+
+**Why, so it is not "improved" later:** closing is the clearer answer to *pull it away*. The
+alternative — shrink, then close — inserts a step in front of a gesture that already works and
+makes the user drag twice for one intent.
+
+**Vocabulary, because I confused the user with it:** "card" is our word for a modal sheet
+(`ModalSheet`'s javadoc), and "grip" is the little drag-handle bar at the top of one. Say
+*sheet* and *the handle bar* with the user. They had to ask what a "card with a grip" was,
+which is a fair failure and not something to repeat.
