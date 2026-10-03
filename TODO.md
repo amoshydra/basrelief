@@ -114,3 +114,25 @@ need storing separately.
   that is leaving is gone, not parked.
 - `check-parity` enforces two architectural invariants: **no `new Dialog(` outside
   `ModalSheet`**, and **no `plainRow`** (rows come from the three role factories).
+
+## Playlists — why the user could not use one (diagnosed 2026-10-03)
+
+Read from the device, not guessed: the playlist the user built is stored with
+`"active":false`. A playlist with rotation off is deliberately inert — a saved list — and
+nothing on the screen said so where they were looking. The editor's one essential control,
+`Rotate through this list`, is a row among rows, and `PlaylistScreen` **deliberately has no
+"rotate now"** (its own javadoc, line 47). So a person can name a playlist, give it two
+photos, a trigger and a surface, and it will never move, with the only tell a small state
+word on the list row.
+
+**Required fix, in the user's own words (how a created playlist is used):**
+- Activation must be an explicit action, not a toggle buried mid-screen: a **`Use this
+  playlist`** row in the editor that turns rotation on and **steps once immediately**, so
+  the effect is visible in the same moment.
+- A **`Next photo`** action, so `Daily`/`Hourly` can be demonstrated without waiting for a
+  wake-up.
+- The list row leads with **`Not rotating — tap to use`** / **`Rotating on Home`**, not a
+  corner dot.
+- Only ONE playlist rotates per surface; the editor must say which one does.
+- NO special logic for the bundled item; only Settings' Reset restores it — the user
+  restated this rule and it governs the map section's refusal guards too.
