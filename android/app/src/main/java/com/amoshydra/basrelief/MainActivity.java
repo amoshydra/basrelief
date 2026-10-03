@@ -190,14 +190,15 @@ public class MainActivity extends Activity {
      * <p>A field rather than a local because the navigation-bar inset has to be
      * re-read from outside {@code onCreate}: the bar is shown or hidden as the
      * sheet collapses (see {@link #applySystemUi}), and hiding it changes the
-     * bottom inset, so the margin that keeps the foot — and the fade — clear of
-     * the bar has to be recomputed. {@link #requestSheetInsets} is the one place
-     * that asks.
+     * bottom inset, so the space that keeps the foot clear of the bar has to be
+     * recomputed. {@link #requestSheetInsets} is the one place that asks.
      *
-     * <p>The inset is a <b>margin</b>, not padding, and that is load-bearing:
-     * Android draws a scroll view's fading edge at the view's bounds, so the
-     * only way to move the fade above a navigation bar is to move the bounds.
-     * See the inset listener in {@code onCreate} and {@link BottomFadeScrollView}.
+     * <p>The inset is <b>content padding</b>, not a margin or padding on THIS
+     * view, and that is load-bearing: Android draws a scroll view's fading edge
+     * at the view's bounds, so a margin would end the fade at the bar's top
+     * instead of the window's bottom, and this view's own padding is the one
+     * strip the fade can never paint. See the inset listener in {@code onCreate}
+     * and {@link BottomFadeScrollView}.
      */
     private ScrollView sheetScroll;
     /** The one dashed line under the grip. See {@link #buildFixLine}. */
@@ -519,36 +520,32 @@ public class MainActivity extends Activity {
         final int sheetPadLeft = dp(14);
         final int sheetPadBottom = dp(14);
         sheetScroll.setPadding(sheetPadLeft, 0, sheetPadLeft, 0);
-        // Fold the navigation-bar inset into a bottom MARGIN, the same way every
-        // modal does -- except the modals fold it into padding, and padding is
-        // wrong here for one reason: the scroll view's fading edge is drawn at
-        // the view's BOUNDS. Padding lives inside the bounds, so padding moves
-        // the content away from the edge while the edge itself stays at the
-        // window's bottom, underneath the bar. A margin moves the bounds, and
-        // therefore the fade, to sit just above the bar; the region below shows
-        // the panel's own glass, which is what the bar then composites over.
+        // The navigation-bar inset is reserved on the CONTENT, as bottom
+        // padding beside the 14dp foot gap. That is the one place it does not
+        // disturb the fade, and the fade is the point: the bar is transparent
+        // now (applySystemUi turns the platform's contrast scrim off), so the
+        // gradient has to run under it rather than stop at its top edge.
         //
-        // The margin is only half of the fix. The fade is also bounded by
-        // View.getFadeHeight(), which is the view's height MINUS its padding:
-        // any bottom padding on the scroll is the one strip the fade can never
-        // cover. That strip was the gap still visible after the margin change,
-        // on both devices -- 27px of unfaded panel below the fade on the OnePlus
-        // (inset 0, so the margin does nothing there) and 42px above the bar on
-        // the Pixel. The 14dp gap therefore lives on sheetContent and the scroll
-        // carries no bottom padding at all. ModalSheet.insetBottom is reused
-        // rather than re-derived so all five surfaces resolve the bar identically.
+        // Two obvious placements are wrong, both measured on device. A bottom
+        // MARGIN on the scroll moves the view's bounds -- and the fading edge is
+        // drawn at the bounds -- up to the bar's top, which is exactly the hard
+        // boundary this fixes. Bottom PADDING on the scroll keeps the bounds at
+        // the window bottom but is excluded from the fade region
+        // (View.getFadeHeight() is height minus padding), which is how the fade
+        // came to stop 14dp short. On the content, the inset neither moves the
+        // bounds nor clips the fade: content at rest ends above the bar, while
+        // the last 22dp of glass -- under the bar -- still fades.
+        // ModalSheet.insetBottom is reused rather than re-derived so all five
+        // surfaces resolve the bar identically.
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                LinearLayout.LayoutParams lp =
-                        (LinearLayout.LayoutParams) v.getLayoutParams();
-                int bar = sheetFootInset(insets);
-                if (lp.bottomMargin != bar) {
-                    lp.bottomMargin = bar;
-                    // A layout change, not a transform: the fade has to be
-                    // re-laid-out to move, and this is also the shape that
-                    // reliably repaints over the GLSurfaceView (b/7179570).
-                    v.setLayoutParams(lp);
+                int bottom = sheetPadBottom + sheetFootInset(insets);
+                if (sheetContent.getPaddingBottom() != bottom) {
+                    // setPadding requests its own layout pass -- the same shape
+                    // that reliably repaints over the GLSurfaceView (b/7179570)
+                    // -- and the fade never left the bounds it is drawn at.
+                    sheetContent.setPadding(0, 0, 0, bottom);
                 }
                 return insets;
             }
@@ -571,8 +568,9 @@ public class MainActivity extends Activity {
         });
         sheetContent = new LinearLayout(this);
         sheetContent.setOrientation(LinearLayout.VERTICAL);
-        // The 14dp foot gap the mockup draws, on the content so the scroll's fade
-        // reaches its own bounds. See sheetScroll's padding above.
+        // The 14dp foot gap the mockup draws, and later the navigation-bar
+        // inset, live on the content so the scroll's fade reaches its own
+        // bounds. See the inset comment above.
         sheetContent.setPadding(0, 0, 0, sheetPadBottom);
         sheetScroll.addView(sheetContent, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
@@ -1245,9 +1243,24 @@ public class MainActivity extends Activity {
      *
      * <p>The consequence of a visible bar is handled where {@code sheetScroll} is
      * built: once a bar can be visible, the sheet's foot can be occluded by it, so
-     * the bar inset is folded into the sheet's bottom padding — the same fix the
-     * modals already carry. When the bar is hidden the same padding recomputes to
-     * zero, which {@link #requestSheetInsets} asks for after every change.
+     * the bar inset is folded into the content's bottom padding — the same fix the
+     * modals already carry, except it must not sit on the scroll itself or it
+     * would cut the fade short. When the bar is hidden the same padding recomputes
+     * to zero, which {@link #requestSheetInsets} asks for after every change.
+     *
+     * <p><b>The bar carries no platform contrast scrim on this window.</b> With a
+     * transparent bar colour the platform normally decides whether the content
+     * behind the bar is contrasty enough and, if it judges it is not, paints its
+     * own opaque scrim; since API 29 that is {@code DecorView.calculateBarColor}
+     * returning {@code SCRIM_LIGHT} or the semi-transparent system bar colour,
+     * drawn by the decor's navigation colour view. That scrim is the opaque band
+     * that sat on the sheet's fade. It is turned off on 29+ with {@code
+     * setNavigationBarContrastEnforced(false)}, because what is behind the bar
+     * while the bar is visible is the sheet's own 92%-opaque glass rather than the
+     * photo, and the design asks for the fade to run through. The colour calls are
+     * only made below 35: at 35 the setter is deprecated and an app targeting 35+
+     * gets a forced-transparent bar, so setting it there would only pretend to
+     * work.
      *
      * <p>{@code setDecorFitsSystemWindows(false)} is API 30+ and is what makes the
      * transparent bar actually overlay our content rather than reserve a strip;
@@ -1256,10 +1269,20 @@ public class MainActivity extends Activity {
      */
     private void applySystemUi() {
         Window window = getWindow();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+        // The flag is what lets the decor draw behind the bars at all, and on
+        // 35+ it is also what keeps DecorView.calculateBarColor out of the
+        // branch that returns opaque black when it is absent. It stays on every
+        // level.
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+        if (Build.VERSION.SDK_INT < 35) {
             window.setStatusBarColor(Color.TRANSPARENT);
             window.setNavigationBarColor(Color.TRANSPARENT);
+        }
+        // The platform's contrast scrim, off; see the javadoc. The call needs
+        // API 29, and it is the switch that stops the decor's navigation colour
+        // view before any of it appears.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.setNavigationBarContrastEnforced(false);
         }
         if (Build.VERSION.SDK_INT >= 35) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -1306,10 +1329,11 @@ public class MainActivity extends Activity {
      * Re-read the bottom system-bar inset into the sheet's foot.
      *
      * <p>The bar is shown or hidden as the sheet collapses, so the inset the
-     * padding is built from is not constant. Asking again is what keeps the foot
-     * clear on a three-button bar — the tallest case, and the one that was
-     * reported — where the bar covers the last ~48dp of the screen. It is safe on
-     * every API: on 26–34 the bar never appears and the inset stays zero.
+     * reserved foot space is built from is not constant. Asking again is what
+     * keeps the foot clear on a three-button bar — the tallest case, and the one
+     * that was reported — where the bar covers the last ~48dp of the screen. It
+     * is safe on every API: on 26–34 the bar never appears and the inset stays
+     * zero.
      */
     private void requestSheetInsets() {
         if (sheetScroll == null) return;
@@ -1324,8 +1348,8 @@ public class MainActivity extends Activity {
      * {@code show()} request. The dispatch that follows the request can therefore
      * carry 0 while the bar is about to appear, and no later dispatch is
      * guaranteed -- which is exactly why the foot was still under a three-button
-     * bar: the listener ran once with inset 0 and the padding was never
-     * recomputed. The bar's height REGARDLESS of visibility is the right number on
+     * bar: the listener ran once with inset 0 and the inset was never re-read.
+     * The bar's height REGARDLESS of visibility is the right number on
      * 35+, because the bar is visible whenever the sheet is expanded and the sheet
      * has no height whenever the bar is hidden, so reserving it can never be wasted
      * space. Below 35 the app hides the bar outright with the immersive flags and
@@ -4030,8 +4054,10 @@ public class MainActivity extends Activity {
      * {@code --panel}, with no background required on the scroll itself.
      *
      * <p>What that mechanism does imply is that the fade is anchored to these
-     * view <b>bounds</b>: padding is inside the bounds and cannot move it, which
-     * is why the navigation-bar inset is applied as a margin in {@code onCreate}.
+     * view <b>bounds</b>: a margin moves the bounds (and the fade) up away from
+     * the window's bottom edge, and this view's own padding is clipped out of the
+     * fade region, which is why the navigation-bar inset lives on the content
+     * instead. See the inset listener in {@code onCreate}.
      *
      * <p>This is a child effect, not a transform, so it is safe over the
      * {@code GLSurfaceView} -- the same reason the sheet positions itself by layout
