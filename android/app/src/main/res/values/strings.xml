@@ -94,8 +94,6 @@
     <string name="fix_no_depth">No depth</string>
     <string name="fix_no_depth_actions">Generate a map</string>
     <string name="fix_choose_map">Choose a map</string>
-    <string name="fix_bundled_demo">Bundled demo</string>
-    <string name="fix_add_photo">Add a photo</string>
     <string name="fix_generating">Generating depth · %1$d%%</string>
     <string name="fix_run_in_background">Run in background</string>
     <string name="fix_no_answer">No answer · map unchanged</string>
@@ -113,15 +111,21 @@
 
     <!--
       The photo line: one line at the top of the scroll that says what the
-      wallpaper is doing with this photograph. Three states, one view — the
-      surface it is on (R-U2), the fact that it is on none yet (R-U3), and the
-      playlist that is rotating it (R-PL3). The name is the <b>first</b>
-      argument in every form, so the caller can ink it differently from the
-      state; see MainActivity.setPhotoLine.
+      wallpaper is doing with this photograph. Four states, one view — the
+      surface it is on (R-U2), the fact that it is on none yet (R-U3), a playlist
+      rotating this photo (R-PL3), and a playlist that is armed while the user
+      has tapped a photo it does not contain. That fourth state is the one the
+      user caught: the pointer is the truth, a manual pick is legal, and the
+      playlist will take the screen back at its next trigger — so the line must
+      say so instead of silently dropping the playlist mention. The name is the
+      <b>first</b> argument in every form, so the caller can ink it differently
+      from the state; see MainActivity.setPhotoLine.
     -->
     <string name="photo_line_surface">%1$s — %2$s</string>
     <string name="photo_line_not_on_screen">%1$s · not on a screen yet</string>
     <string name="photo_line_playlist">%1$s · playlist: %2$s · %3$d of %4$d</string>
+    <!-- %2$s is the playlist's next change, in the trigger's own words. -->
+    <string name="photo_line_playlist_armed">%1$s is armed — it takes the screen back %2$s</string>
 
     <!-- Surfaces. The segment appears ONLY when the photo is on both. -->
     <string name="surface_home">Home</string>
@@ -253,6 +257,19 @@
     <string name="gallery_playlist_new">New playlist</string>
     <string name="gallery_playlist_name">Name</string>
     <string name="gallery_playlist_added">Added %1$d to %2$s</string>
+    <!--
+      The gallery header's ambient proof that a playlist is running. A count is
+      enough while the playlist owns the photo on screen; when it does not — the
+      user tapped a photo outside it — the count is too weak to explain why the
+      wallpaper will change on its own, so the header names the playlist and its
+      next change instead.
+    -->
+    <plurals name="gallery_rotating_playlists">
+        <item quantity="one">%1$d playlist rotating</item>
+        <item quantity="other">%1$d playlists rotating</item>
+    </plurals>
+    <!-- %2$s is the playlist's next change, in the trigger's own words. -->
+    <string name="gallery_playlist_armed">%1$s is armed · next change: %2$s</string>
 
     <!--
       Seams this build cannot close on its own. Both are reported rather than
@@ -271,8 +288,8 @@
     <!-- Playlists. The screen is two states, a list and an editor. -->
     <string name="playlists_title">Playlists</string>
     <string name="playlists_subtitle">Rotation writes the same selection your tap does.</string>
-    <string name="playlist_rotate_on">Rotate on</string>
-    <string name="playlist_surfaces">Surfaces</string>
+    <!-- The grip's own description, because it closes playlists and not settings. -->
+    <string name="playlists_close">Close playlists</string>
     <string name="playlist_new">New</string>
     <string name="playlist_delete">Delete</string>
     <string name="playlists_none">No playlists yet — New makes one</string>
@@ -286,6 +303,43 @@
     <!-- Shuffle is on for this playlist; the list row says so, because how it
          rotates is part of what identifies it. -->
     <string name="playlists_row_summary_shuffled">%1$s · %2$s · %3$s · shuffled</string>
+    <!--
+      The running row, and the idle row's opener. "Rotating on Home + Lock ·
+      next: in 22 h" is the three things a glance needs — what, where, when —
+      from the one PlaylistStatus derivation. "Not rotating" leads the idle line
+      rather than ending it, because it is the fact that makes the Use button
+      beside it make sense.
+    -->
+    <string name="playlists_row_rotating">Rotating on %1$s · next: %2$s</string>
+    <string name="playlists_row_not_rotating">Not rotating · %1$s</string>
+    <string name="playlists_chip_rotating">Rotating</string>
+    <!--
+      The idle row's dedicated control, and the editor's primary action. The
+      editor's version carries its consequence on the plate, the way the settings
+      sheet's Reset does, so "Use" is not a verb the user has to guess at.
+    -->
+    <string name="playlists_use">Use</string>
+    <string name="playlists_use_this">Use this playlist</string>
+    <string name="playlists_use_this_sub">turn it on and change the photo now</string>
+    <string name="playlists_stop">Stop rotating</string>
+    <string name="playlists_stop_sub">leave the wallpaper where it is</string>
+    <string name="playlists_status_not_rotating">Not rotating</string>
+    <!-- The radio mark's spoken state; the visible mark is a shape. -->
+    <string name="playlists_radio_selected">selected</string>
+    <string name="playlists_radio_unselected">not selected</string>
+    <!-- At most one playlist rotates per screen, so Use stands another down; the
+         editor has to name whose turn is being taken. -->
+    <string name="playlists_status_other">%1$s is rotating on %2$s</string>
+    <string name="playlists_status_needs_two">Add a second photo before using this playlist</string>
+    <!--
+      The countdown half of the status. "due now" wins over a small count,
+      because it is the actionable truth; the three buckets keep the line short
+      rather than printing a timestamp the row cannot fit.
+    -->
+    <string name="playlists_next_due">due now</string>
+    <string name="playlists_next_minutes">in %1$d min</string>
+    <string name="playlists_next_hours">in %1$d h</string>
+    <string name="playlists_next_days">in %1$d d</string>
     <string name="playlists_surfaces_both">%1$s + %2$s</string>
     <!--
       For a playlist whose stored surface list this build could not read. It
@@ -293,25 +347,33 @@
       ending in a dangling separator.
     -->
     <string name="playlists_surfaces_none">no screens</string>
-    <string name="playlists_rotation">Rotation</string>
-    <string name="playlists_rotate_row">Rotate through this list</string>
-    <string name="playlists_rotate_row_sub">the wallpaper moves to the next photo</string>
     <!--
-      Shuffle is how the rotation picks, so it sits under the same Rotation
-      caption as the row that turns rotation on. Both states are reachable: an
-      edit that could only switch it on would be a stored value with no way back.
+      The editor's three groups, and the correction the user's misreading forced:
+      "Rotate through this list" sat directly above "Shuffle" and both read as
+      modes of walking the list, so the one activation control was invisible
+      between them. Activation is the Use row; these captions describe what a
+      running rotation does. "How it picks" is one of two (a radio), "Where it
+      shows" is two independent switches, "When it changes" is one of four (radio).
+    -->
+    <string name="playlists_how_it_picks">How it picks</string>
+    <string name="playlists_in_order">In order</string>
+    <string name="playlists_in_order_sub">the next photo in the list</string>
+    <string name="playlists_where_it_shows">Where it shows</string>
+    <string name="playlists_surface_sub">this playlist rotates here</string>
+    <string name="playlists_when_it_changes">When it changes</string>
+    <!--
+      Shuffle is a radio choice, not a switch: order and shuffle are mutually
+      exclusive, and the pair is exactly what a radio says.
     -->
     <string name="playlists_shuffle_row">Shuffle</string>
     <string name="playlists_shuffle_row_sub">pick the next photo at random</string>
     <!--
-      Triggers are two families and are not interchangeable: a timed one is due
-      when a clock says so, an event one when something happens. Grouping them is
-      the whole point — a flat list of four says they are the same kind of thing.
-      The timed subtitles are elapsed, not "at 07:00", because that is what the
-      model means: a calendar day needs a time zone this value cannot see.
+      The four triggers, one group. They used to be split into Timed and Event
+      families, which made them read as two kinds of control; the trigger's own
+      subtitle carries the distinction instead. The timed subtitles are elapsed,
+      not "at 07:00", because that is what the model means: a calendar day needs
+      a time zone this value cannot see.
     -->
-    <string name="playlists_family_timed">Timed</string>
-    <string name="playlists_family_event">Event</string>
     <string name="playlists_trigger_daily">Daily</string>
     <string name="playlists_trigger_daily_sub">once every 24 hours</string>
     <string name="playlists_trigger_hourly">Hourly</string>
@@ -353,13 +415,10 @@
     -->
     <string name="playlists_talk">%1$s, %2$s, %3$s</string>
     <string name="playlists_talk_one">%1$s, %2$s</string>
-    <string name="playlists_state_on">on</string>
-    <string name="playlists_state_off">off</string>
     <string name="playlists_state_rotating">rotating</string>
     <string name="playlists_state_idle">not rotating</string>
     <string name="playlists_state_in_list">in this list</string>
     <string name="playlists_state_missing">skipped</string>
-    <string name="playlists_state_unavailable">unavailable</string>
     <plurals name="playlist_photos">
         <item quantity="one">%1$d photo</item>
         <item quantity="other">%1$d photos</item>
@@ -444,8 +503,8 @@
     <string name="depth_generate">Generate</string>
     <string name="depth_endpoint_required">Set the ComfyUI endpoint first</string>
     <!-- Named for the fact, not for the wording: the panel was opened with no
-         photograph to generate for (the bundled demo has no file, and ships its
-         own map). -->
+         photograph to generate for. Reachable two ways — nothing is selected (an
+         emptied gallery), or the selected row's file is not on this device. -->
     <string name="depth_no_subject">Open this on a photo from the gallery</string>
     <!-- R-BG3: a run is minutes of upload and polling, and battery saver is
          the OS saying the phone cannot afford it. Said on the note rather than

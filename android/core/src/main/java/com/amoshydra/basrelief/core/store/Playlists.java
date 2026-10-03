@@ -359,12 +359,59 @@ public final class Playlists {
         Playlist playlist = from.rotating(on);
         if (playlist == null) return unmoved;            // nothing is rotating here
         if (!playlist.isDue(now, event)) return unmoved; // not yet, or not this event
+        return rotate(from, playlist, index, now, random);
+    }
 
+    /**
+     * Move the rotating playlist by one photo now, whatever its schedule says.
+     *
+     * <p><b>For the user's own "Use" gesture.</b> Switching a playlist on has to
+     * be visible in the same moment or the feature reads as broken: a daily list
+     * that advanced an hour ago is not due, and waiting 23 hours to learn whether
+     * the button worked is exactly the doubt this method removes. It is the same
+     * rotation as {@link #advance}, minus the due gate.
+     *
+     * <p><b>It ignores the schedule but never fakes the clock.</b> The index's
+     * selection is written through the same two calls a tap makes, and the
+     * playlist is stamped with the real {@code now} — never a future time that
+     * would push the next automatic rotation further out. An event trigger is
+     * stepped by the same rule as a timed one, because the user is the event.
+     *
+     * <p>A playlist that rotates nowhere (not active, or its screens unreadable)
+     * and one with no living photos both return {@code rotated() == false} and a
+     * result identical to the input, so a caller can still persist unconditionally
+     * without inventing a move.
+     */
+    public static Result step(Playlists playlists, Library library, Surface surface,
+                              long now, Random random) {
+        Playlists from = playlists == null ? empty() : playlists;
+        Library index = library == null ? Library.empty() : library;
+        Surface on = surface == null ? Surface.HOME : surface;
+
+        Playlist playlist = from.rotating(on);
+        if (playlist == null) return new Result(index, from, null);
+        return rotate(from, playlist, index, now, random);
+    }
+
+    /** {@link #step} with a shared random source for shuffled playlists. */
+    public static Result step(Playlists playlists, Library library, Surface surface,
+                              long now) {
+        return step(playlists, library, surface, now, null);
+    }
+
+    /**
+     * The rotation itself, shared by the scheduled and the immediate paths so
+     * the selection write cannot drift between them.
+     *
+     * <p>No photo to rotate to is deliberately not stamped: leaving the playlist
+     * due means a photo added back into the list is picked up on the next ask,
+     * whereas stamping would start a fresh interval on a rotation that never
+     * happened.
+     */
+    private static Result rotate(Playlists from, Playlist playlist, Library index,
+                                 long now, Random random) {
         List<String> living = livingIds(playlist, index);
-        // No photo to rotate to. Deliberately not stamped: leaving it due means a
-        // photo added back into the list is picked up on the next ask, whereas
-        // stamping would start a fresh interval on a rotation that never happened.
-        if (living.isEmpty()) return unmoved;
+        if (living.isEmpty()) return new Result(index, from, null);
 
         String next = nextId(playlist, living, index.activeId(),
                 random == null ? SHARED_RANDOM : random);

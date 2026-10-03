@@ -308,7 +308,7 @@ final class FramingRows {
         final boolean isX = key.endsWith("X");
         final float v = fraction ? value / 1000f : value;
         final String id = activity.state().activeId();
-        if (id == null) return; // the bundled demo keeps its own framing
+        if (id == null) return; // nothing is selected, so there is nothing to write
         LibraryStore.editItem(activity.prefs, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {

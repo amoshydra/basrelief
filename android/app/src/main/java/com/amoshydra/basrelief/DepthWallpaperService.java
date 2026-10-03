@@ -460,25 +460,23 @@ public class DepthWallpaperService extends WallpaperService {
             // this runs before the renderer exists on that path. Nothing here may
             // throw: the alternative is a wallpaper that is not drawn at all.
             if (p == null || glView == null || renderer == null) return;
-            final AppState state = AppState.load(p, getFilesDir());
+            final AppState state = AppState.load(DepthWallpaperService.this, p, getFilesDir());
             final LibraryItem active = state.activeItem();
-            final String img;
-            final String dep;
-            if (active == null || active.isBundled()) {
-                // The marble bust: no file, so res/raw. Null here is a normal
-                // state and not a missing photo.
-                img = null;
-                dep = null;
-            } else {
-                java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
-                java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
-                img = imgF == null ? null : imgF.getAbsolutePath();
-                dep = depF == null ? null : depF.getAbsolutePath();
-            }
+            // Resolved from the item and from nothing else. There is no branch for
+            // "the demo": it is a file in filesDir like any other photograph, named
+            // by its own id. A null item -- nothing selected, which is where a
+            // delete of the active row lands -- resolves to nothing and is drawn as
+            // the packaged demo pair, which is a normal state and not a missing
+            // photo.
+            java.io.File imgF = PrefFiles.resolve(getFilesDir(),
+                    active == null ? null : active.imageName);
+            java.io.File depF = PrefFiles.resolve(getFilesDir(),
+                    active == null ? null : active.depthName);
+            final String img = imgF == null ? null : imgF.getAbsolutePath();
+            final String dep = depF == null ? null : depF.getAbsolutePath();
             // Which screen this engine is, and therefore whose settings to render.
-            // The bundled demo and an item are both read through the one
-            // resolution point, so the two engines of a two-engine setup cannot
-            // disagree about what a photograph looks like.
+            // Resolved through the one resolution point, so the two engines of a
+            // two-engine setup cannot disagree about what a photograph looks like.
             final SurfaceResolver resolved = surface;
             // Resolved once, on the calling thread, and applied on the GL thread.
             // queueEvent is the one thread hop the renderer allows (see the
@@ -505,8 +503,8 @@ public class DepthWallpaperService extends WallpaperService {
                     // validity and a second meaning for the word in the one line
                     // people grep would cost somebody an afternoon.
                     + " which=" + resolved.surface()
-                    + " item=" + (active == null ? "bundled" : active.displayName())
-                    + " want=" + (img == null ? "res/raw" : new java.io.File(img).getName())
+                    + " item=" + (active == null ? "none" : active.displayName())
+                    + " want=" + (img == null ? "packaged" : new java.io.File(img).getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep)
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             android.util.Log.i("Basrelief", "wallpaper: " + diagnostic);

@@ -71,11 +71,13 @@ public class LibraryDuplicateImageTest {
     @Test
     public void theBundledItemIsNeverDropped() {
         Library l = lib(item("a", "shared.png", 1), item("b", "shared.png", 2))
-                .withItem(LibraryItem.bundled())
+                .withItem(LibraryItem.bundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH))
                 .withSelection("a");
-        // The bundled row has no image name at all, so it cannot join any group
-        // and no repair can drop it: the index lists it, and the index is the
-        // authority over the one row with no file.
+        // The demo's image name comes from its own id, exactly as every other
+        // row's does, so it cannot join a group of two and no repair can drop it.
+        // The check is on NAMES rather than bytes precisely so this holds: a real
+        // row can never share the demo's name, and two genuinely identical photos
+        // must not be collapsed for it.
         assertFalse(l.itemsSharingAnImageName().contains(Library.BUNDLED_ID));
         assertTrue(l.find(Library.BUNDLED_ID) != null);
     }

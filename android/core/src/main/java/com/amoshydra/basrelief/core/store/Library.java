@@ -73,21 +73,25 @@ public final class Library {
     /**
      * The id of the bundled marble bust, the demo every install starts with.
      *
-     * <p>It has no files in {@code filesDir}: {@code imageName} and
-     * {@code depthName} are both null, which is exactly the signal the renderer
-     * uses to fall back to {@code res/raw}. It is the "back to the default"
-     * affordance, and it replaces the studio's old Reset button.
+     * <p><b>It is a file-backed row like any other.</b> The seed copies
+     * {@code res/raw/image.png} and {@code res/raw/depth.png} into
+     * {@code filesDir} under the names this id derives — the same
+     * {@link LibraryItem#imageFileName} scheme every imported photo uses — and
+     * stores them on the item. So the demo can be renamed, re-framed, given a
+     * regenerated or replaced map, exported and deleted through the same code
+     * paths as every other photograph, which is the whole point: the special
+     * logic was never "the marble is a demo", it was "the marble has no file".
      *
-     * <p><b>It is an ordinary preloaded photo, not an immortal one.</b> It can
-     * be selected, renamed, edited, put in a playlist and deleted, and a delete
-     * sticks. The reserved id is what lets a fileless row survive a JSON round
-     * trip -- {@link LibraryItem#fromJson} exempts it from "no image means no
-     * item" -- and what lets a cleanup pass keep it when the index lists it. It
-     * is not a delete guard: the only thing that puts the row back is
-     * {@link #withBundled}, and the caller calls that only when no index has
-     * ever been stored -- a fresh install, or the state a reset leaves behind.
-     * A stored index that parses to zero items is an emptied gallery, not a
-     * fresh one, and stays empty.
+     * <p>It is not an immortal row. It can be deleted and the delete sticks; what
+     * brings it back is {@link #withBundled}, and the caller calls that only when
+     * no index has ever been stored — a fresh install, or the state a reset
+     * leaves behind. A stored index that parses to zero items is an emptied
+     * gallery and stays empty.
+     *
+     * <p>The reserved id is still load-bearing in exactly two places, and both are
+     * about the pre-migration state rather than about the demo being special: the
+     * constructor and {@link LibraryItem#fromJson} tolerate a null image name, and
+     * {@link #retainExisting} keeps a listed row it cannot see the files of.
      */
     public static final String BUNDLED_ID = "bundled";
 
@@ -97,7 +101,7 @@ public final class Library {
     /** Insertion order, never reordered. See {@link #sorted()}. */
     private final List<LibraryItem> items;
 
-    /** Id of the item the wallpaper is showing, or null for the bundled demo. */
+    /** Id of the item the wallpaper is showing, or null when nothing is selected. */
     private final String activeId;
 
     /**
@@ -154,23 +158,21 @@ public final class Library {
      * re-bind a live wallpaper, so there is no gesture that could mean it. Clearing
      * the selection is what removes a photo from both.
      *
-     * <p>Applying the bundled demo to the lock screen is refused. The demo has no
-     * image of its own to render there and the platform's lock frame is captured from
-     * whatever is live — so recording it would claim a second live engine that this
-     * app cannot produce. Better to say no than to store a promise.
+     * <p>Nothing is refused here. There used to be one exception — the demo could
+     * not be recorded on the lock screen, on the grounds that it had no image of
+     * its own to render there. It has a file now, and the rest of that reasoning
+     * (the platform's lock frame is captured from whatever is live) is true of
+     * every photograph equally, so it belongs where it is already handled: the
+     * caller asks {@link SurfaceResolver#supportsPerSurfaceLock} before offering
+     * the choice at all. A rule that named one row and not the rest is the
+     * special-casing this index no longer has.
      */
     public Library withAppliedTo(Surface surface, boolean on) {
         if (!on) return this;
-        if (surface == Surface.LOCK && isBundledActive()) return this;
         if (appliedSurfaces.contains(surface)) return this;
         Set<Surface> next = new LinkedHashSet<Surface>(appliedSurfaces);
         next.add(surface);
         return new Library(items, activeId, sort, next);
-    }
-
-    private boolean isBundledActive() {
-        LibraryItem a = activeItem();
-        return a == null || a.isBundled();
     }
 
     /** An empty gallery: nothing listed, nothing selected, default order. */
@@ -246,7 +248,7 @@ public final class Library {
         return null;
     }
 
-    /** The selected item's id, or null when the wallpaper is the bundled demo. */
+    /** The selected item's id, or null when nothing is selected. */
     public String activeId() {
         return activeId;
     }
@@ -328,11 +330,11 @@ public final class Library {
     /**
      * Seed the bundled item, but only into an otherwise-empty library.
      *
-     * <p>The demo is an ordinary preloaded photo: it can be selected, renamed,
-     * edited, put in a playlist and deleted like any other row, and a delete
-     * must stick. It is also the one row with no file behind it, so a gallery
-     * that has lost it cannot rebuild it from {@code filesDir} -- which is why
-     * it is seeded at first run rather than being baked into the grid.
+     * <p>The demo is an ordinary preloaded photo with an ordinary file behind it:
+     * it can be selected, renamed, edited, given a new map, put in a playlist and
+     * deleted like any other row, and a delete must stick. It is seeded rather
+     * than baked into the grid so that a gallery the user has emptied is a state
+     * the app can be in.
      *
      * <p><b>Only when the library is otherwise empty, and only the caller can
      * know whether empty means fresh.</b> This method seeds any empty library;
@@ -352,10 +354,50 @@ public final class Library {
      * bundled bust is not a photo the user added and leading the newest-first
      * list with it would read as this being the current one. Name order ignores
      * timestamps entirely, so it sorts by its label there, like anything else.
+     *
+     * @param imageName the demo image the seed copied into {@code filesDir}, or
+     *                  null when the copy did not happen. Null is not a special
+     *                  case to design around: it is what a full disk produces, and
+     *                  the row is then read as "the packaged pair" until a later
+     *                  copy succeeds. See {@link #withBundledFiles}.
+     * @param depthName the demo's map, or null with {@code imageName}
      */
-    public Library withBundled() {
+    public Library withBundled(String imageName, String depthName) {
         if (!items.isEmpty()) return this;
-        return withItem(LibraryItem.bundled());
+        return withItem(LibraryItem.bundled(imageName, depthName));
+    }
+
+    /**
+     * Give the bundled row the files it is missing, if it is missing them.
+     *
+     * <p><b>This is the migration, and it is one derivation over the stored
+     * index rather than a check at every place the demo is read.</b> A build
+     * before the demo was file-backed stored the row with no image name, and
+     * every renderer, gallery tile and depth panel had a branch for it. Without
+     * this, an upgrading user is left holding the one special-cased item the work
+     * was meant to eliminate — and doing it at the render site would mean a
+     * special case in the renderer forever, which is what it replaced.
+     *
+     * <p><b>Idempotent by the row's own contents, not by a flag.</b> The row that
+     * has an image name is already done, so a second call returns the same library
+     * without touching anything. That matters because this runs on the read path,
+     * which runs on every surface creation and every pref change, including on the
+     * GL thread at wallpaper cold start — so "did we already do this" has to be
+     * answered by looking at the data rather than by remembering.
+     *
+     * <p><b>It never adds a row.</b> Seeding stays {@link #withBundled}'s job and
+     * stays as narrow as it is, which is what keeps a delete from being undone by a
+     * load that was only supposed to repair one row's filenames.
+     *
+     * @param imageName the copied image, or null when the copy did not happen — in
+     *                  which case nothing is changed, because naming a file that is
+     *                  not there would let the next cleanup pass drop the demo
+     */
+    public Library withBundledFiles(String imageName, String depthName) {
+        if (imageName == null) return this;
+        LibraryItem demo = find(BUNDLED_ID);
+        if (demo == null || demo.imageName != null) return this;
+        return withItem(demo.withFiles(imageName, depthName));
     }
 
     /**
@@ -364,13 +406,13 @@ public final class Library {
      * <p><b>Deleting the active item is allowed.</b> Refusing it would mean the
      * one photo a user is most likely to want gone — the one filling their
      * screen — is the one they cannot remove, with no explanation. Clearing the
-     * selection instead has a visible, honest outcome: the bundled demo, which
-     * the status line already names as such. A gallery that cannot delete is not
-     * a gallery.
+     * selection instead has a visible, honest outcome: the packaged demo pair,
+     * which is what the renderer draws for no selection. A gallery that cannot
+     * delete is not a gallery.
      *
-     * <p><b>The bundled row is not an exception.</b> It is a preloaded photo
-     * with no file, not an unremovable one, so removing it drops it and clears
-     * the selection exactly as for any other id. The seeding rule that keeps a
+     * <p><b>The bundled row is not an exception.</b> It is a preloaded photo, not
+     * an unremovable one, so removing it drops it — and, like every other id,
+     * clears the selection exactly as for any other. The seeding rule that keeps a
      * first run from showing an empty gallery lives in {@link #withBundled},
      * which the app's load path calls only when no index has ever been stored
      * -- so deleting the last row leaves a stored-but-empty gallery, an empty
@@ -417,8 +459,10 @@ public final class Library {
      * impossible under the fixed write path, so it is a fingerprint of this bug
      * and nothing else — which makes the repair exact and free of file I/O.
      *
-     * <p>The bundled item is never in a group: it has no image name at all, and it
-     * is the one row that cannot be recreated from filesDir.
+     * <p>The bundled item is in no group: its name comes from its own id like every
+     * other row's, so a group of two can never contain it. The null check below is
+     * the degenerate state — a copy that failed — and skipping it is what keeps a
+     * nameless row from being grouped with itself.
      *
      * @return the ids to drop, empty when the index is already consistent
      */
@@ -429,7 +473,7 @@ public final class Library {
         Map<String, List<LibraryItem>> groups = new LinkedHashMap<String, List<LibraryItem>>();
         for (LibraryItem item : items) {
             String image = item.imageName;
-            if (image == null || image.length() == 0) continue;   // the bundled item
+            if (image == null || image.length() == 0) continue;   // no file, no group
             List<LibraryItem> group = groups.get(image);
             if (group == null) {
                 group = new ArrayList<LibraryItem>();
@@ -547,10 +591,12 @@ public final class Library {
      * item is a legal item, and the user may be about to generate its depth.
      *
      * <p><b>A row with no file belongs to the index.</b> The bundled row is the
-     * only one, and it is kept when the index lists it and not added when it does
-     * not: this method filters, it never seeds. Seeding is {@link #withBundled}'s
-     * job, and it is deliberately narrower, so that a delete cannot be undone by a
-     * load that was only supposed to be cleaning missing files.
+     * only one that can be in that state — it is the one row whose files come from
+     * a copy rather than from an import — and it is kept when the index lists it
+     * and not added when it does not: this method filters, it never seeds.
+     * Seeding is {@link #withBundled}'s job, and it is deliberately narrower, so
+     * that a delete cannot be undone by a load that was only supposed to be
+     * cleaning missing files.
      *
      * @param fileExists given a bare filename, whether it is present
      */
@@ -558,15 +604,25 @@ public final class Library {
         if (fileExists == null) return this;
         List<LibraryItem> next = new ArrayList<LibraryItem>();
         for (LibraryItem item : items) {
-            // The bundled item has no file to look for: it lives in res/raw, and
-            // its null image name would fail any on-disk test. Keeping it here is
-            // retention, not resurrection -- the row is already in the index, so
-            // the index is the authority. Nothing in this method adds one.
+            // A listed bundled row is kept whether or not its files can be seen
+            // here. It is retention, not resurrection -- the row is already in the
+            // index, so the index is the authority -- and it is what lets a restored
+            // backup that came back without filesDir keep the demo instead of
+            // dropping it and leaving an empty gallery. The row's files are put back
+            // by the copy the load path runs, which is keyed off this row's
+            // existence, so nothing here adds one.
             if (item.isBundled() || Boolean.TRUE.equals(fileExists.test(item.imageName))) {
                 next.add(item);
             }
         }
-        return of(next, activeId, sort);
+        // The applied set is CARRIED ACROSS, and the reason is the same as in
+        // withItem: this method rebuilt through the three-argument `of`, which
+        // defaults the set to {{HOME}}, so a load that dropped one row silently
+        // recorded that the user had never applied to the lock screen. It was
+        // invisible for as long as nothing read the set on that path -- and
+        // unlike the other derivations, this one is not behind a user gesture, so
+        // it re-runs on every load of every surface.
+        return of(next, activeId, sort, appliedSurfaces);
     }
 
     // -------------------------------------------------------------- sorting

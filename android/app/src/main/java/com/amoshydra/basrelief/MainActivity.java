@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
      * same one resolution every control here reads rather than parsing the blob again.
      */
     AppState state() {
-        return AppState.load(prefs, getFilesDir());
+        return AppState.load(this, prefs, getFilesDir());
     }
     private TextView statusView;
     private LinearLayout panel;
@@ -207,6 +207,18 @@ public class MainActivity extends Activity {
      * #layOutCaption} applies whichever is true at the moment.
      */
     private TextView motionCaption;
+    /**
+     * "This photo's map", as one unit with its body.
+     *
+     * <p>A {@link SheetSection} rather than a caption plus a loose row, because
+     * that shape is exactly how the section used to lie: the caption was added
+     * unconditionally, so a photo with no map showed it over nothing, and the
+     * Regenerate/Replace row was built once at construction, so a selection
+     * change left a row describing the previous photo. {@link #refreshMapSection}
+     * is the one place the whole section is put into the state of the item on
+     * screen.
+     */
+    private SheetSection mapSection;
     private TextView fixText;
     private LinearLayout fixActions;
     /**
@@ -271,6 +283,34 @@ public class MainActivity extends Activity {
      */
     private FrameLayout rootLayout;
     private Gallery gallery;
+
+    /**
+     * The active item id the strip and grid were last brought in step with.
+     *
+     * <p>Set once on launch and then in {@link #refreshSliders}, which every
+     * in-app selection reaches. {@code onResume} uses it to tell a selection the
+     * wallpaper moved while the studio was backgrounded -- a playlist rotation
+     * writes the same pointer a tap does -- from a resume that changed nothing,
+     * because {@link Gallery#reindex()} throws away every thumbnail and decodes
+     * it again. Null means "no selection", a real state (a fresh install, or the
+     * bundled item showing), not an unknown, so the comparison is null-safe
+     * rather than treating null as "cannot tell".
+     */
+    private String shownActiveId;
+
+    /**
+     * The active item's last-used stamp when the strip last read the index.
+     *
+     * <p>Read beside {@link #shownActiveId}, and for the case that id alone
+     * misses: a rotation that lands on the item already selected writes the same
+     * id with a fresh stamp ({@code Playlists.advance} is
+     * {@code withSelection(next).markUsed(next, now)}), and under the "Recently
+     * used" order that stamp is the sort key, so the row can move with the id
+     * unchanged. Only the rotated item's stamp moves, and the rotated item is
+     * the active one, so the active item's stamp is the whole of what a
+     * background writer can change.
+     */
+    private long shownActiveUsedAt;
 
     /** Slider handles by key, so a selection change can repopulate them. */
     /** Every slider on the sheet, by key. Replaces four parallel maps. */
@@ -588,8 +628,13 @@ public class MainActivity extends Activity {
         // item: Depth, Zoom and Motion are all properties of a photograph now, so
         // a slider left showing the previous photo's numbers would be editing
         // something nobody can see.
-        final AppState initial = AppState.load(prefs, getFilesDir());
+        final AppState initial = AppState.load(this, prefs, getFilesDir());
         final LibraryItem initialItem = initial.activeItem();
+        // The strip was just built from this same index, so this is what it is
+        // showing. It keeps the first resume from reindexing a gallery that has
+        // not moved; see shownActiveId and shownActiveUsedAt.
+        shownActiveId = initial.activeId();
+        shownActiveUsedAt = initialItem == null ? 0L : initialItem.lastUsedAt;
         // The caption and the depth row are one thing. The row below is built
         // conditionally from the same fact, and syncDepthRow keeps the two in step
         // after a selection change; deciding the launch state here means a photo
@@ -623,11 +668,12 @@ public class MainActivity extends Activity {
         // from Depth and Zoom: they change how the photograph renders, not where it
         // sits or how far it stands out. Signed, because both directions are useful
         // and an unsigned control makes "less contrast" unreachable.
-        sectionLabel(heading(R.string.group_picture, R.string.group_picture_surface));
-        sheetContent.addView(addSlider("brightness",
+        SheetSection picture = addSection(
+                heading(R.string.group_picture, R.string.group_picture_surface));
+        picture.body().addView(addSlider("brightness",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.brightness,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
-        sheetContent.addView(addSlider("shadow",
+        picture.body().addView(addSlider("shadow",
                 s == null ? SurfaceSettings.DEFAULT_ADJUST : s.shadow,
                 SurfaceSettings.ADJUST_MIN, SurfaceSettings.ADJUST_MAX));
 
@@ -646,73 +692,31 @@ public class MainActivity extends Activity {
         // Azimuth's canonical domain is [0, 360) and its unit here is whole
         // degrees, so the row's top is (int) AZIMUTH_MAX - 1: 360 is not an end to
         // clamp at, it is the same light as 0, which the other end already offers.
-        sectionLabel(heading(R.string.group_light, R.string.group_light_surface));
-        sheetContent.addView(addSlider("light_azimuth",
+        SheetSection light = addSection(
+                heading(R.string.group_light, R.string.group_light_surface));
+        light.body().addView(addSlider("light_azimuth",
                 azimuthForSlider(s == null
                         ? SurfaceSettings.DEFAULT_LIGHT_AZIMUTH : s.lightAzimuth),
                 (int) LightDirection.AZIMUTH_MIN, (int) LightDirection.AZIMUTH_MAX - 1));
-        sheetContent.addView(addSlider("light_elevation",
+        light.body().addView(addSlider("light_elevation",
                 elevationForSlider(s == null
                         ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation),
                 (int) LightDirection.ELEVATION_MIN, (int) LightDirection.ELEVATION_MAX));
 
-        sectionLabel(heading(R.string.group_framing, R.string.group_framing_surface));
-        sheetContent.addView(FramingRows.build(this));
+        SheetSection framing = addSection(
+                heading(R.string.group_framing, R.string.group_framing_surface));
+        framing.body().addView(FramingRows.build(this));
 
         // "This photo's map": the mockup's heading for the Regenerate/Replace row and
         // the fix line. It replaces a row of three buttons that were not peers --
         // Gallery became the filmstrip, Depth became the fix line, and Calibrate
         // became a reported condition in Settings > Gyro rather than an action.
-        sectionLabel(getString(R.string.group_depth));
-
-        // Regenerate and Replace, on one row, and only when there IS a map. Two
-        // actions because an applied map has two things you might want to do to it,
-        // and neither is a third thing: deleting it belongs to the gallery row menu,
-        // where delete already asks first.
         //
-        // Gallery is NOT here. It was a button because browsing used to be a mode you
-        // entered; it is the filmstrip now, so a button that opens a gallery you are
-        // already standing in is a control with nothing to do. Calibrate is not here
-        // either: it is a reported condition in Settings > Gyro, not something the
-        // user does while looking at a photo.
-        boolean hasMap = initialItem != null && initialItem.depthName != null;
-        if (hasMap && !initial.isBundled()) {
-            LinearLayout mapRow = new LinearLayout(this);
-            mapRow.setOrientation(LinearLayout.HORIZONTAL);
-            mapRow.addView(makeButton(getString(R.string.action_regenerate),
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            openDepthGen();
-                        }
-                    }), new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            mapRow.addView(makeButton(getString(R.string.action_replace),
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            // Reuses the active item's id, so it overwrites this
-                            // photo's map rather than starting a new gallery row.
-                            pickFile(REQ_DEPTH);
-                        }
-                    }), new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
-            // one control with a doubled border; the gap is what makes them two, and
-            // it is set on the surviving child rather than passed to addView because
-            // each makeButton already carries the right plate and pressed state.
-            View regenButton = mapRow.getChildAt(0);
-            LinearLayout.LayoutParams regenLp =
-                    (LinearLayout.LayoutParams) regenButton.getLayoutParams();
-            regenLp.rightMargin = dp(8);
-            regenButton.setLayoutParams(regenLp);
-            LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            mapLp.topMargin = dp(2);
-            mapRow.setLayoutParams(mapLp);
-            sheetContent.addView(mapRow);
-        }
+        // The body is put into the selected photo's state here and re-derived from
+        // the live selection on every refresh; see refreshMapSection, which is the
+        // only place that decides what the section shows.
+        mapSection = addSection(getString(R.string.group_depth));
+        refreshMapSection(initial);
 
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
@@ -1002,6 +1006,13 @@ public class MainActivity extends Activity {
         if (uri == null) return;
         // The name the sending app showed, so the gallery row is recognisable.
         final String pickedName = displayNameOf(uri);
+        // The selection the strip is showing before the IO thread can select a
+        // matching row. A re-share of the photo already on screen writes the same
+        // id back, so nothing the strip draws has moved and reindex() would drop
+        // and re-decode every thumbnail for nothing; see the target == null
+        // branch. Read here because findByContent's select happens on the IO
+        // thread, before the callback that needs this value can run.
+        final String activeBefore = state().activeId();
         // Read + downscale off the UI thread: PNG re-encode of a large photo
         // takes seconds and would be an ANR inline.
         Io.run(this, new Callable<File>() {
@@ -1039,7 +1050,12 @@ public class MainActivity extends Activity {
                     // The row that was just selected may be the one the strip is
                     // not ringing and the grid not showing, because the pair of
                     // reads above re-resolve the render, not the index views.
-                    gallery.reindex();
+                    // Only worth a rebuild when the selection actually moved: a
+                    // re-share of the photo already on screen writes the same id
+                    // back, and reindex() drops and re-decodes every thumbnail.
+                    if (!TextUtils.equals(activeBefore, state().activeId())) {
+                        gallery.reindex();
+                    }
                     Toast.makeText(MainActivity.this,
                             "Already in the gallery \u2014 selected it",
                             Toast.LENGTH_SHORT).show();
@@ -1073,10 +1089,15 @@ public class MainActivity extends Activity {
      * <p>Selects it as a side effect, so a re-share leaves the user on the item
      * they just sent rather than on whatever was active before. Called from the
      * IO thread, and {@link LibraryStore} is the only thing it touches.
+     *
+     * <p><b>Every row is a candidate, including the demo.</b> The demo is a file
+     * in {@code filesDir} now, so it has bytes to compare and a re-share of the
+     * same picture is the same "already in the gallery" case as any other row.
+     * A row whose file is missing is skipped, which is where a demo whose copy
+     * failed lands — it renders the packaged pair and matches nothing.
      */
     private LibraryItem findByContent(byte[] bytes) {
         for (LibraryItem item : LibraryStore.rows(prefs)) {
-            if (item.isBundled()) continue;      // no file, so nothing to match
             File f = PrefFiles.resolve(getFilesDir(), item.imageName);
             if (f == null || !PrefFiles.sameContent(bytes, f)) continue;
             LibraryStore.select(prefs, item.id);
@@ -1095,7 +1116,7 @@ public class MainActivity extends Activity {
      * reference is weak and this Activity is the thing being collected.
      */
     private void onDepthRunStateChanged() {
-        AppState state = AppState.load(prefs, getFilesDir());
+        AppState state = AppState.load(this, prefs, getFilesDir());
         refreshFixLine(state);
         refreshStatus();
         // The pill repaints only on a collapse otherwise, which is how a failed run
@@ -1162,12 +1183,28 @@ public class MainActivity extends Activity {
         DepthGenDialog.resumePending(this);
         // The index can change while the studio is backgrounded -- a playlist
         // rotation writes the same selection a tap does -- and the strip and grid
-        // each read it once at build time. Re-reading here is what re-rings the
-        // strip after a rotation; without it the studio comes back showing the
-        // previous photo's ring, which is a wallpaper and a gallery disagreeing
-        // about what is on screen. Idempotent and cheap: the grid rebuild is a
-        // no-op when the grid is down.
-        gallery.reindex();
+        // each read it once at build time. Re-reading is what re-rings the strip
+        // after a rotation; without it the studio comes back showing the previous
+        // photo's ring, which is a wallpaper and a gallery disagreeing about what
+        // is on screen.
+        //
+        // Conditional on the index actually having moved. This call used to run
+        // on every resume, and reindex() throws away and re-decodes every
+        // thumbnail, so every return to the studio paid a whole-strip flash for
+        // an index that had not changed. The wallpaper is the only writer that
+        // can move the selection while this activity is paused, and it moves it
+        // through the same two calls a tap makes; the id catches a rotation to
+        // another photo, and the stamp catches one that re-selects the same
+        // photo (a fresh markUsed under the "Recently used" order moves the
+        // row). Both fields are kept current by refreshSliders, which every
+        // in-app selection reaches, and null is a real selection state (no row
+        // selected) rather than an unknown.
+        AppState resumed = AppState.load(this, prefs, getFilesDir());
+        LibraryItem resumedItem = resumed.activeItem();
+        if (!TextUtils.equals(shownActiveId, resumed.activeId())
+                || (resumedItem != null && resumedItem.lastUsedAt != shownActiveUsedAt)) {
+            gallery.reindex();
+        }
         // The renderer reloads the new selection a few lines down, so the sheet
         // above it must re-resolve from the same read or a rotation leaves the
         // controls showing the previous photo's numbers while the render shows
@@ -1183,7 +1220,7 @@ public class MainActivity extends Activity {
         // bare filename on the very next launch.
         // One load covers both migrations and the self-heal, and writes only if
         // something actually needed changing.
-        AppState.load(prefs, getFilesDir());
+        AppState.load(this, prefs, getFilesDir());
         glView.onResume();
         glView.queueEvent(new Runnable() {
             @Override
@@ -1663,9 +1700,9 @@ public class MainActivity extends Activity {
             fixActions.getChildAt(0).setLayoutParams(first);
         }
         // Attention is a property of the CONDITION, not of the fact that a fix line
-        // exists. Setting it here meant the bundled demo -- whose line says only
-        // "Bundled demo" and offers "Add a photo" -- showed an amber "No depth" pill
-        // when there was nothing wrong at all. The caller decides.
+        // exists. Setting it here once meant a purely informational line -- the
+        // bundled demo's, before that sentence was removed -- showed an amber "No
+        // depth" pill when there was nothing wrong at all. The caller decides.
         setPillState(attention ? PillState.ATTENTION : PillState.IDLE);
     }
 
@@ -2197,7 +2234,7 @@ public class MainActivity extends Activity {
                         // silently changed Home instead: the numbers moved, Lock did
                         // not, and the two surfaces converged on whichever was last
                         // pinched.
-                        String zoomId = AppState.load(prefs, getFilesDir()).activeId();
+                        String zoomId = AppState.load(this, prefs, getFilesDir()).activeId();
                         if (zoomId != null) {
                             LibraryStore.editItem(prefs, zoomId, new LibraryStore.Editor() {
                                 @Override
@@ -2332,6 +2369,20 @@ public class MainActivity extends Activity {
      *              neighbours exist.
      */
     private TextView sectionLabel(String text, boolean first) {
+        TextView tv = captionView(text, first);
+        sheetContent.addView(tv);
+        return tv;
+    }
+
+    /**
+     * One caption, styled and spaced, but not added to the tree.
+     *
+     * <p>Split out of {@code sectionLabel} so {@link SheetSection} can own its
+     * caption. The two used to be one method that added the label to the scroll
+     * as a side effect, which is exactly how a caption could outlive the body it
+     * named.
+     */
+    private TextView captionView(String text, boolean first) {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(0x57FFFFFF);
@@ -2340,8 +2391,74 @@ public class MainActivity extends Activity {
         tv.setLetterSpacing(0.09f);
         tv.setTypeface(null, android.graphics.Typeface.BOLD);
         layOutCaption(tv, first);
-        sheetContent.addView(tv);
         return tv;
+    }
+
+    /**
+     * One sheet section: its caption and the rows that caption names, as one
+     * unit.
+     *
+     * <p><b>Why the unit exists.</b> The sheet used to add a caption and then
+     * its rows as unrelated siblings of the scroll, and two real defects came
+     * out of that shape. "This photo's map" was added unconditionally while its
+     * Regenerate/Replace row was added only when the launch photo had a map, so
+     * a photo with no map showed a caption over nothing; and the row was a local
+     * captured at construction, so selecting a different photo left a row
+     * describing the photo that was no longer on screen. With both in one
+     * object, "is this section shown" is one decision, and a body can be
+     * replaced wholesale without leaving its caption behind.
+     *
+     * <p>Caption and body are both direct children of the section, and the
+     * section is a single child of the scroll. Hiding the whole unit is the only
+     * way to make a section absent -- the caption is never hidden on its own,
+     * because that is the orphan this component exists to prevent.
+     */
+    private final class SheetSection extends LinearLayout {
+
+        private final LinearLayout body;
+
+        SheetSection(String caption) {
+            super(MainActivity.this);
+            setOrientation(VERTICAL);
+            addView(captionView(caption, false));
+            body = new LinearLayout(MainActivity.this);
+            body.setOrientation(VERTICAL);
+            addView(body);
+        }
+
+        /** The rows under this section's caption. */
+        LinearLayout body() {
+            return body;
+        }
+    }
+
+    /** Add one section to the scroll. */
+    private SheetSection addSection(String caption) {
+        SheetSection section = new SheetSection(caption);
+        sheetContent.addView(section);
+        return section;
+    }
+
+    /**
+     * One line of section body text: a fact, not a control.
+     *
+     * <p>Dim at 12sp, the same reading weight as the photo line and the surface
+     * note. A statement dressed like a slider label would read as something to
+     * operate.
+     *
+     * <p>The map section's body was its only user, and it stopped needing one when
+     * the demo got a file: the body used to say "Ships with its own depth map"
+     * instead of offering Regenerate/Replace, which was a body with nothing to do
+     * dressed as a fact. Kept because a section body is a legitimate shape and
+     * nothing else should have to build one by hand.
+     */
+    private TextView sectionNote(int textRes) {
+        TextView t = new TextView(this);
+        t.setText(textRes);
+        t.setTextSize(12);
+        t.setTextColor(0x8CFFFFFF);
+        t.setPadding(0, dp(2), 0, dp(2));
+        return t;
     }
 
     /**
@@ -2731,17 +2848,18 @@ public class MainActivity extends Activity {
      * so a slider left over from a previous selection writes to whatever is on
      * screen now -- which is what the user was looking at when they let go.
      *
-     * <p>Every value is written for the bundled demo too. Depth and Zoom used to
+     * <p>Every value is written for the demo too. Depth and Zoom used to
      * be refused there because {@code Framing} forced the demo to its defaults,
      * so a stored value would have been one the renderer never read. The fix was
      * to make {@code Framing} read the item, so there is nothing left to refuse;
-     * only the demo's IMAGE still comes from res/raw.
+     * and the demo's image is a file in {@code filesDir} now, so nothing about it
+     * is unwriteable either.
      */
     private void persist(final String key, final int value) {
         final boolean isDepth = "intensity".equals(key);
         final boolean isZoom = "zoom".equals(key);
         final boolean isMotion = "motion".equals(key);
-        AppState state = AppState.load(prefs, getFilesDir());
+        AppState state = AppState.load(this, prefs, getFilesDir());
         // activeId() is NOT null for the bundled item -- it returns the reserved id
         // -- so a null check here let every slider write to it.
         LibraryStore.editItem(prefs, state.activeId(), new LibraryStore.Editor() {
@@ -2794,8 +2912,18 @@ public class MainActivity extends Activity {
      * longer exists rather than being merely avoided.
      */
     void refreshSliders() {
-        AppState state = AppState.load(prefs, getFilesDir());
+        AppState state = AppState.load(this, prefs, getFilesDir());
         LibraryItem item = state.activeItem();
+        // What the strip and grid were last brought in step with. Recorded on
+        // every refresh rather than only after a rebuild, because every in-app
+        // selection reaches this method (a gallery tap, a delete of the active
+        // row, the share path selecting an existing photo), and a later resume
+        // that sees the same id must not re-decode the whole strip; see
+        // onResume. The stamp goes with the id because under the "Recently
+        // used" order it is the sort key, so a rotation can move the row
+        // without moving the selection.
+        shownActiveId = state.activeId();
+        shownActiveUsedAt = item == null ? 0L : item.lastUsedAt;
         refreshFixLine(state);
         // The photo line and the lock note answer "what is the wallpaper doing",
         // which changes exactly when the selection does, so they are refreshed
@@ -2803,15 +2931,17 @@ public class MainActivity extends Activity {
         refreshPhotoLine(state);
         refreshSurfaceNote(state);
         syncDepthRow(state);
+        refreshMapSection(state);
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
         SurfaceSettings s = item == null ? null : item.settings(editSurface);
-        // Every bar is live, including on the bundled demo. They used to be disabled
+        // Every bar is live, including on the demo. They used to be disabled
         // for it, because Framing forced the demo to the defaults and a live slider
         // there displayed a number the renderer ignored -- the same class of lie as a
         // status line claiming content that is not there. Framing reads the demo's
-        // stored values now, so the premise is gone and so is the reason to disable.
+        // stored values now, and the demo has a file to render them against, so
+        // the premise is gone and so is the reason to disable.
         {
             setBar("intensity", s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, true);
             setBar("zoom", s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, true);
@@ -2898,20 +3028,116 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Put "This photo's map" into the state of the photo actually selected.
+     *
+     * <p><b>Two states, and no third.</b>
+     *
+     * <ul>
+     *   <li>A photo with a map gets the Regenerate/Replace row — <i>including</i>
+     *       the bundled demo, which is a file-backed row like any other since the
+     *       seed copied its pair into {@code filesDir}. It had a special body here
+     *       ("Ships with its own depth map") for as long as it had no image file to
+     *       regenerate from and nowhere to write a replacement; both reasons are
+     *       gone, so it now gets the row every other photo gets.</li>
+     *   <li>A photo with no map gets <b>no section at all</b>, not a bare caption.
+     *       The fix line already says "No depth" with the two actions that answer
+     *       it, directly under the grip where it cannot scroll away; a second copy
+     *       here would be two controls for one fact.</li>
+     * </ul>
+     *
+     * <p>Rebuilt from the live selection on every refresh, which is what makes
+     * the row always describe the photo on screen rather than the one selected
+     * when the sheet was built. The old shape -- caption added unconditionally,
+     * row built once from the launch item -- produced both defects this replaces:
+     * a caption over nothing for a launch photo with no map, and the previous
+     * photo's row left behind after a selection change.
+     */
+    private void refreshMapSection(AppState state) {
+        if (mapSection == null) return;
+        mapSection.body().removeAllViews();
+        LibraryItem item = state.activeItem();
+        // No selection means the renderer is drawing the packaged demo pair, which
+        // does have a map -- so the caption belongs, and the ordinary row does not:
+        // there is no id to write a regenerated map against.
+        if (item == null || item.depthName == null) {
+            mapSection.setVisibility(View.GONE);
+            return;
+        }
+        mapSection.body().addView(buildMapActions());
+        mapSection.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * Regenerate and Replace, on one row, for a file-backed photo with a map.
+     *
+     * <p>Two actions because an applied map has two things you might want to do
+     * to it, and neither is a third thing: deleting it belongs to the gallery
+     * row menu, where delete already asks first.
+     *
+     * <p>Gallery is NOT here. It was a button because browsing used to be a
+     * mode you entered; it is the filmstrip now, so a button that opens a
+     * gallery you are already standing in is a control with nothing to do.
+     * Calibrate is not here either: it is a reported condition in Settings >
+     * Gyro, not something the user does while looking at a photo.
+     *
+     * <p>Built fresh for each selection rather than captured once. Both actions
+     * resolve the active photo at click time -- the picker path reuses the
+     * active id, and the depth panel captures its subject when it opens -- so a
+     * stale row could only ever describe the wrong photo, never edit it.
+     */
+    private View buildMapActions() {
+        LinearLayout mapRow = new LinearLayout(this);
+        mapRow.setOrientation(LinearLayout.HORIZONTAL);
+        mapRow.addView(makeButton(getString(R.string.action_regenerate),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        openDepthGen();
+                    }
+                }), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        mapRow.addView(makeButton(getString(R.string.action_replace),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        // Reuses the active item's id, so it overwrites this
+                        // photo's map rather than starting a new gallery row.
+                        pickFile(REQ_DEPTH);
+                    }
+                }), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
+        // one control with a doubled border; the gap is what makes them two, and
+        // it is set on the surviving child rather than passed to addView because
+        // each makeButton already carries the right plate and pressed state.
+        View regenButton = mapRow.getChildAt(0);
+        LinearLayout.LayoutParams regenLp =
+                (LinearLayout.LayoutParams) regenButton.getLayoutParams();
+        regenLp.rightMargin = dp(8);
+        regenButton.setLayoutParams(regenLp);
+        LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        mapLp.topMargin = dp(2);
+        mapRow.setLayoutParams(mapLp);
+        return mapRow;
+    }
+
+    /**
      * Whether this item has a depth map at all.
      *
-     * <p>The bundled demo does -- it is the one asset pair in res/raw, and shipping
-     * one without wiring the other renders correctly with no relief and no
-     * explanation. See AGENTS.md.
+     * <p>The bundled demo does -- it is the one asset pair the seed copies out of
+     * {@code res/raw}, and shipping one without wiring the other renders
+     * correctly with no relief and no explanation. See AGENTS.md.
      *
      * <p>A null item counts too. It means no row is selected, which is the state a
      * deleted last row leaves and the state a fresh install starts in before the
-     * seed lands; renderer-wise it is the same res/raw pair, so hiding the Depth
+     * seed lands; renderer-wise it is the same packaged pair, so hiding the Depth
      * control there would hide it on a marble bust that visibly has relief.
      */
     private boolean initialItemHasMap(AppState state) {
         LibraryItem item = state.activeItem();
-        return item == null || item.isBundled() || item.depthName != null;
+        return item == null || item.depthName != null;
     }
 
     /**
@@ -2941,15 +3167,13 @@ public class MainActivity extends Activity {
      */
     private void refreshFixLine(AppState state) {
         LibraryItem item = state.activeItem();
-        boolean bundled = item == null || item.isBundled();
         // Reset first, so only the branch that means it actually changes the colour.
         setFixBorderColour(FIX_BORDER);
 
-        // A run in progress, and a run that just failed, are conditions too -- and
-        // they outrank the bundled check, because they are about a real photograph.
-        // The mockup puts both in the SHEET, not only on the collapsed pill: "the
-        // sheet is open, so the fix line is already the signal".
-        if (!bundled && DepthGenDialog.isRunning()) {
+        // A run in progress, and a run that just failed, are conditions too. The
+        // mockup puts both in the SHEET, not only on the collapsed pill: "the sheet
+        // is open, so the fix line is already the signal".
+        if (DepthGenDialog.isRunning()) {
             setFixLine(getString(R.string.fix_generating,
                             Math.max(0, DepthGenDialog.progressPercent())),
                     getString(R.string.fix_run_in_background), new View.OnClickListener() {
@@ -2962,8 +3186,15 @@ public class MainActivity extends Activity {
                     }, null, null, false);
             return;
         }
-        if (!bundled && DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
-                && (item.depthName != null || !DepthGenDialog.failureCause().isEmpty())) {
+        // The item may be null -- nothing is selected -- so it is asked about
+        // defensively here. The old form short-circuited on a `bundled` flag that
+        // was true for the demo AND for no selection at all; dropping the flag
+        // without noticing that it had been carrying the null case would have left
+        // a dereference on the one state with no item, reachable by deleting the
+        // last row while a previous run's failure was still on the last result.
+        if (DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
+                && ((item != null && item.depthName != null)
+                    || !DepthGenDialog.failureCause().isEmpty())) {
             // The sentence says what SURVIVED. An error that does not leaves the user
             // unable to tell whether their depth is gone, which is the worst outcome
             // this app has -- and it is the outcome the PRD named.
@@ -2983,24 +3214,15 @@ public class MainActivity extends Activity {
                     });
             return;
         }
-        if (bundled) {
-            // The demo is editable now, so it has no missing map -- but it is the
-            // "back to the default" row, and first run wants one sentence saying so
-            // with a way to add a photo. That is a condition, not a badge.
-            // attention=false: the bundled demo HAS a depth map and renders in relief,
-            // so an amber pill reading "No depth" beside it was a lie. The five-arg
-            // overload hard-codes attention=true, which is why this call site kept the
-            // behaviour its own comment described as fixed.
-            setFixLine(getString(R.string.fix_bundled_demo),
-                    getString(R.string.fix_add_photo), new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            pickFile(REQ_IMAGE);
-                        }
-                    }, null, null, false);
-            return;
-        }
-        if (item.depthName != null) {
+        if (item == null || item.depthName != null) {
+            // Nothing to report, and that is a state rather than a gap. The old
+            // "Bundled demo / Add a photo" sentence was stale guidance either way:
+            // adding a photo is the filmstrip's add tile. A demo whose map was
+            // replaced, or replaced back with nothing, now gets the same "No depth"
+            // line and the same two actions as any other photograph, because it is
+            // one -- the fix line used to stay silent for it, which was a second
+            // place carrying the demo's specialness rather than the only place
+            // carrying a condition.
             setFixLine(null, null, null, null, null);
             setPillState(PillState.IDLE);
             return;
@@ -3082,6 +3304,18 @@ public class MainActivity extends Activity {
                         name, rotating.displayName(), at + 1, rotating.size()));
                 return;
             }
+            // Armed, but showing a photo it does not contain -- the user picked
+            // this one by hand. Falling through here used to drop the playlist
+            // mention entirely, so the line read as though nothing were armed
+            // while the playlist was still scheduled to take the screen back at
+            // its next trigger. The pointer and the active ring deliberately do
+            // not move: the ring means what is on screen, and the missing fact is
+            // better said than moved. Both this and the gallery header's version
+            // read PlaylistStatus, so the two screens cannot disagree.
+            setPhotoLine(name, getString(R.string.photo_line_playlist_armed,
+                    name, rotating.displayName(),
+                    PlaylistScreen.nextChangeLabel(this, rotating)));
+            return;
         }
 
         if (!ourWallpaperIsBound()) {
@@ -3345,7 +3579,8 @@ public class MainActivity extends Activity {
                     glView.queueEvent(new Runnable() {
                         @Override
                         public void run() {
-                            AppState st = AppState.load(prefs, getFilesDir());
+                            AppState st = AppState.load(MainActivity.this,
+                                    prefs, getFilesDir());
                             com.amoshydra.basrelief.core.render.Framing to =
                                     com.amoshydra.basrelief.core.render.Framing.of(
                                             st.activeItem(), surface);
@@ -3680,13 +3915,13 @@ public class MainActivity extends Activity {
         // What the user calls this photo, so a gallery row does not show the UUID
         // that the on-disk name has to be derived from.
         final String pickedName = isImage ? displayNameOf(data.getData()) : null;
-        String active = isImage ? null : AppState.load(prefs, getFilesDir()).activeId();
-        if (!isImage && (active == null || Library.BUNDLED_ID.equals(active))) {
-            // The bundled demo renders res/raw/image.png with res/raw/depth.png,
-            // so a depth map picked here would be stored on the item and never
-            // read by the renderer. Saying so is better than silently writing a
-            // file no render will ever use. The guard is about that fixed pair,
-            // not about the row being special -- the demo is editable now.
+        String active = isImage ? null : AppState.load(this, prefs, getFilesDir()).activeId();
+        if (!isImage && active == null) {
+            // Nothing is selected, so there is no item whose map this could become:
+            // the filename is derived from the item's id, and there is no id. That
+            // is a state about the selection, not about any one row -- the demo is
+            // a file-backed row like every other and takes a picked map exactly as
+            // an imported photo does, under the same derived name.
             Toast.makeText(this, R.string.toast_pick_photo_first,
                     Toast.LENGTH_LONG).show();
             return;
@@ -3804,21 +4039,19 @@ public class MainActivity extends Activity {
         // has to resolve names against this install's filesDir -- which is what
         // makes a restored backup work: the blob holds bare filenames and the
         // old device's absolute path is never stored.
-        AppState state = AppState.load(prefs, getFilesDir());
+        AppState state = AppState.load(this, prefs, getFilesDir());
         LibraryItem active = state.activeItem();
-        final String img;
-        final String dep;
-        if (active == null || active.isBundled()) {
-            // The marble bust: no file, so res/raw. Null is a normal state here,
-            // not a missing photo.
-            img = null;
-            dep = null;
-        } else {
-            java.io.File imgF = PrefFiles.resolve(getFilesDir(), active.imageName);
-            java.io.File depF = PrefFiles.resolve(getFilesDir(), active.depthName);
-            img = imgF == null ? null : imgF.getAbsolutePath();
-            dep = depF == null ? null : depF.getAbsolutePath();
-        }
+        // Resolved from the item, and from nothing else. There is no branch for
+        // "the demo": its image is a file in filesDir under the name its own id
+        // derives, so it takes this path exactly as an imported photo does. A null
+        // item -- nothing is selected -- resolves to nothing at all, and the
+        // renderer draws the packaged demo pair for that, which is the documented
+        // meaning of an empty gallery and the state a delete of the active row
+        // lands in.
+        java.io.File imgF = PrefFiles.resolve(getFilesDir(), active == null ? null : active.imageName);
+        java.io.File depF = PrefFiles.resolve(getFilesDir(), active == null ? null : active.depthName);
+        final String img = imgF == null ? null : imgF.getAbsolutePath();
+        final String dep = depF == null ? null : depF.getAbsolutePath();
         final Framing framing = Framing.of(state.activeItem(), editSurface);
         glView.queueEvent(new Runnable() {
             @Override

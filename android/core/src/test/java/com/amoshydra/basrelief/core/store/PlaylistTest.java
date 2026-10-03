@@ -501,7 +501,8 @@ public class PlaylistTest {
      */
     @Test
     public void theBundledDemoCanBeInAPlaylist() {
-        Library l = Library.empty().withItem(item("a")).withItem(LibraryItem.bundled())
+        Library l = Library.empty().withItem(item("a"))
+                .withItem(LibraryItem.bundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH))
                 .withSelection("a");
         Playlists p = daily("p", "a", Library.BUNDLED_ID);
 
@@ -720,7 +721,8 @@ public class PlaylistTest {
     @Test
     public void theBundledRowIsDeletedLikeAnyOther() {
         Playlists p = daily("p", "a", Library.BUNDLED_ID);
-        Library l = lib("a").withItem(LibraryItem.bundled());
+        Library l = lib("a")
+                .withItem(LibraryItem.bundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH));
 
         Playlists.Result r = Playlists.afterRemoving(p, l, Library.BUNDLED_ID);
         assertNull("the index row must go", r.library.find(Library.BUNDLED_ID));

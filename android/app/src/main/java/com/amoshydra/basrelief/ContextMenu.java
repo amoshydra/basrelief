@@ -155,6 +155,61 @@ final class ContextMenu {
     // -------------------------------------------------------------------- API
 
     /**
+     * A menu that is now open, so the caller can close it before its moment has
+     * passed.
+     *
+     * <p>The case this exists for is an anchor that can move. A menu opened at
+     * {@link #showAt} is placed in screen coordinates once, so if the list it
+     * points into scrolls — programmatically, or through an accessibility
+     * action — it stays where the finger was instead of following the row, and
+     * the command under the thumb is suddenly about a different photograph.
+     * The popup's own outside-touch dismissal catches a finger that scrolls,
+     * but that finger first has to touch the popup; a scroll with no touch
+     * never does. {@link #dismissOnScroll} is the explicit half.
+     *
+     * <p>A null return from {@code showAt} means nothing was shown — the window
+     * was gone, the item list was empty, the view could not be measured — and
+     * that is not a callers' error to report.
+     */
+    static final class Handle {
+
+        private final PopupWindow popup;
+
+        private Handle(PopupWindow popup) {
+            this.popup = popup;
+        }
+
+        /** Close the menu now. Safe to call once it has already closed. */
+        void dismiss() {
+            popup.dismiss();
+        }
+
+        /**
+         * Also close the menu whenever {@code scrollable} scrolls.
+         *
+         * <p>Replaces that view's own scroll listener, which is why it is a
+         * method on the handle rather than a constructor argument: the one
+         * caller that needs it (the gallery's grid) has exactly one scroll
+         * container and no listener to lose.
+         *
+         * @param scrollable the content the menu is anchored over; null is a
+         *                   no-op, because a menu without a scroller still
+         *                   closes on outside touch and back
+         */
+        void dismissOnScroll(View scrollable) {
+            if (scrollable == null) return;
+            final Handle self = this;
+            scrollable.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+                @Override
+                public void onScrollChange(View v, int scrollX, int scrollY,
+                                           int oldScrollX, int oldScrollY) {
+                    self.dismiss();
+                }
+            });
+        }
+    }
+
+    /**
      * One command in a menu.
      *
      * <p>The four fields are the whole of an item; there is no builder and no
@@ -213,17 +268,18 @@ final class ContextMenu {
      * @param screenY  raw screen y
      * @param items    the commands, top to bottom. Null or empty is a no-op:
      *                 an empty card is a control with nothing to say
+     * @return a handle for dismissing it early, or null when nothing was shown
      */
-    static void showAt(Activity activity, float screenX, float screenY, List<Item> items) {
-        if (items == null || items.isEmpty()) return;
-        if (activity.isFinishing() || activity.isDestroyed()) return;
+    static Handle showAt(Activity activity, float screenX, float screenY, List<Item> items) {
+        if (items == null || items.isEmpty()) return null;
+        if (activity.isFinishing() || activity.isDestroyed()) return null;
         View decor = activity.getWindow().getDecorView();
-        if (decor.getWindowToken() == null) return;
+        if (decor.getWindowToken() == null) return null;
         int x = Math.round(screenX);
         int y = Math.round(screenY);
         // A point anchor: left and right, top and bottom are the same pixel, so
         // the shared placement sees a degenerate rect and grows down-right.
-        show(activity, decor, x, y, x, y, false, items);
+        return show(activity, decor, x, y, x, y, false, items);
     }
 
     /**
@@ -236,10 +292,10 @@ final class ContextMenu {
      * frame and the coordinate origin are all the anchor's window's, never the
      * activity's.
      */
-    static void showUnder(View anchor, List<Item> items) {
-        if (items == null || items.isEmpty()) return;
+    static Handle showUnder(View anchor, List<Item> items) {
+        if (items == null || items.isEmpty()) return null;
         View root = anchor.getRootView();
-        if (root.getWindowToken() == null) return;
+        if (root.getWindowToken() == null) return null;
         int[] loc = new int[2];
         anchor.getLocationOnScreen(loc);
         int left = loc[0];
@@ -248,7 +304,7 @@ final class ContextMenu {
         // the two left ones. Passing the flag through place() keeps the RTL
         // branch in one place instead of a second geometry here.
         boolean ltr = anchor.getLayoutDirection() != View.LAYOUT_DIRECTION_RTL;
-        show(anchor.getContext(), root, left, top, left + anchor.getWidth(),
+        return show(anchor.getContext(), root, left, top, left + anchor.getWidth(),
                 top + anchor.getHeight(), ltr, items);
     }
 
@@ -272,8 +328,9 @@ final class ContextMenu {
      * @param alignToEnd  true to prefer the menu's right edge at the anchor's
      *                    right edge (LTR {@link #showUnder}); false to prefer
      *                    its left edge at the anchor's left
+     * @return the open menu's handle, or null when it could not be shown
      */
-    private static void show(Context context, View host,
+    private static Handle show(Context context, View host,
             int anchorLeft, int anchorTop, int anchorRight, int anchorBottom,
             boolean alignToEnd, List<Item> items) {
 
@@ -301,7 +358,7 @@ final class ContextMenu {
                         Math.max(1, frame.height() - 2 * margin), View.MeasureSpec.AT_MOST));
         int width = card.getMeasuredWidth();
         int height = card.getMeasuredHeight();
-        if (width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) return null;
 
         Point topLeft = place(frame, margin, gap, width, height,
                 anchorLeft, anchorTop, anchorRight, anchorBottom, alignToEnd);
@@ -355,6 +412,7 @@ final class ContextMenu {
                 topLeft.x - hostLoc[0], topLeft.y - hostLoc[1]);
 
         startEntrance(card);
+        return new Handle(popup);
     }
 
     /**

@@ -58,8 +58,11 @@ final class PairCache {
     /**
      * The decoded pair for these exact paths, or null.
      *
-     * <p>Null for the bundled demo, which is not worth caching: it is decoded from
-     * a resource in memory already and is the same bytes every time.
+     * <p>Null for the packaged demo pair, which is not worth caching: it is decoded
+     * from a resource in memory already and is the same bytes every time. It is no
+     * longer how the bundled demo normally draws — the seed copies it into
+     * filesDir, so it comes through here like any other photograph — but "nothing of
+     * the user's is selected" still reaches this path.
      */
     static Object get(String image, String depth) {
         if (image == null) return null;

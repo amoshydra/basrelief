@@ -56,7 +56,7 @@ public final class Framing {
     public final float lightAzimuth;
     public final float lightElevation;
 
-    /** True when the marble bust is showing, and the files are in res/raw. */
+    /** True when the marble bust is showing, or when nothing is selected. */
     public final boolean bundled;
 
     private Framing(LibraryItem item, Surface surface) {
@@ -78,13 +78,11 @@ public final class Framing {
         // the CONTROL instead of to the bug. Switching the controls off hides the
         // symptom and leaves the class still unable to honour a stored value.
         //
-        // The demo is editable. Only its IMAGE comes from res/raw; Depth, Zoom,
-        // Motion, Origin, Pan and the adjustments are ordinary render values that
-        // the reserved item holds perfectly well.
-        //
-        // The one thing that remains special is the FILE: the bundled item has no
-        // image on disk, which is why LibraryItem.fromJson exempts it. Unrelated to
-        // framing, and still true.
+        // The demo is editable. Its image is a file in filesDir like any other
+        // photo's -- the seed copies it there under the name its own id derives --
+        // so Depth, Zoom, Motion, Origin, Pan, the adjustments and the light are
+        // ordinary render values that the reserved item holds perfectly well, and
+        // nothing in this class has to know which row is selected.
         if (s == null) {
             // No item at all, which is what "nothing is selected" means and the
             // state a delete of the active item lands in. Defaults, and no

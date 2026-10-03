@@ -154,11 +154,16 @@ public final class LibraryItem {
                         SurfaceSettings home, SurfaceSettings lockSettings) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
-        // Every user item must name a file. The one exception is the reserved
-        // bundled id, which reads from res/raw and therefore has none. Gated on
-        // the id rather than relaxed generally, so no user item can be given a
-        // null name by accident. The id is not a delete guard -- see
-        // Library.BUNDLED_ID -- it is only what lets this fileless row exist.
+        // Every item must name a file, and the demo is no exception: the seed
+        // copies res/raw/image.png into filesDir under the name its own id derives,
+        // so it is stored exactly like a photo the user imported.
+        //
+        // The single remaining null case is the reserved id, which a blob written
+        // before that migration carries and which is what a failed copy leaves
+        // behind. It is read-only degradation -- the renderer falls back to the
+        // packaged pair -- and it is gated on the id rather than relaxed
+        // generally, so no user item can be given a null name by accident. The id
+        // is not a delete guard: see Library.BUNDLED_ID.
         if (img == null && !Library.BUNDLED_ID.equals(id)) {
             throw new IllegalArgumentException("bad image name: " + imageName);
         }
@@ -191,16 +196,34 @@ public final class LibraryItem {
     }
 
     /**
-     * The bundled marble bust: no files, because it is read from {@code res/raw}.
+     * The bundled marble bust: the demo every install starts with.
      *
-     * <p>Both names are null on purpose. The renderer treats a null image path
-     * as "use the bundled pair", and it only does so when the depth path is null
-     * too -- see the fallback in {@code ReliefRenderer.loadPair}, where a null
-     * image with a non-null depth would render the bundled image against the
-     * user's depth map.
+     * <p><b>Named by the ordinary per-id scheme, like every other item.</b> It used
+     * to be built with both names null, and a null image name was the renderer's
+     * signal to read {@code res/raw} — so the one row in the gallery with no file
+     * was the one row the depth panel refused, the map section could not offer to
+     * regenerate, and a replaced map had nowhere to be written. The seed now copies
+     * {@code res/raw/image.png} and {@code res/raw/depth.png} into {@code filesDir}
+     * under {@code item-bundled.png} and {@code item-bundled-depth.png} — the very
+     * names {@link #imageFileName}/{@link #depthFileName} derive from any id —
+     * and this takes them.
+     *
+     * <p>Nulls are still legal here and only here, for two states that are not
+     * "the demo" but "the demo's files are not here": a blob written before the
+     * migration, and a copy that failed because storage did. Both render the
+     * packaged pair, and both are repaired by the next successful copy — see
+     * {@link Library#withBundledFiles}. The renderer treats a null image path as
+     * "use the packaged pair" only when the depth path is null too, so a null image
+     * beside a real depth map cannot render the demo's photo against somebody
+     * else's map.
+     *
+     * @param imageName the copied image's bare filename, or null when the copy
+     *                  did not happen
+     * @param depthName the copied map's bare filename, or null
      */
-    public static LibraryItem bundled() {
-        return new LibraryItem(Library.BUNDLED_ID, null, null, "Marble bust", 0L, 0L);
+    public static LibraryItem bundled(String imageName, String depthName) {
+        return new LibraryItem(Library.BUNDLED_ID, imageName, depthName, "Marble bust",
+                0L, 0L);
     }
 
     // ------------------------------------------------------------- identity
@@ -482,6 +505,20 @@ public final class LibraryItem {
         return copy(id, imageName, depth, label, addedAt, lastUsedAt);
     }
 
+    /**
+     * This item's two file names replaced, and every other value carried over.
+     *
+     * <p>The one write that names both names together, because a half-applied pair
+     * is the failure this project keeps paying for: an image with no map renders
+     * flat, and a map with no image is a file nothing will ever read. It is public
+     * only because the migration that gives the demo its files has to go through
+     * here rather than through a loose constructor, which would default the render
+     * values it is not given.
+     */
+    public LibraryItem withFiles(String image, String depth) {
+        return copy(id, image, depth, label, addedAt, lastUsedAt);
+    }
+
     public LibraryItem withLabel(String newLabel) {
         return copy(id, imageName, depthName, newLabel, addedAt, lastUsedAt);
     }
@@ -606,13 +643,14 @@ public final class LibraryItem {
         if (!(rawId instanceof String)) return null;
         String id = (String) rawId;
         String img = normaliseName(str(o, "image"));
-        // No image means nothing to render and nothing to resolve -- UNLESS this
-        // is the reserved bundled item, which reads from res/raw and so has no
-        // file by design. This is a PARSE exemption and deliberately not a
-        // resurrection: it keeps a row the blob already carries (so a rename or
-        // a settings edit survives the next load) and adds nothing on its own.
-        // The demo is deletable like any other row; what seeds it is
-        // Library.withBundled, and only into an empty library.
+        // No image means nothing to render and nothing to resolve -- UNLESS this is
+        // the reserved bundled id. A row stored before the demo got a file carries
+        // no image name, and dropping it would delete the demo from every upgrading
+        // user's gallery. This is a PARSE exemption and deliberately not a
+        // resurrection: it keeps a row the blob already carries and adds nothing on
+        // its own. The copy that fixes it is Library.withBundledFiles, and the demo
+        // is deletable like any other row; what seeds it is Library.withBundled, and
+        // only into an empty library.
         if (img == null && !Library.BUNDLED_ID.equals(id)) return null;
         try {
             SurfaceSettings home = homeFrom(o);

@@ -323,7 +323,7 @@ public final class DepthGenDialog {
      */
     private String targetItemId;
 
-    /** The image the depth is generated for, or null for the bundled demo. */
+    /** The image the depth is generated for, or null when nothing is selected. */
     private File targetImage;
 
     // The one screen. Three blocks, always all present, so changing a value
@@ -609,14 +609,18 @@ public final class DepthGenDialog {
      * The photo on screen, captured as this panel's subject.
      *
      * <p>Depth is generated FOR a photograph, so the photo on screen is the only
-     * sensible source. The bundled demo has no file to generate from and already
-     * ships a map, so it is not a subject at all.
+     * sensible source. Every photo qualifies, including the bundled demo: it is a
+     * file-backed row since the seed copied its pair into {@code filesDir}, so it
+     * has an image to upload and an id to write the answer against. Only a photo
+     * that is not there -- nothing selected -- leaves this panel with no subject,
+     * and {@link #startRun} says so rather than failing at the server.
      */
     private void captureSubject() {
         SharedPreferences prefs =
                 activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE);
-        LibraryItem active = AppState.load(prefs, activity.getFilesDir()).activeItem();
-        if (active == null || active.isBundled()) {
+        LibraryItem active = AppState.load(activity, prefs, activity.getFilesDir())
+                .activeItem();
+        if (active == null) {
             targetItemId = null;
             targetImage = null;
             return;
@@ -1259,8 +1263,10 @@ public final class DepthGenDialog {
         // the wrong photograph. The panel is re-targeted by being reopened, which
         // is an explicit act.
         if (targetItemId == null || targetImage == null || !targetImage.exists()) {
-            // No photo, or the bundled demo, which ships its own map and has no
-            // file to generate from.
+            // Nothing was selected, or the photo behind the selection is not on this
+            // device. The latter is reachable -- a restore that carried the index and
+            // not its files -- and it is the only honest answer: there is no image to
+            // upload, and saying so here is better than a failed run at the server.
             say(R.string.depth_no_subject);
             return;
         }
@@ -1521,7 +1527,7 @@ public final class DepthGenDialog {
      */
     private static String labelFor(Context app, String itemId) {
         try {
-            LibraryItem item = AppState.load(
+            LibraryItem item = AppState.load(app,
                     app.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE),
                     app.getFilesDir()).library.find(itemId);
             if (item != null && item.displayName() != null && item.displayName().length() > 0) {

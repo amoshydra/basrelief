@@ -355,7 +355,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private boolean loadedOnce = false;
 
     /**
-     * The pair currently on screen; null for the bundled demo.
+     * The pair currently on screen; both null when the packaged demo is up.
      *
      * <p>Written on the GL thread inside {@link #applyPending} and read by the
      * host to decide whether a reload is needed, so both are volatile: the studio
@@ -372,13 +372,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * Whether anything has ever been installed into the current GL context.
      *
      * <p>Load-bearing, and it exists because of a coincidence of representation.
-     * The bundled demo is the pair (null, null) because it has no file, and a
-     * renderer that has installed <i>nothing</i> is also (null, null), because that
-     * is the initial value of both fields above. So without this flag a fresh
-     * engine asked to show the demo was told it already was and skipped the load
-     * entirely: the surface stayed empty, the wallpaper was black, and the status
-     * line cheerfully reported the demo as loaded. Photos were unaffected, which
-     * is what made it look like the bundled item specifically was broken.
+     * "Nothing of the user's to draw" is the pair (null, null), and a renderer that
+     * has installed <i>nothing</i> is also (null, null), because that is the initial
+     * value of both fields above. So without this flag a fresh engine asked to draw
+     * the packaged pair was told it already was and skipped the load entirely: the
+     * surface stayed empty, the wallpaper was black, and the status line cheerfully
+     * reported the demo as loaded. Photos were unaffected, which is what made it
+     * look like the bundled item specifically was broken.
      */
     private volatile boolean hasInstalled = false;
 
@@ -400,7 +400,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Whether the given pair is already on screen.
      *
-     * <p>Null-safe, because the bundled demo is (null, null) and calling equals
+     * <p>Null-safe, because "the packaged demo" is (null, null) and calling equals
      * on either side is a crash on exactly that path.
      */
     public boolean showingSamePair(String imagePath, String depthPath) {
@@ -774,8 +774,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void saveViewToPrefs() {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        final String id = AppState.load(p, context.getFilesDir()).activeId();
-        if (id == null) return; // the bundled demo keeps its own framing
+        final String id = AppState.load(context, p, context.getFilesDir()).activeId();
+        if (id == null) return; // nothing is selected, so there is nothing to write
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
@@ -789,7 +789,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void savePanToPrefs() {
         final float px = panX, py = panY;
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        final String id = AppState.load(p, context.getFilesDir()).activeId();
+        final String id = AppState.load(context, p, context.getFilesDir()).activeId();
         if (id == null) return;
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
@@ -808,9 +808,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Load an image + depth pair (GL thread only). Either path may be null:
-     * image falls back to the bundled demo; depth falls back to the bundled
-     * demo depth, then to the image's embedded chunk, then to a flat surface.
+     * Load an image + depth pair (GL thread only).
+     *
+     * <p>A null image path means "nothing of the user's to draw", and the one thing
+     * that means is the packaged demo pair. Both are null together, and only
+     * together: a null image beside a real depth map would draw the demo's marble
+     * against somebody else's map, so callers that resolve an item resolve both
+     * names from the same item and the demo's own copy failure nulls both.
+     *
+     * <p>The demo is a file in {@code filesDir} like any other photograph since the
+     * seed copied it there, so this branch is not how it normally draws — it is what
+     * a gallery with nothing selected draws, and what a demo whose copy failed
+     * draws until the next load succeeds. See {@code BundledFiles}.
      */
     private Pending decodePair(String imagePath, String depthPath) {
         // Already decoded by the other surface in this process? Then uploading it
@@ -1401,23 +1410,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // settings together and cannot come back naming a photo that was deleted.
         // Loaded once: this runs on the GL thread at cold start, and each load
         // re-reads and re-validates the whole gallery.
-        final AppState state = AppState.load(p, context.getFilesDir());
+        final AppState state = AppState.load(context, p, context.getFilesDir());
         final LibraryItem active = state.activeItem();
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
         apply(Framing.of(state.activeItem(), editSurface));
-        if (active == null || active.isBundled()) {
-            // No file to resolve: the marble bust, read from res/raw. This is a
-            // renderable state and not a failure, and it is where a delete of the
-            // active item lands.
-            load(null, null);
-            return;
-        }
+        // Resolved from the item and from nothing else. There is no branch for "the
+        // demo": since the seed copied its pair into filesDir it is a file-backed row
+        // like any other, and a null item -- nothing selected -- resolves to nothing
+        // and is drawn as the packaged demo pair, which is what a delete of the active
+        // item leaves behind.
+        //
         // Stored as bare filenames; resolve against this install's filesDir so a
         // restored backup still finds them. Null means it is not present here,
         // which retainExisting has already pruned from the index.
-        java.io.File img = PrefFiles.resolve(context.getFilesDir(), active.imageName);
-        java.io.File dep = PrefFiles.resolve(context.getFilesDir(), active.depthName);
+        java.io.File img = PrefFiles.resolve(context.getFilesDir(),
+                active == null ? null : active.imageName);
+        java.io.File dep = PrefFiles.resolve(context.getFilesDir(),
+                active == null ? null : active.depthName);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath());
     }
@@ -1425,8 +1435,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Load a pair, inlining the very first one when the surface must not be empty.
      *
-     * <p>Both callers go through here, and the bundled demo going through here is
-     * the point. It used to take the async path unconditionally, which for a live
+     * <p>Both callers go through here, and the packaged demo pair going through here
+     * is the point. It used to take the async path unconditionally, which for a live
      * wallpaper means the system snapshots the surface roughly 100 ms after it
      * appears and the decode has not finished, so the snapshot is of an empty
      * surface and the home screen is black -- while the engine went on to install

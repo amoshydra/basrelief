@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief;
 
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -12,8 +13,8 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -21,7 +22,7 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.Playlists;
-import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.Trigger;
@@ -29,7 +30,6 @@ import com.amoshydra.basrelief.core.store.Trigger;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -84,8 +84,25 @@ final class PlaylistScreen {
     private static final int ACCENT = 0xFF7FD1C1;
     private static final int DIM = 0x8CFFFFFF;
     private static final int DIMMER = 0x57FFFFFF;
-    /** A swatch with no photograph in it — the gallery's own tile fill. */
-    private static final int TILE = 0xFF2E3B44;
+    /**
+     * The running row's fill: the accent at 20%.
+     *
+     * <p>A wash rather than a solid plate, because the row's own photograph and
+     * text still have to read; the chip and the 2dp accent border carry the
+     * "this one is running" at full strength. This is the same accent at a lower
+     * alpha than the gallery's picked wash (30%), because this row is a
+     * standing state rather than a selection about to be acted on.
+     */
+    private static final int ROTATING_FILL = 0x337FD1C1;
+    /** The running row's border: the accent, at the picked ring's weight. */
+    private static final int ROTATING_STROKE_DP = 2;
+    /**
+     * A selected radio choice's fill: the accent at 12%, fainter than the
+     * running row's 20% wash. Four choices sit together and only one is on, so a
+     * louder wash would turn one group into four competing plates —
+     * distinguishable from the running row at a glance, which is the point.
+     */
+    private static final int CHOICE_WASH = 0x1F7FD1C1;
     /** The mockup's `.locked`, which is how an unavailable row reads. */
     private static final float LOCKED_ALPHA = 0.42f;
 
@@ -152,14 +169,27 @@ final class PlaylistScreen {
         return box;
     }
 
-    /** The mockup's `.opt`: an outlined card with no fill, so the modal shows through. */
-    private LinearLayout option() {
+    /**
+     * The mockup's `.opt`: an outlined card with no fill, so the modal shows
+     * through — or the running row, filled and bordered in the accent.
+     *
+     * <p>The running state is the row's own fill rather than a badge alone,
+     * because the question "which of these is actually changing my wallpaper"
+     * is answered by scanning the list, not by reading each row. The chip and
+     * the status sentence then say where and when; the fill says which.
+     */
+    private LinearLayout option(boolean rotating) {
         LinearLayout r = new LinearLayout(activity);
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(dp(OPTION_PAD_DP), dp(OPTION_PAD_DP), dp(OPTION_PAD_DP), dp(OPTION_PAD_DP));
-        GradientDrawable bg = plain(Color.TRANSPARENT, dp(OPTION_RADIUS_DP));
-        bg.setStroke(dp(1), LINE);
+        GradientDrawable bg = plain(rotating ? ROTATING_FILL : Color.TRANSPARENT,
+                dp(OPTION_RADIUS_DP));
+        if (rotating) {
+            bg.setStroke(dp(ROTATING_STROKE_DP), ACCENT);
+        } else {
+            bg.setStroke(dp(1), LINE);
+        }
         r.setBackground(bg);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -169,28 +199,28 @@ final class PlaylistScreen {
     }
 
     /**
-     * A swatch: the tile, and the accent dot in its bottom-right corner when the
-     * row is on.
+     * A swatch: one {@link PhotoTile}, and the accent dot in its bottom-right
+     * corner when the row is on.
      *
-     * <p>The dot is drawn <i>outside</i> the tile, which is why the tile's frame
-     * does not clip its children. A dot inside the tile would be a second mark
-     * lying on the photograph, and the mockup is unambiguous about which of the
-     * two it draws.
+     * <p>The dot is drawn <i>outside</i> the tile, which is why the holder does
+     * not clip its children: a dot inside the tile would be a second mark lying
+     * on the photograph, and the mockup is unambiguous about which of the two it
+     * draws. The tile itself is the gallery's own component, so a swatch and a
+     * filmstrip thumbnail cannot drift into two different pictures.
      *
-     * @param photo a decoded thumbnail, or null for a plain tile
+     * @param item the photograph, or null for a plain tile — a missing photo, or
+     *             a mark row that carries no photo at all
      */
-    private View swatch(int fill, ImageView photo, boolean on) {
-        FrameLayout box = new FrameLayout(activity);
-        box.setClipChildren(false);
-        box.setBackground(plain(fill, dp(SWATCH_RADIUS_DP)));
-        if (photo != null) {
-            photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            box.addView(photo, new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        }
-        if (on) box.addView(dot(), dotParams());
+    private View swatch(LibraryItem item, boolean on) {
+        FrameLayout holder = new FrameLayout(activity);
+        holder.setClipChildren(false);
+        PhotoTile tile = new PhotoTile(activity, dp(SWATCH_DP), dp(SWATCH_RADIUS_DP));
+        tile.show(item);
+        holder.addView(tile, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        if (on) holder.addView(dot(), dotParams());
         // Purely decorative: the state it carries is announced on the row.
-        box.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        holder.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         // .opt{gap:12px}: the tile is the row's leading mark, and the text that
         // follows it used to start at the tile's own edge -- no gap at all --
         // unlike every card built by ModalSheet.option, which has always put 12dp
@@ -198,8 +228,8 @@ final class PlaylistScreen {
         LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(
                 dp(SWATCH_DP), dp(SWATCH_DP));
         swatchLp.rightMargin = dp(12);
-        box.setLayoutParams(swatchLp);
-        return box;
+        holder.setLayoutParams(swatchLp);
+        return holder;
     }
 
     private View dot() {
@@ -289,36 +319,6 @@ final class PlaylistScreen {
                         texts.title.getText(), texts.detail.getText(), state));
     }
 
-    /**
-     * A mark row: tile, dot, two lines, and a tap.
-     *
-     * <p>The mockup draws a trigger, a surface and a rotation the same way, so
-     * they are built the same way. What differs between them is the tap, the state
-     * word — which is passed in rather than derived, because the list calls the
-     * same fact "rotating" and a control that calls it two different things is a
-     * control whose value cannot be read — and the unavailable variant, which
-     * keeps its tile and its reason and only drops its brightness.
-     *
-     * @param stateRes the one word that carries this row's state to a screen
-     *                 reader, because the dot it is drawn as is invisible to one
-     */
-    private View markRow(boolean on, String title, String detail, int stateRes,
-                         View.OnClickListener tap, boolean unavailable) {
-        LinearLayout r = option();
-        r.addView(swatch(TILE, null, on));
-        Row texts = texts(title, detail);
-        r.addView(texts.box, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        announce(r, texts, unavailable ? R.string.playlists_state_unavailable : stateRes);
-        r.setOnClickListener(tap);
-        if (unavailable) r.setAlpha(LOCKED_ALPHA);
-        return r;
-    }
-
-    private int markState(boolean on) {
-        return on ? R.string.playlists_state_on : R.string.playlists_state_off;
-    }
-
     /** The modal's `<h3>`: 16px, bold, with 4px of air under it. */
     private TextView heading(String s) {
         TextView t = new TextView(activity);
@@ -357,13 +357,6 @@ final class PlaylistScreen {
         t.setTextColor(DIMMER);
         t.setTypeface(medium());
         t.setPadding(0, dp(16), 0, dp(7));
-        return t;
-    }
-
-    /** A family heading inside a group — the mockup's `.axisgroup .h`. */
-    private TextView family(String s) {
-        TextView t = caption(s);
-        t.setPadding(0, dp(4), 0, dp(2));
         return t;
     }
 
@@ -406,6 +399,11 @@ final class PlaylistScreen {
      */
     private void present() {
         sheet = new ModalSheet(activity, MODAL_MAX_FRACTION);
+        // The same grip the settings sheet installs, and for the same reason:
+        // the acceptance test is that this screen is recognisable as that sheet
+        // by its chrome alone, and it both taps and drags to close. The
+        // description is its own, because the two screens close different things.
+        sheet.grip(str(R.string.playlists_close));
         sheet.onDismiss(new Runnable() {
             @Override
             public void run() {
@@ -426,6 +424,11 @@ final class PlaylistScreen {
         openId = null;
         nameField = null;
         Playlists lists = PlaylistStore.load(activity.prefs);
+        Library lib = library();
+        // One reading of "what is running" for the whole screen, so two rows
+        // cannot disagree about which one it is. See PlaylistStatus.
+        final long now = System.currentTimeMillis();
+        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
 
         // The whole state is one column, heading included. The mockup's .modal is
         // itself the scroller, so the h3 scrolls with the rows; the old screen
@@ -440,9 +443,8 @@ final class PlaylistScreen {
             // anything. This is the first build in which Playlists leads anywhere.
             box.addView(note(str(R.string.playlists_none)));
         }
-        Library lib = library();
         for (Playlist p : lists.playlists()) {
-            box.addView(listRow(p, lib));
+            box.addView(listRow(p, lib, status, now));
         }
         sheet.body(box);
 
@@ -453,7 +455,7 @@ final class PlaylistScreen {
                 newPlaylist();
             }
         });
-        Button done = ModalSheet.button(activity, str(R.string.action_done), true, true);
+        Button done = ModalSheet.button(activity, str(R.string.action_done), false, true);
         done.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -464,22 +466,41 @@ final class PlaylistScreen {
     }
 
     /**
-     * One playlist: its name, and everything that decides when it moves.
+     * One playlist: its name, its state, and the control that starts it.
      *
-     * <p>The swatch is its first photograph rather than a generic tile, because a
-     * column of identical tiles tells a user nothing about which list is which and
-     * the photograph is the only thing here that is recognisable at a glance. The
-     * corner dot is the one that rotates, and it is the only mark of that
-     * anywhere in the app.
+     * <p><b>The row is the control.</b> A saved list and a running list used to
+     * look identical — both drew the same card and a small corner dot — so a
+     * user who had configured a playlist could not tell whether it was doing
+     * anything, which is how a saved list reads as a broken feature. The running
+     * row is now filled and bordered in the accent and carries a filled
+     * {@code Rotating} chip; the idle row carries a {@code Use} button, so the
+     * one action that makes the feature work is the one thing the row offers.
+     *
+     * <p>{@code Use} turns rotation on and steps once in the same write, so the
+     * wallpaper moves in the moment the button is pressed — the alternative is a
+     * user waiting a day to find out whether it worked.
+     *
+     * <p>The row itself still opens the editor; {@code Use} is a child and
+     * consumes its own tap. The list row is also how a playlist is configured,
+     * so both gestures have to live on it without answering for each other.
      */
-    private View listRow(final Playlist p, Library lib) {
+    private View listRow(final Playlist p, Library lib, PlaylistStatus status, long now) {
+        boolean rotating = status.playlist == p;
         LibraryItem first = firstPhoto(p, lib);
-        LinearLayout r = option();
-        r.addView(swatch(TILE, photoView(first), p.active));
-        Row texts = texts(p.displayName(), summary(p));
+        LinearLayout r = option(rotating);
+        r.addView(swatch(first, rotating));
+        Row texts = texts(p.displayName(), rotating
+                ? activity.getString(R.string.playlists_row_rotating, surfaces(p),
+                        nextChangeLabel(activity, p, status, now))
+                : activity.getString(R.string.playlists_row_not_rotating, summary(p)));
         r.addView(texts.box, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        announce(r, texts, p.active
+        if (rotating) {
+            r.addView(rotatingChip());
+        } else {
+            r.addView(useButton(p));
+        }
+        announce(r, texts, rotating
                 ? R.string.playlists_state_rotating : R.string.playlists_state_idle);
         r.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -496,6 +517,139 @@ final class PlaylistScreen {
                         ? R.string.playlists_row_summary_shuffled
                         : R.string.playlists_row_summary,
                 photos(p.size()), p.trigger.label(), surfaces(p));
+    }
+
+    /**
+     * The filled "rotating" mark at a row's end.
+     *
+     * <p>Carries no tap: the row is the control, and a chip that also opened the
+     * editor would be a second hit target promising nothing new. It is the
+     * at-a-glance half of the state; the sentence under the name is the reading.
+     */
+    private View rotatingChip() {
+        TextView chip = new TextView(activity);
+        chip.setText(str(R.string.playlists_chip_rotating));
+        chip.setTextSize(11);
+        chip.setTypeface(medium());
+        chip.setTextColor(ModalSheet.INK_ON_FILL);
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(10), dp(5), dp(10), dp(5));
+        chip.setBackground(plain(ACCENT, dp(OPTION_RADIUS_DP)));
+        // The row announces the state in words; the chip is its colour.
+        chip.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        return chip;
+    }
+
+    /**
+     * The dedicated way in: turn rotation on and step it once, now.
+     *
+     * <p>It is the only control on an idle row, and that is the point — the
+     * previous build buried activation in a switch among switches, so the one
+     * thing a configured playlist needed was the hardest thing to find.
+     * {@link ModalSheet#button} sets the platform-minimum 49dp height, which is
+     * the target this must not shrink below.
+     */
+    private Button useButton(final Playlist p) {
+        Button use = ModalSheet.button(activity, str(R.string.playlists_use), false, true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(8);
+        use.setLayoutParams(lp);
+        use.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                use(p);
+                showList();
+            }
+        });
+        return use;
+    }
+
+    /**
+     * Turn this playlist on and move it one photo, in one write.
+     *
+     * <p><b>Both blobs, one commit.</b> Activation lives on the playlists blob
+     * and the move writes the index's selection — the same two keys a rotation
+     * writes from the wallpaper. Committing them separately would leave a crash
+     * window where the playlist is stamped as having moved but the selection
+     * never changed, or the reverse; an editor cannot express half a rotation.
+     *
+     * <p><b>The studio is told in the same breath.</b> The selection just moved
+     * exactly as if the user had tapped the photograph, so the render, the
+     * sliders and the status line are refreshed here; the wallpaper engine reads
+     * the index on its own. Without this the user would press Use and watch the
+     * screen behind the dialog not change.
+     *
+     * <p>The screen stepped is the first the playlist applies to. A playlist
+     * whose stored screens could not be read steps nowhere — {@code step}
+     * answers with no move rather than a guessed home — and still activates, so
+     * the row says what it is rather than hiding the configuration behind a
+     * failed move.
+     */
+    private void use(Playlist p) {
+        Playlists lists = PlaylistStore.load(activity.prefs);
+        Playlists on = lists.withActive(p.id, true);
+        Playlist running = on.find(p.id);
+        if (running == null) return;
+        Surface surface = running.surfaces.isEmpty() ? Surface.HOME : running.surfaces.get(0);
+        Playlists.Result r = Playlists.step(on, library(), surface,
+                System.currentTimeMillis());
+        activity.prefs.edit()
+                .putString(Library.KEY, r.library.toJson())
+                .putString(Playlists.KEY, r.playlists.toJson())
+                .commit();
+        activity.refreshStatus();
+        activity.refreshSliders();
+        activity.applyFiles();
+    }
+
+    /**
+     * When a running playlist next changes, in words.
+     *
+     * <p>A timed trigger counts down from the playlist's own stamp; "due now"
+     * wins over a small count, because it is the actionable truth. An event
+     * trigger has no moment to count down to — its interval is zero, so a
+     * derived countdown would say "due now" forever — and instead says the event,
+     * reusing the trigger's own subtitle so the row and the editor's radio cannot
+     * word one trigger two ways.
+     *
+     * <p>Static and package-visible because the gallery's header needs the same
+     * words for its armed line: a second copy of this countdown is a second
+     * answer to "when does it move", and the two would drift the first time one
+     * bucket changed.
+     */
+    static String nextChangeLabel(MainActivity activity, Playlist p, PlaylistStatus status,
+                                  long now) {
+        if (!p.trigger.isTimed()) {
+            return activity.getString(triggerSub(p.trigger));
+        }
+        if (status.dueNow) return activity.getString(R.string.playlists_next_due);
+        long remain = Math.max(0L, status.nextChangeAt - now);
+        long minutes = (remain + 59_999L) / 60_000L;
+        if (minutes < 60) {
+            return activity.getString(R.string.playlists_next_minutes, minutes);
+        }
+        long hours = (remain + 3_599_999L) / 3_600_000L;
+        if (hours < 48) {
+            return activity.getString(R.string.playlists_next_hours, hours);
+        }
+        return activity.getString(R.string.playlists_next_days,
+                (remain + 86_399_999L) / 86_400_000L);
+    }
+
+    /** The trigger's own second line, for the event families. */
+    private static int triggerSub(Trigger trigger) {
+        switch (trigger) {
+            case DAILY:
+                return R.string.playlists_trigger_daily_sub;
+            case HOURLY:
+                return R.string.playlists_trigger_hourly_sub;
+            case ON_UNLOCK:
+                return R.string.playlists_trigger_unlock_sub;
+            default:
+                return R.string.playlists_trigger_pickup_sub;
+        }
     }
 
     private String photos(int count) {
@@ -523,6 +677,11 @@ final class PlaylistScreen {
         return str(R.string.playlists_surfaces_none);
     }
 
+    /** One screen's name, for the "X is rotating on Home" sentence. */
+    private String surfaceName(Surface surface) {
+        return str(surface == Surface.LOCK ? R.string.surface_lock : R.string.surface_home);
+    }
+
     // ------------------------------------------------------------------- editor
 
     private void openEditor(String playlistId) {
@@ -544,12 +703,16 @@ final class PlaylistScreen {
         // silently undoes itself. Cheap when nothing changed: the store compares
         // before committing.
         commitName();
-        Playlist p = PlaylistStore.load(activity.prefs).find(openId);
+        Playlists lists = PlaylistStore.load(activity.prefs);
+        Playlist p = lists.find(openId);
         if (p == null) {
             openId = null;
             showList();
             return;
         }
+        final long now = System.currentTimeMillis();
+        Library lib = library();
+        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
         // Built before the old body is detached, so the name field being replaced
         // is still the one the focus listener will see leave. The listener checks
         // identity with the current field, because by the time the detach fires
@@ -557,61 +720,48 @@ final class PlaylistScreen {
         LinearLayout box = column();
         nameField = nameFieldFor(p);
         box.addView(nameField);
-        box.addView(subtitle(photos(p.size()), 0));
 
-        // ---- whether it rotates at all
+        // The decided order: the photographs, then the configuration that moves
+        // them, then the consequence, then the destructive end. Photos first
+        // because they are what the playlist is; configuration next because it
+        // only means something about them; the status line and the action after
+        // it because they are the answer; Delete last, below its own hairline,
+        // because it is the one thing here that cannot be undone.
         //
-        // The list's corner dot says which playlist is the one that moves the
-        // wallpaper, so this is where the dot has to be decided. A mark that reads
-        // a fact nothing can change is a control displaying a value this build
-        // never acts on.
-        box.addView(rotationGroup(p));
-
-        // ---- how it picks. Shuffle is a rotation behaviour, so it lives in the
-        // same group as the switch that turns rotation on; a shuffled playlist
-        // that is not rotating still shuffles nothing.
-        box.addView(shuffleRow(p));
-
-        // ---- when. The two families are grouped, not listed flat: a timed
-        // trigger and an event one are not interchangeable, and a list that put
-        // them in a row says they are.
-        box.addView(caption(str(R.string.playlist_rotate_on)));
-        box.addView(family(str(R.string.playlists_family_timed)));
-        box.addView(triggerRow(p, Trigger.DAILY, R.string.playlists_trigger_daily,
-                R.string.playlists_trigger_daily_sub));
-        box.addView(triggerRow(p, Trigger.HOURLY, R.string.playlists_trigger_hourly,
-                R.string.playlists_trigger_hourly_sub));
-        box.addView(family(str(R.string.playlists_family_event)));
-        box.addView(triggerRow(p, Trigger.ON_UNLOCK, R.string.playlists_trigger_unlock,
-                R.string.playlists_trigger_unlock_sub));
-        box.addView(triggerRow(p, Trigger.ON_PICKUP, R.string.playlists_trigger_pickup,
-                R.string.playlists_trigger_pickup_sub));
-
-        // ---- where
-        box.addView(caption(str(R.string.playlist_surfaces)));
-        box.addView(surfaceRow(p, Surface.HOME, R.string.apply_home));
-        box.addView(surfaceRow(p, Surface.LOCK, R.string.apply_lock));
-        if (!SurfaceResolver.supportsPerSurfaceLock(Build.VERSION.SDK_INT)) {
-            // The stored surfaces are intent, and a degrade must never be written
-            // into the blob, so this is a line under the group rather than a row
-            // that cannot be ticked. See the class note on Playlist.surfaces.
-            box.addView(note(str(R.string.apply_lock_note)));
-        }
-
         // ---- which photos
         box.addView(caption(str(R.string.playlists_photos_caption)));
-        box.addView(photoList(p));
+        box.addView(photoList(p, lib));
+
+        // ---- How it picks: In order or Shuffle, one of two.
+        box.addView(pickingGroup(p));
+
+        // ---- Surfaces: one switch per screen. Two switches, not checkboxes:
+        // there are exactly two and no third can appear, so a checkbox would
+        // imply a set that can grow; see the class note.
+        box.addView(surfacesGroup(p));
+
+        // ---- When: one of four, as a radio group.
+        box.addView(triggerGroup(p));
+
+        // ---- the consequence, in the same words the list row uses.
+        box.addView(statusBlock(p, lists, status, now));
+
+        // ---- the action the screen exists for.
+        box.addView(primaryActionRow(p, status));
+
+        // ---- Delete, last in the scroll, behind its own hairline. Always
+        // drawn: this screen is the ONLY place a playlist can be removed, so
+        // hiding it would leave a playlist undeletable. See deleteBand.
+        box.addView(deleteBand(p));
 
         sheet.body(box);
 
-        Button delete = ModalSheet.button(activity, str(R.string.playlist_delete), false, true);
-        delete.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                confirmDelete(p.id);
-            }
-        });
-        Button done = ModalSheet.button(activity, str(R.string.action_done), true, true);
+        // The same Done as the settings sheet, in the same place: the one visible
+        // way out, ghost, full width, changing nothing. The screen's own action
+        // is a row in the body above rather than a second footer plate beside
+        // this one -- two actions with opposite consequences must not share a
+        // row, and neither must an action and a dismissal.
+        Button done = ModalSheet.button(activity, str(R.string.action_done), false, true);
         done.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -619,7 +769,122 @@ final class PlaylistScreen {
                 showList();
             }
         });
-        sheet.footerRow(delete, done);
+        sheet.footerRow(done);
+    }
+
+    /**
+     * What this playlist is doing, in one line, with the honest caveat under it.
+     *
+     * <p>The screen knew all of this and said none of it: the user configured a
+     * playlist and then asked "how do I use it" because nothing on the screen
+     * named what would move, where, or when. The line is the same sentence the
+     * list row reads, from the same {@link PlaylistStatus}, so the two cannot
+     * drift.
+     *
+     * <p>An idle playlist that shares a screen with a running one says
+     * <i>which</i> one is running: at most one rotates per screen, so pressing
+     * Use here stands that one down, and a user must be able to see whose turn
+     * they are taking.
+     */
+    private View statusBlock(Playlist p, Playlists lists, PlaylistStatus status, long now) {
+        LinearLayout box = column();
+        TextView line = new TextView(activity);
+        line.setTextSize(13);
+        if (status.playlist == p) {
+            line.setText(activity.getString(R.string.playlists_row_rotating, surfaces(p),
+                    nextChangeLabel(activity, p, status, now)));
+            line.setTextColor(ACCENT);
+        } else {
+            String text = str(R.string.playlists_status_not_rotating);
+            for (Surface s : p.surfaces) {
+                Playlist other = lists.rotating(s);
+                if (other != null && other != p) {
+                    text = activity.getString(R.string.playlists_status_other,
+                            other.displayName(), surfaceName(s));
+                    break;
+                }
+            }
+            line.setText(text);
+            line.setTextColor(DIM);
+        }
+        line.setPadding(0, 0, 0, dp(4));
+        box.addView(line);
+        if (p.size() < 2) {
+            // A one-photo list has nowhere to go: Use would "advance" it to
+            // itself and the wallpaper would not change, which is the same
+            // broken-feature reading this whole screen is fixing.
+            box.addView(note(str(R.string.playlists_status_needs_two)));
+        }
+        return box;
+    }
+
+    /**
+     * The screen's own action: start this playlist, or stop it.
+     *
+     * <p>{@code Use} runs {@link #use}, which advances once in the same commit,
+     * so the studio behind the card changes in the moment the row is pressed.
+     * {@code Stop} only clears the flag: the current photo is not the rotation's
+     * to take back. It is an {@link ModalSheet#actionRow} — the shared plate the
+     * settings sheet's Reset uses — so it is the same picture as every other
+     * thing in the app that can be pressed, and it sits in the body above Delete
+     * rather than in the footer beside Done.
+     */
+    private View primaryActionRow(final Playlist p, PlaylistStatus status) {
+        final boolean running = status.playlist == p;
+        return ModalSheet.actionRow(activity,
+                str(running ? R.string.playlists_stop : R.string.playlists_use_this),
+                str(running ? R.string.playlists_stop_sub : R.string.playlists_use_this_sub),
+                false, new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (running) {
+                            PlaylistStore.setActive(activity.prefs, p.id, false);
+                        } else {
+                            use(p);
+                        }
+                        showEditor();
+                    }
+                });
+    }
+
+    /**
+     * Delete, last in the scroll, behind its own hairline.
+     *
+     * <p>A destructive action is never a peer of the way out: it left the footer
+     * because the footer is where Done lives, and it is here, after everything
+     * the user configured, because that is the only place on the card that is
+     * not on the path between opening the screen and leaving it. The confirm
+     * dialog stays as the second gate.
+     *
+     * <p><b>Always drawn, for one reason: this screen is the only place a playlist
+     * can be removed.</b> It was briefly gated behind {@code size() > 1}, on the
+     * reasoning that a one-photo playlist is not worth a destructive row. That
+     * reasoning was borrowed from a rule about <i>controls that do nothing</i>,
+     * and it does not apply here: deleting a playlist always does something and
+     * always means something. The result was the opposite of the intent — an
+     * empty or single-photo playlist became <b>undeletable from the UI
+     * altogether</b>, with the only way out being to add a photo first. A
+     * destructive action's correct place is the far end of the scroll; making it
+     * unreachable is not a safer version of that.
+     */
+    private View deleteBand(final Playlist p) {
+        LinearLayout box = column();
+        View hair = new View(activity);
+        hair.setBackgroundColor(LINE);
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        hp.topMargin = dp(18);
+        hp.bottomMargin = dp(16);
+        box.addView(hair, hp);
+        box.addView(ModalSheet.actionRow(activity, str(R.string.playlist_delete),
+                activity.getString(R.string.playlists_delete_message, p.displayName()),
+                false, new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        confirmDelete(p.id);
+                    }
+                }));
+        return box;
     }
 
     /**
@@ -683,87 +948,172 @@ final class PlaylistScreen {
     }
 
     /**
-     * Rotation on or off for this one playlist, both ways.
+     * "How it picks": In order or Shuffle, one of the two.
      *
-     * <p>Goes through {@link Playlists#withActive}, never
-     * {@link Playlist#withActive}: only the first stands the others down, and one
-     * is all the index can express. The per-playlist setter is still public, which
-     * is exactly why this call is spelled out rather than left to look obvious.
-     *
-     * <p>Turning it <i>off</i> is the half that has to be here as well. The list
-     * draws a dot on whichever playlist is rotating, so a control that can only
-     * put one there is a dot that cannot be taken away, and a user who does not
-     * want a wallpaper that moves has no way to say so. {@code withActive(id,
-     * false)} touches exactly that one row and leaves the others as they were, so
-     * a toggle needs no special case.
+     * <p><b>Shuffle is a radio here, not a switch, and the previous build was
+     * wrong on both counts.</b> Order and shuffle are mutually exclusive — which
+     * is exactly what a radio is — and the old pair put "Rotate through this
+     * list" directly above "Shuffle", so both read as modes of walking the list
+     * and the activation control vanished into the pair. The activation is
+     * {@link #primaryActionRow}; this group only says how a running rotation
+     * picks.
      */
-    private View rotationGroup(final Playlist p) {
+    private View pickingGroup(final Playlist p) {
         LinearLayout box = column();
-        box.addView(caption(str(R.string.playlists_rotation)));
-        box.addView(markRow(p.active, str(R.string.playlists_rotate_row),
-                str(R.string.playlists_rotate_row_sub), p.active
-                        ? R.string.playlists_state_rotating
-                        : R.string.playlists_state_idle,
-                new View.OnClickListener() {
+        box.addView(caption(str(R.string.playlists_how_it_picks)));
+        final SingleChoiceGroup group = new SingleChoiceGroup();
+        box.addView(choiceRow(str(R.string.playlists_in_order),
+                str(R.string.playlists_in_order_sub), !p.shuffle, group,
+                new Runnable() {
                     @Override
-                    public void onClick(View v) {
-                        PlaylistStore.setActive(activity.prefs, p.id, !p.active);
-                        showEditor();
+                    public void run() {
+                        if (!p.shuffle) return;
+                        setShuffle(p, false);
                     }
-                }, false));
+                }));
+        box.addView(choiceRow(str(R.string.playlists_shuffle_row),
+                str(R.string.playlists_shuffle_row_sub), p.shuffle, group,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (p.shuffle) return;
+                        setShuffle(p, true);
+                    }
+                }));
+        return box;
+    }
+
+    private void setShuffle(final Playlist p, final boolean on) {
+        PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
+            @Override
+            public Playlist edit(Playlist current) {
+                return current.withShuffle(on);
+            }
+        });
+        showEditor();
+    }
+
+    /**
+     * "Where it shows": one switch per screen.
+     *
+     * <p>Two switches rather than a checkbox group, and that is the judgement
+     * call: there are exactly two screens and no third can appear, so a checkbox
+     * would imply a set that can grow. Two switches say exactly what
+     * {@link Playlist#surfaces} stores — these two screens, independently on or
+     * off — and it is the same gesture the studio sheet's Home·Lock segment
+     * already means. The spec's trap is the opposite failure: a boolean group
+     * that quietly behaves like a radio group. Each switch edits its own screen
+     * and never the other; only the last-one-off guard couples them, and it
+     * refuses rather than silently choosing.
+     */
+    private View surfacesGroup(final Playlist p) {
+        LinearLayout box = column();
+        box.addView(caption(str(R.string.playlists_where_it_shows)));
+        box.addView(surfaceSwitch(p, Surface.HOME, R.string.apply_home));
+        box.addView(surfaceSwitch(p, Surface.LOCK, R.string.apply_lock));
+        if (!SurfaceResolver.supportsPerSurfaceLock(Build.VERSION.SDK_INT)) {
+            // The stored surfaces are intent, and a degrade must never be written
+            // into the blob, so this is a line under the group rather than a row
+            // that cannot be ticked. See the class note on Playlist.surfaces.
+            box.addView(note(str(R.string.apply_lock_note)));
+        }
         return box;
     }
 
     /**
-     * Shuffle: whether the next photo is random or the next one in the list.
+     * One surface, on or off.
      *
-     * <p>{@link Playlist#shuffle} and the rotation have carried this flag since
-     * they were written, and until now nothing in the app could set it — a stored
-     * capability no control reached, which is the failure this project's
-     * constitution rules out. It goes through the same store as every other
-     * edit, so it is derived from what is on disk and cannot reset the fields it
-     * does not name.
+     * <p>The last one cannot be turned off, and says so.
+     * {@link Playlist#appliesTo} answers no for an empty list, so a playlist on no
+     * screen is one that never moves — and {@link Playlist#withSurfaces} would
+     * quietly put it back on the home screen instead, which is a control that
+     * un-ticks and re-ticks itself.
      *
-     * <p>Both directions are here. A control that could only turn shuffle on
-     * would be a value with no way back, and the state word beside the row says
-     * which state it is in for anyone who cannot see the corner dot.
+     * <p>The refusal path rebuilds the editor. A platform switch has already
+     * moved by the time the listener runs, so returning without a rebuild would
+     * leave the widget showing a state the model refused — a control lying about
+     * what it did, which is the failure this screen exists to remove.
      */
-    private View shuffleRow(final Playlist p) {
-        return markRow(p.shuffle, str(R.string.playlists_shuffle_row),
-                str(R.string.playlists_shuffle_row_sub), markState(p.shuffle),
-                new View.OnClickListener() {
+    private View surfaceSwitch(final Playlist p, final Surface surface, int labelRes) {
+        final boolean on = p.surfaces.contains(surface);
+        return ModalSheet.switchRow(activity, str(labelRes),
+                str(R.string.playlists_surface_sub), on, new ModalSheet.OnToggled() {
                     @Override
-                    public void onClick(View v) {
-                        PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
-                            @Override
-                            public Playlist edit(Playlist current) {
-                                return current.withShuffle(!current.shuffle);
+                    public void onToggled(boolean nowOn) {
+                        if (nowOn == on) return;
+                        if (nowOn) {
+                            // alsoOn rather than a rebuilt list, so a write that
+                            // adds a surface cannot drop one this build has never
+                            // heard of.
+                            PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
+                                @Override
+                                public Playlist edit(Playlist current) {
+                                    return current.alsoOn(surface);
+                                }
+                            });
+                        } else {
+                            if (p.surfaces.size() <= 1) {
+                                toast(R.string.playlists_needs_surface);
+                                showEditor();
+                                return;
                             }
-                        });
+                            final List<Surface> kept = new ArrayList<Surface>(p.surfaces);
+                            kept.remove(surface);
+                            PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
+                                @Override
+                                public Playlist edit(Playlist current) {
+                                    return current.withSurfaces(kept);
+                                }
+                            });
+                        }
                         showEditor();
                     }
-                }, false);
+                });
     }
 
     /**
-     * One of the four triggers.
+     * "When it changes": one of the four triggers.
      *
-     * <p>{@link Trigger#ON_PICKUP} is drawn dimmed, with the reason under it and a
-     * tap that says the same thing again. Hiding it would be tidier and worse: a
-     * stored {@code on_pickup} would then read as {@code daily} everywhere it is
-     * shown, and a wallpaper that starts changing on a clock is the "must never
-     * look like a bug" outcome the model exists to prevent.
+     * <p>Four rows under one caption, the selected one wearing a faint accent
+     * wash, so they read as one choice rather than four switches. The group owns
+     * the exclusivity — see {@link SingleChoiceGroup} — and this method is the
+     * only place that registers rows with it, so a row cannot be wired to the
+     * wrong group without this method changing.
+     *
+     * <p>{@link Trigger#ON_PICKUP} stays shown, dimmed, and refuses by name.
+     * Hiding it would make a stored {@code on_pickup} read as {@code daily}
+     * everywhere it is shown, and a wallpaper that starts changing on a clock is
+     * the "must never look like a bug" outcome the model exists to prevent.
      */
-    private View triggerRow(final Playlist p, final Trigger trigger, int labelRes, int subRes) {
+    private View triggerGroup(final Playlist p) {
+        LinearLayout box = column();
+        box.addView(caption(str(R.string.playlists_when_it_changes)));
+        final SingleChoiceGroup group = new SingleChoiceGroup();
+        box.addView(triggerChoice(p, group, Trigger.DAILY,
+                R.string.playlists_trigger_daily, R.string.playlists_trigger_daily_sub));
+        box.addView(triggerChoice(p, group, Trigger.HOURLY,
+                R.string.playlists_trigger_hourly, R.string.playlists_trigger_hourly_sub));
+        box.addView(triggerChoice(p, group, Trigger.ON_UNLOCK,
+                R.string.playlists_trigger_unlock, R.string.playlists_trigger_unlock_sub));
+        box.addView(triggerChoice(p, group, Trigger.ON_PICKUP,
+                R.string.playlists_trigger_pickup, R.string.playlists_trigger_pickup_sub));
+        return box;
+    }
+
+    private View triggerChoice(final Playlist p, SingleChoiceGroup group,
+                               final Trigger trigger, int labelRes, int subRes) {
         final boolean unavailable = trigger == Trigger.ON_PICKUP;
-        return markRow(p.trigger == trigger, str(labelRes), str(subRes),
-                markState(p.trigger == trigger), new View.OnClickListener() {
+        LinearLayout row = choiceRow(str(labelRes), str(subRes), p.trigger == trigger,
+                group, new Runnable() {
                     @Override
-                    public void onClick(View v) {
+                    public void run() {
                         if (unavailable) {
                             // Named, not silent. A dimmed row that is also inert
-                            // is a control that does nothing at all.
+                            // is a control that does nothing at all. The rebuild
+                            // puts the stored choice back, because the tap lit
+                            // this row before it was refused.
                             toast(R.string.playlists_pickup_unavailable);
+                            showEditor();
                             return;
                         }
                         if (p.trigger == trigger) return;
@@ -775,49 +1125,98 @@ final class PlaylistScreen {
                         });
                         showEditor();
                     }
-                }, unavailable);
+                });
+        if (unavailable) row.setAlpha(LOCKED_ALPHA);
+        return row;
     }
 
     /**
-     * One surface, on or off.
+     * One choice in a single-choice group.
      *
-     * <p>The last one cannot be turned off, and says so.
-     * {@link Playlist#appliesTo} answers no for an empty list, so a playlist on no
-     * screen is one that never moves — and {@link Playlist#withSurfaces} would
-     * quietly put it back on the home screen instead, which is a control that
-     * un-ticks and re-ticks itself.
+     * <p>The group registers the mark and lights exactly one at selection time;
+     * see {@link SingleChoiceGroup}. A row that owned its own check would let two
+     * choices look chosen, which is the trap the brief names.
      */
-    private View surfaceRow(final Playlist p, final Surface surface, int labelRes) {
-        final boolean on = p.surfaces.contains(surface);
-        return markRow(on, str(labelRes), null, markState(on), new View.OnClickListener() {
+    private LinearLayout choiceRow(String title, String sub, boolean selected,
+                                   final SingleChoiceGroup group, final Runnable choose) {
+        LinearLayout row = radioRow(title, sub, selected);
+        final RadioButton mark = (RadioButton) row.getChildAt(1);
+        group.register(mark);
+        row.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (on) {
-                    if (p.surfaces.size() <= 1) {
-                        toast(R.string.playlists_needs_surface);
-                        return;
-                    }
-                    final List<Surface> kept = new ArrayList<Surface>(p.surfaces);
-                    kept.remove(surface);
-                    PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
-                        @Override
-                        public Playlist edit(Playlist current) {
-                            return current.withSurfaces(kept);
-                        }
-                    });
-                } else {
-                    // alsoOn rather than a rebuilt list, so a write that adds a
-                    // surface cannot drop one this build has never heard of.
-                    PlaylistStore.edit(activity.prefs, p.id, new PlaylistStore.Editor() {
-                        @Override
-                        public Playlist edit(Playlist current) {
-                            return current.alsoOn(surface);
-                        }
-                    });
-                }
-                showEditor();
+                // The group owns exclusivity, and it happens before anything
+                // writes: a refusal rebuilds and the mark cannot lie.
+                group.select(mark);
+                choose.run();
             }
-        }, false);
+        });
+        return row;
+    }
+
+    /**
+     * One radio choice: the shared switch row's plate with a radio mark where
+     * its trailing switch was.
+     *
+     * <p><b>Built by taking {@link ModalSheet#switchRow} apart, not by copying
+     * it.</b> The plate, the padding, the type scale and the 12dp gap are the
+     * shared row's, so this screen does not grow the fourth row role that made
+     * the previous editor read as a different app; the only thing replaced is
+     * the trailing widget, because a {@link android.widget.Switch} cannot say
+     * "one of four". The mark is not a target — the row owns the tap — so it is
+     * neither clickable nor focusable, the same rule the switch follows.
+     */
+    private LinearLayout radioRow(String title, String sub, boolean selected) {
+        LinearLayout row = ModalSheet.switchRow(activity, title, sub, selected, null);
+        // switchRow's children are [text (weight 1), trailing widget]; the
+        // trailing LayoutParams carry the gap the text column was given.
+        View trailing = row.getChildAt(1);
+        row.removeViewAt(1);
+        RadioButton mark = new RadioButton(activity);
+        mark.setClickable(false);
+        mark.setFocusable(false);
+        mark.setChecked(selected);
+        mark.setButtonTintList(new ColorStateList(
+                new int[][]{ {android.R.attr.state_checked}, {} },
+                new int[]{ ACCENT, DIMMER }));
+        // The row describes itself; the mark is a picture of the choice.
+        mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        row.addView(mark, trailing.getLayoutParams());
+        // The selected choice wears the faint accent wash, so a group of rows
+        // reads as one choice rather than as so many switches.
+        GradientDrawable bg = (GradientDrawable) row.getBackground();
+        if (bg != null) bg.setColor(selected ? CHOICE_WASH : Color.TRANSPARENT);
+        row.setContentDescription(title + ". " + sub + ", " + str(selected
+                ? R.string.playlists_radio_selected
+                : R.string.playlists_radio_unselected));
+        return row;
+    }
+
+    /**
+     * One group of single-choice rows.
+     *
+     * <p><b>Not {@link android.widget.RadioGroup}.</b> That widget only manages
+     * direct {@link RadioButton} children, and a choice here is the shared framed
+     * row with a mark in its trailing slot; the widget would force either the
+     * plate onto the group (one plate for four rows) or the mark out of the row,
+     * and the whole point is that the row stays one row. The guarantee is the
+     * same and lives in exactly one place: the group holds every mark it owns and
+     * {@link #select} lights exactly one. Each group is its own instance, so a
+     * pick in the shuffle group cannot disturb the trigger group — two groups
+     * sharing one controller is the failure the brief warns about, and the
+     * per-group list is what makes it structurally impossible.
+     */
+    private static final class SingleChoiceGroup {
+
+        private final List<RadioButton> marks = new ArrayList<RadioButton>();
+
+        void register(RadioButton mark) {
+            marks.add(mark);
+        }
+
+        void select(RadioButton chosen) {
+            for (RadioButton mark : marks) mark.setChecked(mark == chosen);
+        }
     }
 
     /**
@@ -848,7 +1247,7 @@ final class PlaylistScreen {
      * the thing that makes a playlist's length worth trusting. A hole is movable
      * too: moving it changes where it would reappear, and never makes it resolve.
      */
-    private View photoList(Playlist p) {
+    private View photoList(Playlist p, Library lib) {
         LinearLayout box = column();
         if (p.isEmpty()) {
             // The way in is the gallery's own Add to playlist, which already
@@ -857,20 +1256,19 @@ final class PlaylistScreen {
             box.addView(note(str(R.string.playlists_none_photos)));
             return box;
         }
-        Library lib = library();
         for (int i = 0; i < p.itemIds.size(); i++) {
             final String id = p.itemIds.get(i);
             final LibraryItem item = lib.find(id);
             final String label = item == null ? null : item.displayName();
-            LinearLayout r = option();
+            LinearLayout r = option(false);
             Row texts;
             if (item == null) {
-                r.addView(swatch(TILE, null, false));
+                r.addView(swatch(null, false));
                 texts = texts(str(R.string.playlists_photo_missing),
                         str(R.string.playlists_photo_missing_sub));
                 announce(r, texts, R.string.playlists_state_missing);
             } else {
-                r.addView(swatch(TILE, photoView(item), false));
+                r.addView(swatch(item, false));
                 texts = texts(item.displayName(), null);
                 announce(r, texts, R.string.playlists_state_in_list);
             }
@@ -1063,33 +1461,6 @@ final class PlaylistScreen {
             if (item != null) return item;
         }
         return null;
-    }
-
-    /**
-     * A decoded thumbnail for a row, or null.
-     *
-     * <p>The bundled demo has no file, and that filelessness is exactly what
-     * makes it the bundled row — so it decodes its packaged {@code res/raw}
-     * bytes through the same preview path the gallery and the filmstrip use.
-     * This screen used to keep a flat brown fill for it, which made the one row
-     * whose photograph is always present the only one drawn as a colour; the
-     * marble was already in the app, just not here. One path, and one place
-     * that knows how a fileless row is drawn.
-     *
-     * <p>Null for a missing row, which keeps the plain tile fill; a row whose
-     * file has gone is a hole and says so in words beside the swatch.
-     */
-    private ImageView photoView(LibraryItem item) {
-        if (item == null) return null;
-        ImageView thumb = new ImageView(activity);
-        if (item.isBundled()) {
-            Io.decodeResourcePreview(activity, R.raw.image, thumb, dp(SWATCH_DP));
-            return thumb;
-        }
-        File file = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
-        if (file == null) return null;
-        Io.decodePreview(activity, file, thumb, dp(SWATCH_DP));
-        return thumb;
     }
 
     // ------------------------------------------------------------------ storage

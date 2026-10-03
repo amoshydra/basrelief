@@ -2,17 +2,16 @@ package com.amoshydra.basrelief;
 
 import android.os.Build;
 import android.graphics.Color;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.LayerDrawable;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -22,6 +21,7 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.Playlists;
+import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.SortOrder;
 import com.amoshydra.basrelief.core.store.Surface;
@@ -128,28 +128,25 @@ final class Gallery {
     private static final int CELL_DP_FALLBACK = 96;
     /** The depth chip. A dot, because a chip that needs reading is a label. */
     private static final int CHIP_DP = 10;
-    /** The checkmark badge: big enough to read at a glance over a photograph. */
-    private static final int BADGE_DP = 22;
-    /** The active ring: `.thumb[aria-current=true]`'s 2px white border. */
-    private static final int RING_ACTIVE_DP = 2;
     /**
-     * The picked ring, deliberately thicker than the active one. It is the
-     * accent, so "picked" is the state that shouts, and a thicker stroke reads
-     * across the room where the wash and the badge need a look.
+     * `.thumb`/`.cell`'s 11px radius. The photograph tiles get it passed to
+     * {@link PhotoTile}; the two glyph tiles here carry it themselves.
      */
-    private static final int RING_PICKED_DP = 3;
-    /** `.thumb`/`.cell`'s 11px radius: shared by the fill, the clip and every ring. */
     private static final int TILE_RADIUS_DP = 11;
+    /** The row menu's drawn plate: the mockup's 19dp mark, in the tile's corner. */
+    private static final int MENU_PLATE_DP = 19;
     /**
-     * The picked cell's wash. The accent at 30%, so the photograph is visibly
-     * claimed without being hidden — the user still has to be able to tell
-     * which photographs they picked by looking at them.
+     * The row menu's touch target.
+     *
+     * <p>48dp is the platform's minimum and the plate is not it: a 19dp control
+     * is aimed at rather than tapped, and this is the only route to Rename and
+     * Delete. The plate stays the mockup's size; this target extends down and
+     * towards the tile's middle, clear of the depth chip in the opposite
+     * corner.
      */
-    private static final int PICK_TINT = 0x4D7FD1C1;
+    private static final int MENU_TARGET_DP = 48;
     /** --dim: a header entry that is a reading rather than an action. */
     private static final int DIM = 0x8CFFFFFF;
-    /** --accent: the one header entry that goes somewhere. */
-    private static final int ACCENT = 0xFF7FD1C1;
 
     private final MainActivity activity;
     private final FrameLayout root;
@@ -169,6 +166,32 @@ final class Gallery {
 
     /** The grid. Null when it is not up. */
     private View grid;
+
+    /**
+     * The grid header's count of running playlists, kept so it can be refreshed
+     * in place when the Playlists dialog closes.
+     *
+     * <p>Null while the grid is down. It exists as a field because the answer can
+     * change without the grid being rebuilt: the Playlists screen is a dialog,
+     * its writes do not rebuild this view, and rebuilding the grid to update one
+     * line would drop every thumbnail and decode it again — the flash
+     * {@code b426298} removed. See {@link #refreshRotatingLine}.
+     */
+    private TextView rotatingLine;
+
+    /**
+     * The grid's scroll container, kept so an open row menu can be dismissed
+     * when the grid moves under it.
+     *
+     * <p>The menu is anchored at the pixel the finger was on; a scroll leaves
+     * that pixel pointing at a different photograph. The popup's outside-touch
+     * dismissal covers a finger, but not a programmatic or accessibility
+     * scroll, and the scroll listener is the half that does.
+     *
+     * <p>Nulled with {@link #grid}, so a listener can never address a detached
+     * scroll view.
+     */
+    private View gridScroller;
 
     /**
      * The photos picked for a many-at-once action, in the order they were picked.
@@ -208,7 +231,7 @@ final class Gallery {
      * it again. The entry holds no active flag: the ring is the foreground,
      * drawn on demand by {@link #drawStripRing}.
      */
-    private final Map<String, ImageView> stripTiles = new HashMap<String, ImageView>();
+    private final Map<String, PhotoTile> stripTiles = new HashMap<String, PhotoTile>();
 
     /**
      * The strip's row: every photograph's tile, then the add and grid tiles.
@@ -232,31 +255,25 @@ final class Gallery {
     private final List<Button> selectionActions = new ArrayList<Button>();
 
     /**
-     * One grid cell's picked mark: the wash, the checkmark badge and the picture
-     * whose foreground ring is redrawn, plus the cell whose description names
-     * the state.
+     * One grid cell's picked mark: the cell whose description names the state,
+     * and the tile that draws it.
      *
-     * <p>The picture is here because the ring depends on <i>both</i> states:
-     * a pick toggled on the active cell has to become the doubled ring, and a
-     * pick toggled off has to fall back to the white one. Writing the tint and
-     * the badge alone would leave the outline claiming a selection that has
-     * just been cleared.
+     * <p>The tile is here because the ring depends on <i>both</i> states: a pick
+     * toggled on the active cell has to become the doubled ring, and a pick
+     * toggled off has to fall back to the white one. Writing the wash and the
+     * badge alone would leave the outline claiming a selection that has just
+     * been cleared, which is why {@link PhotoTile#setPicked} is one write.
      */
     private static final class PickedCell {
         final LibraryItem item;
         final View cell;
-        final View picture;
-        final View tint;
-        final View badge;
+        final PhotoTile tile;
         final boolean active;
 
-        PickedCell(LibraryItem item, View cell, View picture, View tint, View badge,
-                   boolean active) {
+        PickedCell(LibraryItem item, View cell, PhotoTile tile, boolean active) {
             this.item = item;
             this.cell = cell;
-            this.picture = picture;
-            this.tint = tint;
-            this.badge = badge;
+            this.tile = tile;
             this.active = active;
         }
     }
@@ -313,6 +330,18 @@ final class Gallery {
     Gallery(MainActivity activity, FrameLayout root) {
         this.activity = activity;
         this.root = root;
+        // The Playlists screen is a dialog in its own window, so closing it is
+        // the one moment the gallery's ambient count can be stale and no rebuild
+        // will fix it. The root outlives every grid rebuild, and a focus
+        // listener refreshes one line where rebuilding the grid would re-decode
+        // every thumbnail.
+        root.getViewTreeObserver().addOnWindowFocusChangeListener(
+                new ViewTreeObserver.OnWindowFocusChangeListener() {
+                    @Override
+                    public void onWindowFocusChanged(boolean hasFocus) {
+                        if (hasFocus) refreshRotatingLine();
+                    }
+                });
     }
 
     // ------------------------------------------------------------------- setup
@@ -511,37 +540,17 @@ final class Gallery {
      */
     private View stripThumb(final LibraryItem item, boolean isActive) {
         final int size = activity.dp(THUMB_DP);
-        ImageView thumb = new ImageView(activity);
-        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumb.setBackground(tileBackground());
-        // The ring is a foreground, over the picture. A background ring is painted
-        // before the bitmap, and the padding that used to keep the bitmap off it
-        // did not save the corners: clipToOutline clipped the bitmap to the
-        // background drawable's outline — the ring's OUTER edge — so the picture
-        // covered the stroke's inner half at every corner and the ring arrived
-        // with its radius cut off. A foreground cannot be painted over by the
-        // content it decorates, and it is what the mockup draws: its border sits
-        // on top of the background.
-        thumb.setForeground(tileRing(isActive, false));
-        // A rounded background plus clipToOutline is the framework's own rounded
-        // thumbnail. The alternative is a second bitmap pass per photograph, and
-        // there is no view recycling in this app, so that is a per-photo cost for
-        // a cosmetic edge.
-        thumb.setClipToOutline(true);
-        if (item.isBundled()) {
-            // No file to resolve: the bundled row's photograph is the one asset
-            // pair in res/raw, so it decodes through the resource path at the
-            // same size as every other tile rather than showing a flat fill.
-            Io.decodeResourcePreview(activity, R.raw.image, thumb, size);
-        } else {
-            File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
-            if (f != null) Io.decodePreview(activity, f, thumb, size);
-        }
+        PhotoTile tile = new PhotoTile(activity, size, activity.dp(TILE_RADIUS_DP));
+        // The one ring this size draws. The pick marks exist but are never
+        // shown here: a 46dp strip has no picking mode, and a hidden mark costs
+        // nothing; see PhotoTile.
+        tile.setActive(isActive);
+        tile.show(item);
         // The name is what makes an unlabelled tile a photograph rather than a
         // colour, and it is the only thing a screen reader has to read.
-        thumb.setContentDescription(activity.getString(R.string.gallery_thumb_use,
+        tile.setContentDescription(activity.getString(R.string.gallery_thumb_use,
                 item.displayName()));
-        thumb.setOnClickListener(new View.OnClickListener() {
+        tile.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 select(item.id);
@@ -549,9 +558,9 @@ final class Gallery {
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
         lp.setMargins(activity.dp(3), 0, activity.dp(3), 0);
-        thumb.setLayoutParams(lp);
-        stripTiles.put(item.id, thumb);
-        return thumb;
+        tile.setLayoutParams(lp);
+        stripTiles.put(item.id, tile);
+        return tile;
     }
 
     /**
@@ -565,9 +574,9 @@ final class Gallery {
      */
     private void drawStripRing(String id, boolean active) {
         if (id == null) return;
-        ImageView tile = stripTiles.get(id);
+        PhotoTile tile = stripTiles.get(id);
         if (tile == null) return;
-        tile.setForeground(tileRing(active, false));
+        tile.setActive(active);
     }
 
     /**
@@ -594,7 +603,7 @@ final class Gallery {
      */
     private void moveStripTile(String id, List<LibraryItem> sorted) {
         if (stripRow == null || id == null) return;
-        ImageView tile = stripTiles.get(id);
+        PhotoTile tile = stripTiles.get(id);
         if (tile == null) return;
         int at = -1;
         for (int i = 0; i < sorted.size(); i++) {
@@ -606,72 +615,6 @@ final class Gallery {
         if (at < 0 || stripRow.indexOfChild(tile) == at) return;
         stripRow.removeView(tile);
         stripRow.addView(tile, at);
-    }
-
-    /**
-     * The fill behind one thumbnail, rounded like the mockup's tile.
-     *
-     * <p>One fill for every row, including the bundled demo. The old
-     * demo-specific brown was standing in for a photograph the tile could not
-     * decode; now that the bundled row decodes its real res/raw image through
-     * the same preview path as any other, a second fill would be a colour the
-     * user sees for one frame — and the "not a solid brown colour" the demo's
-     * thumbnail was reported as.
-     *
-     * <p>No stroke here: the ring is a foreground, because a stroke on this
-     * background is what {@code clipToOutline} would clip the picture to. See
-     * {@link #tileRing}.
-     */
-    private GradientDrawable tileBackground() {
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.RECTANGLE);
-        d.setColor(0xFF2E3B44);
-        d.setCornerRadius(activity.dp(TILE_RADIUS_DP));
-        return d;
-    }
-
-    /**
-     * The outline a tile wears for its two states, or null for neither.
-     *
-     * <p><b>Picked is thicker than active, and both at once is a doubled
-     * ring.</b> Picked and active are independent facts — "what the next action
-     * will touch" and "what is on the wallpaper" — so a cell can be either, or
-     * both. With both, the accent ring stays outermost, because picked is the
-     * mode the user is in and the accent is the app's one selection colour;
-     * immediately inside it sits the white active ring, so the cell still
-     * answers "this is the one on screen" without a tap on anything else. Two
-     * strokes on two concentric radii, rather than one colour hiding the other,
-     * is what keeps the doubled state readable at a glance.
-     *
-     * <p>The radius shrinks with the inset so the two strokes stay concentric:
-     * the white ring's corner must follow the accent ring's inner edge, not the
-     * tile's outer corner, or the pair pinches at the corners.
-     */
-    private Drawable tileRing(boolean active, boolean picked) {
-        if (!active && !picked) return null;
-        int radius = activity.dp(TILE_RADIUS_DP);
-        if (!picked) {
-            return ring(activity.dp(RING_ACTIVE_DP), 0xFFFFFFFF, radius);
-        }
-        int thick = activity.dp(RING_PICKED_DP);
-        if (!active) {
-            return ring(thick, ACCENT, radius);
-        }
-        LayerDrawable both = new LayerDrawable(new Drawable[] {
-                ring(thick, ACCENT, radius),
-                ring(activity.dp(RING_ACTIVE_DP), 0xFFFFFFFF, radius - thick),
-        });
-        both.setLayerInset(1, thick, thick, thick, thick);
-        return both;
-    }
-
-    /** One stroke of a ring, rounded like the tile it sits on. */
-    private GradientDrawable ring(int widthPx, int colour, int radiusPx) {
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.RECTANGLE);
-        d.setCornerRadius(radiusPx);
-        d.setStroke(widthPx, colour);
-        return d;
     }
 
     /**
@@ -771,6 +714,8 @@ final class Gallery {
         selectionLineView = null;
         root.removeView(grid);
         grid = null;
+        gridScroller = null;
+        rotatingLine = null;
     }
 
     /**
@@ -829,13 +774,20 @@ final class Gallery {
             }
         }));
         header.addView(headerLink(activity.getString(R.string.gallery_playlists),
-                ACCENT, true, new View.OnClickListener() {
+                PhotoTile.ACCENT, true, new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         openPlaylists();
                     }
                 }));
         panel.addView(header);
+        // The ambient count of what is running, outside the playlists screens.
+        // Always built, refreshed in place: the grid is not rebuilt when the
+        // Playlists dialog closes, and rebuilding it to change one line would
+        // re-decode every thumbnail. See refreshRotatingLine.
+        rotatingLine = buildRotatingLine();
+        panel.addView(rotatingLine);
+        refreshRotatingLine();
 
         // The count and the hint share one line: they are the same question at two
         // moments, and two lines would be one too many on a screen this size.
@@ -871,6 +823,8 @@ final class Gallery {
         }
 
         ScrollView scroll = new ScrollView(activity);
+        // Held so an open row menu can close when this scrolls; see gridScroller.
+        gridScroller = scroll;
         LinearLayout cells = new LinearLayout(activity);
         cells.setOrientation(LinearLayout.VERTICAL);
         // .cells{gap:8px} is a row gap as much as a column one. The rows used to
@@ -939,6 +893,71 @@ final class Gallery {
                         }),
                 doneButton()));
         return panel;
+    }
+
+    /**
+     * The grid header's count of running playlists — the ambient proof, outside
+     * the playlists screens, that the feature is doing something.
+     *
+     * <p>It is built always and shown only when the count is not zero, because
+     * the alternative — adding and removing it as the answer changes — moves the
+     * selection line and the grid below it under the user's thumb.
+     */
+    private TextView buildRotatingLine() {
+        TextView status = text("", 12);
+        status.setTextColor(PhotoTile.ACCENT);
+        status.setTypeface(null, android.graphics.Typeface.BOLD);
+        status.setPadding(0, activity.dp(2), 0, activity.dp(4));
+        // A route to the screen that owns it, so the count is a way in rather
+        // than a fact with nowhere to go.
+        status.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPlaylists();
+            }
+        });
+        return status;
+    }
+
+    /**
+     * Re-read the running count and show or hide the header line.
+     *
+     * <p>Read through {@link PlaylistStatus#rotatingCount}, the one resolution
+     * every playlist surface uses, so the gallery cannot claim a rotation the
+     * Playlists screen does not show. A no-op while the grid is down: there is
+     * nothing to refresh, and the next build computes the line from scratch.
+     *
+     * <p>Called on window focus because the Playlists screen is a dialog in its
+     * own window — dismissing it returns focus here, and no other callback
+     * covers that moment without rebuilding the grid.
+     */
+    private void refreshRotatingLine() {
+        if (rotatingLine == null) return;
+        Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
+        Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
+        long now = System.currentTimeMillis();
+        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
+        if (!status.isRotating()) {
+            rotatingLine.setVisibility(View.GONE);
+            return;
+        }
+        if (status.position > 0) {
+            // The armed playlist owns the photo on screen: the count answers
+            // "is anything rotating" and the position is not needed here.
+            int rotating = PlaylistStatus.rotatingCount(lists);
+            rotatingLine.setText(activity.getResources().getQuantityString(
+                    R.plurals.gallery_rotating_playlists, rotating, rotating));
+        } else {
+            // Armed, and the photo on screen is not one of its own. A manual tap
+            // is legal -- the index owns the pointer and a playlist has no cursor
+            // to disagree with it -- but the playlist will take the screen back
+            // at its next trigger. The count alone cannot say that, so the line
+            // names the playlist and when it moves.
+            rotatingLine.setText(activity.getString(R.string.gallery_playlist_armed,
+                    status.playlist.displayName(),
+                    PlaylistScreen.nextChangeLabel(activity, status.playlist, status, now)));
+        }
+        rotatingLine.setVisibility(View.VISIBLE);
     }
 
     /**
@@ -1103,58 +1122,32 @@ final class Gallery {
         if (!firstInRow) cellLp.leftMargin = activity.dp(GRID_GAP_DP);
         cell.setLayoutParams(cellLp);
 
-        FrameLayout picture = new FrameLayout(activity);
-        // A plain rounded fill behind the image; every ring is a foreground on
-        // top of it. See tileRing: a background ring is painted before the
-        // bitmap, and clipToOutline's outline is the ring's outer edge, which is
-        // how the previous version's stroke got covered at the corners.
-        picture.setBackground(tileBackground());
-        picture.setForeground(tileRing(isActive, isPicked));
-        picture.setClipToOutline(true);
+        // The tile is the picture. It owns the rounded fill, the bitmap, the
+        // clip and every ring and pick mark; the grid adds only its own two
+        // controls on top. See PhotoTile for why the marks live there.
+        final PhotoTile tile = new PhotoTile(activity, cellPx, activity.dp(TILE_RADIUS_DP));
+        tile.setActive(isActive);
+        tile.setPicked(isPicked);
         // Square by arithmetic, not by measurement: cellPx is the column's width, so
         // using it as the height is what makes the cell a square. MATCH_PARENT width
         // and the computed height, because the two have to agree and only one of them
         // was computed.
-        picture.setLayoutParams(new LinearLayout.LayoutParams(
+        tile.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, cellPx));
-        ImageView thumb = new ImageView(activity);
-        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        picture.addView(thumb, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        // The wash and the badge are built on every cell and only their
-        // visibility changes. Building them conditionally is what made a pick a
-        // rebuild: the grid could not show a mark it had never created, so the
-        // rebuild threw every cell away and decoded every thumbnail again.
-        //
-        // The wash is the at-a-glance answer to "how many are picked" that does
-        // not need the count line to be read: a checked cell is one the next
-        // paste or playlist will include.
-        View tint = new View(activity);
-        tint.setBackgroundColor(PICK_TINT);
-        tint.setVisibility(isPicked ? View.VISIBLE : View.GONE);
-        picture.addView(tint, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        View chip = depthChip(item);
-        picture.addView(chip, chipParams());
-        picture.addView(menuButton(item), menuParams());
-        View badge = selectedBadge();
-        badge.setVisibility(isPicked ? View.VISIBLE : View.GONE);
-        picture.addView(badge, badgeParams());
-        if (item.isBundled()) {
-            // The one row with no file: its photograph is res/raw, decoded at
-            // this cell's own size through the resource path so the marble
-            // shows its real image rather than a flat fill. The embedded-depth
-            // watcher is deliberately skipped — the demo's map is the separate
-            // res/raw/depth.png, not a chunk in these bytes, and canStandOut
-            // has already made the chip visible for it.
-            Io.decodeResourcePreview(activity, R.raw.image, thumb, cellPx);
-        } else {
-            File f = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
-            if (f != null) watchForEmbeddedDepth(f, item, thumb, chip);
-        }
-        cell.addView(picture);
+        final View chip = depthChip(item);
+        tile.addView(chip, chipParams());
+        tile.addView(menuButton(item), menuParams());
+        // The embedded-depth answer comes out of the same read that decodes the
+        // thumbnail; see PhotoTile.show. The bundled demo's map is the separate
+        // res/raw/depth.png, so canStandOut has already shown the chip for it.
+        final boolean hasFile = item.hasDepth();
+        tile.show(item, new Io.EmbeddedDepthListener() {
+            @Override
+            public void onFound(boolean embedded) {
+                if (embedded && !hasFile) chip.setVisibility(View.VISIBLE);
+            }
+        });
+        cell.addView(tile);
         // No name under the cell. The mockup draws none, and with square cells a
         // caption would be a quarter of the cell's height spent on a label -- the
         // depth chip and the two selection marks already say which photograph
@@ -1183,7 +1176,7 @@ final class Gallery {
                 return true;
             }
         });
-        cellMarks.put(item.id, new PickedCell(item, cell, picture, tint, badge, isActive));
+        cellMarks.put(item.id, new PickedCell(item, cell, tile, isActive));
         cell.setContentDescription(stateDescription(item, isActive, isPicked));
         return cell;
     }
@@ -1226,9 +1219,7 @@ final class Gallery {
     private void drawPicked(String id, boolean on) {
         PickedCell mark = cellMarks.get(id);
         if (mark == null) return;
-        mark.tint.setVisibility(on ? View.VISIBLE : View.GONE);
-        mark.badge.setVisibility(on ? View.VISIBLE : View.GONE);
-        mark.picture.setForeground(tileRing(mark.active, on));
+        mark.tile.setPicked(on);
         mark.cell.setContentDescription(stateDescription(mark.item, mark.active, on));
     }
 
@@ -1247,7 +1238,7 @@ final class Gallery {
             selectionLineView.setText(picking
                     ? activity.getString(R.string.gallery_selection_count, picked.size())
                     : activity.getString(R.string.gallery_selection_hint));
-            selectionLineView.setTextColor(picking ? ACCENT : 0x99FFFFFF);
+            selectionLineView.setTextColor(picking ? PhotoTile.ACCENT : 0x99FFFFFF);
         }
         for (Button b : selectionActions) refreshSelectionAction(b);
     }
@@ -1295,47 +1286,19 @@ final class Gallery {
     }
 
     /**
-     * The row menu's corner.
+     * The row menu's corner and its touch target.
      *
-     * <p>Top-RIGHT, 19dp, as the mockup draws it — it was top-LEFT at 28dp, which is
-     * where the depth chip now sits. Two marks in one corner is one of them invisible,
-     * and "which is it on this row" is a question a gallery must not ask.
+     * <p>Top-RIGHT at 19dp, as the mockup draws the mark — it was top-LEFT at
+     * 28dp, which is where the depth chip now sits. Two marks in one corner is
+     * one of them invisible, and "which is it on this row" is a question a
+     * gallery must not ask. The target is the minimum 48dp; see
+     * {@link #MENU_TARGET_DP} for why the two sizes differ.
      */
     private FrameLayout.LayoutParams menuParams() {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                activity.dp(19), activity.dp(19), Gravity.TOP | Gravity.END);
+                activity.dp(MENU_TARGET_DP), activity.dp(MENU_TARGET_DP),
+                Gravity.TOP | Gravity.END);
         lp.setMargins(0, activity.dp(5), activity.dp(5), 0);
-        return lp;
-    }
-
-    /**
-     * The checkmark badge: picked, at a glance, on top of the wash.
-     *
-     * <p>Bottom-RIGHT because the three other corners already carry a fact: the
-     * depth chip top-left, the row menu top-right, and the photograph itself
-     * everywhere else. A fourth mark in either top corner would be one of the
-     * two invisible, which is the collision the chip and the menu were moved
-     * apart to avoid in the first place.
-     */
-    private View selectedBadge() {
-        TextView badge = text(activity.getString(R.string.gallery_selected_mark), 13);
-        badge.setGravity(Gravity.CENTER);
-        GradientDrawable circle = new GradientDrawable();
-        circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(ACCENT);
-        badge.setBackground(circle);
-        // Near-black on the accent, the same ink the primary buttons use, so the
-        // tick reads on the smallest phone this app runs on.
-        badge.setTextColor(0xFF08110F);
-        return badge;
-    }
-
-    /** Bottom-right, clear of the chip's and the menu's corners. */
-    private FrameLayout.LayoutParams badgeParams() {
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                activity.dp(BADGE_DP), activity.dp(BADGE_DP),
-                Gravity.BOTTOM | Gravity.END);
-        lp.setMargins(0, 0, activity.dp(6), activity.dp(6));
         return lp;
     }
 
@@ -1350,7 +1313,7 @@ final class Gallery {
      */
     private View depthChip(LibraryItem item) {
         View chip = new View(activity);
-        chip.setBackground(plain(0xFF7FD1C1, activity.dp(CHIP_DP)));
+        chip.setBackground(plain(PhotoTile.ACCENT, activity.dp(CHIP_DP)));
         chip.setContentDescription(activity.getString(R.string.gallery_has_depth_map));
         chip.setVisibility(canStandOut(item) ? View.VISIBLE : View.GONE);
         return chip;
@@ -1364,44 +1327,54 @@ final class Gallery {
      * already a control. It is added after the picture, so it is above it in the
      * draw order, and it consumes its own touches — the cell's tap does not also
      * fire underneath it.
+     *
+     * <p><b>Anchored at the finger.</b> {@code OnClick} carries no coordinates,
+     * so the DOWN point is recorded on the way past and the click hands that to
+     * {@link ContextMenu#showAt}. A click that arrives with no touch at all —
+     * TalkBack, a keyboard — falls back to the mark's own centre, so the menu
+     * still opens beside the control rather than at the display's corner.
      */
     private View menuButton(final LibraryItem item) {
-        TextView menu = text(activity.getString(R.string.gallery_more_glyph), 12);
-        menu.setGravity(Gravity.CENTER);
+        final float[] touch = new float[2];
+        final boolean[] touched = new boolean[1];
+        TextView glyph = text(activity.getString(R.string.gallery_more_glyph), 12);
+        glyph.setGravity(Gravity.CENTER);
         // A plate behind the glyph, because a dark mark on a dark photograph is
-        // a control that is present and unreadable. 19dp, so the glyph and its
-        // target are one size rather than two.
-        menu.setBackground(plain(0x99000000, activity.dp(10)));
-        menu.setContentDescription(activity.getString(R.string.gallery_more_glyph));
-        menu.setOnClickListener(new View.OnClickListener() {
+        // a control that is present and unreadable. 19dp, the mockup's mark;
+        // the target around it is menuParams' 48dp.
+        glyph.setBackground(plain(0x99000000, activity.dp(10)));
+
+        FrameLayout target = new FrameLayout(activity);
+        target.addView(glyph, new FrameLayout.LayoutParams(
+                activity.dp(MENU_PLATE_DP), activity.dp(MENU_PLATE_DP),
+                Gravity.TOP | Gravity.END));
+        target.setContentDescription(activity.getString(R.string.gallery_more_glyph));
+        target.setOnTouchListener(new View.OnTouchListener() {
             @Override
-            public void onClick(View v) {
-                showRowMenu(item);
+            public boolean onTouch(View v, MotionEvent e) {
+                if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    touch[0] = e.getRawX();
+                    touch[1] = e.getRawY();
+                    touched[0] = true;
+                }
+                return false;
             }
         });
-        return menu;
-    }
-
-    /**
-     * Reveal the chip for a photograph that carries its depth map inside the PNG.
-     *
-     * <p>{@code hasDepth()} only knows about a separate file, so without this the
-     * chip would be absent for a photograph that is visibly in relief — and an
-     * absent chip is a claim, not a lack of one. Read from the same pass that
-     * decodes the thumbnail, because the answer is inside the same bytes and a
-     * grid that asked separately would read every photograph twice on a list with
-     * no view recycling.
-     */
-    private void watchForEmbeddedDepth(final File file, final LibraryItem item,
-                                       final ImageView thumb, final View chip) {
-        final boolean hasFile = item.hasDepth();
-        Io.decodePreview(activity, file, thumb, cellPx,
-                new Io.EmbeddedDepthListener() {
-                    @Override
-                    public void onFound(boolean embedded) {
-                        if (embedded && !hasFile) chip.setVisibility(View.VISIBLE);
-                    }
-                });
+        target.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                float x = touch[0];
+                float y = touch[1];
+                if (!touched[0]) {
+                    int[] loc = new int[2];
+                    v.getLocationOnScreen(loc);
+                    x = loc[0] + v.getWidth() / 2f;
+                    y = loc[1] + v.getHeight() / 2f;
+                }
+                showRowMenu(item, x, y);
+            }
+        });
+        return target;
     }
 
     /**
@@ -1447,7 +1420,7 @@ final class Gallery {
                 ? activity.getString(R.string.gallery_selection_count, picked.size())
                 : activity.getString(R.string.gallery_selection_hint);
         TextView line = text(s, 12);
-        line.setTextColor(picking ? ACCENT : 0x99FFFFFF);
+        line.setTextColor(picking ? PhotoTile.ACCENT : 0x99FFFFFF);
         // 8 below, not 2: the line sits directly on the grid, and at 2dp the
         // hint's last pixel nearly touched the first row of photographs. 8 is
         // the grid's own gutter, so the one added line uses the grid's scale.
@@ -2014,16 +1987,25 @@ final class Gallery {
      * <p>Whether each item means "this row" or "everything picked" is said in
      * its own label, because the alternative is a menu whose four entries silently
      * change meaning depending on state the user cannot see.
+     *
+     * <p><b>Open at the finger, never a bottom sheet.</b> The command belongs to
+     * the cell the finger is on, so the card opens there; the sheet version put
+     * it at the far end of the screen, over the content it acts on, with the
+     * finger nowhere near the row that was named. {@link ContextMenu} clamps the
+     * card to the visible frame and flips it above the point when there is no
+     * room below, and every action in it dismisses the menu before it runs.
+     *
+     * @param screenX raw screen x of the touch that opened the menu
+     * @param screenY raw screen y of the touch that opened the menu
      */
-    private void showRowMenu(final LibraryItem item) {
+    private void showRowMenu(final LibraryItem item, float screenX, float screenY) {
         final boolean many = !picked.isEmpty();
-        final ModalSheet sheet = new ModalSheet(activity, 0.88f);
-        LinearLayout body = modalBody(item.displayName());
-        // R-G4's four, in the design's order, with Delete last. A destructive
-        // action under three others is harder to hit by accident than one at the
-        // bottom of a list, and "the last thing in the menu" is the only position
-        // every platform's muscle memory agrees on.
-        body.addView(menuOption(sheet,
+        // R-G4's four, in the design's order, with Delete last and in the bad
+        // ink. A destructive action under three others is harder to hit by
+        // accident than one at the bottom of a list, and "the last thing in the
+        // menu" is the only position every platform's muscle memory agrees on.
+        List<ContextMenu.Item> items = new ArrayList<ContextMenu.Item>();
+        items.add(new ContextMenu.Item(
                 activity.getString(R.string.gallery_copy_settings),
                 new Runnable() {
                     @Override
@@ -2031,7 +2013,7 @@ final class Gallery {
                         copyFrom(item);
                     }
                 }));
-        body.addView(menuOption(sheet, many
+        items.add(new ContextMenu.Item(many
                         ? activity.getString(R.string.gallery_paste_onto_selected)
                         : activity.getString(R.string.gallery_paste_onto_this),
                 new Runnable() {
@@ -2040,7 +2022,7 @@ final class Gallery {
                         pasteOnto(targetsFor(item));
                     }
                 }));
-        body.addView(menuOption(sheet,
+        items.add(new ContextMenu.Item(
                 activity.getString(R.string.gallery_add_to_playlist),
                 new Runnable() {
                     @Override
@@ -2048,14 +2030,15 @@ final class Gallery {
                         showPlaylistPicker(item);
                     }
                 }));
-        body.addView(menuOption(sheet, activity.getString(R.string.gallery_rename),
+        items.add(new ContextMenu.Item(
+                activity.getString(R.string.gallery_rename),
                 new Runnable() {
                     @Override
                     public void run() {
                         rename(item);
                     }
                 }));
-        body.addView(menuOption(sheet, many
+        items.add(ContextMenu.Item.destructive(many
                         ? activity.getString(R.string.gallery_delete_selected)
                         : activity.getString(R.string.gallery_delete_one),
                 new Runnable() {
@@ -2064,9 +2047,13 @@ final class Gallery {
                         confirmDelete(targetsFor(item));
                     }
                 }));
-        sheet.body(body);
-        sheet.footerRow(closeButton(activity.getString(R.string.action_cancel), sheet));
-        sheet.show(activity);
+        ContextMenu.Handle open = ContextMenu.showAt(activity, screenX, screenY, items);
+        if (open != null) {
+            // The menu is placed in screen coordinates once; if the grid scrolls
+            // under it, the command stays at the old pixel. Outside touch covers
+            // a finger, but not a programmatic or accessibility scroll.
+            open.dismissOnScroll(gridScroller);
+        }
     }
 
     private void rename(final LibraryItem item) {

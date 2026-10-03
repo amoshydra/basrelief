@@ -79,19 +79,21 @@ final class LibraryStore {
      * fresh install, or the state a reset leaves behind -- and that is the one
      * state that gets the preload.
      *
-     * <p>Every write path goes through here rather than through {@link #load}.
-     * A write that skipped the seed would persist the unseeded index and destroy
-     * the fresh state for every later read, which is the same class of mistake
-     * as re-seeding an emptied gallery: both come from asking what the library
-     * holds instead of asking what has been stored.
+     * <p><b>The demo is seeded here with no filename, and that is repaired.</b>
+     * This class has no {@code Context} and so cannot copy {@code res/raw} into
+     * {@code filesDir}; the read path can, and it does so on the next
+     * {@link AppState#load} in the same process, which every write here is
+     * reached from. A demo row with no filename renders the packaged pair in the
+     * meantime, and the row is never lost — so the repair needs no flag, no
+     * ordering guarantee and no second writer.
      */
     private static Library loadForWrite(SharedPreferences prefs) {
         Library lib = load(prefs);
         String stored = prefs.getString(Library.KEY, null);
-        return stored == null || stored.trim().isEmpty() ? lib.withBundled() : lib;
+        return stored == null || stored.trim().isEmpty() ? lib.withBundled(null, null) : lib;
     }
 
-    /** Select an item, or pass null for the bundled demo. */
+    /** Select an item, or pass null to select nothing. */
     static Library select(SharedPreferences prefs, String id) {
         Library next = loadForWrite(prefs).withSelection(id);
         if (id != null) next = next.markUsed(id, System.currentTimeMillis());
@@ -127,9 +129,9 @@ final class LibraryStore {
      *
      * <p>The index is the only place the selection is recorded, so clearing it is
      * part of removing the row and cannot be forgotten: there is no second copy
-     * to leave behind. A deleted active item lands on the bundled demo rather
-     * than on an arbitrary neighbour, because quietly showing a photo the user
-     * did not pick is worse than showing the one they can recognise as the
+     * to leave behind. A deleted active item lands on the packaged demo pair
+     * rather than on an arbitrary neighbour, because quietly showing a photo the
+     * user did not pick is worse than showing the one they can recognise as the
      * default.
      *
      * <p>Deliberately does not touch the files. The caller removes them only

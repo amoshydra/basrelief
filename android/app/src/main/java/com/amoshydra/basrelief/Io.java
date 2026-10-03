@@ -100,14 +100,16 @@ final class Io {
      * Decode a small preview of a packaged resource into a view, off the UI
      * thread, at the same size and sample scale as the file form above.
      *
-     * <p>The bundled demo is the reason this exists. It is an ordinary gallery
-     * row with no file on disk — that filelessness is exactly what makes it the
-     * bundled row — so the file path cannot serve it and its thumbnail drew a
-     * flat placeholder while every other row showed its photograph. Its bytes
-     * live in {@code res/raw} at import size, so it takes the same two-line
-     * sample calculation: a full-size decode for a 46px tile is tens of
-     * megabytes of heap, and a resource decode is no more free than a file one,
-     * which is why it runs on the same worker thread.
+     * <p>The bundled demo is why this exists. It used to be an ordinary gallery
+     * row with no file on disk — that filelessness is exactly what made it the
+     * bundled row — so the file path could not serve it and its thumbnail drew a
+     * flat placeholder while every other row showed its photograph. The seed now
+     * copies it into {@code filesDir} and the file path serves it like any other
+     * photo, so this has no caller on the normal path; it is kept because decoding
+     * a packaged asset at tile size is a real thing to want and the sampling
+     * calculation below is the half that is easy to get wrong: a full-size decode
+     * for a 46px tile is tens of megabytes of heap, and a resource decode is no
+     * more free than a file one, which is why it runs on the same worker thread.
      *
      * <p>No embedded-depth listener here. The demo's map is a separate
      * {@code res/raw/depth.png} rather than a chunk inside these bytes, so

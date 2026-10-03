@@ -40,9 +40,9 @@ import com.amoshydra.basrelief.core.store.SurfaceResolver;
  * <p>Choosing lock records it as applied <b>optimistically</b>, because the system
  * picker runs after this dialog and the app cannot observe what the user picks there.
  * That is the only claim available, and it is the user's stated intent rather than a
- * measurement — {@code Library.withAppliedTo} documents that distinction and refuses
- * the one case the app cannot honour (the bundled demo, which has no image to render
- * on a second engine).
+ * measurement — {@code Library.withAppliedTo} documents that distinction, and it
+ * refuses nothing: which surfaces are even offered is decided here, from what the
+ * platform can actually render.
  *
  * <p><b>Built on {@link ModalSheet}.</b> This screen used to hand-roll its own scrim
  * and card, which is how it came to have a fourth scrim alpha (0.55 against the
@@ -89,7 +89,8 @@ final class ApplyChooser {
     private void present() {
         java.util.Set<Surface> applied = new java.util.LinkedHashSet<Surface>();
         try {
-            Library lib = AppState.load(Settings.prefs(activity), activity.getFilesDir()).library;
+            Library lib = AppState.load(activity, Settings.prefs(activity),
+                    activity.getFilesDir()).library;
             applied.addAll(lib.appliedSurfaces());
         } catch (Exception e) {
             // Nothing recorded yet, so fall through to the default below.
@@ -229,7 +230,7 @@ final class ApplyChooser {
         if (surfaces == null || surfaces.isEmpty()) return;
         try {
             SharedPreferences prefs = Settings.prefs(activity);
-            Library current = AppState.load(prefs, activity.getFilesDir()).library;
+            Library current = AppState.load(activity, prefs, activity.getFilesDir()).library;
             Library next = current;
             for (Surface surface : surfaces) {
                 next = next.withAppliedTo(surface, true);

@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 314 tests across eighteen classes:
+it**. 335 tests across nineteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -468,6 +468,17 @@ it**. 314 tests across eighteen classes:
   hand-picked selection does not move a playlist's own clock. Note the trap in its
   own making — a "migration is idempotent" test that only re-parses the
   re-serialised blob **skips the migration entirely** and so cannot test it.
+- `PlaylistStatusTest` — what is rotating, on which screens, and when it next
+  changes. The trap is a status that is **written down**: every fact already lives
+  on a playlist or on the index, and `PlaylistTest` enumerates the blob's allowed
+  keys, so a stored copy would break rotation's byte-equality guarantee as well as
+  drift. Its second theme is the **surface as a gate**: a playlist whose stored
+  screens could not be read rotates nowhere, and a status that guessed home would
+  put a running badge on a wallpaper nothing will move. It also pins the
+  guaranteed-immediate step behind the editor's Use action — the scheduled path
+  must decline inside the interval, and `step` must move anyway, byte-identically
+  to a tap's write and stamped with the real now rather than a faked due time that
+  would push the next automatic rotation further out.
 - `LibraryDuplicateImageTest` — which row survives when several share an image
   file, which is the repair for a share path that wrote every import to one fixed
   name. The trap it exists to pin is *which* survivor: the active row is kept even
@@ -483,6 +494,18 @@ it**. 314 tests across eighteen classes:
   deleted files straight back and the delete never sticks. The bundled preload
   is deletable on those same terms, and what stops a reload resurrecting it is
   the empty-only seed, not a refusal to delete.
+  Its third theme is that **the demo is a file-backed row**, so the tests build it
+  from `LibraryItem.imageFileName(BUNDLED_ID)` rather than spelling a name out —
+  the assertion *is* that the seed stores it under the ordinary per-id scheme. The
+  migration that gives an already-installed row those files is pinned there too,
+  and the trap in it is **idempotence held by the row's own contents rather than
+  by a flag**: this runs on the read path, including on the GL thread at wallpaper
+  cold start, so "have we done this yet" has to be answerable by looking at the
+  data. Three further traps: a *failed* copy must store no filename at all, because
+  a name for a file that is not there is what the next cleanup pass drops the row
+  for; the repair must never *add* the row, or a delete stops sticking; and a row
+  seeded by the write path (which has no `Context`, so cannot copy) must converge
+  on the same bytes as one seeded by the read path.
 - `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
   a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
   for. The trap is reading a *position* when the user changed *direction*: the

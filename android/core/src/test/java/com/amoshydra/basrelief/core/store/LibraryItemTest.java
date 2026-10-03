@@ -306,7 +306,8 @@ public class LibraryItemTest {
         assertFalse("hasDepth() must not be true for a photo with no map", item.hasDepth());
 
         // And again, from a blob the buggy build already wrote.
-        Library index = Library.empty().withBundled().withItem(item);
+        Library index = Library.empty()
+                .withBundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH).withItem(item);
         // Precisely the poisoned form. A bare "\"depth\"" would also match the
         // per-surface depth INSIDE surfaces, which is a different field and always
         // present.
@@ -321,12 +322,23 @@ public class LibraryItemTest {
     @Test
     public void aNullImageNameIsAbsentAndNormaliseRejectsTheLiteral() {
         assertNull("normaliseName must reject \"null\"", LibraryItem.normaliseName("null"));
-        // The bundled item is the one entry allowed to have no image at all.
-        LibraryItem bundled = LibraryItem.fromJson(json(
+        // The reserved id is the one entry allowed to come back with no image name,
+        // and only because an install that ran before the demo was file-backed has a
+        // blob that says so. It is repaired by Library.withBundledFiles, not here.
+        LibraryItem stale = LibraryItem.fromJson(json(
                 "{\"id\":\"" + Library.BUNDLED_ID + "\",\"image\":null}"));
-        assertNotNull("the bundled item must survive a null image", bundled);
-        assertNull("and it must have no image NAME", bundled.imageName);
-        assertTrue("and it must still be the bundled item", bundled.isBundled());
+        assertNotNull("the pre-migration demo row must survive a parse", stale);
+        assertNull("and it must have no image NAME", stale.imageName);
+        assertTrue("and it must still be the demo", stale.isBundled());
+
+        // The row as it is stored now: named, like every other item, and a user
+        // item with no image is still junk either way.
+        LibraryItem named = LibraryItem.fromJson(json(
+                "{\"id\":\"" + Library.BUNDLED_ID + "\",\"image\":\""
+                        + LibraryTest.DEMO_IMAGE + "\"}"));
+        assertNotNull(named);
+        assertEquals(LibraryTest.DEMO_IMAGE, named.imageName);
+        assertNull(LibraryItem.fromJson(json("{\"id\":\"nope\",\"image\":null}")));
     }
 
     /** A label is optional too, and "null" is not one. */

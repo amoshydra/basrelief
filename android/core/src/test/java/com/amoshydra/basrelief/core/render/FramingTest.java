@@ -26,10 +26,13 @@ import org.junit.Test;
  * <p>The themes are the ones this class exists to hold:
  *
  * <ol>
- *   <li><b>The bundled demo renders at the defaults, whatever the index says.</b>
- *       It is not editable, so a stored value for it is a value the renderer will
- *       never use, and a slider showing it is a control lying to the user.
- *   <li><b>A null item is the bundled demo</b>, because that is what "nothing is
+ *   <li><b>A stored value for the demo is used, not discarded.</b> It once was
+ *       discarded, so a slider could display a number the renderer never drew
+ *       with — and the first fix disabled the controls rather than fixing the
+ *       bug, which hid the symptom and left the class still unable to honour a
+ *       stored value. The demo is an ordinary row with a file behind it now, so
+ *       there is nothing left for this class to treat differently.
+ *   <li><b>A null item is the demo</b>, because that is what "nothing is
  *       selected" means and it is the state a delete of the active item lands in.
  *   <li><b>Motion is read from the photo, not from the caller.</b> It used to be
  *       a parameter, from a global. Now that it is per-photo, a caller cannot hand
@@ -56,6 +59,19 @@ public class FramingTest {
 
     private static Framing home(LibraryItem item) {
         return Framing.of(item, Surface.HOME);
+    }
+
+    /**
+     * The demo, carrying the files the seed copied out of {@code res/raw}.
+     *
+     * <p>Framing never asked what those files were — it takes an item and reads
+     * its settings — so this is here only so the tests below are about the item's
+     * values rather than about the fact that the demo once had none.
+     */
+    private static LibraryItem demo() {
+        return LibraryItem.bundled(
+                com.amoshydra.basrelief.core.store.LibraryTest.DEMO_IMAGE,
+                com.amoshydra.basrelief.core.store.LibraryTest.DEMO_DEPTH);
     }
 
     // -------------------------------------------------------------- the bug
@@ -120,17 +136,17 @@ public class FramingTest {
      */
     @Test
     public void aStoredMotionForTheBundledDemoIsUsed() {
-        LibraryItem tampered = LibraryItem.bundled().withMotion(Surface.HOME, 100);
+        LibraryItem tampered = demo().withMotion(Surface.HOME, 100);
         assertTrue(home(tampered).bundled);
         assertEquals(3f, home(tampered).motion, 1e-6f);
-        assertEquals(0f, home(LibraryItem.bundled().withMotion(Surface.HOME, 0)).motion, 1e-6f);
+        assertEquals(0f, home(demo().withMotion(Surface.HOME, 0)).motion, 1e-6f);
     }
 
     /** A demo with no stored Motion still gets the default, not a null deref. */
     @Test
     public void theBundledDemoWithoutAStoredMotionGetsTheDefault() {
         assertEquals(SurfaceSettings.DEFAULT_MOTION / 100f * 3f,
-                home(LibraryItem.bundled()).motion, 1e-6f);
+                home(demo()).motion, 1e-6f);
         assertEquals("and the same for no item at all",
                 SurfaceSettings.DEFAULT_MOTION / 100f * 3f,
                 Framing.of(null, Surface.HOME).motion, 1e-6f);
@@ -157,7 +173,7 @@ public class FramingTest {
     /** Picture follows the same rule as everything else: stored means used. */
     @Test
     public void aStoredPictureForTheBundledDemoIsUsed() {
-        LibraryItem stored = LibraryItem.bundled().withAdjust(Surface.HOME, 100, -100);
+        LibraryItem stored = demo().withAdjust(Surface.HOME, 100, -100);
         Framing f = home(stored);
         assertTrue(f.bundled);
         assertEquals("one stop up", 2f, f.brightnessGain, 1e-6f);
@@ -167,7 +183,7 @@ public class FramingTest {
     /** And an untouched demo is unadjusted, so 0 stays the identity. */
     @Test
     public void anUntouchedBundledDemoIsUnadjusted() {
-        Framing f = home(LibraryItem.bundled());
+        Framing f = home(demo());
         assertEquals(1f, f.brightnessGain, 0f);
         assertEquals(0f, f.shadowLift, 0f);
     }
@@ -322,7 +338,7 @@ public class FramingTest {
     @Test
     public void theBundledItemResolvesIdenticallyToNoItem() {
         Framing viaNull = Framing.of(null, Surface.HOME);
-        Framing viaItem = home(LibraryItem.bundled());
+        Framing viaItem = home(demo());
         assertEquals(viaNull.bundled, viaItem.bundled);
         assertEquals(viaNull.depth, viaItem.depth, 0f);
         assertEquals(viaNull.zoom, viaItem.zoom, 0f);
@@ -345,9 +361,9 @@ public class FramingTest {
      *
      * <p>The bug was fixed in the wrong place. The controls were switched off for
      * the demo, which hides the symptom and leaves this class still unable to
-     * honour a stored value. Only the demo's <i>image</i> comes from res/raw;
-     * Depth, Zoom, Motion, Origin, Pan and the adjustments are ordinary render
-     * values the reserved item holds perfectly well.
+     * honour a stored value. Its image is a file in {@code filesDir} like every
+     * other photo's, and Depth, Zoom, Motion, Origin, Pan and the adjustments are
+     * ordinary render values the reserved item holds perfectly well.
      *
      * <p>So the demo is editable and the value is read. The rule that actually
      * matters is unchanged and is the first assertion below: a control must never
@@ -355,7 +371,7 @@ public class FramingTest {
      */
     @Test
     public void aStoredValueForTheBundledDemoIsUsedRatherThanIgnored() {
-        LibraryItem stored = LibraryItem.bundled()
+        LibraryItem stored = demo()
                 .withZoom(Surface.HOME, 42)
                 .withIntensity(Surface.HOME, 13);
         Framing f = home(stored);
@@ -367,7 +383,7 @@ public class FramingTest {
     /** The same on the lock screen: the demo is not special on either surface. */
     @Test
     public void aStoredValueForTheBundledDemoIsUsedOnTheLockScreenToo() {
-        LibraryItem stored = LibraryItem.bundled().withZoom(Surface.LOCK, 42);
+        LibraryItem stored = demo().withZoom(Surface.LOCK, 42);
         assertTrue(Framing.of(stored, Surface.LOCK).bundled);
         assertEquals(0.42f, Framing.of(stored, Surface.LOCK).zoom, 1e-6f);
     }
@@ -381,7 +397,7 @@ public class FramingTest {
      */
     @Test
     public void anUntouchedBundledDemoRendersAtTheDefaults() {
-        Framing f = home(LibraryItem.bundled());
+        Framing f = home(demo());
         assertTrue(f.bundled);
         assertEquals(SurfaceSettings.DEFAULT_ZOOM / 100f, f.zoom, 0f);
         assertEquals(SurfaceSettings.DEFAULT_DEPTH / 100f, f.depth, 1e-6f);
@@ -402,7 +418,7 @@ public class FramingTest {
      */
     @Test
     public void deletingTheActiveItemLandsOnTheBundledDemo() {
-        Library lib = Library.empty().withItem(LibraryItem.bundled())
+        Library lib = Library.empty().withItem(demo())
                 .withItem(photo("a", 90, 100, 0f, 0f, 0f, 0f))
                 .withSelection("a");
         assertFalse(home(lib.activeItem()).bundled);
@@ -454,9 +470,9 @@ public class FramingTest {
     @Test
     public void theDefaultLightResolvesThroughEveryPath() {
         assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG,
-                home(LibraryItem.bundled()).lightAzimuth, 1e-6f);
+                home(demo()).lightAzimuth, 1e-6f);
         assertEquals(LightDirection.DEFAULT_ELEVATION_DEG,
-                home(LibraryItem.bundled()).lightElevation, 1e-6f);
+                home(demo()).lightElevation, 1e-6f);
         assertEquals(LightDirection.DEFAULT_ELEVATION_DEG,
                 Framing.of(null, Surface.HOME).lightElevation, 1e-6f);
         assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG,

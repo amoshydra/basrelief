@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 
 import java.io.File;
@@ -46,12 +47,12 @@ final class AppState {
     }
 
     /**
-     * What the renderer should draw, or null for the bundled marble bust.
+     * What the renderer should draw, or null when nothing is selected.
      *
-     * <p>Null is a normal, renderable answer and not an error: the bundled item
-     * has no file, so a caller handles it by reading {@code res/raw} rather than
-     * by treating it as a missing photo. It is also where a delete of the active
-     * item lands, and where an install that has never chosen anything starts.
+     * <p>Null is a normal, renderable answer and not an error: the renderer draws
+     * the packaged demo pair for it, and so does a demo row whose files could not
+     * be copied. It is also where a delete of the active item lands, and where an
+     * install that has never chosen anything starts.
      */
     LibraryItem activeItem() {
         return library.activeItem();
@@ -61,21 +62,14 @@ final class AppState {
      * The selected item's id, or null when nothing is selected.
      *
      * <p>Exposed because a caller about to <i>write</i> a per-item setting has to
-     * know whether there is an item to write it to. The bundled demo has an id
-     * and settings like any other row -- its only reserved property is that its
-     * image comes from res/raw -- so null here means exactly what it says: no
-     * selection, which is the state an emptied gallery leaves behind.
+     * know whether there is an item to write it to. The demo is an ordinary row and
+     * has settings like any other -- its image is a file in filesDir, like every
+     * other photo's -- so null here means exactly what it says: no selection,
+     * which is the state an emptied gallery leaves behind.
      */
     String activeId() {
         LibraryItem active = activeItem();
         return active == null ? null : active.id;
-    }
-
-
-    /** True when the wallpaper is the bundled demo. */
-    boolean isBundled() {
-        LibraryItem active = activeItem();
-        return active == null || active.isBundled();
     }
 
     /**
@@ -96,14 +90,36 @@ final class AppState {
     // ------------------------------------------------------------------ load
 
     /**
+     * Read both blobs, migrating and self-healing as needed, with no {@link Context}.
+     *
+     * <p>The read-only form. It cannot materialise the demo's files — copying out of
+     * the APK needs a {@code Context} — so a caller that has one should use
+     * {@link #load(Context, SharedPreferences, File)}; this one exists for the paths
+     * that have none, and every such path runs inside a surface that has already
+     * been through the other form, which is why leaving them on it is safe rather
+     * than merely convenient.
+     */
+    static AppState load(SharedPreferences prefs, File filesDir) {
+        return load(null, prefs, filesDir);
+    }
+
+    /**
      * Read both blobs, migrating and self-healing as needed.
      *
      * <p>Safe to call on every surface creation and on every pref change: it
      * writes only when it has something to change, and every step is idempotent.
      * That matters more than it looks, because the wallpaper calls this from the
-     * GL thread at cold start, where a throw means no wallpaper at all.
+     * GL thread at cold start, where a throw means no wallpaper at all — which is
+     * why the demo's copy is allowed to fail and returns null rather than
+     * propagating.
+     *
+     * @param context used once, to copy the demo's pair out of {@code res/raw} the
+     *                first time an install needs it. May be null, and then the demo
+     *                keeps whatever filenames its index already carries: no copy, no
+     *                repair, and a first-run gallery that is seeded without a
+     *                filename the very next load repairs. Never a crash.
      */
-    static AppState load(SharedPreferences prefs, File filesDir) {
+    static AppState load(Context context, SharedPreferences prefs, File filesDir) {
         // Read the raw config BEFORE anything can rewrite it. This is the only
         // point at which the v1 pair can still be seen.
         String configBlob = prefs.getString(Config.KEY, null);
@@ -146,19 +162,54 @@ final class AppState {
             }
         }
 
-        // 2. Drop rows whose photo is not on this device. Self-heals, so a
+        // 2. The demo's files, and the row that names them. One derivation over the
+        //    stored index, on the read path, so both surfaces reach the same answer
+        //    without either of them having a branch for the demo.
+        //
+        //    The copy is asked for only when a demo row exists or is about to be
+        //    seeded. That condition is not cosmetic: a copy that ran unconditionally
+        //    would put two files back after the user deleted the row, and nothing
+        //    would ever remove them again.
+        boolean absent = libraryBlob == null || libraryBlob.trim().isEmpty();
+        // Exactly when withBundled below would add something: absent AND empty.
+        boolean seeding = absent && library.isEmpty();
+        String[] demo = library.find(Library.BUNDLED_ID) != null || seeding
+                ? BundledFiles.ensure(context, filesDir)
+                : null;
+        // Null when the copy did not happen, and null on purpose: a filename for a
+        // file that is not there would let the next cleanup pass drop the demo row,
+        // so "could not copy" has to mean "store no name and render the packaged
+        // pair" rather than "store a name and hope".
+        String demoImage = demo == null ? null : demo[0];
+        String demoDepth = demo == null ? null : demo[1];
+        // Repairing a row that was stored with no filename.
+        //
+        // Dirty is set HERE rather than left to the cleaned-vs-library comparison
+        // below, because that comparison cannot see it: `library` is what the
+        // repair rewrote, so `cleaned` is derived from an already-named row and the
+        // two come back identical. A repair that is never written is a repair that
+        // re-copies 2.5 MB on every launch and never converges -- measured on a
+        // device, where the files appeared and the index kept saying the demo had
+        // none.
+        if (demoImage != null) {
+            Library named = library.withBundledFiles(demoImage, demoDepth);
+            if (!named.toJson().equals(library.toJson())) libraryDirty = true;
+            library = named;
+        }
+
+        // 3. Drop rows whose photo is not on this device. Self-heals, so a
         //    restored backup cannot leave a gallery of photos that render as
         //    nothing.
         Library cleaned = library.retainExisting(existsIn(filesDir));
-        // 3. Preload the bundled demo, but only for a genuinely fresh install.
+        // 4. Preload the bundled demo, but only for a genuinely fresh install.
         //    "Fresh" is the ABSENCE of an index, not an empty one. The user may
         //    legitimately empty their gallery, and re-seeding a stored-but-empty
         //    index would resurrect the row they deleted on the very next load,
         //    however many other photos they deleted first. A reset clears the
         //    key, so the load after it sees null here and the demo comes back.
         //    See Library.withBundled for why the caller owns this question.
-        if (libraryBlob == null || libraryBlob.trim().isEmpty()) {
-            cleaned = cleaned.withBundled();
+        if (absent) {
+            cleaned = cleaned.withBundled(demoImage, demoDepth);
         }
         if (!cleaned.toJson().equals(library.toJson())) {
             library = cleaned;
@@ -257,7 +308,7 @@ final class AppState {
      * released.
      */
     static AppState update(SharedPreferences prefs, File filesDir, Editor editor) {
-        AppState next = editor.edit(load(prefs, filesDir));
+        AppState next = editor.edit(load(null, prefs, filesDir));
         LibraryStore.save(prefs, next.library);
         ConfigStore.save(prefs, next.config);
         return next;

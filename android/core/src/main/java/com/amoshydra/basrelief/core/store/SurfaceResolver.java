@@ -113,9 +113,9 @@ public final class SurfaceResolver {
      * "The flags were never read." The state of every engine below
      * {@link #API_SURFACE_SIGNAL}, and of any caller that does not pass them.
      *
-     * <p>A sentinel rather than a nullable, for the reason this project uses a
-     * null image name to mean "the bundled demo": one way to say it, checked in
-     * one place. It cannot collide — the platform returns a bitmask of the two
+     * <p>A sentinel rather than a nullable, for the reason this project keeps one
+     * checked constant for every closed set: one way to say it, checked in one
+     * place. It cannot collide — the platform returns a bitmask of the two
      * constants above and never a negative value.
      */
     public static final int FLAGS_UNREAD = -1;

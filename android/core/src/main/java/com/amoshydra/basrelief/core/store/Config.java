@@ -19,7 +19,7 @@ import org.json.JSONObject;
  * owners of one value, and the two can disagree: {@link Library#of()} already
  * guarantees its selection names a real item, so a second copy in the config can
  * only ever be a copy that dangles. The index owns the selection, and
- * {@code activeItem()} returns null for "the bundled demo" -- a state that
+ * {@code activeItem()} returns null for "nothing is selected" -- a state that
  * renders, so it needs no representation of its own.
  *
  * <p><b>Never throws.</b> {@link #parse} returns defaults for anything it cannot

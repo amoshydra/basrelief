@@ -646,18 +646,26 @@ public class PerItemSettingsTest {
     }
 
     /**
-     * The bundled demo cannot be applied to the lock screen.
+     * The demo records on the lock screen like any other photo.
      *
-     * <p>It has no image of its own there and the platform's lock frame is captured
-     * from whatever is live, so recording it would claim a second live engine this
-     * app cannot produce. Saying no beats storing a promise.
+     * <p>It used to be refused, on the grounds that it had no image of its own to
+     * render there. It has a file now — the seed copies its pair into filesDir
+     * under the names its id derives — and the rest of that reasoning (the
+     * platform's lock frame is captured from whatever is live) is true of every
+     * photograph equally, so it belongs where it already is: the chooser asks
+     * {@code SurfaceResolver.supportsPerSurfaceLock} before offering the choice at
+     * all. A rule that named one row and not the rest is the special-casing this
+     * index no longer has.
      */
     @Test
-    public void theBundledDemoIsNotRecordedOnTheLockScreen() {
-        Library lib = Library.empty().withItem(LibraryItem.bundled())
+    public void theBundledDemoIsRecordedOnTheLockScreenLikeAnyOtherPhoto() {
+        Library lib = Library.empty().withItem(demo())
                 .withSelection(Library.BUNDLED_ID)
                 .withAppliedTo(Surface.LOCK, true);
-        assertFalse(lib.isOnBothSurfaces());
+        assertTrue(lib.isOnBothSurfaces());
+        assertEquals("which is exactly what an ordinary photo gets", lib.toJson(),
+                Library.empty().withItem(demo()).withSelection(Library.BUNDLED_ID)
+                        .withAppliedTo(Surface.LOCK, true).toJson());
     }
 
     /** A key from a newer build is skipped, not fatal. */
@@ -673,18 +681,43 @@ public class PerItemSettingsTest {
 
     // ------------------------------------------------------- the bundled item
 
+    /** The demo, carrying the files the seed copies out of {@code res/raw}. */
+    private static LibraryItem demo() {
+        return LibraryItem.bundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH);
+    }
+
+    /**
+     * The demo is recognised by its reserved id and has an image like everything
+     * else in the gallery.
+     *
+     * <p>It had no image name at all until the seed began copying {@code res/raw}
+     * into {@code filesDir}, and that missing file was the whole of its
+     * special-casing: a depth panel that refused to generate for it, a map section
+     * that could not offer to regenerate, a picked map with nowhere to go.
+     */
     @Test
-    public void theBundledItemHasNoFilesAndIsRecognised() {
-        LibraryItem b = LibraryItem.bundled();
+    public void theBundledItemHasTheOrdinaryFilesAndIsRecognised() {
+        LibraryItem b = demo();
         assertTrue(b.isBundled());
         assertEquals(Library.BUNDLED_ID, b.id);
-        assertNull("bundled reads from res/raw, so it has no file", b.imageName);
-        assertNull(b.depthName);
+        assertEquals(LibraryTest.DEMO_IMAGE, b.imageName);
+        assertEquals(LibraryTest.DEMO_DEPTH, b.depthName);
+        assertTrue("and so it can stand out of its plane like any other row", b.hasDepth());
+    }
+
+    /** The demo's settings are ordinary settings, and this class writes them. */
+    @Test
+    public void theBundledItemTakesAnEditLikeAnyOtherRow() {
+        LibraryItem b = demo().withIntensity(Surface.HOME, 55).withZoom(Surface.LOCK, 130);
+        assertEquals(55, b.settings(Surface.HOME).depth);
+        assertEquals(130, b.settings(Surface.LOCK).zoom);
+        assertEquals("the depth went to the surface it named, not both",
+                LibraryTest.DEMO_DEPTH, b.depthName);
     }
 
     @Test
     public void theBundledItemIsRemovedLikeAnyOtherRow() {
-        Library lib = Library.empty().withItem(item("a")).withItem(LibraryItem.bundled());
+        Library lib = Library.empty().withItem(item("a")).withItem(demo());
         assertEquals(2, lib.items().size());
         Library after = lib.remove(Library.BUNDLED_ID);
         assertEquals("the bundled item must go when it is asked to", 1, after.items().size());
@@ -695,10 +728,11 @@ public class PerItemSettingsTest {
     @Test
     public void theBundledItemSurvivesAFileCleanupPass() {
         // A predicate that reports nothing exists -- the worst case, e.g. right
-        // after a restore onto a device where filesDir came back empty. The
-        // bundled row has no file to look for and is listed, so a cleanup keeps
-        // it: the index is the authority over a row with no file.
-        Library lib = Library.empty().withItem(item("a")).withItem(LibraryItem.bundled());
+        // after a restore onto a device where filesDir came back empty. The demo
+        // row is listed, so a cleanup keeps it and the next load puts its files
+        // back: this is retention, not resurrection, and nothing in the cleanup
+        // adds a row.
+        Library lib = Library.empty().withItem(item("a")).withItem(demo());
         Library kept = lib.retainExisting(new java.util.function.Predicate<String>() {
             @Override
             public boolean test(String name) {
@@ -706,20 +740,22 @@ public class PerItemSettingsTest {
             }
         });
         assertEquals("only the bundled item may remain", 1, kept.items().size());
-        assertNotNull("a listed row with no file must not be dropped",
+        assertNotNull("a listed row must not be dropped by a file check",
                 kept.find(Library.BUNDLED_ID));
     }
 
     @Test
     public void theBundledItemSurvivesAJsonRoundTrip() {
-        // fromJson drops any item with no image name, because for a user item
-        // that means nothing to render. The bundled item has none by design, so
-        // without an exemption it was silently dropped on every parse -- and a
-        // rename or an edit would not survive the next load. The exemption is
+        // A row stored before the demo got a file has no image name, and
+        // fromJson drops any item without one — because for a user item that means
+        // nothing to render. Without an exemption the pre-migration row was
+        // silently dropped on every parse, so the one row the migration exists to
+        // repair was the row the repair could never reach. The exemption is
         // parsing, not resurrection: it keeps what the blob carries and adds
-        // nothing. What seeds the row is withBundled, and only into an empty
-        // library.
-        Library lib = Library.empty().withItem(LibraryItem.bundled())
+        // nothing. What names the files is Library.withBundledFiles, and what seeds
+        // the row is withBundled, and only into an empty library.
+        Library lib = Library.empty()
+                .withItem(LibraryItem.bundled(null, null))
                 .withSelection(Library.BUNDLED_ID);
         Library back = Library.parse(lib.toJson());
         assertEquals("the bundled item must survive persistence", 1, back.items().size());
