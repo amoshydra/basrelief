@@ -327,3 +327,39 @@ say plainly when the playlist takes the screen back.
   and a window cannot be blurred from inside itself without a screenshot — which `AGENTS.md`
   already forbids for appearance. Darker scrim only there, and say so rather than shipping a
   promise the platform cannot keep on `minSdk 26`.
+
+## Backdrop: darker still below API 31, and every modal scrim-tappable (2026-10-03)
+
+### Sub-API-31 needs a much darker scrim, not the same one
+A blur removes competing detail *and* lowers apparent brightness. Without it the same scrim
+alpha reads as a lighter, flatter wash, so **the fallback must be darker, not equal** — the
+user asked for "much darker" specifically for below 31. Two constants, one derivation: keep
+`SCRIM` as the blurred (API 31+) value and add a second, darker value used when
+`isCrossWindowBlurSupported()` is false or `Build.VERSION.SDK_INT < 31`. **Both existing
+scrim variants** (the default and the custom-scrim constructor, `ModalSheet.java:207`) must
+darken on the fallback path, and the relationship between them must be preserved rather than
+re-picked — e.g. darken each by the same measured step, or derive both from one pair of
+tokens. Report the before/after hex for each on both paths.
+
+### Every modal already IS a bottom sheet — the missing route is the scrim
+`new Dialog(` exists **exactly once**, in `ModalSheet.java:318`, and `check-parity.mjs`
+(invariant 1) fails the build on a second one. So the "replace all modals with dismissible
+bottom sheets" request is **already satisfied by construction**; `PlaylistScreen` and
+`SettingsSheet` say in their own javadoc they were migrated off `AlertDialog` for this reason.
+
+**What is missing is scrim-tap dismissal.** `ModalSheet` is `setCancelable(true)` (`:697`)
+and dismisses on BACK (`dismissOnBack`, `:361`), the grip (`:455`) and its own drag — but the
+scrim is a plain `ColorDrawable` on the root (`:211-212`), so **tapping outside the card
+does nothing**. That is the one dismissal gesture users reach for first.
+
+Requirements:
+- **A tap on the scrim dismisses; a tap on the card does not.** The card consumes its own
+  taps, so the scrim listener must be on the root and must not fire for events the card
+  consumed — check that a scroll, a slider drag and a field tap never leak to it.
+- **The scrim tap must go through `dismiss()`, not `dialog.cancel()`**, so it animates like
+  the grip and runs `dismissAction` (`:662`) — a caller with work to finish, e.g. the
+  playlists editor, would otherwise be skipped. Same path, one dismissal.
+- **A destructive confirm is a different thing.** A dialog asking "delete this?" must NOT
+  dismiss on a stray scrim tap — that is the tap that should do least. Read each caller and
+  decide deliberately; the safe default is that a confirm ignores scrim taps, and that
+  decision must be visible in the code rather than accidental.
