@@ -804,7 +804,12 @@ public class MainActivity extends Activity {
 
             @Override
             public void applyFade(float progress) {
-                applySheetFade(progress);
+                // The studio sheet NEVER fades. Its contents stay fully legible
+                // until they have been physically dragged off the bottom edge;
+                // an extreme drag is not a reason to make the panel look
+                // disabled. A dialog still dissolves its content and scrim
+                // (ModalSheet), because a modal that is leaving is gone, not
+                // parked.
             }
 
             @Override
@@ -2084,27 +2089,6 @@ public class MainActivity extends Activity {
         panelLp.bottomMargin = margin;
         // setLayoutParams requests a layout, which is the repaint this needs.
         panel.setLayoutParams(panelLp);
-    }
-
-    /**
-     * Fade the sheet's contents by one progress value; the sheet itself stays.
-     *
-     * <p>The user's correction was fade the content rather than the sheet: the panel's glass keeps its constant alpha, and only the
-     * scroll's contents, the fix line and the strip dissolve as the drag goes
-     * down. One progress value drives the content curve, and a dialog's host
-     * applies the same number to its scrim; nothing here scales the surface.
-     *
-     * <p>Alpha is a paint property, so unlike a translation of the same sibling it
-     * cannot desync from the SurfaceView's transparent region. The grip is
-     * deliberately not in the content set — it is the handle, and it has to stay
-     * legible while there is still a sheet to grab.
-     */
-    private void applySheetFade(float progress) {
-        float content = BottomSheet.contentAlpha(progress);
-        sheetContent.setAlpha(content);
-        if (fixLine != null) fixLine.setAlpha(content);
-        View strip = gallery == null ? null : gallery.stripView();
-        if (strip != null) strip.setAlpha(content);
     }
 
     /**

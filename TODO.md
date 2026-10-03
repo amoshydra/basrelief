@@ -94,7 +94,10 @@ need storing separately.
   The user chose scrolling.
 - The gallery draws `Tap a photo to use it · hold to pick several`, which no mockup state
   draws. The user chose to keep it and make selection obvious instead.
-- The sheet fade is **content-only** (the glass stays opaque) by the user's instruction; a
-  dialog's scrim still reveals as the card comes down.
+- **The studio sheet never fades at all** — its contents stay fully legible until they have
+  been dragged off the bottom edge; the earlier content-only fade was still a fade, and an
+  extreme drag is not a reason for the panel to look disabled. A **dialog's content** still
+  dissolves (per-child alpha) and its scrim reveals as the card descends, because a modal
+  that is leaving is gone, not parked.
 - `check-parity` enforces two architectural invariants: **no `new Dialog(` outside
   `ModalSheet`**, and **no `plainRow`** (rows come from the three role factories).
