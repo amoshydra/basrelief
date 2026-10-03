@@ -483,3 +483,36 @@ below the strip must be *removed* by geometry, and there are two honest ways:
   clipped by the panel's own bounds. Smooths better; still layout + a child transform, never a
   transform of the panel itself, so it does not touch the `b/7179570` hazard — **but that is
   exactly the kind of claim this project verifies on a device rather than reasons about.**
+
+## The morph's fade: content-only, and ONLY in the edge band (2026-10-04)
+
+**The user:** *fade out, but only at the edge*
+
+**Which corrects an invention of mine.** I had built the plan under an absolute "nothing may
+fade", derived from the user's real instruction (the content must not fade even at the extreme bottom, `90c5553`). That instruction was about the **drag fade**: the sheet was fully
+present and usable while its contents sat at 15% alpha, so a live panel looked switched off.
+**A morph is the opposite case — the content is leaving.** So the rule is not "never fade", it
+is "never fade a sheet that is still there", and a fade confined to the edge satisfies it.
+
+**The rule to implement:**
+- **Below the edge band: alpha is exactly 1.0 at every position, and the fade is a function of
+  `f` alone — never of scrolling.** So scrolling content inside the sheet cannot fade anything,
+  which is the case the user objected to.
+- **Inside the last stretch of travel, content fades 1.0 → 0.0** as the sheet becomes the pill,
+  and fades back in over the same band when dragged up. Same function both ways, so it is
+  seamless and reversible.
+- **The strip never fades.** The grip row, the pill's label, the dot and the progress ring are
+  the pill; they are the only thing that survives, so their alpha stays 1 throughout. Anything
+  that fades is content that is *leaving*.
+
+**The parked case is the trap, and it is why the band must be tight.** The studio sheet is
+`FREE` and can rest anywhere below 0.95, so a fade keyed to `f` alone can leave a **parked,
+fully usable sheet sitting at 50% alpha** — which is exactly the "looks disabled" complaint,
+reintroduced through the back door. The band is therefore the last few percent of travel, and
+the band start is a constant in `:core` with a test that pins alpha == 1.0 at both 0.0 and at
+the band start. If the user parks inside the band, the sheet is nearly the pill and a fading
+content is correct; if they can park well inside it, the constant is wrong.
+
+**Alpha is a paint property**, which is why this is safe where a transform would not be: it
+cannot desync the `GLSurfaceView`'s transparent region (`AGENTS.md`), and it needs no relayout
+per frame. The height is still set by `LayoutParams`, never by translating the panel.
