@@ -351,6 +351,31 @@ already cost real time.
   slider and the sensor, because two reads are two chances to disagree — which is
   how a slider ends up showing 0 while the sensor is still told to run.
 
+- **A `Dialog` cannot have a backdrop blur. Stop trying, and stop tuning the fill instead.**
+  Measured on a Pixel 7 Pro with a modal open: `dumpsys SurfaceFlinger` prints **zero**
+  `blurRadius` entries device-wide, while `disableBackgroundBlur=false` and
+  `RenderEngine chosen blur algorithm: KawaseDualFilterV2` are both set. The window asks
+  for a 25dp blur — `blurSupported()` is true and `setBackgroundBlurRadius` is called — and
+  the compositor produces no region for it. AOSP composites that region only for a
+  translucent, **floating** window, and a `Dialog` is `ty=BASE_APPLICATION`; a floating
+  window means `TYPE_APPLICATION_OVERLAY` and therefore `SYSTEM_ALERT_WINDOW`, a permission
+  a wallpaper studio should not hold for a sheet background. **It is not the radius, not the
+  fill, and not the size**, which is what makes this worth writing down: three separate
+  passes lowered the pill's opacity and then made the window 4px smaller (which `setContentView`'s
+  `MATCH_PARENT` params silently undid), each on the theory that the blur was *nearly*
+  working. What a view in one window can have is **painted** glass — transparency, a
+  gradient, a lit rim — and that is a mimic, not the effect: it cannot sample what is
+  behind it.
+- **`setStroke` on a `GradientDrawable` clears the fill.** AOSP writes
+  `setColor(TRANSPARENT)` and installs a new stroke paint, so a stroke change after a fill
+  silently leaves no fill at all — which reads as a *design choice* rather than as a bug,
+  and is why "not translucent" survived three attempts to lower the alpha. Set the colour
+  after the stroke, and let one helper own the pairing.
+- **An invisible view still occupies space.** Fading the studio pill's grip bar to alpha 0
+  left its band at `dp(22)`, so the pill's label was laid out below an empty band and sat
+  32px under the capsule's centre — diagnosed by the user, not by any bounds check, because
+  every bound was individually correct. When hiding part of a stack, change its **height**.
+
 ### Build constraints
 
 - The manifest has **no `package=` attribute** (AGP 8 rejects it). The package

@@ -562,14 +562,6 @@ final class ModalSheet {
     private final FrameLayout root;
 
     /** Present. */
-    private static int screenWidthPx(android.content.Context c) {
-        return c.getResources().getDisplayMetrics().widthPixels;
-    }
-
-    private static int screenHeightPx(android.content.Context c) {
-        return c.getResources().getDisplayMetrics().heightPixels;
-    }
-
     void show(Activity activity) {
         // The root is built once, in the constructor, and kept in a field so the
         // card's children — the title, the rows, the fields a settings screen
@@ -615,21 +607,30 @@ final class ModalSheet {
         // -- the exact symptom the user reported from a Pixel that reports
         // mBlurEnabled=true. A one-pixel inset in both axes is enough to satisfy it
         // without moving the scrim, which is drawn by our own root anyway.
-        // FLOATING IS GEOMETRIC: the window must be smaller than the display for WMS to
-        // composite a background blur. MATCH_PARENT x MATCH_PARENT fills the screen and is
-        // therefore not floating, so setBackgroundBlurRadius below was accepted and never
-        // drawn -- measured on a Pixel that reports mBlurEnabled=true. Two pixels off each
-        // edge is enough to satisfy the test and is invisible: the scrim is our own root
-        // and is inset with it, and the card is bottom-anchored so a 2px shift does not
-        // move it relative to the screen edge in any way a user could see.
+        // The window fills the display, and that is now a MEASURED decision rather than
+        // an oversight. It was briefly made 4px smaller, on the theory that "floating" is
+        // a geometric test (a window smaller than the display); that did nothing, because
+        // setContentView's MATCH_PARENT params override setLayout and the window still
+        // requested 1440x3120. It is removed rather than repaired, because it could not
+        // have worked anyway and would have cost six modals a 4px shift:
+        //
+        //   MEASURED, with a modal open on a Pixel 7 Pro: dumpsys SurfaceFlinger prints
+        //   ZERO blurRadius entries device-wide, while `disableBackgroundBlur=false` and
+        //   `RenderEngine chosen blur algorithm: KawaseDualFilterV2` are both set. The
+        //   window asks for a 25dp blur -- blurSupported() is true and the call is made
+        //   below -- and the compositor declines to produce a region for it.
+        //
+        // AOSP's rule is that the region is composited only for a translucent, FLOATING
+        // window, and a Dialog is ty=BASE_APPLICATION. That is not a radius, a fill or a
+        // size, which is why three earlier passes of lowering the pill's opacity changed
+        // nothing. A backdrop blur on this app's modals would need a
+        // TYPE_APPLICATION_OVERLAY window and therefore SYSTEM_ALERT_WINDOW -- a
+        // permission a wallpaper studio should not hold for a sheet background. The blur
+        // call is kept because it is free and may land on an OEM that composites it; the
+        // design does not depend on it.
         dialog.getWindow().setLayout(
-                screenWidthPx(activity) - 4,
-                screenHeightPx(activity) - 4);
-        // Clamped to the top-left so the 4px comes off the far edges; the card is laid out
-        // against the window's own bottom, which is 4px above the screen's, so the card's
-        // foot sits 4px high. That is the one visible cost and it is why this is 4 and not
-        // forty: a floating window that is obviously inset would show the pill hovering.
-        dialog.getWindow().setGravity(Gravity.TOP | Gravity.START);
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
         dialog.setContentView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // A card dismissed from a half-finished grip drag keeps the translation it
