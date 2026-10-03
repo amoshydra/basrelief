@@ -22,13 +22,24 @@ import android.view.VelocityTracker;
  * tested without a device. This class is the machinery around it: which curve,
  * how long, and how resistance tapers.
  *
- * <p><b>The spring is a damped sine, not a library.</b> The framework has no
- * spring interpolator (its own are all fixed-shape), and a dependency for
- * fifteen lines of maths was not worth the install. The curve is the
- * underdamped step response of a second-order system, normalised to [0, 1], so
- * it overshoots once and settles; the duration is what carries the speed, and it
- * comes from the remaining distance over the release speed. A flick therefore
- * settles fast and a slow drag eases, without a second table of numbers.
+ * <p><b>The spring is a damped second-order response, not a library.</b> The
+ * framework has no spring interpolator (its own are all fixed-shape), and a
+ * dependency for fifteen lines of maths was not worth the install. The curve is
+ * the step response of a second-order system, normalised to [0, 1]; the duration
+ * is what carries the speed, and it comes from the remaining distance over the
+ * release speed. A flick therefore settles fast and a slow drag eases, without a
+ * second table of numbers.
+ *
+ * <p><b>Critically damped, so it settles and never bounces.</b> Both profiles run
+ * at damping 1.0, which makes the step response monotone. An earlier version ran
+ * underdamped and overshot — 10.7%, then 9.5% on the cards, then 0.15% — and the
+ * user rejected that three times, the last as comically springy, like a cartoon. Lowering
+ * damping was the wrong lever: any value below 1 overshoots by construction, so
+ * "very subtle" was being approximated by a smaller bounce rather than by removing
+ * the mechanism. {@link Spring} keeps all three cases and dispatches on the value,
+ * because the critical case has its own closed form
+ * ({@code 1 - e^(-w t)(1 + w t)}) and the underdamped one divides by zero there.
+ * Monotone is a structural property, not a number to be argued down.
  *
  * <p><b>Two profiles, because the two hosts are not the same surface.</b> The
  * dialog cards are small, close to the finger and dismissed in one gesture; the
@@ -52,31 +63,31 @@ final class SpringSettle {
     /**
      * The studio sheet's own motion, tuned to settle rather than bounce.
      *
-     * <p>The user's correction: tone the bounce down and settle quickly." The previous 0.58 damped the sheet's first peak to ~10.7%, which
-     * on a surface this large read as a wobble; 0.90 puts it at ~0.15%, which is
-     * below what an eye can see as an overshoot while still being a spring curve
-     * with velocity in it rather than the platform's fixed ease. A damping of
-     * exactly 1.0 is the other candidate and is deliberately not used: the
-     * normalized curve is what the interpolator computes, and at 1.0 the
-     * underdamped form divides by a zero damped frequency — the maths would need
-     * a second branch for a difference nobody can see.
+     * <p>The user's correction, twice: tone the bounce down and settle quickly, then the bounce was comical, like a cartoon, and was asked to be very subtle
      *
-     * <p>{@code damping} sets the peak alone: the first peak is
-     * {@code e^(-pi*z/sqrt(1-z^2))}, so 0.90 is ~0.15% and 0.60 — the cards — is
-     * ~9.5%. {@code omega} only decides how settled the curve is by t=1; at 12
-     * the residual is ~0.1%, so the animation ends on the value instead of
-     * jumping. A higher damping also decays the envelope faster within the same
-     * time base, so the settle reads sooner, not later; there is no reason to
-     * shorten the range to compensate.
+     * <p><b>This is critically damped, and overshoot is now structurally
+     * impossible rather than merely small.</b> The earlier passes picked damping by
+     * arithmetic — 0.58, then 0.90 — and both were still springs, because a damping
+     * below 1 <i>always</i> overshoots by construction, and 0.90 still leaves a
+     * visible bounce on a surface this large. Arguing that ~0.15% was "below what
+     * an eye can see" was the wrong defence of a number the user had already
+     * rejected twice. {@code damping >= 1} is the branch that cannot bounce: the
+     * step response is monotone, so there is no peak to argue about.
      *
-     * <p>{@code minSettleSpeed} is the floor under the measured release speed so
-     * a dead-still release still moves: 0.9 travels/s, which for this sheet's
-     * roughly 1800px height is about the old 1500px/s the dialog used, but
-     * screen-independent the way every other number here is. 250–500 ms is the
-     * range the sheet has always had; the curve change is what the user felt.
+     * <p>It is still a spring, not the platform's fixed ease, and that distinction
+     * is the whole reason this class exists (see the class javadoc): velocity is
+     * still measured from the gesture and the duration is still distance over
+     * speed, so a flick settles fast and a slow release eases. What is gone is the
+     * oscillation, which was never the part being asked for.
+     *
+     * <p>{@code omega} shapes how settled the curve is by t=1; at 12 the residual
+     * is ~0.1%, so the animation lands on the value rather than stopping short of
+     * it. {@code minSettleSpeed} is the floor under the measured release speed so a
+     * dead-still release still moves: 0.9 travels/s, screen-independent the way
+     * every other number here is.
      */
     static final Profile SHEET = new Profile(
-            /* damping */ 0.90f,
+            /* damping */ 1.0f,
             /* omega */ 12f,
             /* durationFactor */ 1.0f,
             /* minSettleSpeed, travels/s */ 0.9f,
@@ -90,22 +101,20 @@ final class SpringSettle {
      * one-gesture surface — a drag either dismisses it or returns it — and a long
      * tail would leave the user waiting on a window that is already decided.
      *
-     * <p>The correction allowed this profile to follow the sheet or stay, and it
-     * stays at 0.60 damping (~9.5% overshoot) deliberately: the sheet's complaint
-     * was a large persistent surface wobbling as it settled, while a small
-     * transient card returning from a partial drag is where a visible spring
-     * still reads as feedback rather than as imprecision, and its 140 ms floor
-     * keeps the overshoot from lingering. If the user wants one motion language
-     * everywhere, this is the one number to change.
+     * <p><b>Also critically damped.</b> This profile sat at 0.60 — a first peak of
+     * <b>~9.5%</b> — behind a comment arguing that a small transient card is "where
+     * a visible spring still reads as feedback rather than as imprecision". That was
+     * me defending a number the user had twice called a cartoon, and it is the
+     * reason every modal in this app visibly bounced. There is no version of that
+     * argument that survives the user asking twice; the card is a window, not a
+     * toy, and it now settles.
      *
-     * <p>Same curve family, but a 0.9 duration factor, a 140ms floor and a 420ms
-     * ceiling: the constants this app shipped for the modal grip, kept rather
-     * than inflated along with the sheet. {@code minSettleSpeed} 2.0 travels/s is
-     * about 1500px/s on a card of this size — the old pixel floor — expressed the
-     * same screen-independent way as the sheet's.
+     * <p>Same curve family and the same remaining constants — a 0.9 duration factor,
+     * a 140 ms floor, a 420 ms ceiling — so a dismiss still reads as immediate. Only
+     * the damping changed, which is the only thing that decides whether it bounces.
      */
     static final Profile CARD = new Profile(
-            /* damping */ 0.60f,
+            /* damping */ 1.0f,
             /* omega */ 12f,
             /* durationFactor */ 0.9f,
             /* minSettleSpeed, travels/s */ 2.0f,
@@ -136,9 +145,16 @@ final class SpringSettle {
     static final class Profile {
 
         /**
-         * Damping ratio. Below 1 the curve overshoots once — that overshoot is
-         * what reads as a spring; at 1 or above the settling is monotone and reads
-         * as an ease. The first peak's height is {@code e^(-pi*z/sqrt(1-z^2))}.
+         * Damping ratio. <b>At or above 1 the settling is monotone and cannot
+         * overshoot</b>, which is what every profile in this app uses; below 1 the
+         * curve is a spring proper and overshoots once by construction, with a
+         * first peak of {@code e^(-pi*z/sqrt(1-z^2))}.
+         *
+         * <p>Both profiles are critically damped rather than merely low-damped
+         * because the user rejected the bounce three times, and the middle pass
+         * answered a request to remove it by lowering damping to 0.90 and arguing
+         * the remaining 0.15% was invisible. {@link Spring} dispatches on this
+         * value, so asking for zero bounce costs one branch at construction.
          */
         final float damping;
 
@@ -254,27 +270,109 @@ final class SpringSettle {
         }
     }
 
-    /** The damped sine: {@code 1 - e^(-z w t)(cos(wd t) + (z w / wd) sin(wd t))}. */
+    /**
+     * The critically damped step response, which is the default for both hosts.
+     *
+     * <p><b>Two curves, because one formula cannot express both.</b> The
+     * underdamped step response of a second-order system is
+     * {@code 1 - e^(-z w t)(cos(wd t) + (z w / wd) sin(wd t))}, where the damped
+     * frequency is {@code wd = w sqrt(1 - z^2)}. That form was used alone until the
+     * user rejected the bounce three times — the last two passes lowered damping
+     * rather than removing the mechanism, and at damping 1.0 {@code wd} is
+     * {@code sqrt(0)}: the sine term vanishes and {@code z w / wd} is a division by
+     * zero, which is the exact reason a previous attempt stopped at 0.90 and
+     * rationalised the residual overshoot as invisible.
+     *
+     * <p><b>It is not invisible, and the branch is cheap.</b> The critical case has
+     * a closed form of its own — {@code 1 - e^(-w t)(1 + w t)} — that follows from
+     * taking the limit of the same expression, so this is the same system solved at
+     * its critical point rather than a different animation. It is monotone by
+     * construction: the velocity of that curve is {@code w^2 t e^(-w t)}, which is
+     * non-negative for all {@code t >= 0}. <b>That is the property being bought —
+     * overshoot cannot be dialled down further because there is no peak to
+     * measure.</b>
+     *
+     * <p>{@code damping > 1} is overdamped and has the form
+     * {@code 1 - e^(-z w t)(1 + (z w t) / sqrt(z^2 - 1))}; it is kept so a profile
+     * can ask for an even flatter settle, and it is monotone for the same reason.
+     */
     private static final class Spring implements TimeInterpolator {
 
-        private final float damping;
-        private final float omega;
-        private final float damped;
+        /** Critically damped: the underdamped form's limit as {@code wd -> 0}. */
+        private static final class CriticallyDamped implements TimeInterpolator {
+            private final float omega;
+
+            CriticallyDamped(float omega) {
+                this.omega = omega;
+            }
+
+            @Override
+            public float getInterpolation(float t) {
+                if (t <= 0f) return 0f;
+                if (t >= 1f) return 1f;
+                float wt = omega * t;
+                return 1f - (float) Math.exp(-wt) * (1f + wt);
+            }
+        }
+
+        /** Overdamped: two real roots, monotone, slower to land than critical. */
+        private static final class Overdamped implements TimeInterpolator {
+            private final float zomega;
+            private final float root;
+
+            Overdamped(float damping, float omega) {
+                this.zomega = damping * omega;
+                this.root = (float) Math.sqrt(damping * damping - 1f);
+            }
+
+            @Override
+            public float getInterpolation(float t) {
+                if (t <= 0f) return 0f;
+                if (t >= 1f) return 1f;
+                return 1f - (float) (Math.exp(-zomega * t) * (1f + zomega * t / root));
+            }
+        }
+
+        /** Underdamped: the spring proper, which overshoots by construction. */
+        private static final class Underdamped implements TimeInterpolator {
+            private final float damping;
+            private final float omega;
+            private final float damped;
+
+            Underdamped(float damping, float omega) {
+                this.damping = damping;
+                this.omega = omega;
+                this.damped = omega * (float) Math.sqrt(1f - damping * damping);
+            }
+
+            @Override
+            public float getInterpolation(float t) {
+                if (t <= 0f) return 0f;
+                if (t >= 1f) return 1f;
+                float envelope = (float) Math.exp(-damping * omega * t);
+                float phase = (float) Math.cos(damped * t)
+                        + (damping * omega / damped) * (float) Math.sin(damped * t);
+                return 1f - envelope * phase;
+            }
+        }
 
         Spring(float damping, float omega) {
-            this.damping = damping;
-            this.omega = omega;
-            this.damped = omega * (float) Math.sqrt(1f - damping * damping);
+            // Dispatched once, at construction, so a profile never branches per
+            // frame and the interpolation is a plain method call.
+            if (damping >= 1f) {
+                this.interpolator = damping == 1f
+                        ? new CriticallyDamped(omega)
+                        : new Overdamped(damping, omega);
+            } else {
+                this.interpolator = new Underdamped(damping, omega);
+            }
         }
+
+        private final TimeInterpolator interpolator;
 
         @Override
         public float getInterpolation(float t) {
-            if (t <= 0f) return 0f;
-            if (t >= 1f) return 1f;
-            float envelope = (float) Math.exp(-damping * omega * t);
-            float phase = (float) Math.cos(damped * t)
-                    + (damping * omega / damped) * (float) Math.sin(damped * t);
-            return 1f - envelope * phase;
+            return interpolator.getInterpolation(t);
         }
     }
 
