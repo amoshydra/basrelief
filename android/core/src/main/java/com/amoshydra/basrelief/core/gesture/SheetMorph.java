@@ -51,36 +51,6 @@ public final class SheetMorph {
      */
     public static final float EDGE_BAND_START = 0.95f;
 
-    /**
-     * Where the panel's height starts to fall: the same line as the fade.
-     *
-     * <p><b>Hold, then fall — the height is not a lerp across the travel.</b> The
-     * user: <i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse</i> A linear {@code lerp(natural, pill, f)} spends the whole gesture
-     * giving up height, so every centimetre of travel costs the sheet some of the
-     * screen and dragging it down feels like shrinking a card rather than putting
-     * something away. Holding first makes the gesture mean one thing for almost all
-     * of its length — <i>this sheet is moving</i> — and then collapse, once, at the
-     * end.
-     *
-     * <p><b>It is {@link #EDGE_BAND_START}, deliberately, and that is the coherence
-     * rather than a coincidence of numbers.</b> Inside the band the sheet's content is
-     * dissolving and the sheet's own glass is losing its height; outside it the
-     * content is fully present and the sheet is fully tall. Those are the same
-     * moment, and a height that fell through the stretch where the content is still
-     * fully opaque would be saying <i>it is going</i> for most of the travel and
-     * <i>it is gone</i> for the last sliver of it.
-     *
-     * <p><b>The consequence to price before changing it.</b> The studio sheet is
-     * {@code FREE} and can rest anywhere below its collapse threshold, and that
-     * threshold <i>is</i> this line — so the whole of the fall happens inside the
-     * narrow strip of travel where the sheet can come to rest. A sheet parked at
-     * {@code f = 0.96} is already a fifth of the way down. Widening the fall would
-     * make that band parkable at more heights; narrowing it makes the end of the
-     * collapse abrupt. It is a named constant so that trade is one edit, and the
-     * test pins the equality with the fade so the two cannot be moved apart by
-     * accident.
-     */
-    public static final float HEIGHT_BAND_START = EDGE_BAND_START;
 
     private SheetMorph() {
     }
@@ -137,32 +107,47 @@ public final class SheetMorph {
      * @return the height to lay the panel out at, never below {@code pillPx}
      */
     /**
-     * The morph's single progress: <b>0 until {@link #HEIGHT_BAND_START}, then a
-     * straight 0 to 1 across the band.</b>
+     * The morph's single progress: <b>the collapse fraction itself</b>, clamped to
+     * 0..1, and every geometric property of the collapse reads <i>this</i> — the
+     * height, the side margins, the bottom lift, the corner radius and the fill.
      *
-     * <p><b>One gesture, one timeline.</b> Every property of the collapse — the
-     * height, the side margins, the bottom lift, the corner radius and the fill —
-     * reads <i>this</i>, so they move together or not at all. They did not used to:
-     * the height was banded while the shape was a plain lerp across the whole
-     * travel, so at a quarter of the way down the drag the sheet had every pixel of
-     * its height <i>and</i> was already narrower, lifted, rounder and a different
-     * colour. Every measured number was correct and the gesture read as three
-     * things happening at once. The user: <i>the shrink should happen only at the very end of the travel</i> A collapse is one event.
+     * <p><b>One gesture, one timeline.</b> They once did not agree: the height was
+     * banded — held at full until the last 5% of travel — while the shape was a
+     * plain ramp across the whole gesture. Two corrections from the user, in order,
+     * and this function is where they meet:
+     *
+     * <ul>
+     * <li><i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse</i> Read as *hold until the last 5%*, which made the height snap: dragged
+     * through four fifths of the travel with no change at all and then a sudden
+     * collapse. <b>This was a misreading</b>, and the correction came as
+     * <i>the height did not follow the drag and then collapsed all at once; a bottom sheet's height should track the finger</i>
+     * <li><i>the sheet moved as three unrelated timelines.</i> Which was
+     * true — one gesture was running three timelines, and the shape changed while
+     * the height stood still. That half was the real bug and this function is its
+     * fix.
+     * </ul>
+     *
+     * <p>So the height ramps across the <b>whole</b> travel, because that is what
+     * dragging a bottom sheet down <i>is</i>, and every shape property rides the
+     * same ramp so the sheet is always the same shape at the same fraction. The
+     * <b>opacity</b> is deliberately NOT on this ramp: the content's fade stays
+     * edge-only, at {@link #EDGE_BAND_START}, which is a separate instruction about
+     * a different property — you asked for that one twice and it is not the same
+     * claim as the height should not shrink while the content is being read.
      *
      * <p><b>NaN reads as "not collapsed".</b> Everything downstream of this is a
      * layout value or a paint colour, and a NaN reaching either is not a degraded
      * one — a NaN margin is an unusable layout and a NaN alpha is an invisible
-     * strip. Zero is the open shape, which is exactly what the sheet looked like
-     * before the morph existed.
+     * strip. Zero is the open shape, which is what the sheet looked like before the
+     * morph existed.
      *
      * @param fraction the collapse fraction, as {@link #heightFor} takes it
-     * @return 0 while the sheet is still the sheet, 1 once it is the pill
+     * @return 0 while the sheet is open, 1 once it is the pill
      */
     public static float morphProgress(float fraction) {
         if (!(fraction > 0f)) return 0f; // `!(f > 0f)`, not `f <= 0f`: NaN.
         if (fraction >= 1f) return 1f;
-        if (fraction <= HEIGHT_BAND_START) return 0f;
-        return (fraction - HEIGHT_BAND_START) / (1f - HEIGHT_BAND_START);
+        return fraction;
     }
 
     public static float heightFor(float fraction, float naturalPx, float pillPx) {
