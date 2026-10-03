@@ -83,7 +83,9 @@ final class FramingRows {
         activity.framingReadout = new TextView(activity);
         activity.framingReadout.setTextSize(13);
         activity.framingReadout.setTextColor(0x8CFFFFFF);
-        activity.framingReadout.setPadding(activity.dp(4), activity.dp(2), activity.dp(4), activity.dp(6));
+        // No side padding, so the readout shares the column of the captions and
+        // axis rows beneath it instead of sitting 4dp inside it.
+        activity.framingReadout.setPadding(0, activity.dp(2), 0, activity.dp(6));
         box.addView(activity.framingReadout);
         refreshReadout(activity);
 
@@ -152,7 +154,10 @@ final class FramingRows {
         t.setLetterSpacing(0.09f);
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         t.setTextColor(0x57FFFFFF);
-        t.setPadding(activity.dp(4), activity.dp(6), activity.dp(4), activity.dp(4));
+        // No side padding: this caption names the rows under it, and those rows'
+        // labels begin at the sheet's content edge. The 4dp here put "Origin
+        // (fraction)" 4dp right of "Origin X" directly beneath it.
+        t.setPadding(0, activity.dp(6), 0, activity.dp(4));
         return t;
     }
 

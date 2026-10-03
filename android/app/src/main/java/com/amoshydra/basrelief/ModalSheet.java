@@ -3,7 +3,10 @@ package com.amoshydra.basrelief;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.DialogInterface;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -103,16 +106,21 @@ final class ModalSheet {
 
         card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(CARD);
-        bg.setCornerRadii(new float[]{dp(activity, 20), dp(activity, 20), 0, 0,
-                dp(activity, 20), dp(activity, 20), 0, 0});
-        bg.setStroke(dp(activity, 1), LINE);
-        card.setBackground(bg);
-        padLeft = dp(activity, 18);
-        padTop = dp(activity, 16);
-        padRight = dp(activity, 18);
-        padBottom = dp(activity, 16);
+        // The mockup's .modal edge: a top hairline only, over the fill's own top
+        // corners. A GradientDrawable stroke would draw four edges, putting a 1px
+        // bright line down both sides and along the foot of a card that is flush
+        // with the screen's own edges -- the "bleeding" reported on the studio
+        // sheet, and true of every surface built on this card.
+        card.setBackground(new TopEdgeBackground(CARD, LINE, dp(activity, 20),
+                dp(activity, 1)));
+        // .modal{padding:18px 16px 24px}: 18 top, 16 sides, 24 foot. These were
+        // rotated here -- 18 sides, 16 top and foot -- so the same card content
+        // started 2dp further in than the playlists screen's, which reads the
+        // stylesheet directly. One card, one padding, matching the CSS.
+        padLeft = dp(activity, 16);
+        padTop = dp(activity, 18);
+        padRight = dp(activity, 16);
+        padBottom = dp(activity, 24);
         card.setPadding(padLeft, padTop, padRight, padBottom);
 
         scroll = new ScrollView(activity);
@@ -406,8 +414,10 @@ final class ModalSheet {
         t.setAllCaps(true);
         t.setLetterSpacing(0.09f);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        t.setPadding(dp(activity, 2), first ? dp(activity, 4) : dp(activity, 16),
-                dp(activity, 2), dp(activity, 7));
+        // No side padding: the stylesheet's .caption has none, and the 2dp this
+        // used to carry put every caption 2dp right of the rows and fields under
+        // it, which are laid out at the card's own edge.
+        t.setPadding(0, first ? dp(activity, 4) : dp(activity, 16), 0, dp(activity, 7));
         return t;
     }
 
@@ -520,5 +530,73 @@ final class ModalSheet {
 
     static int dp(android.content.Context context, int v) {
         return (int) (v * context.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /**
+     * A bottom-anchored card's background: the fill with rounded top corners,
+     * and a hairline along the <b>top edge only</b>.
+     *
+     * <p><b>Why this is not a GradientDrawable with {@code setStroke}.</b> A
+     * stroke is drawn on all four edges of the shape. On a sheet or modal whose
+     * left, right and bottom edges are the screen's own, that is a 1px bright
+     * line down each side and along the foot — the "bleeding" the user reported
+     * on the studio sheet — and it is also why the rounded top corners read as a
+     * boxed card rather than as a sheet. The design draws one edge:
+     * {@code .sheet / .modal { border-top:1px solid var(--line) }}.
+     *
+     * <p>The line is clipped to the top edge's own pixels, so at the corners it
+     * follows the fill's own rounding the way a CSS {@code border-top} does: the
+     * visible run is the flat top between the two arcs, not a bar laid across a
+     * transparent notch.
+     *
+     * <p>{@code setAlpha} is honoured by folding {@link #getAlpha()} into the
+     * edge paint at draw time, because the studio dims this background while a
+     * control is held ({@code MainActivity.setSheetBackgroundAlpha}) and the
+     * hairline has to dim with it.
+     */
+    static final class TopEdgeBackground extends GradientDrawable {
+
+        private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int edgeColour;
+        private final float radius;
+        private final float edgeWidth;
+
+        TopEdgeBackground(int fill, int edgeColour, float topCornerRadiusPx,
+                          float edgeWidthPx) {
+            this.edgeColour = edgeColour;
+            this.radius = topCornerRadiusPx;
+            this.edgeWidth = edgeWidthPx;
+            setShape(RECTANGLE);
+            setColor(fill);
+            setCornerRadii(new float[]{topCornerRadiusPx, topCornerRadiusPx,
+                    topCornerRadiusPx, topCornerRadiusPx, 0, 0, 0, 0});
+            edge.setStyle(Paint.Style.STROKE);
+            // dp(1), like every other hairline in the app: a CSS pixel is a
+            // device-independent pixel, so one physical pixel would be half the
+            // design's line on a 2x screen and inconsistent with the foot rule
+            // and the button plates beside it.
+            edge.setStrokeWidth(edgeWidthPx);
+            edge.setDither(true);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            super.draw(canvas);
+            Rect b = getBounds();
+            if (b.width() <= 0 || b.height() <= 0) return;
+            int a = ((edgeColour >>> 24) * getAlpha()) / 255;
+            edge.setColor((a << 24) | (edgeColour & 0x00FFFFFF));
+            float half = edgeWidth / 2f;
+            int save = canvas.save();
+            // Only the top edge's own pixels of the outline: the arcs start
+            // radius pixels down, so the corners contribute nothing below this
+            // clip and the line stops where the rounding does.
+            canvas.clipRect(b.left, b.top, b.right, b.top + edgeWidth);
+            // Half the stroke inset so the line sits inside the bounds rather
+            // than straddling them and losing its top half to the clip.
+            canvas.drawRoundRect(b.left + half, b.top + half,
+                    b.right - half, b.bottom - half, radius, radius, edge);
+            canvas.restoreToCount(save);
+        }
     }
 }

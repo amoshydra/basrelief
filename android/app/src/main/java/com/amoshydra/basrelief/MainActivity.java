@@ -422,12 +422,15 @@ public class MainActivity extends Activity {
         // over the photo instead of glass. There is no Android equivalent of
         // backdrop-filter below API 31, so the flat panel at 92% is the honest
         // approximation: the photo's edge still continues underneath.
-        android.graphics.drawable.GradientDrawable sheetBg =
-                new android.graphics.drawable.GradientDrawable();
-        sheetBg.setColor(0xEB161A20);
-        sheetBg.setCornerRadii(new float[]{dp(22), dp(22), dp(22), dp(22), 0, 0, 0, 0});
-        sheetBg.setStroke(dp(1), 0x24FFFFFF);
-        panel.setBackground(sheetBg);
+        //
+        // Top edge only, per .sheet{border-top:1px solid var(--line)}. The
+        // GradientDrawable stroke this replaced drew the hairline on all four
+        // edges -- the 1-2px bleed down the sides and along the foot the user
+        // reported -- and the two side lines were also why the rounded corners
+        // read as a boxed card. ModalSheet.TopEdgeBackground clips the edge to
+        // the top pixel, so it follows the corner rounding and stops there.
+        panel.setBackground(new ModalSheet.TopEdgeBackground(
+                0xEB161A20, 0x24FFFFFF, dp(22), dp(1)));
         // No panel padding: the mockup pads the SCROLLING content, not the sheet, so
         // the grip and the fix line sit flush to the edges the way they do there.
         panel.setPadding(0, 0, 0, 0);
@@ -784,6 +787,13 @@ public class MainActivity extends Activity {
         // the width that is actually laid out.
         gearButton.setMinimumWidth(dp(48));
         gearButton.setContentDescription(getString(R.string.settings_title));
+        // .btnrow{gap:8px}: the gap every other pair of buttons in the app uses.
+        // makeButton's default 6dp is for a row that may hold more than two
+        // controls; this is always one gear beside one action.
+        LinearLayout.LayoutParams gearLp =
+                (LinearLayout.LayoutParams) gearButton.getLayoutParams();
+        gearLp.rightMargin = dp(8);
+        gearButton.setLayoutParams(gearLp);
         footRow.addView(gearButton);
         footRow.addView(makeButton(getString(R.string.apply_set_as_wallpaper),
                 new View.OnClickListener() {
@@ -1006,6 +1016,10 @@ public class MainActivity extends Activity {
                     // gallery, and findByContent has already marked which row.
                     applyFiles();
                     refreshSliders();
+                    // The row that was just selected may be the one the strip is
+                    // not ringing and the grid not showing, because the pair of
+                    // reads above re-resolve the render, not the index views.
+                    gallery.reindex();
                     Toast.makeText(MainActivity.this,
                             "Already in the gallery \u2014 selected it",
                             Toast.LENGTH_SHORT).show();
@@ -1018,6 +1032,12 @@ public class MainActivity extends Activity {
                 prefs.edit().remove("status").apply();
                 refreshSliders();
                 applyFiles();
+                // The grid may be open behind the share, and the strip is always
+                // up: both read the index once and would otherwise keep showing
+                // the list the new row was added to. Measured: a shared photo was
+                // selected and absent from the gallery, which reads as the import
+                // having failed.
+                gallery.reindex();
                 Toast.makeText(MainActivity.this,
                         "Shared image loaded \u2014 set as wallpaper, or generate depth",
                         Toast.LENGTH_LONG).show();
@@ -1120,6 +1140,23 @@ public class MainActivity extends Activity {
         // run is process-static and its prompt id is in prefs, so nothing else in the
         // app would ever go back and ask.
         DepthGenDialog.resumePending(this);
+        // The index can change while the studio is backgrounded -- a playlist
+        // rotation writes the same selection a tap does -- and the strip and grid
+        // each read it once at build time. Re-reading here is what re-rings the
+        // strip after a rotation; without it the studio comes back showing the
+        // previous photo's ring, which is a wallpaper and a gallery disagreeing
+        // about what is on screen. Idempotent and cheap: the grid rebuild is a
+        // no-op when the grid is down.
+        gallery.reindex();
+        // The renderer reloads the new selection a few lines down, so the sheet
+        // above it must re-resolve from the same read or a rotation leaves the
+        // controls showing the previous photo's numbers while the render shows
+        // the new one. This is also the first refresh a cold launch gets, which
+        // is what puts the fix line and the depth caption on screen: they are
+        // built from the launch selection in onCreate and were never refreshed
+        // before this, so a photo with no map came back without its "No depth"
+        // line until the user touched something.
+        refreshSliders();
         // Tidy the stored filenames on the UI thread. reloadFromPrefs() (GL
         // thread) only reads them; normalising here keeps pref writes off the
         // GL thread and means a restored legacy absolute path is rewritten as a
@@ -1587,6 +1624,16 @@ public class MainActivity extends Activity {
         if (secondaryLabel != null) {
             fixActions.addView(fixButton(secondaryLabel, secondary));
         }
+        // .fixline .acts{gap:8px}, between the two and nowhere else. A right
+        // margin on every button -- which is what the 4dp on each used to be --
+        // leaves a dead strip at the box's right edge too, so the pair sat 4dp
+        // short of the sentence above it.
+        if (fixActions.getChildCount() == 2) {
+            LinearLayout.LayoutParams first = (LinearLayout.LayoutParams)
+                    fixActions.getChildAt(0).getLayoutParams();
+            first.rightMargin = dp(8);
+            fixActions.getChildAt(0).setLayoutParams(first);
+        }
         // Attention is a property of the CONDITION, not of the fact that a fix line
         // exists. Setting it here meant the bundled demo -- whose line says only
         // "Bundled demo" and offers "Add a photo" -- showed an amber "No depth" pill
@@ -1619,9 +1666,11 @@ public class MainActivity extends Activity {
         b.setBackground(bg);
         b.setPadding(dp(8), 0, dp(8), 0);
         b.setOnClickListener(onClick);
+        // No margin of its own: the gap between the pair is applied by
+        // setFixLine to the first button only, so the second reaches the box's
+        // right padding exactly like the sentence above it reaches the left.
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        lp.rightMargin = dp(4);
         b.setLayoutParams(lp);
         return b;
     }
@@ -1835,7 +1884,10 @@ public class MainActivity extends Activity {
         // bar is the thing that reads as a handle.
         View grip = new View(this);
         LinearLayout.LayoutParams gripLp = new LinearLayout.LayoutParams(dp(38), dp(4));
-        gripLp.setMargins(0, dp(9), 0, 0);
+        // No top margin. The 9dp it carried pushed the bar below the strip's
+        // centre, so the one line a sheet is read by sat low; .grip centres it,
+        // and the settings sheet's copy of this grip -- also .grip -- already
+        // centres. With no margin, the strip's own CENTER gravity does it.
         // The mockup's grip bar: rgba(255,255,255,.42).
         grip.setBackgroundColor(0x6BFFFFFF);
         grip.setLayoutParams(gripLp);
@@ -2513,9 +2565,14 @@ public class MainActivity extends Activity {
      * the first caption in the scroll, and it has to take the 2px top gap rather
      * than the 16px of an inter-group heading. Two captions cannot both be first,
      * and the depth row's presence is the one thing that decides which is.
+     *
+     * <p>No side padding: {@code .caption{margin:16px 0 7px}} has none, and the
+     * 4dp this carried put every caption 4dp right of the slider labels and
+     * tracks beneath it, which begin at the scroll's own 14dp edge. Every
+     * caption is a label for the rows under it, so it has to share their column.
      */
     private void layOutCaption(TextView tv, boolean first) {
-        tv.setPadding(dp(4), first ? dp(2) : dp(16), dp(4), dp(7));
+        tv.setPadding(0, first ? dp(2) : dp(16), 0, dp(7));
     }
 
     /**
@@ -3109,7 +3166,9 @@ public class MainActivity extends Activity {
         t.setTextSize(12);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
-        t.setPadding(dp(4), dp(2), dp(4), dp(6));
+        // No side padding: this is a full-width reading that sits in the same
+        // column as the captions and rows below it.
+        t.setPadding(0, dp(2), 0, dp(6));
         return t;
     }
 
@@ -3214,8 +3273,9 @@ public class MainActivity extends Activity {
         t.setTextSize(11);
         t.setTextColor(0x8CFFFFFF);
         // The mockup's .segnote hugs the segment: no top padding, and the gap
-        // below it is what separates the note from the photo line.
-        t.setPadding(dp(4), 0, dp(4), dp(8));
+        // below it is what separates the note from the photo line. No side
+        // padding, so its text shares the row column like every other line.
+        t.setPadding(0, 0, 0, dp(8));
         t.setVisibility(View.GONE);
         return t;
     }
@@ -3722,6 +3782,10 @@ public class MainActivity extends Activity {
                     // showing the previous one while the status line claimed
                     // otherwise would be a lie.
                     LibraryItem added = LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
+                    // The picker can be opened from the open grid, whose list was
+                    // read before this row existed; re-read it now or the selected
+                    // photo is missing from the gallery that is still on screen.
+                    gallery.reindex();
                     Toast.makeText(MainActivity.this,
                             "Added " + added.displayName(), Toast.LENGTH_SHORT).show();
                 } else if (depthForId != null) {

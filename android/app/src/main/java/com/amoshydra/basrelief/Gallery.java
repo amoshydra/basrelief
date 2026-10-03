@@ -713,9 +713,14 @@ final class Gallery {
         // moments ago and has never been laid out, so its width is a question about
         // the future. It is MATCH_PARENT, so the screen's width is not an
         // approximation of what it will be -- it is what it will be.
+        //
+        // The gaps are counted BETWEEN the columns -- two of them for three
+        // columns -- because the stylesheet's `gap` is not an inset on the first
+        // column. Counting three put every cell 8dp right of the header and hint
+        // above it, and left the left edge of the grid ragged against them.
         int screen = activity.getResources().getDisplayMetrics().widthPixels;
-        cellPx = (screen - 2 * pad - GRID_COLUMNS * activity.dp(GRID_GAP_DP))
-                / GRID_COLUMNS;
+        cellPx = (screen - 2 * pad
+                - (GRID_COLUMNS - 1) * activity.dp(GRID_GAP_DP)) / GRID_COLUMNS;
         if (cellPx <= 0) {
             cellPx = activity.dp(CELL_DP_FALLBACK);
         }
@@ -723,10 +728,16 @@ final class Gallery {
         ScrollView scroll = new ScrollView(activity);
         LinearLayout cells = new LinearLayout(activity);
         cells.setOrientation(LinearLayout.VERTICAL);
+        // .cells{gap:8px} is a row gap as much as a column one. The rows used to
+        // stack with no gap at all: the horizontal 8dp read as the grid's only
+        // gutter, and a row of photographs touched the row below it.
+        boolean first = true;
         for (int start = 0; start < rows.size(); start += GRID_COLUMNS) {
-            cells.addView(cellRow(rows, start, activeId));
+            cells.addView(cellRow(rows, start, activeId), rowSpacing(first));
+            first = false;
         }
-        cells.addView(addCellRow(rows.size()));
+        // The add tile is a row like any photograph row, so it takes the same gap.
+        cells.addView(addCellRow(rows.size()), rowSpacing(first));
         scroll.addView(cells, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
@@ -774,12 +785,32 @@ final class Gallery {
     }
 
     /**
+     * The 8dp a row leaves above it, except the first: {@code .cells{gap:8px}}.
+     *
+     * <p>A margin rather than a spacer row, so the gap belongs to the row and
+     * cannot be dropped when a row is rebuilt.
+     */
+    private LinearLayout.LayoutParams rowSpacing(boolean first) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        if (!first) lp.topMargin = activity.dp(GRID_GAP_DP);
+        return lp;
+    }
+
+    /**
      * One row of {@link #GRID_COLUMNS} cells, the last one padded with blanks.
      *
      * <p>Fixed rows rather than a wrapping container, because a grid that measures
      * itself against variable-width children produces rows of differing heights,
      * and a gallery whose photographs are not on a baseline reads as broken
      * before it is read.
+     *
+     * <p>The first column has no left margin: {@code .cells{gap:8px}} puts the
+     * gutter <i>between</i> columns, so the grid's first photograph starts at the
+     * panel's own 14dp edge, in the same column as the header and the hint line.
+     * Every column used to carry the 8dp, which indented the whole grid by one
+     * gap and made it ragged against the text above it.
      */
     private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId) {
         LinearLayout line = new LinearLayout(activity);
@@ -788,15 +819,15 @@ final class Gallery {
             int at = start + i;
             if (at < rows.size()) {
                 LibraryItem item = rows.get(at);
-                line.addView(cell(item, item.id.equals(activeId)));
+                line.addView(cell(item, item.id.equals(activeId), i == 0));
             } else {
                 // A spacer, and deliberately zero-height: it exists only to hold a
-                // column open so the row's cells keep their weight, and giving it a
-                // height makes an empty box the size of a photograph.
+                // column open so the last row keeps the first row's column widths,
+                // and giving it a height makes an empty box the size of a photograph.
                 View blank = new View(activity);
-                LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(0,
-                        0, 1f);
-                blankLp.leftMargin = activity.dp(GRID_GAP_DP);
+                LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(
+                        cellPx, 0);
+                if (i > 0) blankLp.leftMargin = activity.dp(GRID_GAP_DP);
                 blank.setLayoutParams(blankLp);
                 line.addView(blank);
             }
@@ -807,11 +838,15 @@ final class Gallery {
     private LinearLayout addCellRow(int taken) {
         LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = taken % GRID_COLUMNS; i > 0; i--) {
+        // The columns already used on the last row, held open at the same widths.
+        // A blank after the first column carries the gutter, exactly as a
+        // photograph in that column would.
+        int blanks = taken % GRID_COLUMNS;
+        for (int i = 0; i < blanks; i++) {
             View blank = new View(activity);
-            LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            blankLp.leftMargin = activity.dp(GRID_GAP_DP);
+            LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(
+                    cellPx, 0);
+            if (i > 0) blankLp.leftMargin = activity.dp(GRID_GAP_DP);
             blank.setLayoutParams(blankLp);
             line.addView(blank);
         }
@@ -826,7 +861,11 @@ final class Gallery {
                 addPhoto();
             }
         });
-        add.setLayoutParams(new LinearLayout.LayoutParams(cellPx, cellPx));
+        LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(cellPx, cellPx);
+        // A gutter only when it is not the first column; the add tile is in the
+        // first free column, not after a gap that does not exist there.
+        if (blanks > 0) addLp.leftMargin = activity.dp(GRID_GAP_DP);
+        add.setLayoutParams(addLp);
         line.addView(add);
         return line;
     }
@@ -856,13 +895,17 @@ final class Gallery {
      * checkmark for what is picked — so "which mode am I in" is answered by the
      * grid rather than remembered.
      */
-    private View cell(final LibraryItem item, final boolean isActive) {
+    private View cell(final LibraryItem item, final boolean isActive,
+                      boolean firstInRow) {
         final boolean isPicked = !item.isBundled() && picked.contains(item.id);
         LinearLayout cell = new LinearLayout(activity);
         cell.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        cellLp.leftMargin = activity.dp(GRID_GAP_DP);
+        // Fixed, not weighted: cellPx is the column width the buildGrid arithmetic
+        // promised, and a weighted cell would take the gutter back out of the
+        // column it belongs to. The first column carries no gutter; see cellRow.
+        LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(cellPx,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        if (!firstInRow) cellLp.leftMargin = activity.dp(GRID_GAP_DP);
         cell.setLayoutParams(cellLp);
 
         FrameLayout picture = new FrameLayout(activity);
@@ -1162,14 +1205,23 @@ final class Gallery {
      * longer all pairs — {@link #doneButton} is a primary plate and the rest are
      * quiet ones — and a builder that could only take two could not hold a
      * mixed pair without a second builder drifting from this one.
+     *
+     * <p>{@code .btnrow{gap:8px;margin-top:9px}}: the gap goes on every button
+     * after the first, and the 9dp is a top pad on the row itself so two stacked
+     * rows sit 9dp apart rather than the 12 the old 6dp pad made. The buttons
+     * used to be re-added with fresh {@code LayoutParams}, which silently dropped
+     * the 6dp right margin {@code makeButton} had put on them, so each pair
+     * shared an edge.
      */
     private LinearLayout actionRow(Button... buttons) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, activity.dp(6), 0, 0);
-        for (Button b : buttons) {
-            row.addView(b, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.setPadding(0, activity.dp(9), 0, 0);
+        for (int i = 0; i < buttons.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.leftMargin = activity.dp(GRID_GAP_DP);
+            row.addView(buttons[i], lp);
         }
         return row;
     }
@@ -1190,7 +1242,10 @@ final class Gallery {
                 : activity.getString(R.string.gallery_selection_hint);
         TextView line = text(s, 12);
         line.setTextColor(picking ? ACCENT : 0x99FFFFFF);
-        line.setPadding(0, activity.dp(6), 0, activity.dp(2));
+        // 8 below, not 2: the line sits directly on the grid, and at 2dp the
+        // hint's last pixel nearly touched the first row of photographs. 8 is
+        // the grid's own gutter, so the one added line uses the grid's scale.
+        line.setPadding(0, activity.dp(6), 0, activity.dp(8));
         // Kept so a toggle can rewrite it without rebuilding the grid it is in.
         selectionLineView = line;
         return line;

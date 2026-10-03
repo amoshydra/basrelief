@@ -94,11 +94,16 @@ final class ApplyChooser {
 
         LinearLayout modal = new LinearLayout(activity);
         modal.setOrientation(LinearLayout.VERTICAL);
-        modal.setPadding(dp(18), dp(16), dp(18), dp(18));
-        GradientDrawable card = new GradientDrawable();
-        card.setColor(MODAL);
-        card.setCornerRadii(new float[]{dp(20), dp(20), 0, 0, dp(20), dp(20), 0, 0});
-        modal.setBackground(card);
+        // .modal{padding:18px 16px 24px}. This card had 18 sides, 16 top and 18
+        // foot -- the same rotation ModalSheet carried, and a different foot from
+        // the playlists card, which reads the stylesheet correctly. The inset
+        // listener below re-applies the same set when the navigation bar is known.
+        modal.setPadding(dp(16), dp(18), dp(16), dp(24));
+        // The mockup's .modal edge: one hairline along the top only. This card
+        // had no border at all, so the apply screen was the one modal that did
+        // not match the other four; a full stroke would have bled down the
+        // screen's own side and bottom edges. See ModalSheet.TopEdgeBackground.
+        modal.setBackground(new ModalSheet.TopEdgeBackground(MODAL, LINE, dp(20), dp(1)));
 
         TextView title = new TextView(activity);
         title.setText(R.string.apply_title);
@@ -111,7 +116,11 @@ final class ApplyChooser {
         sub.setText(R.string.apply_subtitle);
         sub.setTextSize(13);
         sub.setTextColor(DIM);
-        sub.setPadding(0, dp(3), 0, dp(10));
+        // .modal .sub{margin:0 0 14px}: 14 below is the stylesheet's gap to the
+        // first option, and the same value ModalSheet.subtitle carries. This one
+        // had 10, so the apply screen's list sat 4dp tighter than every other
+        // modal's.
+        sub.setPadding(0, dp(3), 0, dp(14));
         modal.addView(sub);
 
         // TWO selections, not one.
@@ -178,7 +187,10 @@ final class ApplyChooser {
             modal.addView(note);
         }
 
-        // Cancel / Continue
+        // Cancel / Continue. `.btnrow{gap:8px}`: the gutter goes on the second
+        // button, not as a right margin on the first, so the pair still reaches
+        // the card's right padding exactly. This row had neither, and the two
+        // plates shared an edge.
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
@@ -187,8 +199,10 @@ final class ApplyChooser {
         row.setLayoutParams(rowLp);
         row.addView(ghost(activity.getString(R.string.action_cancel)), new LinearLayout.LayoutParams(
                 0, dp(49), 1f));
-        row.addView(primary(activity.getString(R.string.apply_continue)), new LinearLayout.LayoutParams(
-                0, dp(49), 1f));
+        LinearLayout.LayoutParams continueLp = new LinearLayout.LayoutParams(
+                0, dp(49), 1f);
+        continueLp.leftMargin = dp(8);
+        row.addView(primary(activity.getString(R.string.apply_continue)), continueLp);
         modal.addView(row);
         row.getChildAt(0).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -205,24 +219,29 @@ final class ApplyChooser {
 
         ScrollView scroll = new ScrollView(activity);
         scroll.addView(modal);
+        // Bottom-anchored and shrink-wrapped, exactly as ModalSheet does: the
+        // card sits on the screen's foot and is only as tall as its content. The
+        // height this used to force to 86% made the scroll take the bottom 86%
+        // and then placed the card at the TOP of it, so a short chooser floated
+        // in mid-screen with a quarter of a screen of empty scrim below it. A
+        // card too tall to fit is bounded and scrolled by the ScrollView.
         FrameLayout.LayoutParams modalLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
-        modalLp.height = (int) (activity.getResources().getDisplayMetrics().heightPixels * 0.86f);
-        modalLp.width = FrameLayout.LayoutParams.MATCH_PARENT;
         scrim.addView(scroll, modalLp);
 
         // The same bottom-inset treatment ModalSheet folds into its card. This
         // screen hand-rolls its scrim and card rather than using ModalSheet -- it
-        // predates it, and its scroll-and-0.86 layout is its own -- so it has to
-        // carry the inset itself or the Cancel/Continue row is drawn under the
-        // navigation bar. The value comes from ModalSheet so the two cannot drift.
+        // predates it -- so it has to carry the inset itself or the
+        // Cancel/Continue row is drawn under the navigation bar. The value comes
+        // from ModalSheet so the two cannot drift, and the padding is .modal's
+        // 18px 16px 24px like every other card.
         final LinearLayout modalCard = modal;
         scrim.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 int bottom = ModalSheet.insetBottom(insets);
-                modalCard.setPadding(dp(18), dp(16), dp(18), dp(18) + bottom);
+                modalCard.setPadding(dp(16), dp(18), dp(16), dp(24) + bottom);
                 return insets;
             }
         });

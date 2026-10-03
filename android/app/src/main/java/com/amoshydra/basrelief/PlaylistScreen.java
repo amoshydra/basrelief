@@ -208,7 +208,14 @@ final class PlaylistScreen {
         if (on) box.addView(dot(), dotParams());
         // Purely decorative: the state it carries is announced on the row.
         box.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        box.setLayoutParams(new LinearLayout.LayoutParams(dp(SWATCH_DP), dp(SWATCH_DP)));
+        // .opt{gap:12px}: the tile is the row's leading mark, and the text that
+        // follows it used to start at the tile's own edge -- no gap at all --
+        // unlike every card built by ModalSheet.option, which has always put 12dp
+        // between the two.
+        LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(
+                dp(SWATCH_DP), dp(SWATCH_DP));
+        swatchLp.rightMargin = dp(12);
+        box.setLayoutParams(swatchLp);
         return box;
     }
 
@@ -486,15 +493,19 @@ final class PlaylistScreen {
         frame.requestApplyInsets();
     }
 
-    /** The modal's own card: rounded at the top only, with the mockup's hairline. */
+    /**
+     * The modal's own card: rounded at the top only, with the mockup's hairline
+     * along the top edge.
+     *
+     * <p>{@link ModalSheet.TopEdgeBackground} rather than a stroked
+     * {@code GradientDrawable}: a stroke draws four edges, and this card is
+     * flush with the screen's sides and foot, so the design's single
+     * {@code border-top} arrived as a 1px line down both flanks and along the
+     * bottom — the same bleed reported on the studio sheet.
+     */
     private GradientDrawable panelBackground() {
-        int r = dp(MODAL_RADIUS_DP);
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.RECTANGLE);
-        d.setColor(MODAL_BG);
-        d.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
-        d.setStroke(dp(1), LINE);
-        return d;
+        return new ModalSheet.TopEdgeBackground(MODAL_BG, LINE, dp(MODAL_RADIUS_DP),
+                dp(1));
     }
 
     private void applyPanelPadding() {
