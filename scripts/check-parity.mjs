@@ -198,9 +198,88 @@ function checkParity() {
   }
 }
 
+// --------------------------------------------------------- modal architecture
+
+/**
+ * Strip comments before matching, so prose ABOUT the old shape ("was a `new
+ * Dialog(`") is not mistaken for the shape itself. Crude on string literals
+ * containing `//`, which is acceptable: the only thing this is used for is
+ * structural keywords, and a stripped rest-of-line cannot hide a real one.
+ */
+function stripJavaComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
+ * The four defects this guards are one defect: the same visual built more than
+ * once, so a fix lands in one copy and not the others. Habits cannot enforce
+ * that; the two exact claims can be checked, so they are:
+ *
+ *   1. `new Dialog(` exists once, in ModalSheet.java. A second one means a
+ *      second scrim alpha, a second nav-bar inset listener and a second drag
+ *      implementation, which is how the four modals drifted apart.
+ *   2. `plainRow` does not exist. Its optional tap is what let Reset (a
+ *      destructive button) and "Basrelief 0.1.0" (a fact) be the same picture;
+ *      the three factories that replace it each carry exactly one affordance.
+ *
+ * The third claim — "every row is built by one of the three factories" — is
+ * deliberately NOT checked, and this says so rather than shipping a plausible
+ * guard: a row is not a type, so a mechanical count would either fail on
+ * correct code (the playlists screen's photo rows, the fix line's buttons) or
+ * pass on the next hand-rolled row someone writes. A guard that can only look
+ * like it works is worse than none.
+ */
+function checkModalInvariants() {
+  const appDir = join(root, 'android/app/src/main/java/com/amoshydra/basrelief');
+  const files = readdirSync(appDir).filter((f) => f.endsWith('.java'));
+  const extraDialogs = [];
+  const plainRows = [];
+
+  for (const f of files) {
+    const text = stripJavaComments(readFileSync(join(appDir, f), 'utf8'));
+    if (f !== 'ModalSheet.java' && /new\s+(?:android\.app\.)?Dialog\s*\(/.test(text)) {
+      extraDialogs.push(f);
+    }
+    if (/\bplainRow\b/.test(text)) plainRows.push(f);
+  }
+
+  if (extraDialogs.length) {
+    failures.push(
+      `new Dialog( outside ModalSheet.java in: ${extraDialogs.join(', ')} — ` +
+        `every modal is ModalSheet, or the scrim, inset and drag code comes ` +
+        `back a third time`
+    );
+  } else {
+    console.log('modals: one Dialog, in ModalSheet.java');
+  }
+
+  if (plainRows.length) {
+    failures.push(
+      `plainRow in: ${plainRows.join(', ')} — it drew tappable and reading rows ` +
+        `identically; use switchRow, actionRow or readingRow`
+    );
+  } else {
+    console.log('row roles: no plainRow, and the three factories exist');
+  }
+
+  for (const factory of ['switchRow', 'actionRow', 'readingRow']) {
+    if (!new RegExp(`\\b${factory}\\s*\\(`).test(
+      readFileSync(join(appDir, 'ModalSheet.java'), 'utf8'))) {
+      failures.push(
+        `ModalSheet.${factory} is missing — the row-role rule needs all three factories`
+      );
+    }
+  }
+  console.log(
+    'row roles: rows built outside the three factories are not counted — a row ' +
+      'is not a type, and a guessed count would be a guard that only looks plausible'
+  );
+}
+
 checkDocLinks();
 checkTestCounts();
 checkParity();
+checkModalInvariants();
 
 if (failures.length) {
   console.error(`\ncheck-parity: ${failures.length} problem(s)\n`);

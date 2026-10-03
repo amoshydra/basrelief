@@ -1,24 +1,14 @@
 package com.amoshydra.basrelief;
 
 import android.app.Activity;
-import android.app.Dialog;
-import android.content.Intent;
-import android.content.SharedPreferences;
-import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
-import android.view.Gravity;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.WindowInsets;
-import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
 import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.view.View;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.amoshydra.basrelief.core.store.Library;
@@ -53,11 +43,30 @@ import com.amoshydra.basrelief.core.store.SurfaceResolver;
  * measurement — {@code Library.withAppliedTo} documents that distinction and refuses
  * the one case the app cannot honour (the bundled demo, which has no image to render
  * on a second engine).
+ *
+ * <p><b>Built on {@link ModalSheet}.</b> This screen used to hand-roll its own scrim
+ * and card, which is how it came to have a fourth scrim alpha (0.55 against the
+ * mockup's 0.62), a second bottom-inset listener and a primary button in the accent
+ * colour while the identical Cancel/Continue pair one gesture away was white. The
+ * card, the scrim, the navigation-bar inset and the back handling now exist in one
+ * place; what is left here is the question and the answer.
  */
 final class ApplyChooser {
 
+    /** The mockup's {@code .modal{max-height:88%}}. */
+    private static final float MAX_FRACTION = 0.88f;
+
+    // The note ink. The title, rows and buttons are ModalSheet's now; this one is
+    // the qualifier under the list, which no shared factory draws.
+    private static final int DIMMER = 0x57FFFFFF;
+
     private final Activity activity;
-    private Dialog dialog;
+
+    /** The one window. Both selections live in it. */
+    private ModalSheet sheet;
+
+    /** The note that only matters once Lock is chosen. */
+    private TextView lockNote;
 
     private ApplyChooser(Activity activity) {
         this.activity = activity;
@@ -67,61 +76,42 @@ final class ApplyChooser {
         new ApplyChooser(activity).present();
     }
 
-    // ------------------------------------------------------------------ tokens
-    // The mockup's own values. There is no shared UI module, so these are restated
-    // per file; a value that drifts between two screens is a visible seam.
-
-    private static final int INK = 0xFFFFFFFF;
-    private static final int DIM = 0x8CFFFFFF;
-    private static final int DIMMER = 0x57FFFFFF;
-    private static final int LINE = 0x24FFFFFF;
-    private static final int ACCENT = 0xFF7FD1C1;
-    private static final int MODAL = 0xFF171B21;
-    private static final int SCRIM = 0x8C000000;
-
     private int dp(int v) {
         return (int) (v * activity.getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private String str(int res) {
+        return activity.getString(res);
+    }
+
     // ------------------------------------------------------------------ build
 
-    private View build(final java.util.Set<Surface> applied) {
-        FrameLayout scrim = new FrameLayout(activity);
-        scrim.setBackgroundColor(SCRIM);
-
+    private void present() {
+        java.util.Set<Surface> applied = new java.util.LinkedHashSet<Surface>();
+        try {
+            Library lib = AppState.load(Settings.prefs(activity), activity.getFilesDir()).library;
+            applied.addAll(lib.appliedSurfaces());
+        } catch (Exception e) {
+            // Nothing recorded yet, so fall through to the default below.
+        }
         final boolean lockSupported = SurfaceResolver.supportsPerSurfaceLock(
                 android.os.Build.VERSION.SDK_INT);
-
-        LinearLayout modal = new LinearLayout(activity);
-        modal.setOrientation(LinearLayout.VERTICAL);
-        // .modal{padding:18px 16px 24px}. This card had 18 sides, 16 top and 18
-        // foot -- the same rotation ModalSheet carried, and a different foot from
-        // the playlists card, which reads the stylesheet correctly. The inset
-        // listener below re-applies the same set when the navigation bar is known.
-        modal.setPadding(dp(16), dp(18), dp(16), dp(24));
-        // The mockup's .modal edge: one hairline along the top only. This card
-        // had no border at all, so the apply screen was the one modal that did
-        // not match the other four; a full stroke would have bled down the
-        // screen's own side and bottom edges. See ModalSheet.TopEdgeBackground.
-        modal.setBackground(new ModalSheet.TopEdgeBackground(MODAL, LINE, dp(20), dp(1)));
-
-        TextView title = new TextView(activity);
-        title.setText(R.string.apply_title);
-        title.setTextSize(16);
-        title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(INK);
-        modal.addView(title);
-
-        TextView sub = new TextView(activity);
-        sub.setText(R.string.apply_subtitle);
-        sub.setTextSize(13);
-        sub.setTextColor(DIM);
-        // .modal .sub{margin:0 0 14px}: 14 below is the stylesheet's gap to the
-        // first option, and the same value ModalSheet.subtitle carries. This one
-        // had 10, so the apply screen's list sat 4dp tighter than every other
-        // modal's.
-        sub.setPadding(0, dp(3), 0, dp(14));
-        modal.addView(sub);
+        if (applied.isEmpty()) {
+            // HOME ONLY. Defaulting to both was wrong, and the truth table says why:
+            // one wallpaper on home AND lock is ONE engine, one window, one set of
+            // values -- so the lock screen composites the home engine and the Lock
+            // settings are never rendered by anything. Defaulting to both therefore
+            // steered every user into the one state where per-surface settings cannot
+            // work, while the sheet offered a switch that stored values nothing read.
+            //
+            // Separate surfaces need two separate applications, each choosing its own
+            // destination in the system dialog. That is more steps, and it is the only
+            // route there is: re-binding is signature|privileged.
+            applied.add(Surface.HOME);
+        } else if (!lockSupported) {
+            // A restore can hand back a lock surface this platform cannot render.
+            applied.remove(Surface.LOCK);
+        }
 
         // TWO selections, not one.
         //
@@ -138,23 +128,30 @@ final class ApplyChooser {
         // settings wants, and on the platform version where that is possible.
         final java.util.Set<Surface> chosen =
                 new java.util.LinkedHashSet<Surface>(applied);
-        final Option[] homeOpt = new Option[1];
-        final Option[] lockOpt = new Option[1];
+        final ModalSheet.OptionRow[] homeOpt = new ModalSheet.OptionRow[1];
+        final ModalSheet.OptionRow[] lockOpt = new ModalSheet.OptionRow[1];
 
-        homeOpt[0] = option(R.string.apply_home, R.string.apply_home_sub,
-                chosen.contains(Surface.HOME), new Runnable() {
+        LinearLayout body = new LinearLayout(activity);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(ModalSheet.title(activity, str(R.string.apply_title)));
+        body.addView(ModalSheet.subtitle(activity, str(R.string.apply_subtitle)));
+
+        homeOpt[0] = ModalSheet.option(activity, str(R.string.apply_home),
+                str(R.string.apply_home_sub), chosen.contains(Surface.HOME), false,
+                new View.OnClickListener() {
                     @Override
-                    public void run() {
+                    public void onClick(View v) {
                         toggle(chosen, Surface.HOME, homeOpt[0], lockOpt[0], lockSupported);
                     }
                 });
-        modal.addView(homeOpt[0].view);
+        body.addView(homeOpt[0]);
 
         if (lockSupported) {
-            lockOpt[0] = option(R.string.apply_lock, R.string.apply_lock_sub,
-                    chosen.contains(Surface.LOCK), new Runnable() {
+            lockOpt[0] = ModalSheet.option(activity, str(R.string.apply_lock),
+                    str(R.string.apply_lock_sub), chosen.contains(Surface.LOCK), false,
+                    new View.OnClickListener() {
                         @Override
-                        public void run() {
+                        public void onClick(View v) {
                             toggle(chosen, Surface.LOCK, homeOpt[0], lockOpt[0], lockSupported);
                         }
                     });
@@ -162,220 +159,59 @@ final class ApplyChooser {
             // Dimmed, with the reason, and NOT tappable. The opacity is the
             // mockup's .locked -- a whole row at 42% rather than just the text, so
             // it reads as unavailable rather than as a label.
-            lockOpt[0] = option(R.string.apply_lock, R.string.apply_lock_unavailable,
-                    false, null);
-            lockOpt[0].setLocked();
+            lockOpt[0] = ModalSheet.option(activity, str(R.string.apply_lock),
+                    str(R.string.apply_lock_unavailable), false, true, null);
         }
-        modal.addView(lockOpt[0].view);
+        body.addView(lockOpt[0]);
 
-        lockNote = new TextView(activity);
-        lockNote.setText(R.string.apply_lock_note_separate);
-        lockNote.setTextSize(11);
-        lockNote.setTextColor(DIMMER);
-        lockNote.setLineSpacing(0, 1.2f);
-        lockNote.setPadding(dp(2), dp(8), dp(2), 0);
+        lockNote = note(str(R.string.apply_lock_note_separate), 11f, 8);
         lockNote.setVisibility(View.GONE);
-        modal.addView(lockNote);
-
+        body.addView(lockNote);
         if (!lockSupported) {
-            TextView note = new TextView(activity);
-            note.setText(R.string.apply_lock_note);
-            note.setTextSize(12);
-            note.setTextColor(DIMMER);
-            note.setLineSpacing(0, 1.2f);
-            note.setPadding(dp(2), dp(10), dp(2), 0);
-            modal.addView(note);
+            body.addView(note(str(R.string.apply_lock_note), 12f, 10));
         }
+        updateLockNote(chosen);
 
-        // Cancel / Continue. `.btnrow{gap:8px}`: the gutter goes on the second
-        // button, not as a right margin on the first, so the pair still reaches
-        // the card's right padding exactly. This row had neither, and the two
-        // plates shared an edge.
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rowLp.topMargin = dp(14);
-        row.setLayoutParams(rowLp);
-        row.addView(ghost(activity.getString(R.string.action_cancel)), new LinearLayout.LayoutParams(
-                0, dp(49), 1f));
-        LinearLayout.LayoutParams continueLp = new LinearLayout.LayoutParams(
-                0, dp(49), 1f);
-        continueLp.leftMargin = dp(8);
-        row.addView(primary(activity.getString(R.string.apply_continue)), continueLp);
-        modal.addView(row);
-        row.getChildAt(0).setOnClickListener(new View.OnClickListener() {
+        sheet = new ModalSheet(activity, MAX_FRACTION);
+        sheet.body(body);
+
+        // Cancel / Continue. One ModalSheet footer, so the plate colours, the 8dp
+        // gutter and the heights are the same pair as every other question in the
+        // app; the apply screen's primary used to be accent-filled, which is why
+        // the same Cancel/Continue looked like two designs one gesture apart.
+        Button cancel = ModalSheet.button(activity, str(R.string.action_cancel), false, true);
+        cancel.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 dismiss();
             }
         });
-        ((View) row.getChildAt(1)).setOnClickListener(new View.OnClickListener() {
+        Button proceed = ModalSheet.button(activity, str(R.string.apply_continue), true, true);
+        proceed.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 recordAndLaunch(chosen);
             }
         });
-
-        ScrollView scroll = new ScrollView(activity);
-        scroll.addView(modal);
-        // Bottom-anchored and shrink-wrapped, exactly as ModalSheet does: the
-        // card sits on the screen's foot and is only as tall as its content. The
-        // height this used to force to 86% made the scroll take the bottom 86%
-        // and then placed the card at the TOP of it, so a short chooser floated
-        // in mid-screen with a quarter of a screen of empty scrim below it. A
-        // card too tall to fit is bounded and scrolled by the ScrollView.
-        FrameLayout.LayoutParams modalLp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
-        scrim.addView(scroll, modalLp);
-
-        // The same bottom-inset treatment ModalSheet folds into its card. This
-        // screen hand-rolls its scrim and card rather than using ModalSheet -- it
-        // predates it -- so it has to carry the inset itself or the
-        // Cancel/Continue row is drawn under the navigation bar. The value comes
-        // from ModalSheet so the two cannot drift, and the padding is .modal's
-        // 18px 16px 24px like every other card.
-        final LinearLayout modalCard = modal;
-        scrim.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
-            @Override
-            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                int bottom = ModalSheet.insetBottom(insets);
-                modalCard.setPadding(dp(16), dp(18), dp(16), dp(24) + bottom);
-                return insets;
-            }
-        });
-        return scrim;
+        sheet.footerRow(cancel, proceed);
+        sheet.show(activity);
     }
 
-    // ------------------------------------------------------------------ widgets
-
-    /** One candidate row: a swatch, a title, and a reason. */
-    private final class Option {
-        private final View view;
-        private final GradientDrawable swatch;
-        private final GradientDrawable dot;
-        private final View dotHolder;
-
-        Option(int titleRes, int subRes, boolean selected, Runnable onTap) {
-            LinearLayout row = new LinearLayout(activity);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(12), dp(12), dp(12));
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(0x00000000);
-            bg.setCornerRadius(dp(11));
-            bg.setStroke(dp(1), LINE);
-            row.setBackground(bg);
-
-            // The swatch: a 34dp rounded tile carrying a 14dp accent dot with a
-            // 2px ring in the modal's own colour at the bottom-right. The ring is
-            // what makes the dot read as sitting ON the tile rather than printed on it.
-            FrameLayout holder = new FrameLayout(activity);
-            swatch = new GradientDrawable();
-            swatch.setCornerRadius(dp(9));
-            // As the tile's BACKGROUND, not as a child: a Drawable is not a View,
-            // and a View would have a second background of its own to fight.
-            holder.setBackground(swatch);
-
-            dot = new GradientDrawable();
-            dot.setShape(GradientDrawable.OVAL);
-            dotHolder = new View(activity);
-            dotHolder.setBackground(dot);
-            dotHolder.setElevation(dp(1));
-            FrameLayout.LayoutParams dotLp = new FrameLayout.LayoutParams(dp(14), dp(14));
-            dotLp.gravity = Gravity.BOTTOM | Gravity.RIGHT;
-            dotLp.leftMargin = -dp(3);
-            dotLp.bottomMargin = -dp(3);
-            holder.addView(dotHolder, dotLp);
-
-            LinearLayout.LayoutParams holderLp = new LinearLayout.LayoutParams(dp(34), dp(34));
-            holderLp.rightMargin = dp(12);
-            row.addView(holder, holderLp);
-
-            LinearLayout text = new LinearLayout(activity);
-            text.setOrientation(LinearLayout.VERTICAL);
-            TextView b = new TextView(activity);
-            b.setText(titleRes);
-            b.setTextSize(14);
-            b.setTextColor(INK);
-            text.addView(b);
-            TextView small = new TextView(activity);
-            small.setText(subRes);
-            small.setTextSize(12);
-            small.setTextColor(DIM);
-            text.addView(small);
-            row.addView(text, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-            if (onTap != null) {
-                row.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        onTap.run();
-                    }
-                });
-                row.setClickable(true);
-            } else {
-                row.setClickable(false);
-            }
-
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = dp(8);
-            row.setLayoutParams(lp);
-            view = row;
-            setSelected(selected);
-        }
-
-        void setSelected(boolean on) {
-            swatch.setColor(on ? 0x33FFFFFF : 0x14FFFFFF);
-            // The ring is in the MODAL's colour, which is what makes the dot read as
-            // sitting ON the tile rather than printed on it.
-            dot.setColor(on ? ACCENT : 0x00FFFFFF);
-            dot.setStroke(dp(2), MODAL);
-        }
-
-        /** The mockup's .locked: the whole row at 42%, and not tappable. */
-        void setLocked() {
-            view.setAlpha(0.42f);
-        }
-    }
-
-    private Option option(int titleRes, int subRes, boolean selected, Runnable onTap) {
-        return new Option(titleRes, subRes, selected, onTap);
-    }
-
-    private Button ghost(String label) {
-        Button b = new Button(activity);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextSize(14);
-        b.setTextColor(INK);
-        b.setTypeface(null, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0x00000000);
-        bg.setCornerRadius(dp(11));
-        bg.setStroke(dp(1), LINE);
-        b.setBackground(bg);
-        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
-        if (lp != null) lp.rightMargin = dp(6);
-        return b;
-    }
-
-    private Button primary(String label) {
-        Button b = new Button(activity);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextSize(14);
-        b.setTextColor(0xFF08110F);
-        b.setTypeface(null, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(ACCENT);
-        bg.setCornerRadius(dp(11));
-        b.setBackground(bg);
-        return b;
+    /**
+     * A qualifier under the list: 11 or 12px, the dimmer ink, wrapped.
+     *
+     * <p>Not {@link ModalSheet#note}: that is the mockup's centred aside, and these
+     * are the reason a whole option cannot be chosen, which reads as a footnote and
+     * is deliberately left-aligned with the rows above it.
+     */
+    private TextView note(String text, float sizeSp, int topDp) {
+        TextView t = new TextView(activity);
+        t.setText(text);
+        t.setTextSize(sizeSp);
+        t.setTextColor(DIMMER);
+        t.setLineSpacing(0, 1.2f);
+        t.setPadding(dp(2), dp(topDp), dp(2), 0);
+        return t;
     }
 
     // ------------------------------------------------------------------ outcome
@@ -423,22 +259,20 @@ final class ApplyChooser {
         launchPicker();
     }
 
+    private void updateLockNote(java.util.Set<Surface> chosen) {
+        if (lockNote == null) return;
+        lockNote.setVisibility(chosen.contains(Surface.LOCK) ? View.VISIBLE : View.GONE);
+    }
+
     /**
      * Flip one surface, and never leave nothing chosen.
      *
      * <p>"Apply to nothing" is not an outcome the button should offer, and below 35
      * Lock cannot be the only choice either -- there is no second engine to bind.
      */
-    /** Named in the note that appears when Lock is chosen. */
-    private TextView lockNote;
-
-    private void updateLockNote(java.util.Set<Surface> chosen) {
-        if (lockNote == null) return;
-        lockNote.setVisibility(chosen.contains(Surface.LOCK) ? View.VISIBLE : View.GONE);
-    }
-
     private void toggle(java.util.Set<Surface> chosen, Surface surface,
-                        Option home, Option lock, boolean lockSupported) {
+                        ModalSheet.OptionRow home, ModalSheet.OptionRow lock,
+                        boolean lockSupported) {
         if (chosen.contains(surface)) {
             if (chosen.size() == 1) return;
             if (surface == Surface.LOCK && !lockSupported) return;
@@ -446,8 +280,8 @@ final class ApplyChooser {
         } else {
             chosen.add(surface);
         }
-        home.setSelected(chosen.contains(Surface.HOME));
-        lock.setSelected(chosen.contains(Surface.LOCK));
+        home.setMarked(chosen.contains(Surface.HOME));
+        lock.setMarked(chosen.contains(Surface.LOCK));
         updateLockNote(chosen);
     }
 
@@ -471,62 +305,9 @@ final class ApplyChooser {
     }
 
     private void dismiss() {
-        if (dialog != null) {
-            dialog.dismiss();
-            dialog = null;
+        if (sheet != null) {
+            sheet.dismiss();
+            sheet = null;
         }
-    }
-
-    private void present() {
-        java.util.Set<Surface> applied = new java.util.LinkedHashSet<Surface>();
-        try {
-            Library lib = AppState.load(Settings.prefs(activity), activity.getFilesDir()).library;
-            applied.addAll(lib.appliedSurfaces());
-        } catch (Exception e) {
-            // Nothing recorded yet, so fall through to the default below.
-        }
-        final boolean lockSupported = SurfaceResolver.supportsPerSurfaceLock(
-                android.os.Build.VERSION.SDK_INT);
-        if (applied.isEmpty()) {
-            // HOME ONLY. Defaulting to both was wrong, and the truth table says why:
-            // one wallpaper on home AND lock is ONE engine, one window, one set of
-            // values -- so the lock screen composites the home engine and the Lock
-            // settings are never rendered by anything. Defaulting to both therefore
-            // steered every user into the one state where per-surface settings cannot
-            // work, while the sheet offered a switch that stored values nothing read.
-            //
-            // Separate surfaces need two separate applications, each choosing its own
-            // destination in the system dialog. That is more steps, and it is the only
-            // route there is: re-binding is signature|privileged.
-            applied.add(Surface.HOME);
-        } else if (!lockSupported) {
-            // A restore can hand back a lock surface this platform cannot render.
-            applied.remove(Surface.LOCK);
-        }
-
-        dialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
-        View content = build(applied);
-        updateLockNote(applied);
-        if (content.getLayoutParams() != null) {
-            content.setLayoutParams(new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT));
-        }
-        dialog.setContentView(content);
-        dialog.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(android.content.DialogInterface d) {
-                dialog = null;
-            }
-        });
-        // Back dismisses and never reaches the Activity; see ModalSheet.dismissOnBack.
-        ModalSheet.dismissOnBack(dialog, new Runnable() {
-            @Override
-            public void run() {
-                dismiss();
-            }
-        });
-        dialog.show();
-        content.requestApplyInsets();
     }
 }

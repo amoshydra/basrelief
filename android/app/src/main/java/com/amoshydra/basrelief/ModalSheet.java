@@ -60,6 +60,24 @@ import android.window.OnBackInvokedDispatcher;
  * dismiss ({@link #grip}). One implementation, so the four screens built on this
  * card cannot drift into four different ones — which is how this class came to
  * exist.
+ *
+ * <p><b>Three row roles, and no fourth.</b> A row is one of three things, and
+ * each has its own factory here: a {@link #switchRow} carries a state you can
+ * flip, an {@link #actionRow} is a plate you can press (with a chevron when it
+ * navigates), and a {@link #readingRow} is information and cannot be pressed at
+ * all — its factory takes no listener. The rule is: <b>if it can be tapped it
+ * carries an affordance — a switch, a plate or a chevron; if it carries none it
+ * must not respond to touch.</b> The rule exists because the one factory this
+ * replaces, {@code plainRow}, took an optional tap and therefore drew Reset and
+ * "Basrelief 0.1.0" identically, so a destructive button and a version string
+ * were one glance apart with nothing to tell them apart. Pressed states come
+ * from the shared plate ({@link #plate}), never from a row that styles itself.
+ *
+ * <p><b>The spring is shared with the studio sheet, the mechanism is not.</b> The
+ * grip's drag and release live in {@link SpringSettle}, whose javadoc states the
+ * one structural difference: this card is dragged by {@code translationY}, which
+ * is safe in a Dialog's own window, while the studio's sheet is a sibling of the
+ * {@code GLSurfaceView} and must move by layout height (b/7179570).
  */
 final class ModalSheet {
 
@@ -97,16 +115,14 @@ final class ModalSheet {
     static final int NOTE_TOP_DP = 7;
     /** The {@code margin-top:14px} every mockup modal's button row carries. */
     static final int FOOTER_TOP_DP = 14;
+    /** {@code .btnrow{gap:8px}} — between two buttons, and only between them. */
+    static final int FOOTER_GAP_DP = 8;
 
     // The grip: .grip{height:22px} and its 38x4 bar, rgba(255,255,255,.42).
     private static final int GRIP_HEIGHT_DP = 22;
     private static final int GRIP_BAR_WIDTH_DP = 38;
     private static final int GRIP_BAR_HEIGHT_DP = 4;
     private static final int GRIP_BAR = 0x6BFFFFFF;
-
-    /** How far down the grip must drag the card before that counts as a dismissal. */
-    private static final float GRIP_DISMISS_FRACTION = 0.25f;
-    private static final int GRIP_DISMISS_MIN_DP = 64;
 
     // The platform switch, tinted with the app's own colours. On is the accent;
     // off is the hairline family. The off thumb takes --dim rather than --line,
@@ -120,9 +136,19 @@ final class ModalSheet {
     private final float maxHeightFraction;
 
     private final LinearLayout card;
-    private final ScrollView scroll;
+    private final CappedScroll scroll;
     private final LinearLayout footer;
     private Dialog dialog;
+
+    /**
+     * The grip strip, once {@link #grip} has installed one, so the height cap
+     * can take the handle out of the scroll's budget. Null when the card has no
+     * grip, which is a real state: the playlists list has no handle.
+     */
+    private View gripHandle;
+
+    /** Run after the window goes away, however it went away. See {@link #onDismiss}. */
+    private Runnable dismissAction;
 
     /**
      * The card's padding before the navigation-bar inset is folded into the
@@ -181,12 +207,21 @@ final class ModalSheet {
         padBottom = dp(activity, 24);
         card.setPadding(padLeft, padTop, padRight, padBottom);
 
-        scroll = new ScrollView(activity);
+        scroll = new CappedScroll(activity);
         // The mockup masks the last 22px; a fading edge is a child property, so this
         // is safe where a translated overlay would not be.
         scroll.setFadingEdgeLength(dp(activity, 22));
         scroll.setVerticalFadingEdgeEnabled(true);
         scroll.setClipToPadding(false);
+        // WRAP_CONTENT, not the weight-1 column this used to install. A weighted
+        // zero-height child of a wrap_content LinearLayout is remeasured to take
+        // all the space its AT_MOST spec offers (LinearLayout.measureVertical,
+        // targetSdk >= P), which made every short card full-screen and then
+        // depended on applyHeight() to cut it back after layout. The ceiling is
+        // the same idea done once, in onMeasure; see CappedScroll.
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // The card is a column: scroll, then footer. The footer is OUTSIDE the scroll
         // so the buttons stay reachable at any height -- the mockup puts them inside,
@@ -252,7 +287,10 @@ final class ModalSheet {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // A card dismissed from a half-finished grip drag keeps the translation it
         // was showing, and this instance is reused (see the top of show()), so the
-        // next open must not start half way off the screen.
+        // next open must not start half way off the screen. Cancel first: a settle
+        // that was still running would otherwise animate from under the reset and
+        // then run its end action into the freshly opened dialog.
+        card.animate().cancel();
         card.setTranslationY(0f);
         // ADJUST_RESIZE, because the depth panel's first field is an endpoint the user
         // has to be able to type. Without it the keyboard covers the box being typed
@@ -265,6 +303,7 @@ final class ModalSheet {
             @Override
             public void onDismiss(DialogInterface d) {
                 dialog = null;
+                if (dismissAction != null) dismissAction.run();
             }
         });
         // A modal you cannot leave with the system back gesture is a trap. See
@@ -329,6 +368,7 @@ final class ModalSheet {
         strip.addView(bar, new LinearLayout.LayoutParams(
                 dp(context, GRIP_BAR_WIDTH_DP), dp(context, GRIP_BAR_HEIGHT_DP)));
 
+        gripHandle = strip;
         // A tap has always closed this sheet, and it is also the accessibility
         // action; a drag past the threshold closes it too. Both gestures go the
         // same way, so the handle does not advertise one thing and do another.
@@ -339,6 +379,7 @@ final class ModalSheet {
             }
         });
         strip.setOnTouchListener(new View.OnTouchListener() {
+            private SpringSettle.Drag drag;
             private float downRawY;
             private float downTranslation;
             private boolean crossedSlop;
@@ -350,41 +391,86 @@ final class ModalSheet {
                         downRawY = e.getRawY();
                         downTranslation = card.getTranslationY();
                         crossedSlop = false;
-                        // A half-finished settle would otherwise fight the finger.
+                        // A half-finished settle would otherwise fight the finger;
+                        // cancel() also drops the settlement's end action, so an
+                        // interrupted dismissal is not run when the finger lands.
                         card.animate().cancel();
+                        if (drag != null) drag.end();
+                        drag = new SpringSettle.Drag();
+                        drag.add(e);
                         return true;
                     case MotionEvent.ACTION_MOVE: {
+                        if (drag != null) drag.add(e);
                         // Measured from the DOWN every time, like the studio
                         // sheet's drag, so a double delivery is the same number
                         // twice instead of twice the travel.
                         float dy = downTranslation + e.getRawY() - downRawY;
-                        // Down only: dragging up would lift the card off its own
-                        // bottom edge with nothing above it to reveal.
-                        if (dy < 0f) dy = 0f;
+                        // Tethered above the top: the card may lift a little,
+                        // against a resistance that stiffens, and never free.
+                        // SpringSettle says why it is a curve and not a clamp.
+                        dy = SpringSettle.resistUp(dy, card.getHeight());
                         if (dy - downTranslation > slop) crossedSlop = true;
                         card.setTranslationY(dy);
-                        if (dy >= dismissDistance()) {
-                            // Past the threshold with the finger still down:
-                            // dismiss now, the way the studio sheet collapses the
-                            // moment its own fraction passes rather than waiting
-                            // for the release.
-                            card.setTranslationY(card.getHeight());
-                            dismiss();
-                        }
+                        // Deliberately NOT decided here. The finger is still
+                        // asking for the card to be where it is; the release is
+                        // the decision, and it is taken below.
                         return true;
                     }
-                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_UP: {
+                        float velocity = drag == null ? 0f : drag.velocityY();
+                        endDrag();
                         if (crossedSlop) {
-                            settleGrip();
+                            release(velocity);
                         } else {
                             v.performClick();
                         }
                         return true;
-                    case MotionEvent.ACTION_CANCEL:
-                        settleGrip();
+                    }
+                    case MotionEvent.ACTION_CANCEL: {
+                        // Only if the gesture is still tracked: an UP already
+                        // decided this drag, and a CANCEL delivered after it (a
+                        // quirk of injected input, and not of a finger) must not
+                        // re-decide it and cancel the settle the UP just began.
+                        if (drag == null) return true;
+                        float velocity = drag.velocityY();
+                        endDrag();
+                        release(velocity);
                         return true;
+                    }
                     default:
                         return false;
+                }
+            }
+
+            private void endDrag() {
+                if (drag != null) {
+                    drag.end();
+                    drag = null;
+                }
+            }
+
+            /**
+             * The one release rule, shared with the studio sheet: project the
+             * fling, dismiss if it lands past a quarter of the card, otherwise
+             * spring back. See {@link SpringSettle#dismissesOnRelease}.
+             */
+            private void release(float velocityPxPerS) {
+                float dismiss = SpringSettle.dismissDistance(card.getHeight(),
+                        dp(root.getContext(), SpringSettle.DISMISS_MIN_DP));
+                if (SpringSettle.dismissesOnRelease(
+                        card.getTranslationY(), velocityPxPerS, card.getHeight(), dismiss)) {
+                    // Carry the fling off the bottom before closing, so the card
+                    // leaves in the direction the finger threw it instead of
+                    // being cut out from under the motion.
+                    SpringSettle.settleTranslation(card, card.getHeight(), velocityPxPerS,
+                            new Runnable() {
+                                @Override
+                                public void run() {
+                                    dismiss();
+                                }
+                            });
+                } else {
+                    SpringSettle.settleTranslation(card, 0f, velocityPxPerS, null);
                 }
             }
         });
@@ -392,25 +478,21 @@ final class ModalSheet {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(context, GRIP_HEIGHT_DP)));
     }
 
-    /** The downward distance, in pixels, past which a grip drag dismisses. */
-    private float dismissDistance() {
-        return Math.max(card.getHeight() * GRIP_DISMISS_FRACTION,
-                dp(root.getContext(), GRIP_DISMISS_MIN_DP));
-    }
-
-    /** Put a dragged-but-not-dismissed card back. */
-    private void settleGrip() {
-        if (card.getTranslationY() != 0f) {
-            card.animate().translationY(0f).setDuration(180).start();
-        }
-    }
-
     /**
-     * Cap the card, then give the rest to the scroll.
+     * Cap the scroll to the card's share of the screen, minus the card's own
+     * chrome and the pinned footer.
      *
-     * <p>Done after layout, from the card's own measured height, rather than by setting
-     * a fixed fraction up front — which is what the apply modal did, so a three-line
-     * form sat at the top of a large empty card with the buttons far from the content.
+     * <p>The cap is a property of the scroll ({@link CappedScroll}), not a fixed
+     * height applied once after layout. That is what lets the card shrink-wrap: a
+     * three-line form is as tall as its content, and a form longer than the
+     * fraction scrolls inside a card that stops at the fraction. The old version
+     * measured the whole card and cut the scroll after the fact, which on a
+     * short card had already been stretched to the screen by the weighted child
+     * (see the constructor) and so could never shrink-wrap at all.
+     *
+     * <p>It runs again whenever the answer changes: the first layout, an inset
+     * dispatch, a footer, a body swap. The ceiling is derived from values that
+     * are all in hand at those moments; measuring the card is not.
      */
     private void applyHeight() {
         int screen = root.getHeight();
@@ -418,33 +500,76 @@ final class ModalSheet {
         // The inset is inside the card's padding, so it is not height the card may
         // use: subtract it from the ceiling and the card still fits the fraction.
         int ceiling = (int) (screen * maxHeightFraction) - bottomInset;
-        if (ceiling <= 0) return;
-        int natural = card.getMeasuredHeight();
-        if (natural <= ceiling) {
-            // Shrink-wrap: the card is as tall as it needs and no taller.
-            scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-            return;
+        int maxScroll = ceiling - chromeHeight();
+        if (maxScroll < dp(root.getContext(), 120)) {
+            // A screen so short that the chrome alone eats the fraction: prefer a
+            // scrollable card that overflows the fraction to one with no content
+            // in it. Same floor the playlists editor used, and the reason it had
+            // to exist is this branch.
+            maxScroll = (int) (screen * maxHeightFraction);
         }
-        int footerHeight = footer.getVisibility() == View.GONE ? 0 : footer.getMeasuredHeight();
-        scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, ceiling - footerHeight));
+        scroll.setCeiling(maxScroll);
     }
 
-    /** Add content to the scrolling part. */
+    /**
+     * Everything in the card that is not the scroll: its padding, the grip when
+     * one is installed, and the footer with its top gap.
+     *
+     * <p>All measured values, not re-derived dp: the card's padding already has
+     * the navigation-bar inset folded in, and the footer is a real view whose
+     * height the mockup's buttons define.
+     */
+    private int chromeHeight() {
+        int chrome = card.getPaddingTop() + card.getPaddingBottom();
+        // The grip's height is its fixed layout token, not its measured height:
+        // the first inset dispatch can arrive before the strip has been laid out,
+        // and a zero there would hand the scroll a ceiling it does not have.
+        if (gripHandle != null) chrome += dp(root.getContext(), GRIP_HEIGHT_DP);
+        if (footer.getVisibility() != View.GONE) {
+            chrome += footer.getMeasuredHeight();
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) footer.getLayoutParams();
+            if (lp != null) chrome += lp.topMargin;
+        }
+        return chrome;
+    }
+
+    /**
+     * Add or replace the content in the scrolling part.
+     *
+     * <p><b>Replace, not append.</b> The playlists screen is one window with two
+     * states — list and editor — and swaps between them in place, so that a tap
+     * is a rebuild rather than a second dialog and a flicker. Calling this twice
+     * used to throw "child already has a parent" out of the second
+     * {@code card.addView(scroll)}; replacing the scroll's children is also the
+     * only shape that can work, because a state has content where the previous
+     * state had different content, not in addition to it.
+     */
     void body(View view) {
+        if (scroll.getParent() == null) card.addView(scroll);
+        scroll.removeAllViews();
         scroll.addView(view, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
-        card.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (root.getHeight() > 0) applyHeight();
     }
 
-    /** Add a row of buttons that stays put. Equal weights; two is the usual number. */
+    /**
+     * Add or replace the row of buttons that stays put. Equal weights; two is
+     * the usual number.
+     *
+     * <p>Replace, for the same reason {@link #body} replaces: the playlists
+     * editor's footer is Delete/Done where the list's is New/Done, and appending
+     * would leave New behind the editor's pair. The 8dp gutter is
+     * {@code .btnrow{gap:8px}} and lives here once, rather than as a right margin
+     * on a button that each screen has to remember.
+     */
     void footerRow(Button... buttons) {
+        footer.removeAllViews();
         footer.setVisibility(buttons.length == 0 ? View.GONE : View.VISIBLE);
-        for (Button b : buttons) {
-            footer.addView(b, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        for (int i = 0; i < buttons.length; i++) {
+            LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) b.leftMargin = dp(root.getContext(), FOOTER_GAP_DP);
+            footer.addView(buttons[i], b);
         }
         if (buttons.length > 0) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -452,8 +577,9 @@ final class ModalSheet {
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.topMargin = dp(root.getContext(), FOOTER_TOP_DP);
             footer.setLayoutParams(lp);
-            card.addView(footer);
+            if (footer.getParent() == null) card.addView(footer);
         }
+        if (root.getHeight() > 0) applyHeight();
     }
 
     void dismiss() {
@@ -461,6 +587,23 @@ final class ModalSheet {
             dialog.dismiss();
             dialog = null;
         }
+    }
+
+    /**
+     * Run {@code action} after the window goes away, however it went away.
+     *
+     * <p><b>Why a hook and not a {@code dismiss()} override.</b> The grip, the
+     * system back gesture and the playlists screen's Done button all end the
+     * dialog by different routes, and three of them never call the screen's own
+     * {@code dismiss()}. A caller with work to finish — the playlists editor has
+     * a name field to commit — attaches it here once, so it runs on the grip tap
+     * and the back press as well as on its own Done. The old private dialogs
+     * carried this callback because they owned the {@link Dialog}; the callers
+     * migrated onto this class still need it, so it is a capability of the class
+     * rather than a second window.
+     */
+    void onDismiss(Runnable action) {
+        dismissAction = action;
     }
 
     /**
@@ -536,6 +679,36 @@ final class ModalSheet {
     // ------------------------------------------------------------------ widgets
     // The mockup's .btn family, so a modal cannot invent its own button.
 
+    /**
+     * The plate under every tappable thing: {@code .btn}'s rounded rect, with a
+     * pressed state.
+     *
+     * <p><b>One helper, because a pressed state is feedback and not decoration.</b>
+     * A custom background replaces the platform's button drawable, which is also
+     * what supplies the touch feedback; without a state list here a tap on any
+     * plate in the app produced no visible response at all. Building the plate
+     * once means the next control that wants one cannot skip the pressed colour.
+     *
+     * @param primary white fill, near-black ink
+     * @param ghost transparent fill; a filled ghost is {@code .btn}'s default
+     */
+    private static GradientDrawable plate(Activity activity, boolean primary, boolean ghost) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(activity, 11));
+        int[][] states = { new int[]{android.R.attr.state_pressed}, new int[]{} };
+        if (primary) {
+            // .btn.primary is a WHITE fill with near-black text. Accent is the app's
+            // highlight colour, not this button's: using it here made Cancel/Continue
+            // disagree with the identical pair in the playlists modal.
+            bg.setColor(new ColorStateList(states, new int[]{ 0xFFE2E2E2, INK }));
+        } else {
+            bg.setColor(new ColorStateList(states,
+                    new int[]{ 0x2EFFFFFF, ghost ? Color.TRANSPARENT : 0x1AFFFFFF }));
+            bg.setStroke(dp(activity, 1), LINE);
+        }
+        return bg;
+    }
+
     /** {@code .btn} — a filled plate. {@code .btn.ghost} is the transparent one. */
     static Button button(Activity activity, String label, boolean primary, boolean ghost) {
         Button b = new Button(activity);
@@ -545,22 +718,8 @@ final class ModalSheet {
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinHeight(dp(activity, 49));
         b.setPadding(dp(activity, 12), 0, dp(activity, 12), 0);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(activity, 11));
-        if (primary) {
-            // .btn.primary is a WHITE fill with near-black text. Accent is the app's
-            // highlight colour, not this button's: using it here made Cancel/Continue
-            // disagree with the identical pair in the playlists modal.
-            bg.setColor(INK);
-            b.setTextColor(INK_ON_FILL);
-        } else {
-            bg.setColor(ghost ? Color.TRANSPARENT : 0x1AFFFFFF);
-            bg.setStroke(dp(activity, 1), LINE);
-            b.setTextColor(INK);
-        }
-        b.setBackground(bg);
-        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
-        if (lp != null) lp.rightMargin = dp(activity, 4);
+        b.setBackground(plate(activity, primary, ghost));
+        b.setTextColor(primary ? INK_ON_FILL : INK);
         return b;
     }
 
@@ -612,30 +771,37 @@ final class ModalSheet {
         return t;
     }
 
+    /** The accent corner dot, as a drawable, so a row can recolour it in place. */
+    private static GradientDrawable dot(Activity activity, boolean on) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(on ? ACCENT : Color.TRANSPARENT);
+        d.setStroke(dp(activity, 2), CARD);
+        return d;
+    }
+
     /**
      * {@code .opt .sw} — the 34dp tile with a 14dp accent dot on its bottom-right,
      * ringed in the card's own colour so the dot reads as sitting ON the tile.
      *
-     * @return the tile's container, so the dot can be toggled without rebuilding.
+     * @param mark the dot's own drawable, held by the caller so the state can be
+     *             changed later without rebuilding the row
      */
-    static FrameLayout swatch(Activity activity, boolean on, View.OnClickListener tap) {
+    private static FrameLayout swatch(Activity activity, GradientDrawable mark,
+                                      View.OnClickListener tap) {
         FrameLayout holder = new FrameLayout(activity);
         GradientDrawable tile = new GradientDrawable(
                 GradientDrawable.Orientation.TL_BR, new int[]{0xFF3D5563, 0xFF1B262E});
         tile.setCornerRadius(dp(activity, 9));
         holder.setBackground(tile);
 
-        View dot = new View(activity);
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.OVAL);
-        d.setColor(on ? ACCENT : Color.TRANSPARENT);
-        d.setStroke(dp(activity, 2), CARD);
-        dot.setBackground(d);
+        View dotView = new View(activity);
+        dotView.setBackground(mark);
         FrameLayout.LayoutParams dotLp = new FrameLayout.LayoutParams(
                 dp(activity, 14), dp(activity, 14), Gravity.BOTTOM | Gravity.RIGHT);
         dotLp.leftMargin = -dp(activity, 3);
         dotLp.bottomMargin = -dp(activity, 3);
-        holder.addView(dot, dotLp);
+        holder.addView(dotView, dotLp);
 
         if (tap != null) holder.setOnClickListener(tap);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -645,15 +811,8 @@ final class ModalSheet {
         return holder;
     }
 
-    /**
-     * The bordered frame every row shares: {@code .opt} minus its leading mark.
-     *
-     * <p>Extracted the moment a second kind of row existed. A switch row and a
-     * plain row must pad and gap exactly like a picker row, and the way that stops
-     * being true is two copies of the same padding edited once.
-     */
-    private static LinearLayout rowFrame(Activity activity) {
-        LinearLayout row = new LinearLayout(activity);
+    /** The bordered row shell, applied to a row that has already chosen its type. */
+    private static void frameRow(Activity activity, LinearLayout row) {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(activity, OPT_PAD_DP), dp(activity, OPT_PAD_DP),
@@ -668,7 +827,6 @@ final class ModalSheet {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(activity, OPT_GAP_DP);
         row.setLayoutParams(lp);
-        return row;
     }
 
     /** {@code .opt b} over {@code .opt small}: the two-line text column. */
@@ -688,15 +846,48 @@ final class ModalSheet {
         return text;
     }
 
+    /**
+     * A picker row whose mark can be turned on and off after it is built.
+     *
+     * <p>The apply chooser is why this is a type and not a bare {@code LinearLayout}:
+     * its two options are selections that change while the sheet is open, and the
+     * mark is the only thing that says which. Rebuilding the row per tap would work
+     * and would also lose the row it is replacing; the drawable the tile already
+     * holds is the state.
+     */
+    static final class OptionRow extends LinearLayout {
+
+        private final GradientDrawable mark;
+
+        OptionRow(Activity activity, GradientDrawable mark) {
+            super(activity);
+            this.mark = mark;
+        }
+
+        /**
+         * On shows the accent dot; off is transparent, like {@code .sw} without
+         * {@code .on}.
+         *
+         * <p>Not named {@code setSelected}: that is {@link View}'s own method for
+         * the accessibility state, and this is a picture, not a linear selection.
+         */
+        void setMarked(boolean on) {
+            mark.setColor(on ? ACCENT : Color.TRANSPARENT);
+        }
+    }
+
     /** {@code .opt} — a bordered row with a swatch, a title and a subtitle. */
-    static LinearLayout option(Activity activity, String titleText, String subText,
-                               boolean on, boolean locked, View.OnClickListener tap) {
-        LinearLayout row = rowFrame(activity);
+    static OptionRow option(Activity activity, String titleText, String subText,
+                            boolean on, boolean locked, View.OnClickListener tap) {
+        // The drawable is built first and handed to both the tile and the row, so
+        // the row owns the mark it will later turn on and off.
+        OptionRow row = new OptionRow(activity, dot(activity, on));
+        frameRow(activity, row);
         // .locked: the WHOLE row at 42%, so it reads as unavailable rather than as a
         // label whose text happens to be grey.
         if (locked) row.setAlpha(0.42f);
 
-        row.addView(swatch(activity, on, null));
+        row.addView(swatch(activity, row.mark, null));
         row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -706,20 +897,117 @@ final class ModalSheet {
     }
 
     /**
-     * A row with no state at all: a title and a subtitle, optionally tappable.
+     * A row you can tap: a bordered ghost plate, with its label centred and a
+     * pressed state from {@link #plate}.
      *
-     * <p>For facts (the About row) and one-off actions (Reset) that are not
-     * pickers. Deliberately no {@link #swatch}: an undotted chip still reads as a
-     * picture at the head of a row, and a switch on a fact would claim a state
-     * that does not exist.
+     * <p><b>Why a plate and not the framed row Reset used to be.</b> A bordered
+     * row with no mark is the same picture as a fact in a bordered row, and the
+     * two were literally the same factory — {@code plainRow} — until this pass.
+     * The rule is one line: if it can be tapped it carries an affordance, and the
+     * three affordances are the switch ({@link #switchRow}), this plate, and the
+     * chevron for a row that navigates. If it carries none it must not respond to
+     * touch, which is {@link #readingRow}'s whole definition.
+     *
+     * <p>Reset is the reason this exists: it is destructive, so it is a button
+     * rather than a tappable label, and the subtitle carries the consequence on
+     * the same plate the fix line's actions use.
+     *
+     * @param chevron true when the tap goes somewhere; a confirmation is a
+     *                question and not a destination, so Reset passes false
      */
-    static LinearLayout plainRow(Activity activity, String titleText, String subText,
-                                 View.OnClickListener tap) {
-        LinearLayout row = rowFrame(activity);
-        row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
+    static LinearLayout actionRow(Activity activity, String label, String sub,
+                                  boolean chevron, View.OnClickListener tap) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(activity, 49));
+        row.setPadding(dp(activity, OPT_PAD_DP), dp(activity, OPT_PAD_DP),
+                dp(activity, OPT_PAD_DP), dp(activity, OPT_PAD_DP));
+        row.setBackground(plate(activity, false, true));
+
+        LinearLayout text = new LinearLayout(activity);
+        text.setOrientation(LinearLayout.VERTICAL);
+        text.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView title = new TextView(activity);
+        title.setText(label);
+        title.setTextSize(14);
+        title.setTextColor(INK);
+        title.setGravity(Gravity.CENTER);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        text.addView(title);
+        if (sub != null && !sub.isEmpty()) {
+            TextView small = new TextView(activity);
+            small.setText(sub);
+            small.setTextSize(12);
+            small.setTextColor(DIM);
+            small.setGravity(Gravity.CENTER);
+            text.addView(small);
+        }
+        // Weight 1 so the label centres in the plate's own width; the chevron is
+        // wrap and sits outside it, which is what "trailing" means.
+        row.addView(text, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.setClickable(tap != null);
-        if (tap != null) row.setOnClickListener(tap);
+
+        if (chevron) {
+            TextView arrow = new TextView(activity);
+            arrow.setText(R.string.row_navigates_glyph);
+            arrow.setTextSize(16);
+            arrow.setTextColor(DIM);
+            // The row is the control and describes itself; the arrow is decoration.
+            arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            LinearLayout.LayoutParams arrowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            arrowLp.leftMargin = dp(activity, OPT_INNER_GAP_DP);
+            row.addView(arrow, arrowLp);
+        }
+
+        row.setClickable(true);
+        row.setOnClickListener(tap);
+        // The plate is the affordance, and the row as one control reads the label
+        // first rather than letting a screen reader stop on each line.
+        row.setContentDescription(sub == null || sub.isEmpty() ? label : label + ". " + sub);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(activity, OPT_GAP_DP);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    /**
+     * A row that is information: a title and a subtitle, no border, no pressed
+     * state, no trailing mark, quieter ink.
+     *
+     * <p><b>Why there is no listener parameter.</b> The About row and the Reset
+     * row were the same factory with a nullable tap, which is how "Basrelief
+     * 0.1.0" came to look exactly like a thing you could press. A reading that
+     * cannot be handed a tap cannot drift into being one, so the signature is the
+     * enforcement. Quieter ink is the other half: a fact is not asking to be
+     * operated, so it does not use the full-strength ink a label on a control does.
+     */
+    static LinearLayout readingRow(Activity activity, String titleText, String subText) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        // No padding and no border: the text lines up with the caption above it,
+        // which is the card's own edge. A framed reading was the ambiguity itself.
+        TextView title = new TextView(activity);
+        title.setText(titleText);
+        title.setTextSize(14);
+        title.setTextColor(DIM);
+        row.addView(title);
+        if (subText != null && !subText.isEmpty()) {
+            TextView small = new TextView(activity);
+            small.setText(subText);
+            small.setTextSize(12);
+            small.setTextColor(DIMMER);
+            row.addView(small);
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(activity, OPT_GAP_DP);
+        row.setLayoutParams(lp);
         return row;
     }
 
@@ -757,7 +1045,8 @@ final class ModalSheet {
      */
     static LinearLayout switchRow(final Activity activity, String titleText, String subText,
                                   boolean on, final OnToggled onToggled) {
-        final LinearLayout row = rowFrame(activity);
+        final LinearLayout row = new LinearLayout(activity);
+        frameRow(activity, row);
 
         final Switch sw = new Switch(activity);
         // No ON/OFF thumb text: the tint carries the state and the words are
@@ -842,6 +1131,40 @@ final class ModalSheet {
 
     static int dp(android.content.Context context, int v) {
         return (int) (v * context.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /**
+     * A ScrollView with a ceiling, which the framework has no attribute for.
+     *
+     * <p>It measures its child the way a ScrollView always does — the child's
+     * natural height, unbounded — and then clamps its own measured height to the
+     * ceiling. The child keeps its natural height, which is exactly what makes it
+     * scroll, and below the ceiling the view shrink-wraps, so a short list is a
+     * short card. This is the capability the playlists screen used to carry
+     * privately; it now applies to every modal, which is what makes a
+     * {@code body()} swap in that screen preserve its own look.
+     */
+    private static final class CappedScroll extends ScrollView {
+
+        private int ceiling;
+
+        CappedScroll(Context context) {
+            super(context);
+        }
+
+        void setCeiling(int px) {
+            if (ceiling == px) return;
+            ceiling = px;
+            requestLayout();
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            if (ceiling > 0 && getMeasuredHeight() > ceiling) {
+                setMeasuredDimension(getMeasuredWidth(), ceiling);
+            }
+        }
     }
 
     /**

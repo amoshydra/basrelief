@@ -1,8 +1,5 @@
 package com.amoshydra.basrelief;
 
-import android.app.Dialog;
-import android.content.Context;
-import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -12,13 +9,11 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -77,30 +72,25 @@ final class PlaylistScreen {
     // ---------------------------------------------- the mockup's own numbers
     // --panel #171b21 · --line rgba(255,255,255,.14) · --accent #7fd1c1
     // --dim rgba(255,255,255,.55) · --dimmer rgba(255,255,255,.34)
+    //
+    // The window's own numbers -- scrim, card, padding, buttons -- are gone from
+    // this file: the screen is built on ModalSheet now, so one card and one
+    // scrim exist for every modal rather than one per screen. What remains here
+    // is what the rows in this screen's body draw.
 
+    /** The card fill, referenced by the corner dot's ring so the dot sits ON the card. */
     private static final int MODAL_BG = 0xFF171B21;
     private static final int LINE = 0x24FFFFFF;
-    private static final int SCRIM = 0x9E000000;
     private static final int ACCENT = 0xFF7FD1C1;
     private static final int DIM = 0x8CFFFFFF;
     private static final int DIMMER = 0x57FFFFFF;
-    private static final int PRIMARY_INK = 0xFF0B0D10;
     /** A swatch with no photograph in it — the gallery's own tile fill. */
     private static final int TILE = 0xFF2E3B44;
     /** The mockup's `.locked`, which is how an unavailable row reads. */
     private static final float LOCKED_ALPHA = 0.42f;
 
-    private static final int MODAL_RADIUS_DP = 20;
-    private static final int MODAL_PAD_DP = 16;
-    private static final int MODAL_PAD_TOP_DP = 18;
-    private static final int MODAL_PAD_BOTTOM_DP = 24;
     /** `.modal { max-height: 88% }`. */
     private static final float MODAL_MAX_FRACTION = 0.88f;
-    /** `.btn { padding: 13px }` around a 14px line, which measures 49. */
-    private static final int BUTTON_DP = 49;
-    private static final int BUTTON_RADIUS_DP = 11;
-    private static final int BUTTONROW_GAP_DP = 8;
-    private static final int BUTTONROW_TOP_DP = 14;
 
     private static final int OPTION_PAD_DP = 12;
     private static final int OPTION_RADIUS_DP = 11;
@@ -114,23 +104,17 @@ final class PlaylistScreen {
     private final MainActivity activity;
 
     /** The one window. Both states live in it, so a row tap swaps the contents. */
-    private Dialog dialog;
-    /** The modal's body: the scroll plus the button row, rebuilt per state. */
-    private LinearLayout panel;
-    /** The scroll of the current state, so an inset can re-cap it. */
-    private CappedScroll scroll;
+    private ModalSheet sheet;
     /** The playlist being edited, or null for the list. */
     private String openId;
     /** The editor's name field, held so a commit does not have to find it. */
     private EditText nameField;
-    /** The navigation-bar inset, folded into the modal's bottom padding. */
-    private int bottomInset;
-    // The editor builds its own window rather than using ModalSheet -- it
-    // predates it, and its capped scroll and per-state rebuild are its own -- so
-    // it carries the inset itself. It shares ModalSheet.insetBottom so the two
-    // cannot resolve the bar differently. The delete confirm is the one
-    // ModalSheet here: it is a question rather than a state of this editor, and
-    // it should look like the questions the gallery asks.
+    // The screen used to build its own window -- scrim, card, inset listener,
+    // capped scroll -- which is how it ended up with a card padding, a ceiling
+    // formula and a back handler that only it had. It is ModalSheet's card now:
+    // body() replaces the state's content in place and footerRow() replaces the
+    // state's buttons, so list and editor still share one window without either
+    // of them drawing one.
 
     private PlaylistScreen(MainActivity activity) {
         this.activity = activity;
@@ -402,172 +386,36 @@ final class PlaylistScreen {
         return Typeface.create("sans-serif-medium", Typeface.NORMAL);
     }
 
-    // ------------------------------------------------------------------ buttons
-
-    private TextView button(int labelRes, boolean primary, View.OnClickListener tap) {
-        TextView b = new TextView(activity);
-        b.setText(str(labelRes));
-        b.setTextSize(14);
-        b.setTypeface(medium());
-        b.setGravity(Gravity.CENTER);
-        b.setTextColor(primary ? PRIMARY_INK : Color.WHITE);
-        GradientDrawable bg = plain(primary ? Color.WHITE : Color.TRANSPARENT,
-                dp(BUTTON_RADIUS_DP));
-        bg.setStroke(dp(1), primary ? Color.WHITE : LINE);
-        b.setBackground(bg);
-        b.setMinHeight(dp(BUTTON_DP));
-        b.setPadding(dp(OPTION_PAD_DP), dp(OPTION_PAD_DP), dp(OPTION_PAD_DP), dp(OPTION_PAD_DP));
-        b.setOnClickListener(tap);
-        return b;
-    }
-
-    private LinearLayout buttonRow(View... buttons) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(BUTTONROW_TOP_DP);
-        row.setLayoutParams(lp);
-        for (int i = 0; i < buttons.length; i++) {
-            LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, dp(BUTTON_DP), 1f);
-            if (i > 0) b.leftMargin = dp(BUTTONROW_GAP_DP);
-            row.addView(buttons[i], b);
-        }
-        return row;
-    }
-
     // ------------------------------------------------------------------- window
 
     /**
-     * A Dialog rather than a view in the studio's root, for the reason
-     * {@link SettingsSheet} gives: it brings its own window, so this screen does
-     * not have to know what the studio's view tree looks like, cannot end up laid
-     * out under the sheet, and leaves nothing half-attached behind it.
+     * Present the screen, wholesale from {@link ModalSheet}.
+     *
+     * <p><b>One window, two states.</b> The list and the editor are the same
+     * dialog with a different body and footer, not two dialogs; a row tap swaps
+     * them in place so there is no flicker and no second window to leave behind.
+     * The card, the scrim, the navigation-bar inset, the capped scroll and the
+     * back handling are ModalSheet's -- this screen's window code was a second
+     * implementation of all five, which is how its ceiling and its card padding
+     * came to differ from every other modal's.
+     *
+     * <p><b>The dismiss hook is the name's last chance.</b> The name is a text
+     * field, so a BACK press never takes its focus away and the field's own
+     * focus listener would not fire. Dismissing is the one event that covers the
+     * grip, the back gesture and Done alike, so the commit lives there once.
      */
     private void present() {
-        FrameLayout frame = new FrameLayout(activity);
-        View scrim = new View(activity);
-        scrim.setBackgroundColor(SCRIM);
-        frame.addView(scrim, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-
-        panel = new LinearLayout(activity);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackground(panelBackground());
-        panel.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+        sheet = new ModalSheet(activity, MODAL_MAX_FRACTION);
+        sheet.onDismiss(new Runnable() {
             @Override
-            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                bottomInset = insetBottom(insets);
-                applyPanelPadding();
-                return insets;
-            }
-        });
-        applyPanelPadding();
-        frame.addView(panel, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
-
-        dialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
-        dialog.setContentView(frame);
-        dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(DialogInterface d) {
-                // The name is a text field, so a BACK press never takes its focus
-                // away and the focus listener would not fire. Dismissing is the one
-                // backstop that covers every way out of this screen.
+            public void run() {
                 commitName();
                 openId = null;
-                dialog = null;
+                sheet = null;
             }
         });
         showList();
-        // Back closes this screen, not the studio; see ModalSheet.dismissOnBack.
-        ModalSheet.dismissOnBack(dialog, new Runnable() {
-            @Override
-            public void run() {
-                dismiss();
-            }
-        });
-        dialog.show();
-        frame.requestApplyInsets();
-    }
-
-    /**
-     * The modal's own card: rounded at the top only, with the mockup's hairline
-     * along the top edge.
-     *
-     * <p>{@link ModalSheet.TopEdgeBackground} rather than a stroked
-     * {@code GradientDrawable}: a stroke draws four edges, and this card is
-     * flush with the screen's sides and foot, so the design's single
-     * {@code border-top} arrived as a 1px line down both flanks and along the
-     * bottom — the same bleed reported on the studio sheet.
-     */
-    private GradientDrawable panelBackground() {
-        return new ModalSheet.TopEdgeBackground(MODAL_BG, LINE, dp(MODAL_RADIUS_DP),
-                dp(1));
-    }
-
-    private void applyPanelPadding() {
-        panel.setPadding(dp(MODAL_PAD_DP), dp(MODAL_PAD_TOP_DP), dp(MODAL_PAD_DP),
-                dp(MODAL_PAD_BOTTOM_DP) + bottomInset);
-        if (scroll != null) scroll.setCeiling(ceiling());
-    }
-
-    private int insetBottom(WindowInsets insets) {
-        // One resolution for all four dialogs: see ModalSheet.insetBottom, which
-        // also names the bar (systemBars on API 30+) and the minSdk 26 fallback.
-        return ModalSheet.insetBottom(insets);
-    }
-
-    /**
-     * How tall the scrolling part may be.
-     *
-     * <p>The stylesheet caps the modal at 88% of the screen and lets it shrink-wrap
-     * below that, which is the difference between a three-row list sitting at the
-     * bottom of the display and an editor that would run off the top. The button
-     * row is excluded: the mockup draws it inside the scroll, but an editor long
-     * enough to scroll has to keep its Done reachable. What is left of the 88% is
-     * the scroll's.
-     */
-    private int ceiling() {
-        android.util.DisplayMetrics m = activity.getResources().getDisplayMetrics();
-        int chrome = MODAL_PAD_TOP_DP + MODAL_PAD_BOTTOM_DP + BUTTON_DP + BUTTONROW_TOP_DP;
-        int left = (int) (m.heightPixels * MODAL_MAX_FRACTION) - (int) (chrome * m.density)
-                - bottomInset;
-        if (left < dp(120)) left = (int) (m.heightPixels * MODAL_MAX_FRACTION);
-        return left;
-    }
-
-    /**
-     * A ScrollView with a ceiling, which the framework has no attribute for.
-     *
-     * <p>It measures its child the way a ScrollView always does — the child's
-     * natural height, unbounded — and then clamps its own measurement to the
-     * ceiling. The child keeps its natural height, which is exactly what makes it
-     * scroll, and the view shrink-wraps below the ceiling so a short list still
-     * looks like the mockup's.
-     */
-    private static final class CappedScroll extends ScrollView {
-
-        private int ceiling;
-
-        CappedScroll(Context context) {
-            super(context);
-        }
-
-        void setCeiling(int px) {
-            if (ceiling == px) return;
-            ceiling = px;
-            requestLayout();
-        }
-
-        @Override
-        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-            if (ceiling > 0 && getMeasuredHeight() > ceiling) {
-                setMeasuredDimension(getMeasuredWidth(), ceiling);
-            }
-        }
+        sheet.show(activity);
     }
 
     // --------------------------------------------------------------------- list
@@ -578,12 +426,15 @@ final class PlaylistScreen {
         openId = null;
         nameField = null;
         Playlists lists = PlaylistStore.load(activity.prefs);
-        panel.removeAllViews();
 
-        panel.addView(heading(str(R.string.playlists_title)));
-        panel.addView(subtitle(str(R.string.playlists_subtitle), 14));
-
+        // The whole state is one column, heading included. The mockup's .modal is
+        // itself the scroller, so the h3 scrolls with the rows; the old screen
+        // pinned a title above its own scroll, which is a second layout the card
+        // does not need and a heading that would outlive its content on a long
+        // list. body() replaces the previous state's column in place.
         LinearLayout box = column();
+        box.addView(heading(str(R.string.playlists_title)));
+        box.addView(subtitle(str(R.string.playlists_subtitle), 14));
         if (lists.isEmpty()) {
             // A screen with only a New button is a screen that has not said
             // anything. This is the first build in which Playlists leads anywhere.
@@ -593,20 +444,23 @@ final class PlaylistScreen {
         for (Playlist p : lists.playlists()) {
             box.addView(listRow(p, lib));
         }
-        panel.addView(startScroll(box));
-        panel.addView(buttonRow(
-                button(R.string.playlist_new, false, new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        newPlaylist();
-                    }
-                }),
-                button(R.string.action_done, true, new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        dismiss();
-                    }
-                })));
+        sheet.body(box);
+
+        Button newButton = ModalSheet.button(activity, str(R.string.playlist_new), false, true);
+        newButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                newPlaylist();
+            }
+        });
+        Button done = ModalSheet.button(activity, str(R.string.action_done), true, true);
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dismiss();
+            }
+        });
+        sheet.footerRow(newButton, done);
     }
 
     /**
@@ -696,13 +550,14 @@ final class PlaylistScreen {
             showList();
             return;
         }
-        panel.removeAllViews();
-
-        nameField = nameFieldFor(p);
-        panel.addView(nameField);
-        panel.addView(subtitle(photos(p.size()), 0));
-
+        // Built before the old body is detached, so the name field being replaced
+        // is still the one the focus listener will see leave. The listener checks
+        // identity with the current field, because by the time the detach fires
+        // nameField has moved on to the new one -- see nameFieldFor.
         LinearLayout box = column();
+        nameField = nameFieldFor(p);
+        box.addView(nameField);
+        box.addView(subtitle(photos(p.size()), 0));
 
         // ---- whether it rotates at all
         //
@@ -747,21 +602,24 @@ final class PlaylistScreen {
         box.addView(caption(str(R.string.playlists_photos_caption)));
         box.addView(photoList(p));
 
-        panel.addView(startScroll(box));
-        panel.addView(buttonRow(
-                button(R.string.playlist_delete, false, new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        confirmDelete(p.id);
-                    }
-                }),
-                button(R.string.action_done, true, new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        commitName();
-                        showList();
-                    }
-                })));
+        sheet.body(box);
+
+        Button delete = ModalSheet.button(activity, str(R.string.playlist_delete), false, true);
+        delete.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmDelete(p.id);
+            }
+        });
+        Button done = ModalSheet.button(activity, str(R.string.action_done), true, true);
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                commitName();
+                showList();
+            }
+        });
+        sheet.footerRow(delete, done);
     }
 
     /**
@@ -793,7 +651,12 @@ final class PlaylistScreen {
         field.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
-                if (!hasFocus) commitName();
+                // Only the CURRENT field may commit. A rebuild detaches the old
+                // field, and that focus loss arrives after nameField has already
+                // been reassigned to the new, empty one; committing then would
+                // write "" over the name the user just typed. Every rebuild path
+                // commits explicitly before it reassigns, so nothing is lost.
+                if (!hasFocus && v == nameField) commitName();
             }
         });
         return field;
@@ -1135,7 +998,7 @@ final class PlaylistScreen {
             showList();
             return;
         }
-        final ModalSheet sheet = new ModalSheet(activity, MODAL_MAX_FRACTION);
+        final ModalSheet confirm = new ModalSheet(activity, MODAL_MAX_FRACTION);
         LinearLayout body = column();
         TextView head = ModalSheet.title(activity, str(R.string.gallery_delete_title));
         // The gap the other modals get from their subtitle; see Gallery.modalBody.
@@ -1143,13 +1006,13 @@ final class PlaylistScreen {
         body.addView(head);
         body.addView(ModalSheet.subtitle(activity,
                 activity.getString(R.string.playlists_delete_message, p.displayName())));
-        sheet.body(body);
+        confirm.body(body);
 
         Button cancel = ModalSheet.button(activity, str(R.string.action_cancel), false, true);
         cancel.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                sheet.dismiss();
+                confirm.dismiss();
             }
         });
         Button delete = ModalSheet.button(activity, str(R.string.playlist_delete), true, true);
@@ -1158,18 +1021,20 @@ final class PlaylistScreen {
             public void onClick(View v) {
                 // Close first, then act: the editor is what is left when the
                 // question goes, and the same order the gallery's confirm uses.
-                sheet.dismiss();
+                confirm.dismiss();
                 PlaylistStore.remove(activity.prefs, id);
                 showList();
             }
         });
-        sheet.footerRow(cancel, delete);
-        sheet.show(activity);
+        confirm.footerRow(cancel, delete);
+        confirm.show(activity);
     }
 
     private void dismiss() {
-        if (dialog != null) dialog.dismiss();
-        dialog = null;
+        if (sheet != null) {
+            sheet.dismiss();
+            sheet = null;
+        }
     }
 
     private void toast(int res) {
@@ -1390,15 +1255,4 @@ final class PlaylistScreen {
         }
     }
 
-    // ------------------------------------------------------------------- layout
-
-    /** Put {@code box} in a fresh, capped scroll, and make it the current one. */
-    private View startScroll(LinearLayout box) {
-        scroll = new CappedScroll(activity);
-        scroll.setCeiling(ceiling());
-        scroll.addView(box);
-        scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        return scroll;
-    }
 }

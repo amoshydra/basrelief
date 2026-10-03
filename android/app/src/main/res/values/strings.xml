@@ -63,6 +63,10 @@
          a glyph cannot be worded and the control would otherwise be unnamed. -->
     <string name="add_photo_glyph">＋</string>
     <string name="settings_glyph">⚙</string>
+    <!-- The affordance on an action row that navigates. The row itself is the
+         control and carries its own description, so this glyph is decoration and
+         deliberately has no accessible name of its own. -->
+    <string name="row_navigates_glyph">›</string>
 
     <!--
       The fix line. Terse on purpose: the two actions underneath already say what

@@ -267,27 +267,29 @@ final class SettingsSheet {
         box.addView(toggle(R.string.settings_sleep_still,
                 R.string.settings_sleep_still_sub, KEY_SLEEP_WHEN_STILL));
 
-        // ---- About & diagnostics. This row is a fact, not a setting, so it is a
-        // plainRow: no mark at all. A switch would claim a state it does not have,
-        // and a dotless swatch is the picture-chip confusion the switches above it
-        // exist to end. The null listener is what makes the row non-clickable, so
-        // it cannot drift into a live-looking row that does nothing.
+        // ---- About & diagnostics. This is a fact, not a control, so it is a
+        // readingRow: no border, no pressed state, no mark, quieter ink. It used to
+        // share plainRow with Reset, which is why the one destructive button in the
+        // app and the version string looked identical; readingRow's factory takes no
+        // listener, so it cannot become a button by accident. The version is read
+        // from the package manager, never hard-coded.
         box.addView(ModalSheet.caption(activity,
                 activity.getString(R.string.group_about), false));
-        box.addView(ModalSheet.plainRow(activity,
+        box.addView(ModalSheet.readingRow(activity,
                 activity.getString(R.string.app_name) + " " + versionName(),
-                activity.getString(R.string.settings_licence), null));
+                activity.getString(R.string.settings_licence)));
 
         // ---- Reset. The one destructive action here, so it asks first (see
-        // confirmReset) and it carries the consequence on the row itself. The
+        // confirmReset) and it carries the consequence on the plate itself. The
         // subtitle is settings_reset_message, the same string the confirm dialog
         // shows, so the row and the question cannot drift into two sentences about
-        // one action. Shaped like every other row rather than as a plate of its
-        // own: same .opt padding and the same OPT_GAP_DP below it, which is the
-        // gap that was missing between Reset and the diagnostics panel.
-        box.addView(ModalSheet.plainRow(activity,
+        // one action. A bordered ghost plate, because that is what "tap me" looks
+        // like everywhere else in the app (the fix line's actions): a destructive
+        // action must not read as a tappable label. No chevron -- the confirm that
+        // follows is a question, not a destination.
+        box.addView(ModalSheet.actionRow(activity,
                 activity.getString(R.string.settings_reset),
-                activity.getString(R.string.settings_reset_message),
+                activity.getString(R.string.settings_reset_message), false,
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
