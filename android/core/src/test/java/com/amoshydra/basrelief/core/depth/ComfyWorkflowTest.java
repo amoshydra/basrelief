@@ -10,6 +10,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.List;
+
 /**
  * Pins the ComfyUI depth graph.
  *
@@ -181,5 +184,138 @@ public class ComfyWorkflowTest {
         assertEquals("execution error (see ComfyUI console)",
                 ComfyWorkflow.extractExecutionError(
                         new JSONObject("{\"messages\":[[\"progress\",{}]]}")));
+    }
+
+    // --------------------------------------------------------------- model filter
+
+    /**
+     * The depth-related entries copied from the user's real ComfyUI
+     * {@code /object_info} (one server, 1762 nodes). Real schemas on purpose: the
+     * bug this guards is a node the server lists but whose required inputs cannot
+     * be met, and an invented schema would not have caught it.
+     */
+    private static JSONObject realServerInfo() throws JSONException {
+        return new JSONObject("{"
+                + "\"DepthAnythingPreprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"DepthAnythingV2Preprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"Zoe_DepthAnythingPreprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"MiDaS-DepthMapPreprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"MeshGraphormer-DepthMapPreprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\", \"MASK\"]},"
+                + "\"DepthAnything_V2\": {"
+                + "  \"input\": {\"required\": {\"da_model\": [\"DAMODEL\"],"
+                + "                           \"images\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"DownloadAndLoadDepthAnythingV2Model\": {"
+                + "  \"input\": {\"required\": {\"model\": ["
+                + "      [\"depth_anything_v2_vits_fp16.safetensors\","
+                + "       \"depth_anything_v2_vitl_fp32.safetensors\"],"
+                + "      {\"default\": \"depth_anything_v2_vitl_fp32.safetensors\"}]}},"
+                + "  \"output\": [\"DAMODEL\"]},"
+                + "\"SBS_External_Depthmap_by_SamSeen\": {"
+                + "  \"input\": {\"required\": {\"base_image\": [\"IMAGE\"],"
+                + "                           \"depth_map\": [\"IMAGE\"],"
+                + "                           \"depth_scale\": [\"INT\"],"
+                + "                           \"mode\": [[\"Parallel\", \"Cross-eyed\"]]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"MeshGraphormer+ImpactDetector-DepthMapPreprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"],"
+                + "                           \"bbox_detector\": [\"BBOX_DETECTOR\"]}},"
+                + "  \"output\": [\"IMAGE\", \"MASK\"]},"
+                + "\"Hy3DRenderMultiViewDepth\": {"
+                + "  \"input\": {\"required\": {\"trimesh\": [\"TRIMESH\"],"
+                + "                           \"render_size\": [\"INT\"],"
+                + "                           \"texture_size\": [\"INT\"]}},"
+                + "  \"output\": [\"IMAGE\", \"MASK\"]}"
+                + "}");
+    }
+
+    /**
+     * The whole point: the chooser's list is exactly the nodes the graph builder
+     * can submit. A single-image preprocessor stays; a node that needs a model
+     * handle, a mask, a mesh or a second image goes.
+     */
+    @Test
+    public void filterKeepsWhatTheBuilderCanRunAndDropsTheRest() throws Exception {
+        List<String> expected = Arrays.asList(
+                "DepthAnythingPreprocessor",
+                "DepthAnythingV2Preprocessor",
+                "MeshGraphormer-DepthMapPreprocessor",
+                "MiDaS-DepthMapPreprocessor",
+                "Zoe_DepthAnythingPreprocessor");
+        assertEquals(expected, ComfyWorkflow.usableDepthModels(realServerInfo()));
+    }
+
+    /** The named regression: this one is offered today and always fails. */
+    @Test
+    public void depthAnythingV2IsDroppedBecauseItNeedsADaModelHandle() throws Exception {
+        assertFalse(ComfyWorkflow.canBuildWorkflow(
+                realServerInfo().getJSONObject("DepthAnything_V2")));
+    }
+
+    /** The named regression: a loader is not a depth producer. */
+    @Test
+    public void downloadAndLoadDepthAnythingV2ModelIsDropped() throws Exception {
+        // Its only required input is a satisfiable combo; what disqualifies it is
+        // the missing `image` input and the DAMODEL output SaveImage cannot read.
+        assertFalse(ComfyWorkflow.canBuildWorkflow(
+                realServerInfo().getJSONObject("DownloadAndLoadDepthAnythingV2Model")));
+    }
+
+    @Test
+    public void aNodeWithOnlyAnImageInputIsRunnable() throws Exception {
+        assertTrue(ComfyWorkflow.canBuildWorkflow(
+                realServerInfo().getJSONObject("DepthAnythingV2Preprocessor")));
+    }
+
+    /** A second, ordinary IMAGE input is still a missing link, not a scalar. */
+    @Test
+    public void aSecondRequiredImageInputMakesANodeUnrunnable() throws Exception {
+        assertFalse(ComfyWorkflow.canBuildWorkflow(
+                realServerInfo().getJSONObject("SBS_External_Depthmap_by_SamSeen")));
+    }
+
+    @Test
+    public void aNonImageOutputZeroMakesANodeUnrunnable() throws Exception {
+        // SaveImage reads output 0, so a node whose first output is a mask would
+        // be accepted by ComfyUI's graph check and then save the wrong tensor.
+        String info = "{\"DepthMask\": {\"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + " \"output\": [\"MASK\"]}}";
+        assertFalse(ComfyWorkflow.canBuildWorkflow(
+                new JSONObject(info).getJSONObject("DepthMask")));
+    }
+
+    /**
+     * A required combo has no type name — element 0 is the option array — so the
+     * older {@code getString(0)} threw before the prompt was sent. The builder
+     * must pick the node's default, or the first option when it has none.
+     */
+    @Test
+    public void requiredComboIsFilledInsteadOfThrowing() throws Exception {
+        String info = "{\"LoadDepth\": {\"input\": {\"required\": {"
+                + "  \"image\": [\"IMAGE\"],"
+                + "  \"which\": [[\"small\", \"large\"], {\"default\": \"large\"}],"
+                + "  \"bare\":  [[\"tiny\", \"huge\"]]}}}}";
+        JSONObject in = new JSONObject(
+                ComfyWorkflow.buildWorkflow(info, "LoadDepth", "up.png", 512, TS))
+                .getJSONObject("2").getJSONObject("inputs");
+        assertEquals("large", in.getString("which"));
+        assertEquals("tiny", in.getString("bare"));
+    }
+
+    /** The flag that lets an empty list explain itself instead of lying. */
+    @Test
+    public void hasDepthNodeDistinguishesAnEmptyServerFromAnUnusableOne() throws Exception {
+        assertTrue(ComfyWorkflow.hasDepthNode(realServerInfo()));
+        assertFalse(ComfyWorkflow.hasDepthNode(new JSONObject("{\"KSampler\": {}}")));
     }
 }

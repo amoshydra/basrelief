@@ -34,7 +34,6 @@ import org.json.JSONObject;
 import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -357,6 +356,14 @@ public final class DepthGenDialog {
     private final List<String> nodes = new ArrayList<String>();
     private final List<String> displayNames = new ArrayList<String>();
     private boolean modelsFetched;
+    /**
+     * True when the server had depth-named nodes but none this app can drive.
+     *
+     * <p>Set only after a fetch that produced no usable model. It is what lets
+     * {@link #renderSetup} say "none of these work from one image" instead of the
+     * false "No depth models on this server".
+     */
+    private boolean modelsUnusable;
 
     /**
      * The selection dot of each model's row, keyed by node name.
@@ -911,9 +918,15 @@ public final class DepthGenDialog {
             // Both texts are set whenever the list is known, because the list can
             // go from several models to none (the user pointed the app at a
             // different server) and a stale "Test the connection to load models"
-            // beside an empty list would send them round the loop.
-            modelEmpty.setText(nodes.isEmpty()
-                    ? R.string.depth_models_none : R.string.depth_models_untested);
+            // beside an empty list would send them round the loop. The empty case
+            // has two causes and they must not be collapsed: the server may have
+            // no depth node at all, or it may have depth nodes this app cannot
+            // drive from one image.
+            modelEmpty.setText(!nodes.isEmpty()
+                    ? R.string.depth_models_untested
+                    : (modelsUnusable
+                            ? R.string.depth_models_unusable
+                            : R.string.depth_models_none));
         }
         // Generate needs a confirmed model. The list is the SERVER's and cannot
         // be known before it is reached (R-PANEL2), so there is no path to a run
@@ -1005,23 +1018,23 @@ public final class DepthGenDialog {
             @Override
             public void run() {
                 try {
-                    final List<String> found = new ArrayList<String>();
+                    // The filter is :core's, so the list the user sees is exactly
+                    // the set the graph builder can submit — a node kept here and
+                    // rejected there would be a generation failure with no clue
+                    // that the model choice caused it.
                     final JSONObject obj = new JSONObject(new ComfyApi(host).getObjectInfo());
-                    Iterator<String> it = obj.keys();
-                    while (it.hasNext()) {
-                        String name = it.next();
-                        String lower = name.toLowerCase();
-                        if (lower.contains("depth") || lower.contains("midas")
-                                || lower.contains("zoe")) {
-                            found.add(name);
-                        }
-                    }
-                    Collections.sort(found);
-                    final List<String> sorted = found;
+                    final List<String> sorted = new ArrayList<String>(
+                            ComfyWorkflow.usableDepthModels(obj));
+                    // Only asked when the list came back empty, and only so the
+                    // message can tell "no depth nodes" from "depth nodes that
+                    // cannot be driven".
+                    final boolean filteredToEmpty =
+                            sorted.isEmpty() && ComfyWorkflow.hasDepthNode(obj);
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
                             modelsFetched = true;
+                            modelsUnusable = filteredToEmpty;
                             nodes.clear();
                             nodes.addAll(sorted);
                             displayNames.clear();
@@ -1041,6 +1054,7 @@ public final class DepthGenDialog {
                         @Override
                         public void run() {
                             modelsFetched = false;
+                            modelsUnusable = false;
                             nodes.clear();
                             displayNames.clear();
                             // The rows go too. A list the server has just failed to

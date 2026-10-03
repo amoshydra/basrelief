@@ -4,7 +4,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Builds the ComfyUI graph the Depth AI page submits, plus the small pure
@@ -78,7 +81,11 @@ public final class ComfyWorkflow {
             String inName = it.next();
             if (inName.equals("image")) continue; // already wired above
             JSONArray spec = required.getJSONArray(inName);
-            String type = spec.getString(0);
+            // A combo's type slot is the option array itself, not a type name.
+            // Calling getString(0) on it throws, so a required combo used to
+            // make buildWorkflow fail before the prompt was ever sent.
+            Object typeObj = spec.opt(0);
+            String type = typeObj instanceof String ? (String) typeObj : "";
             Object def = spec.length() > 1 ? spec.opt(1) : null;
             Object value;
             if (inName.equals("resolution")) {
@@ -86,9 +93,9 @@ public final class ComfyWorkflow {
             } else if (def instanceof JSONObject) {
                 // options dict — use the node's own default when present
                 JSONObject opts = (JSONObject) def;
-                value = opts.has("default") ? opts.get("default") : defaultForType(type);
+                value = opts.has("default") ? opts.get("default") : fallbackFor(typeObj);
             } else if (def == null) {
-                value = defaultForType(type); // never drop a required input
+                value = fallbackFor(typeObj); // never drop a required input
             } else {
                 value = def;
             }
@@ -117,6 +124,125 @@ public final class ComfyWorkflow {
         if (type.equals("FLOAT")) return 0.0;
         if (type.equals("BOOLEAN")) return true;
         return "";
+    }
+
+    /**
+     * A value for a required input with no explicit default.
+     *
+     * <p>A combo declares no type name; its slot holds the option array, and the
+     * first option is the only value guaranteed to be valid. Anything else falls
+     * back to {@link #defaultForType}, with an empty string for a missing type.
+     */
+    private static Object fallbackFor(Object typeObj) {
+        if (typeObj instanceof JSONArray) {
+            JSONArray options = (JSONArray) typeObj;
+            return options.length() > 0 ? options.opt(0) : "";
+        }
+        return defaultForType(typeObj instanceof String ? (String) typeObj : "");
+    }
+
+    /**
+     * The server's nodes that can serve as the single image-to-depth step this
+     * app builds, sorted by class name.
+     *
+     * <p>This is the chooser's whole candidate list: the name heuristic that
+     * finds nodes worth looking at, and {@link #canBuildWorkflow} that removes the
+     * ones the builder cannot drive. It lives here, not in the dialog, because it
+     * is a pure function of the server's JSON and belongs under test.
+     *
+     * @param objectInfo the whole {@code /object_info} body
+     * @return class names that match the depth heuristic and can be wired from a
+     *         single uploaded image
+     */
+    public static List<String> usableDepthModels(JSONObject objectInfo) {
+        List<String> usable = new ArrayList<String>();
+        Iterator<String> it = objectInfo.keys();
+        while (it.hasNext()) {
+            String name = it.next();
+            if (!looksLikeDepthModel(name)) continue;
+            JSONObject node = objectInfo.optJSONObject(name);
+            if (node != null && canBuildWorkflow(node)) usable.add(name);
+        }
+        Collections.sort(usable);
+        return usable;
+    }
+
+    /**
+     * Whether the server names any depth-like node at all, usable or not.
+     *
+     * <p>Exists so an empty list can be explained rather than misreported: "No
+     * depth models on this server" is false when the server has plenty and this
+     * app simply cannot drive any of them.
+     */
+    public static boolean hasDepthNode(JSONObject objectInfo) {
+        Iterator<String> it = objectInfo.keys();
+        while (it.hasNext()) {
+            if (looksLikeDepthModel(it.next())) return true;
+        }
+        return false;
+    }
+
+    /** The name heuristic the panel has always used to find depth nodes. */
+    static boolean looksLikeDepthModel(String name) {
+        String lower = name.toLowerCase();
+        return lower.contains("depth") || lower.contains("midas") || lower.contains("zoe");
+    }
+
+    /**
+     * Whether {@link #buildWorkflow} can drive this node from an uploaded image.
+     *
+     * <p>The rule mirrors the builder exactly, and that is the point: a node the
+     * chooser keeps must be one the builder can actually submit. The builder
+     * supplies a value for the required input named {@code image} by wiring it to
+     * {@code LoadImage}, and for every other required input it sends the node's
+     * own default or a type-appropriate plain value. It cannot produce a link, so
+     * a required input of a custom handle type — {@code MODEL}, {@code DAMODEL},
+     * {@code LATENT}, {@code MASK}, a second {@code IMAGE} — would be sent as an
+     * empty string and refused by the server. A required combo is a plain value
+     * the builder can pick, so it counts as satisfiable. The node must also emit
+     * an image as output 0, because {@code SaveImage} always reads that output.
+     *
+     * @param nodeInfo one node's entry from {@code /object_info}
+     * @return true when a single image plus that node's defaults is a valid graph
+     */
+    public static boolean canBuildWorkflow(JSONObject nodeInfo) {
+        JSONObject input = nodeInfo.optJSONObject("input");
+        JSONObject required = input != null ? input.optJSONObject("required") : null;
+        if (required == null) required = nodeInfo.optJSONObject("required"); // fallback
+        if (required == null) return false;
+
+        // SaveImage is hard-wired to output 0, so that output must be the image.
+        JSONArray output = nodeInfo.optJSONArray("output");
+        if (output != null && output.length() > 0 && !"IMAGE".equals(output.opt(0))) {
+            return false;
+        }
+
+        boolean hasImage = false;
+        Iterator<String> it = required.keys();
+        while (it.hasNext()) {
+            String name = it.next();
+            JSONArray spec = required.optJSONArray(name);
+            if (spec == null || spec.length() == 0) return false;
+            Object type = spec.opt(0);
+            if (name.equals("image")) {
+                // The builder wires only an IMAGE-typed input named `image`.
+                if (!"IMAGE".equals(type)) return false;
+                hasImage = true;
+            } else if (!(type instanceof JSONArray) && !isPlainInputType(type)) {
+                // A handle type can only come from another node, so the builder
+                // would put "" here and the server would reject the prompt.
+                return false;
+            }
+        }
+        return hasImage;
+    }
+
+    /** Types whose required input the builder can fill with a literal value. */
+    private static boolean isPlainInputType(Object type) {
+        if (!(type instanceof String)) return false;
+        String t = (String) type;
+        return t.equals("INT") || t.equals("FLOAT") || t.equals("BOOLEAN")
+                || t.equals("STRING") || t.equals("COMBO");
     }
 
     /** Turn a raw ComfyUI class name into something human-readable. */

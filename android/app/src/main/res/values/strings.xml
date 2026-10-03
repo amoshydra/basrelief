@@ -317,6 +317,10 @@
     <string name="depth_test_failed">Not reached: %1$s</string>
     <string name="depth_models_untested">Test the connection to load models</string>
     <string name="depth_models_none">No depth models on this server</string>
+    <!-- The server has depth nodes, but every one of them needs an input this
+         app cannot supply (a model, a mask, or a second image), so the list is
+         empty for a reason the old message would misreport. -->
+    <string name="depth_models_unusable">No depth model on this server runs from a single image</string>
     <!-- R-PANEL3. Depth results get compared, so a silently changed model makes
          the comparison meaningless; the swap says so. -->
     <string name="depth_model_gone">%1$s is gone — using %2$s</string>
