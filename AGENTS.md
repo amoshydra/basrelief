@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 363 tests across twenty-one classes:
+it**. 378 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -518,23 +518,73 @@ has run.**
 - `SheetMorphTest` — the studio sheet **morphing into the pill** as one view on one
   axis, because it used to be two views with two lifecycles (the panel's height
   reached zero and a separate `pill` view went VISIBLE), and a pop by construction
-  is also why the pill could not be a drag handle. Three functions, one band
-  constant. The height's traps: it must never dip below the pill at any fraction
-  (a lerp that dipped would be a card that gets *taller* as it collapses, which a
-  sweep catches and a spot check does not), and it must keep rising for a negative
+  is also why the pill could not be a drag handle. **The height mapping is piecewise
+  -- hold, then fall -- and that is a decision, not an accident.** Every fraction below
+  `HEIGHT_BAND_START` returns the natural height *exactly*; only the last stretch
+  falls to the pill. The brief: the shrink should happen only at the very end of the travel. A plain lerp spends the whole gesture giving up
+  height, so every centimetre of travel costs the sheet some of the screen and
+  dragging down reads as shrinking a card rather than putting something away.
+  `HEIGHT_BAND_START` **is** `EDGE_BAND_START` -- the same line as the fade -- because
+  inside the band the content is dissolving and the sheet is losing its height, and
+  outside it both say "still here"; the test asserts that equality, and against
+  `SheetIntent.SHEET`'s threshold, so all three numbers cannot drift apart.
+  **Price this before widening it:** the whole collapse now happens in the last 5%
+  of travel, and the studio sheet is `FREE`, so it can rest nowhere inside that band
+  and a drag past 95% commits all at once. It is one constant.
+  The height's other traps: it must never dip below the pill at any fraction (a curve
+  that dipped would be a card that gets *taller* as it collapses, which a sweep
+  catches and a spot check does not), and it must keep rising for a negative
   fraction, because that is the over-open tether and clamping it would delete a
-  spring the user can feel. The fade's trap is **the parked sheet**: the studio is
+  spring the user can feel. **"Monotonic" now means non-increasing, and the plateau is
+  the point** -- a strictly decreasing function over the whole travel is precisely
+  the old behaviour. Continuity is asserted by *resolution*: doubling the sweep
+  density must halve the largest single step, which a seam at the join cannot do.
+  An earlier version asserted "the last 1% must move under 5% of the fall" and
+  failed; the assertion was wrong rather than the curve, because the fall is
+  confined to 5% of travel, so 1% of travel is a fifth of the fall by arithmetic. The fade's trap is **the parked sheet**: the studio is
   `FREE` and can rest anywhere below its collapse threshold, so the band is pinned
   to exactly that threshold — asserted *equal* to `SheetIntent.SHEET`'s, so the two
-  cannot drift — and the substantive test is that a sheet parked at the band's start
-  is already down to a fraction of its natural height, which is why fading there is
-  not the old "looks disabled" bug. Note two tests here that were written wrong and
-  fixed rather than papered over: one compared `edgeFade(f)` with `edgeFade(f)`,
-  which cannot fail; and one asserted the band began with the panel "nearly its full
-  height", which is false because the height mapping is linear and 5% of travel is
-  5% of the range. The radius test exists because interpolating toward
+  cannot drift. **What makes fading there honest is that equality and nothing
+  else.** `SheetIntent` collapses a release only when `projected >
+  collapseThreshold`, and `edgeFade` is exactly 1.0 at or below that same number, so
+  no position the sheet can rest at is ever faded. The argument never mentions
+  height, which is why it survived the height being changed underneath it. An
+  earlier version of this test justified the band by the sheet being *small* at its
+  start — true only while the height mapping was linear, and it sampled exactly one
+  point of the curve to prove it. That is a test which keeps passing straight through
+  the moment the curve's shape changes; it was rewritten and the fact that the band
+  start is now at **full** height is pinned instead. The cost is recorded rather
+  than asserted away: inside the band the sheet is still tall while its content
+  dissolves, so it is the one stretch where a fading sheet is also a big sheet.
+  Note two more tests here written wrong and fixed rather than papered over: one
+  compared `edgeFade(f)` with `edgeFade(f)`, which cannot fail; and one asserted
+  the band began with the panel "nearly its full height". The radius test exists because interpolating toward
   `panelHeight / 2` gave a 2400px panel a **611px** corner half way down a drag —
-  a stadium — so the panel's half-height is a ceiling, never the target.
+  a stadium — so the panel's half-height is a ceiling, never the target. Its third
+  theme is the rest of the **shape**, which the radius could not fix alone: the
+  morph rounded the sheet's top corners and left the object a full-width bar
+  flush to the bottom of the screen, and the user filed that as the fully collapsed sheet did not look like the original pill — a complaint every measured
+  number contradicted, because the strip really was 167px, unmoved and unfaded.
+  **Appearance is not measurable by bounds, and this is the second time that has
+  cost a round trip.** **The pill's shape is a width, not a margin.** The first
+  version of this fix specified it as 28dp a side -- faithful to the pre-morph pill,
+  and still a bar, because on a 483dp phone that leaves 88% of the width. The token
+  is now `PILL_WIDTH_FRACTION = 0.72` in `:app`, with the subtraction in
+  `SheetMorph.pillSideMarginFor`; a fraction rather than dp because the sheet is
+  edge-to-edge on every supported phone, so a fixed dp width is nearly the screen on
+  a compact one and a lozenge on a large one. Centred by construction -- the margin
+  is half the leftover -- so the two sides cannot differ. So `insetFor` (26dp off the
+  bottom, plus the nav bar) and
+  `blendColour` (the sheet's own glass to the original pill's plate, both
+  recovered from `227a53f^`) are here too, and the capsule is the *same* radius
+  function asked with `0` as its open radius rather than a second rule that could
+  drift from the first. Their shared trap is **no step in the last 1% of travel**,
+  swept at a hundredth of a percent because a snap there is invisible in any
+  screenshot taken at rest and obvious in the hand. Two of the assertions here are
+  written as *signed* checks per channel for a reason worth keeping: the alpha
+  **falls** (the strip eases from 0xEB glass into 0xB8 plate, so more of the render
+  shows through) while the colour channels rise, and a first run that asserted one
+  direction for all four caught exactly that.
 - `DepthSourceTest` — whether a photo has depth at all, and **where that depth
   lives**, which are two different questions the app had been answering with one. The
   bug it exists for: `hasDepth()` asked only whether a separate depth *file* exists, so a

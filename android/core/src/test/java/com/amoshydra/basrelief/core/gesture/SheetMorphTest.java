@@ -44,6 +44,11 @@ public class SheetMorphTest {
     private static final float PILL = 168f;   // 56dp at 3x
     private static final float OPEN_R = 22f;  // the sheet's own top corner, px
     private static final float PILL_R = 28f;  // half the pill's height: a semicircle
+    private static final float SIDE = 84f;    // the pill's 28dp side margin, px at 3x
+    /** The panel's own glass, rgba(22,26,32,.92) -- the strip at f = 0. */
+    private static final int GLASS = 0xEB161A20;
+    /** The original pill's plate, rgba(28,32,38,.72) -- the strip at f = 1. */
+    private static final int PLATE = 0xB81C2026;
 
     // ------------------------------------------------------------ the height
 
@@ -77,7 +82,16 @@ public class SheetMorphTest {
         }
     }
 
-    /** Monotonic: every step down is a step smaller, so a reversal reads as a reversal. */
+    /**
+     * Monotonic, which here means <b>non-increasing</b>: every step is level or down
+     * and never up, so a reversal of the gesture reads as a reversal.
+     *
+     * <p>The plateau is the feature and not an accident of the fixture. This sweep
+     * used to assert only {@code h <= previous}, which a strictly falling curve also
+     * satisfies — so it passed under <i>both</i> mappings and could not tell them
+     * apart. {@link #theSheetKeepsEveryPixelOfItsHeightUntilTheBandStarts} is the
+     * test that separates them.
+     */
     @Test
     public void theHeightOnlyEverDecreasesAsTheSheetCollapses() {
         float previous = Float.MAX_VALUE;
@@ -86,6 +100,113 @@ public class SheetMorphTest {
             assertTrue("grew at f=" + (i / 1000f), h <= previous + 1e-4f);
             previous = h;
         }
+    }
+
+    /**
+     * <b>The sheet keeps its full height until the very end</b>, which is the whole
+     * of this change and the one the old mapping got backwards.
+     *
+     * <p>The user: <i>the shrink should happen only at the very end of the travel</i> A lerp across the whole travel spent the gesture giving
+     * up height, so half way down the drag the sheet was already two thirds gone and
+     * the user was dragging something that shrank rather than something that moved.
+     *
+     * <p>Asserted <b>exactly</b>, not approximately: the hold must be bit-for-bit the
+     * natural height, because a hold that drifted a pixel per frame is the old linear
+     * creep wearing the same shape as the fix.
+     */
+    @Test
+    public void theSheetKeepsEveryPixelOfItsHeightUntilTheBandStarts() {
+        for (int i = 0; i <= 950; i++) {
+            float f = i / 1000f;
+            assertEquals("the sheet gave up height at f=" + f + ", long before the end",
+                    NATURAL, SheetMorph.heightFor(f, NATURAL, PILL), 0f);
+        }
+        // The join itself is still full height: it is the one value both halves of the
+        // curve must agree on, and it is where a piecewise mapping would seam.
+        assertEquals(NATURAL,
+                SheetMorph.heightFor(SheetMorph.HEIGHT_BAND_START, NATURAL, PILL), 0f);
+        // Past it, strictly falling.
+        assertTrue(SheetMorph.heightFor(0.99f, NATURAL, PILL) < NATURAL);
+        assertTrue(SheetMorph.heightFor(1f, NATURAL, PILL) < NATURAL);
+    }
+
+    /**
+     * The height falls in the <b>same stretch</b> as the content fades, because that
+     * is the coherence rather than a coincidence: inside the band the content is
+     * dissolving and the sheet is losing its height, and outside it both say "still
+     * here".
+     *
+     * <p>Asserted as an equality so a later edit to one constant cannot quietly
+     * break the story. The same relationship is asserted against {@link SheetIntent}'s
+     * collapse threshold elsewhere in this file, which is the third link in the same
+     * chain — and the chain is the point: the fade's band, the height's band and the
+     * policy that says where the sheet may rest are three numbers that must not drift
+     * apart.
+     */
+    @Test
+    public void theHeightFallsInTheSameStretchAsTheFade() {
+        assertEquals(SheetMorph.EDGE_BAND_START, SheetMorph.HEIGHT_BAND_START, 0f);
+        assertEquals(SheetIntent.SHEET.collapseThreshold, SheetMorph.HEIGHT_BAND_START, 0f);
+    }
+
+    /**
+     * <b>Level, then falling, and continuous at the join.</b> The join is a seam a
+     * linear curve could not have had, so it is swept rather than reasoned about —
+     * the whole range at a hundredth of a percent, because a seam in the height shows
+     * up as a twitch in the hand and nowhere else.
+     *
+     * <p>The property that matters is not "never rises", which a creeping curve also
+     * satisfies, but that inside the hold every step is <b>exactly zero</b> and inside
+     * the fall every step is <b>negative</b>, and the two never mix in one step.
+     *
+     * <p><b>Continuity is asserted by resolution, not by a magnitude.</b> The first
+     * version of this test asserted "the last 1% must move less than 5% of the fall"
+     * and failed, and the assertion was what was wrong rather than the curve: the
+     * fall is confined to the last {@code 1 - }{@value SheetMorph#HEIGHT_BAND_START}
+     * of the travel, so one percent of travel is <i>one fifth</i> of the fall by
+     * arithmetic and no correct implementation can satisfy the smaller bound. A
+     * number like that is not a property of continuity, it is a guess about how steep
+     * the collapse ought to be. Continuity actually means that halving the sample
+     * spacing halves the largest single step — a jump keeps its own size however fine
+     * the sweep gets — so that is what this asserts instead, and a seam at the join
+     * still fails it.
+     */
+    @Test
+    public void theHeightIsLevelThenFallingWithNoStepAtTheJoin() {
+        float previous = SheetMorph.heightFor(0f, NATURAL, PILL);
+        for (int i = 1; i <= 10000; i++) {
+            float f = i / 10000f;
+            float now = SheetMorph.heightFor(f, NATURAL, PILL);
+            float step = now - previous;
+            if (f <= SheetMorph.HEIGHT_BAND_START) {
+                assertEquals("the hold crept at f=" + f + ": " + previous + " -> " + now,
+                        0f, step, 0f);
+            } else {
+                assertTrue("the height rose at f=" + f, step <= 0f);
+            }
+            previous = now;
+        }
+        float coarse = maxHeightStep(1000);
+        float fine = maxHeightStep(2000);
+        assertEquals("the curve is not continuous: halving the sweep resolution left "
+                        + "the largest single step at " + coarse + " -> " + fine,
+                coarse / 2f, fine, Math.max(1e-3f, coarse * 1e-3f));
+    }
+
+    /**
+     * The largest single-step change in the height over {@code n} equal steps of
+     * travel. Doubling {@code n} must halve it for a continuous curve and not at all
+     * for one with a jump, which is the whole of the continuity argument above.
+     */
+    private static float maxHeightStep(int n) {
+        float worst = 0f;
+        float previous = SheetMorph.heightFor(0f, NATURAL, PILL);
+        for (int i = 1; i <= n; i++) {
+            float now = SheetMorph.heightFor(i / (float) n, NATURAL, PILL);
+            worst = Math.max(worst, Math.abs(now - previous));
+            previous = now;
+        }
+        return worst;
     }
 
     /**
@@ -214,37 +335,58 @@ public class SheetMorphTest {
     }
 
     /**
-     * At the band start the sheet is <b>already nearly the pill</b> — which is why
-     * fading there is honest rather than the "looks disabled" failure.
+     * <b>A sheet that can come to rest is never faded</b> -- and the reason is the
+     * rest threshold, not the sheet's size.
      *
-     * <p>This test replaced one that asserted the opposite and was simply wrong.
-     * It claimed the band begins with the panel "still nearly its full height", on
-     * the reasoning that the fade must not be keyed to height. But the height
-     * mapping is a <i>linear lerp</i>, so 5% of travel is 5% of the height range
-     * either way, and at {@code EDGE_BAND_START} the panel is down to about an
-     * eighth of its natural height — 93dp against a 56dp pill on the Pixel. There
-     * is no meaningful difference between "fraction of travel" and "fraction of
-     * height remaining" here, because the two mappings are the same function. The
-     * distinction that <i>is</i> real is structural — {@code edgeFade} takes no
-     * height at all — and it is stated in the code, not testable here.
+     * <p><b>This test was rewritten, and its old justification was wrong even while
+     * it passed.</b> It claimed that at the band start the sheet is "already nearly
+     * the pill", which under a linear height mapping was true and is now false by
+     * construction: the height holds at its full natural height right up to the band,
+     * so at the band start the sheet is <i>entirely</i> there. It also only ever
+     * sampled the single point {@code f = EDGE_BAND_START}, where the linear mapping
+     * happened to leave the sheet at a fifth of its height -- so it was measuring a
+     * coincidence of the curve's shape rather than a property of the fade. At
+     * {@code f = 0.96} the sheet was 80% of its height under that mapping too, and
+     * would have looked just as usable, which is the failure the band exists to
+     * prevent. A test that samples one point of a curve and calls the curve's shape
+     * a guarantee will keep passing right through the moment the shape changes.
      *
-     * <p>What the number below pins is the <b>substantive</b> half of the tight
-     * band, which the other tests do not reach on their own: the reason a user who
-     * parks inside the band is not looking at a usable sheet is that the sheet has
-     * already shrunk to a few dp of content above the strip. If the pill were, say,
-     * a fifth of the panel rather than 56dp, the band would need to be much
-     * narrower still, and this test is what would say so.
+     * <p><b>What actually holds the line is an equality of two constants.</b>
+     * {@code SheetIntent} collapses a release only when {@code projected >
+     * policy.collapseThreshold}, so every fraction at which the studio sheet can come
+     * to rest is at or below that number; and {@code edgeFade} is exactly 1.0 at or
+     * below {@code EDGE_BAND_START}, which <i>is</i> that number. No resting position
+     * is faded, and the argument never mentions height -- so it survives the height
+     * being changed underneath it, which the old one did not.
      */
     @Test
-    public void insideTheBandTheSheetIsAlreadyNearlyThePill() {
-        float atBandStart = SheetMorph.heightFor(SheetMorph.EDGE_BAND_START, NATURAL, PILL);
-        assertTrue("a sheet parked at the band start must not be a usable sheet, or "
-                        + "fading its content is the 'looks disabled' bug",
-                atBandStart < NATURAL * 0.2f);
-        // Still the pill's floor plus a sliver, and the sliver is what fades.
-        assertTrue(atBandStart > PILL);
-        assertTrue("and the whole band is a small slice of the height range",
-                (atBandStart - PILL) < (NATURAL - PILL) * 0.1f);
+    public void aSheetThatCanRestIsFullHeightAndNeverFaded() {
+        for (int i = 0; i <= 950; i++) {
+            float f = i / 1000f;
+            assertEquals("a sheet can rest at f=" + f + " but its content is faded",
+                    1f, SheetMorph.edgeFade(f), 0f);
+        }
+        assertTrue("the studio sheet could rest at every fraction, so there is no "
+                        + "position at which fading would be honest",
+                SheetIntent.SHEET.collapseThreshold < 1f);
+
+        // The new fact, pinned so the disappearance of the old coincidence is
+        // documented rather than forgotten: the band start is at FULL height.
+        assertEquals(NATURAL,
+                SheetMorph.heightFor(SheetMorph.EDGE_BAND_START, NATURAL, PILL), 0f);
+
+        // And the cost of the hold, recorded rather than asserted away. The height
+        // only begins to fall on the same line the fade does, so inside the band the
+        // sheet is still tall while its content dissolves -- the one stretch where a
+        // fading sheet is also a big sheet. No resting sheet is ever in it (asserted
+        // above), but it is a look to check on a device rather than a property this
+        // file can decide, and widening or narrowing the band moves where it sits.
+        float justInside = SheetMorph.heightFor(0.97f, NATURAL, PILL);
+        assertTrue("inside the band the sheet is no longer at full height",
+                justInside < NATURAL);
+        assertTrue("but it is still most of its height while fading, which is the "
+                        + "tension to look at: " + justInside + " of " + NATURAL,
+                justInside > NATURAL * 0.5f);
     }
 
     // ------------------------------------------------------- corner radius
@@ -309,5 +451,277 @@ public class SheetMorphTest {
         // And the pill's target is clamped by the same ceiling when the strip is
         // shorter than the radius it was asked for.
         assertEquals(20f, SheetMorph.cornerRadiusFor(1f, 40f, OPEN_R, 400f), 1e-4f);
+    }
+
+    /**
+     * The bottom corners are the <i>same function with 0 as the open radius</i>, so
+     * the two pairs arrive at one number. That equality is the whole capsule: a
+     * shape whose top corners and bottom corners disagree is a bar with two soft
+     * ends, which is exactly what the morph produced when only the top pair was
+     * rounded.
+     */
+    @Test
+    public void theTopAndBottomCornersAgreeOnceCollapsed() {
+        for (int i = 0; i <= 100; i++) {
+            float f = i / 100f;
+            // The bottom pair asks the same question with a square open end, which is
+            // what the panel has always been at f = 0.
+            float bottom = SheetMorph.cornerRadiusFor(f, PILL, 0f, PILL_R);
+            float top = SheetMorph.cornerRadiusFor(f, PILL, OPEN_R, bottom);
+            if (f >= 1f) {
+                assertEquals("f=" + f + " left the corners disagreeing", bottom, top,
+                        1e-4f);
+            }
+            assertTrue("f=" + f + " rounded the bottom corners while open: " + bottom,
+                    bottom <= 1e-4f || f > 0f);
+        }
+        // Both ends of the collapsed shape: a semicircle, and a square while open.
+        assertEquals(0f, SheetMorph.cornerRadiusFor(0f, PILL, 0f, PILL_R), 1e-4f);
+        assertEquals(PILL_R, SheetMorph.cornerRadiusFor(1f, PILL, 0f, PILL_R), 1e-4f);
+    }
+
+    // --------------------------------------------------------------- the insets
+
+    /**
+     * The inset is <b>0 while the sheet is open</b>, which is what keeps the open
+     * sheet laid out at exactly the margins it always had. A pill inset that started
+     * at a few dp would draw a seam up both sides of every expanded sheet, and
+     * there is no way to see that in a collapsed screenshot.
+     */
+    @Test
+    public void thereIsNoInsetUntilTheSheetCollapses() {
+        assertEquals(0f, SheetMorph.insetFor(0f, SIDE), 1e-4f);
+        assertEquals(0f, SheetMorph.insetFor(-0.2f, SIDE), 1e-4f);
+        // And it is exactly the pill's own inset once collapsed -- 28dp at 3x.
+        assertEquals(SIDE, SheetMorph.insetFor(1f, SIDE), 1e-4f);
+        assertEquals(SIDE, SheetMorph.insetFor(1.4f, SIDE), 1e-4f);
+    }
+
+    /**
+     * The trap in the last stretch of travel, swept rather than spot-checked: the
+     * user's complaint was that the collapsed sheet did not look like the pill, and
+     * the failure was a shape that sat at the pill's <i>sizes</i> and did nothing
+     * about its <i>position</i> until the end. A snap in over the final 1% is
+     * invisible in any screenshot taken at rest and obvious in the hand.
+     */
+    @Test
+    public void theInsetMovesSmoothlyThroughTheEndOfTheTravel() {
+        float previous = SheetMorph.insetFor(0f, SIDE);
+        for (int i = 1; i <= 1000; i++) {
+            float f = i / 1000f;
+            float now = SheetMorph.insetFor(f, SIDE);
+            assertTrue("f=" + f + " went backwards: " + previous + " then " + now,
+                    now >= previous - 1e-4f);
+            assertTrue("f=" + f + " overshot the pill's own inset: " + now,
+                    now <= SIDE + 1e-4f);
+            previous = now;
+        }
+        // The specific boundary the user saw: 0.99 -> 1.0 must be one 1% step and
+        // not the whole inset. A lerp moves SIDE/100 = 0.84px in that step; an
+        // inset that snapped would move all 84.
+        float step = SheetMorph.insetFor(1f, SIDE) - SheetMorph.insetFor(0.99f, SIDE);
+        assertEquals(SIDE / 100f, step, 1e-3f);
+        assertTrue("the last 1% moved " + step + "px of a " + SIDE + "px inset",
+                step < SIDE * 0.02f);
+    }
+
+    /** A negative inset is not an inset, and nothing here throws on nonsense. */
+    @Test
+    public void nothingHereThrowsOnDegenerateInsetInput() {
+        assertEquals(0f, SheetMorph.insetFor(0.5f, -10f), 1e-4f);
+        assertEquals(0f, SheetMorph.insetFor(1f, 0f), 1e-4f);
+        assertEquals(0f, SheetMorph.insetFor(Float.NaN, SIDE), 1e-4f);
+        assertEquals(SIDE, SheetMorph.insetFor(Float.POSITIVE_INFINITY, SIDE), 1e-4f);
+    }
+
+    // ---------------------------------------------------------- the pill's width
+
+    /**
+     * The collapsed <b>width</b>, not a margin — and this is the test that would have
+     * caught the first attempt.
+     *
+     * <p>That attempt was faithful to history and still wrong: 28dp a side, recovered
+     * from the pre-morph pill, leaves the pill 88% of this phone's width, which is a
+     * bar. The user asked for the total width to be smaller. So the endpoint here is
+     * asserted as a <b>width</b>, and a fraction the eye reads as a capsule: 0.72.
+     */
+    @Test
+    public void theCollapsedWidthIsTheFractionAndNotARoundingOfTheScreen() {
+        float screen = 1440f;
+        float margin = SheetMorph.pillSideMarginFor(1f, screen, 0.72f);
+        float width = screen - 2f * margin;
+        assertEquals(screen * 0.72f, width, 0.01f);
+        // The bar this replaces, for the size of the difference: 28dp at this
+        // phone's density is 83px a side, which is 88.4% of the width.
+        float barMargin = 83f;
+        assertTrue("the old 28dp margin left the pill this wide: "
+                        + (screen - 2f * barMargin),
+                (screen - 2f * barMargin) > screen * 0.85f);
+        assertTrue("so the two are not the same shape",
+                width < (screen - 2f * barMargin) - 200f);
+    }
+
+    /** Centred by construction: one number, so the two sides cannot differ. */
+    @Test
+    public void thePillIsCentredBecauseThereIsOnlyOneMargin() {
+        float screen = 1080f;   // a compact phone
+        float margin = SheetMorph.pillSideMarginFor(1f, screen, 0.72f);
+        assertEquals("the right margin is not the left one", margin, margin, 0f);
+        assertEquals(screen, 2f * margin + screen * 0.72f, 1e-3f);
+        // The left edge of the pill and the space to the right of it are equal, which
+        // is what "centred" means and is only true because the margin is half of the
+        // leftover rather than two independent numbers.
+        assertEquals(margin, (screen - (screen - 2f * margin)) / 2f, 1e-3f);
+    }
+
+    /**
+     * The margin grows on the same curve as the height's fall, so the pill cannot
+     * reach its width before it reaches its height or after.
+     *
+     * <p>Swept rather than spot-checked because the failure is a seam: two quantities
+     * animated on two curves that cross at the ends but not in between give a shape
+     * that is briefly a lozenge and briefly a bar, which no single sample finds.
+     */
+    @Test
+    public void theMarginGrowsSmoothlyAndIsZeroUntilTheSheetCollapses() {
+        assertEquals("the open sheet must be laid out at the margins it always had",
+                0f, SheetMorph.pillSideMarginFor(0f, 1440f, 0.72f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(-0.2f, 1440f, 0.72f), 0f);
+        float previous = 0f;
+        for (int i = 1; i <= 10000; i++) {
+            float f = i / 10000f;
+            float now = SheetMorph.pillSideMarginFor(f, 1440f, 0.72f);
+            assertTrue("the margin went backwards at f=" + f, now >= previous - 1e-4f);
+            // Same continuity argument as the height: the step shrinks with the
+            // sampling, so there is no seam hiding in it.
+            assertTrue("the margin jumped by " + (now - previous) + " at f=" + f,
+                    now - previous < 1440f * 0.001f);
+            previous = now;
+        }
+        // And it is exactly the pill's width at the pill.
+        assertEquals(1440f * 0.14f,
+                SheetMorph.pillSideMarginFor(1f, 1440f, 0.72f), 1e-3f);
+    }
+
+    /** Degenerate widths and fractions must not throw or invert the sides. */
+    @Test
+    public void theMarginIsWellBehavedOnDegenerateInput() {
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 0f, 0.72f), 0f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, -100f, 0.72f), 0f);
+        // A fraction of 1 is "no narrowing" and 0 is "no pill", both of which are
+        // degenerate but neither of which may produce a negative margin.
+        assertEquals(0f, SheetMorph.pillSideMarginFor(1f, 1440f, 1f), 0f);
+        assertEquals(720f, SheetMorph.pillSideMarginFor(1f, 1440f, 0f), 1e-3f);
+        // Out-of-range fractions clamp rather than extrapolate.
+        assertEquals(201.6f,
+                SheetMorph.pillSideMarginFor(9f, 1440f, 0.72f), 1e-3f);
+        assertEquals(0f, SheetMorph.pillSideMarginFor(Float.NaN, 1440f, 0.72f), 0f);
+    }
+
+    // ------------------------------------------------------------ the colour
+
+    /** Both ends are the values the object actually had, so both are pinned. */
+    @Test
+    public void theBlendRunsFromTheSheetsGlassToThePillsPlate() {
+        // rgba(22,26,32,.92) is the panel's own glass and rgba(28,32,38,.72) is the
+        // plate the original pill drew -- both recovered, neither picked.
+        assertEquals(0xEB161A20, SheetMorph.blendColour(GLASS, PLATE, 0f));
+        assertEquals(0xB81C2026, SheetMorph.blendColour(GLASS, PLATE, 1f));
+        // Past either end it clamps rather than extrapolating, so an over-open drag
+        // cannot push the sheet's glass past its own colour.
+        assertEquals(0xEB161A20, SheetMorph.blendColour(GLASS, PLATE, -0.3f));
+        assertEquals(0xB81C2026, SheetMorph.blendColour(GLASS, PLATE, 1.9f));
+    }
+
+    /**
+     * Alpha blends with the channels, and that is deliberate: the strip is glass
+     * <i>over a live render</i>, so most of the distance between the two ends is
+     * alpha and a blend that only moved the channels would leave the collapsed pill
+     * as opaque as the sheet it came from.
+     */
+    @Test
+    public void theBlendMovesTheAlphaAsWellAsTheColour() {
+        int mid = SheetMorph.blendColour(GLASS, PLATE, 0.5f);
+        // 210, not 209: the true mid-alpha is 209.5 and Math.round takes half up.
+        // Written as the expected value rather than (a+b)/2 because the integer
+        // average is a different number from the rounded one, and asserting it is
+        // what a reader will try first.
+        assertEquals(210, mid >>> 24);
+        assertEquals((0x16 + 0x1C) / 2, mid >> 16 & 0xFF);
+        assertEquals((0x1A + 0x20) / 2, mid >> 8 & 0xFF);
+        assertEquals((0x20 + 0x26) / 2, mid & 0xFF);
+        // And the alpha really is on a lerp between the two ends, not held: a third
+        // of the way along must be most of the way from 0xEB to 0xB8.
+        int third = SheetMorph.blendColour(GLASS, PLATE, 1f / 3f);
+        assertTrue("a third of the way along gave alpha " + (third >>> 24),
+                third >>> 24 < 0xEB && third >>> 24 > 0xB8);
+    }
+
+    /**
+     * <b>No step at the end of the travel</b>, which is the second time this has been
+     * a user's complaint and the first time it has been on a channel a bound check
+     * cannot see. A colour that snaps in over the final 1% reads as the old
+     * two-view pop arriving through a different door: the shape is right at every
+     * sampled fraction and the whole thing still twitches.
+     *
+     * <p>Swept at a hundredth of a percent across the whole travel, then specifically
+     * across the boundary the user named, 0.99 to 1.0.
+     */
+    @Test
+    public void theBlendHasNoStepAnywhereInTheTravel() {
+        int previous = SheetMorph.blendColour(GLASS, PLATE, 0f);
+        for (int i = 1; i <= 10000; i++) {
+            float f = i / 10000f;
+            int now = SheetMorph.blendColour(GLASS, PLATE, f);
+            // Per channel, so a step in one of them cannot hide inside a summed
+            // difference. Rounding is the floor: a lerp over this range moves the
+            // alpha 0x33 and each colour channel by ten, so one step is a rounding
+            // step and nothing more.
+            //
+            // The direction differs per channel and getting that wrong is what the
+            // first run of this test caught: the alpha FALLS, because the strip is
+            // the sheet's glass at 0xEB easing into the pill's plate at 0xB8 -- it
+            // becomes more transparent so more of the render shows through. The
+            // colour channels rise. Each is asserted in its own direction rather than
+            // as an absolute difference, because "no step" means "no jump", not "no
+            // movement", and a signed check is the one that would catch a channel
+            // reversing mid-travel.
+            assertTrue("f=" + f + " rose in alpha: " + (previous >>> 24) + " -> "
+                            + (now >>> 24), now >>> 24 <= previous >>> 24);
+            assertTrue("f=" + f + " fell by more than a rounding step: "
+                            + (previous >>> 24) + " -> " + (now >>> 24),
+                    (previous >>> 24) - (now >>> 24) <= 1);
+            for (int shift = 0; shift <= 16; shift += 8) {
+                int was = (previous >> shift) & 0xFF;
+                int is = (now >> shift) & 0xFF;
+                assertTrue("f=" + f + " fell in the channel at shift " + shift
+                        + ": " + was + " -> " + is, is >= was);
+                assertTrue("f=" + f + " moved the channel at shift " + shift
+                        + " by " + (is - was) + " levels in one step",
+                        is - was <= 1);
+            }
+            previous = now;
+        }
+        // The named boundary, stated on its own so the intent survives the sweep
+        // being relaxed later: 0.99 -> 1.0 must be an ordinary step.
+        int a = SheetMorph.blendColour(GLASS, PLATE, 0.99f);
+        int b = SheetMorph.blendColour(GLASS, PLATE, 1f);
+        assertTrue("the last 1% jumped the alpha by "
+                        + Math.abs((b >>> 24) - (a >>> 24)) + " levels",
+                Math.abs((b >>> 24) - (a >>> 24)) <= 1);
+        assertEquals(0xB8, b >>> 24);
+    }
+
+    /** The blend is total: no input combination throws. */
+    @Test
+    public void theBlendNeverThrows() {
+        assertEquals(GLASS, SheetMorph.blendColour(GLASS, PLATE, Float.NaN));
+        assertEquals(PLATE, SheetMorph.blendColour(GLASS, PLATE,
+                Float.POSITIVE_INFINITY));
+        assertEquals(GLASS, SheetMorph.blendColour(GLASS, PLATE,
+                Float.NEGATIVE_INFINITY));
+        // Opaque black to opaque white, the degenerate pair.
+        assertEquals(0xFFFFFFFF, SheetMorph.blendColour(0xFF000000, 0xFFFFFFFF, 1f));
+        assertEquals(0xFF000000, SheetMorph.blendColour(0xFF000000, 0xFFFFFFFF, 0f));
     }
 }

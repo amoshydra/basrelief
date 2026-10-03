@@ -2042,18 +2042,32 @@ final class ModalSheet {
      * edge paint at draw time, because the studio dims this background while a
      * control is held ({@code MainActivity.setSheetBackgroundAlpha}) and the
      * hairline has to dim with it.
+     *
+     * <p><b>The hairline's arc radius is read back off {@link #getCornerRadii()},
+     * not cached.</b> It used to be a {@code final} field taken from the
+     * constructor, which is right for a card whose radius never changes and wrong
+     * for the one host that animates it: the studio's panel rounds from 22dp to
+     * half a pill on every frame of a collapse, and a hairline still drawing a
+     * 22dp arc under a fill rounded to 28dp leaves the corner visibly inconsistent
+     * — the one row of pixels where the line stops short of the shape. Reading it
+     * back cannot drift, because the same {@code setCornerRadii} call the morph
+     * makes is what it reads.
      */
     static final class TopEdgeBackground extends GradientDrawable {
 
         private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int edgeColour;
-        private final float radius;
         private final float edgeWidth;
+        /**
+         * A multiplier on the hairline's alpha, for a host that retires the line
+         * over the course of an animation. 1.0 is "draw it as configured" and every
+         * card here is constructed and never touched, so their lines are unchanged.
+         */
+        private float edgeAlpha = 1f;
 
         TopEdgeBackground(int fill, int edgeColour, float topCornerRadiusPx,
                           float edgeWidthPx) {
             this.edgeColour = edgeColour;
-            this.radius = topCornerRadiusPx;
             this.edgeWidth = edgeWidthPx;
             setShape(RECTANGLE);
             setColor(fill);
@@ -2068,13 +2082,33 @@ final class ModalSheet {
             edge.setDither(true);
         }
 
+        /**
+         * Fade the hairline without touching the fill. A paint property, so it
+         * costs a repaint and no relayout — the same reason the corner radius is
+         * one.
+         *
+         * @param alpha 1.0 as configured, 0.0 for no line at all, clamped between
+         */
+        void setEdgeAlpha(float alpha) {
+            edgeAlpha = Math.min(1f, Math.max(0f, alpha));
+        }
+
         @Override
         public void draw(Canvas canvas) {
             super.draw(canvas);
             Rect b = getBounds();
             if (b.width() <= 0 || b.height() <= 0) return;
-            int a = ((edgeColour >>> 24) * getAlpha()) / 255;
+            if (edgeAlpha <= 0f) return;
+            int a = ((edgeColour >>> 24) * getAlpha() * Math.round(edgeAlpha * 255f))
+                    / (255 * 255);
+            if (a <= 0) return;
             edge.setColor((a << 24) | (edgeColour & 0x00FFFFFF));
+            // Read back rather than cached, so the line's arc is always the fill's
+            // own arc. getCornerRadii() returns 8 entries from the first
+            // setCornerRadii, and 4 after a setCornerRadius; both are laid out with
+            // the top-left first.
+            float[] radii = getCornerRadii();
+            float radius = (radii != null && radii.length >= 4) ? radii[0] : 0f;
             float half = edgeWidth / 2f;
             int save = canvas.save();
             // Only the top edge's own pixels of the outline: the arcs start

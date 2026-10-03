@@ -50,6 +50,7 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -127,6 +128,75 @@ public class MainActivity extends Activity {
      * no row to show. This is the height that makes the leftover zero.
      */
     private static final int STRIP_GRIP_DP = 22;
+
+    /**
+     * The collapsed pill's <b>total width, as a fraction of the screen's</b>.
+     *
+     * <p><b>This replaced a 28dp side margin, and a margin was never going to read as
+     * a capsule.</b> The 28dp was itself recovered from the pre-morph pill's holder
+     * ({@code 227a53f^}), so the first version of this fix was faithful to history
+     * and still wrong: on this phone, which is 483dp wide, 28dp a side leaves the
+     * pill 427dp of 483dp — <b>88% of the width</b>. The user: <i>the capsule's width should be smaller too</i> A margin is a rounding of
+     * whatever screen it is measured on, so it cannot express "narrower" as a shape
+     * at all; a total width is the thing the eye reads.
+     *
+     * <p><b>0.72, and a fraction rather than dp is the argument.</b> The sheet is
+     * edge-to-edge on every phone the app supports, so a fixed dp width would be
+     * nearly the whole screen on a compact one and a floating lozenge on a large one
+     * — the same shape failing in two directions, untunable without picking a phone
+     * to tune it on. A fraction is one number that reads as a capsule on both, and it
+     * is also the quantity the panel's own width is measured against, so
+     * {@link SheetMorph#pillSideMarginFor} is a subtraction rather than a guess.
+     *
+     * <p>0.72 leaves the dot, the label and the 18dp row padding ample room on a
+     * narrow phone while being unmistakably narrower than the sheet: at this phone's
+     * density the collapsed pill is 348dp of 483dp, a 6:1 lozenge rather than a bar.
+     * It is one constant, so the shape is one edit.
+     */
+    private static final float PILL_WIDTH_FRACTION = 0.72f;
+
+    /**
+     * How far the collapsed pill floats above the window's bottom edge.
+     *
+     * <p>26dp, from the same holder's {@code capLp.bottomMargin = dp(26)}. The old
+     * comment on {@link #applySheetRadius} said the pill was "flush to the window's
+     * bottom edge", which was true of the morph and false of the pill: the pill was
+     * 26dp off it, and rounding its bottom corners while it was flush is what would
+     * have shown the render through them.
+     */
+    private static final int PILL_BOTTOM_INSET_DP = 26;
+
+    /**
+     * The sheet's own glass, and so the strip's colour while the sheet is open.
+     *
+     * <p>The value {@link #panelBackground} is built with. The strip is the panel's
+     * first child and covers its top {@link #STRIP_HEIGHT_DP} exactly, so when the
+     * two differ the open sheet carries a plate on top that the morph then has to
+     * explain away: a lighter band across the top of the sheet that becomes the
+     * pill. Starting the strip at the panel's own colour makes it part of the sheet
+     * it is a piece of, which is the same claim the height makes.
+     */
+    private static final int SHEET_GLASS = 0xEB161A20;
+
+    /**
+     * The pill's own plate, and so the strip's colour once collapsed.
+     *
+     * <p>0xB81C2026, which is {@code rgba(28,32,38,.72)} — and it is not a new
+     * number. It is what {@code pillBackground} has always returned, and what
+     * {@code 227a53f^} handed the original pill on all three of its states. The
+     * morph did not invent the strip's fill; it inherited the pill's, and the
+     * reason the collapsed sheet does not look like the pill was never the colour
+     * at all.
+     *
+     * <p>Recovering it matters because the alternative is guessing, and the two
+     * plausible guesses are both wrong in a way a user would see. The old
+     * {@code PILL_DIM} ({@code 0x8CFFFFFF}) is <b>not</b> this pill's plate — it
+     * was the status <i>dot</i> — and it survives as {@link #STRIP_DIM}, still
+     * drawing the dot. A 55%-white plate would also have eaten that dot: the dot is
+     * the same 55% white, so on a pill of that colour the one thing the collapsed
+     * sheet exists to show would be invisible on it.
+     */
+    private static final int PILL_PLATE = 0xB81C2026;
     /**
      * How much of the phone the sheet occupies when no position has been stored.
      *
@@ -234,6 +304,45 @@ public class MainActivity extends Activity {
     /** The panel's own background, so the morph can round its top corners. */
     private ModalSheet.TopEdgeBackground panelBackground;
 
+    /**
+     * The colour the strip's own state wants, before the morph blends it.
+     *
+     * <p>All three of {@link StripState} ask for the same fill today, so this is one
+     * value and nothing reads it back yet. It is {@link #SHEET_GLASS} and **not**
+     * {@link #PILL_PLATE}, which is the mistake this field was written to prevent:
+     * it is the colour the blend starts from, and the pill's plate is where the
+     * blend <i>ends</i>. Blending {@code PLATE} to {@code PLATE} is a constant, and
+     * the open sheet kept a plate on it for the whole session — caught on the device
+     * by reading the morph's own log line, which reported the pill's colour at
+     * {@code f = 0.27}.
+     *
+     * <p>It exists at all because {@link #applyStripState} and {@link #applySheetTone}
+     * both write the fill, and the second must not be undone by the first: a state
+     * change while the sheet is collapsed would snap the glass back to full opacity
+     * under the user's finger. One base, one writer.
+     */
+    private int stripFillBase = SHEET_GLASS;
+
+    /** The last fill written, so an unchanged blend is not re-set. */
+    private int lastSheetFill = -1;
+
+    /**
+     * The navigation bar's height, cached from the one place insets are read.
+     *
+     * <p>The pill floats {@link #PILL_BOTTOM_INSET_DP} off the bottom edge, and on
+     * 35+ the bar is <i>shown</i> whenever the sheet is collapsed — so at exactly
+     * the moment the pill exists, the bar is the thing it has to clear. Asking for
+     * this inside {@link #applySheetPosition} would mean a {@code WindowInsets}
+     * read per frame, which is not something a drag can do; {@link
+     * #sheetFootInset} already resolves the value correctly for both API paths, so
+     * the listener that receives the insets stores it and the morph reads the
+     * field.
+     */
+    private int navBarInsetPx;
+
+    /** The last edge alpha written to {@link #panelBackground}, for the same reason. */
+    private float lastSheetEdgeAlpha = -1f;
+
     /** The label inside {@link #sheetStrip}. The ellipsis lives on THIS, not the strip. */
     private TextView stripLabel;
 
@@ -250,7 +359,18 @@ public class MainActivity extends Activity {
      * fraction {@link #applySheetPosition} was just given, so it keeps it rather than
      * inverting somebody else's number.
      */
-    private float lastSheetFraction;
+    private float lastSheetFraction = -1f;
+
+    /**
+     * The entrance offset the last {@link #applySheetPosition} was given.
+     *
+     * <p>Held so the panel can be re-placed from the insets listener without the
+     * gesture being re-run. Every quantity the morph writes is a function of the
+     * fraction <i>and</i> this, so re-placing from one and not the other would
+     * leave the two disagreeing — which is how an entrance offset would end up
+     * written into the collapsed pill's bottom inset.
+     */
+    private float lastSheetBelowPx;
 
     /** What {@link #applyStripState} last drew, so a drag does not redraw it. */
     private StripState stripDrawnState;
@@ -638,7 +758,20 @@ public class MainActivity extends Activity {
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                int bottom = sheetPadBottom + sheetFootInset(insets);
+                int bar = sheetFootInset(insets);
+                // Cached for the collapsed pill's bottom inset. The bar's visibility
+                // follows the sheet's committed state, so this value changes exactly
+                // when the pill appears or goes -- which is why the morph cannot ask
+                // for it itself and has to be handed it.
+                if (navBarInsetPx != bar) {
+                    navBarInsetPx = bar;
+                    // Re-place the panel: an inset the pill has not yet cleared is
+                    // not a padding problem, and only the morph writes this margin.
+                    if (lastSheetFraction >= 0f) {
+                        applySheetPosition(lastSheetFraction, lastSheetBelowPx);
+                    }
+                }
+                int bottom = sheetPadBottom + bar;
                 if (sheetContent.getPaddingBottom() != bottom) {
                     // setPadding requests its own layout pass -- the same shape
                     // that reliably repaints over the GLSurfaceView (b/7179570)
@@ -808,9 +941,19 @@ public class MainActivity extends Activity {
                         ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation),
                 (int) LightDirection.ELEVATION_MIN, (int) LightDirection.ELEVATION_MAX));
 
-        SheetSection framing = addSection(
-                heading(R.string.group_framing, R.string.group_framing_surface));
-        framing.body().addView(FramingRows.build(this));
+        // Origin and Pan are two sections, not one section with two families under
+        // it. "Where it sits" named a group that held exactly two things, each of
+        // which is a thing in its own right and neither of which is a family of
+        // controls — one axis each, with a unit. So the umbrella is gone and the two
+        // family captions become the section headings, at the section's weight
+        // rather than the 11dp label weight they used to be drawn at.
+        //
+        // Nothing about the rows changes: same four sliders, same keys, same ranges,
+        // same persistence, same preview. FramingRows is still built exactly once —
+        // it installs a layout listener on the GL view and registers each row into
+        // the shared slider map, so building it per section would double every one
+        // of those. Only the parent changes.
+        addFramingSections();
 
         // "This photo's map": the mockup's heading for the Regenerate/Replace row and
         // the fix line. It replaces a row of three buttons that were not peers --
@@ -1847,7 +1990,6 @@ public class MainActivity extends Activity {
             case IDLE:
                 stripLabel.setText(R.string.pill_controls);
                 stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setColor(0xB81C2026);
                 stripBackground.setStroke(dp(1), 0x33FFFFFF);
                 setStripMark(false);
                 break;
@@ -1856,8 +1998,9 @@ public class MainActivity extends Activity {
                 stripLabel.setTextColor(WARN_COLOUR);
                 // The BORDER carries the warning too. Changing only the text colour
                 // left a pill that read as informational at a glance, which is the
-                // opposite of the point -- the border is what you see first.
-                stripBackground.setColor(0xB81C2026);
+                // opposite of the point -- the border is what you see first. It is
+                // also why the fill never blends toward the old PILL_DIM: a 55%
+                // white plate has no room for a 55% white border on it.
                 stripBackground.setStroke(dp(1), WARN_COLOUR);
                 setStripMark(false);
                 break;
@@ -1865,13 +2008,13 @@ public class MainActivity extends Activity {
                 // The percentage comes from the same read the guard used.
                 stripLabel.setText(getString(R.string.pill_generating, percent));
                 stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setColor(0xB81C2026);
                 stripBackground.setStroke(dp(1), 0x33FFFFFF);
                 setStripMark(true);
                 break;
             default:
                 break;
         }
+        applyStripFill();
     }
 
     /** An 8dp dot when idle, a 15dp spinning ring while a generation runs. */
@@ -1912,14 +2055,37 @@ public class MainActivity extends Activity {
      * for is glass over a render, and the render can be anything. The corner radius
      * is not set here: the morph owns it, and it must match the panel's own every
      * frame or one of them peeks out of the other at {@code f = 1}.
+     *
+     * <p>The fill is the value the morph blends <i>to</i>, not one it blends from,
+     * so it is only ever seen at {@code f = 1}. What the strip actually draws at
+     * any other fraction is {@link #applySheetTone}'s, and every state change goes
+     * through {@link #applyStripFill} so the two cannot disagree.
      */
     private android.graphics.drawable.GradientDrawable pillBackground(int stroke) {
         android.graphics.drawable.GradientDrawable d =
                 new android.graphics.drawable.GradientDrawable();
         d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        d.setColor(0xB81C2026);
+        d.setColor(PILL_PLATE);
         d.setStroke(dp(1), stroke);
         return d;
+    }
+
+    /**
+     * Write the strip's fill for the collapse it is currently at.
+     *
+     * <p>One writer, two callers: {@link #applyStripState} when the <i>condition</i>
+     * changes and {@link #applySheetTone} when the <i>geometry</i> moves. Both set
+     * the same base and both land here, which is the only way a generation finishing
+     * while the sheet is collapsed cannot snap the glass back to full opacity under
+     * the user's finger.
+     */
+    private void applyStripFill() {
+        // Before the morph has ever placed the panel there is no fraction to blend
+        // from, and the strip's own constructor fill is the pill's -- so f = 1 is the
+        // honest answer, not f = 0.
+        float f = lastSheetFraction < 0f ? 1f : lastSheetFraction;
+        applySheetTone(f, SheetMorph.blendColour(stripFillBase, PILL_PLATE,
+                SheetMorph.insetFor(f, 1f)));
     }
 
     private TextView fieldCaption(String s) {
@@ -2146,9 +2312,22 @@ public class MainActivity extends Activity {
         applyStripState();
     }
 
+    /**
+     * The width the sheet spans while it is open, which is the denominator the
+     * collapsed pill's width fraction is taken against.
+     *
+     * <p>The display metrics rather than {@code root.getWidth()}, because the morph
+     * runs before the first layout has necessarily settled and a zero there would
+     * silently resolve the pill's width to <i>full</i> screen — the one value that
+     * reproduces the bar this whole change exists to remove. The metrics are the
+     * same number {@link #peekFraction} already measures the sheet against.
+     */
+    private float screenWidthPx() {
+        return getResources().getDisplayMetrics().widthPixels;
+    }
+
     /** The first-launch fraction: a third of the phone, capped at the whole panel. */
-    private float peekFraction() {
-        int peek = Math.round(SHEET_PEEK_FRACTION
+    private float peekFraction() {        int peek = Math.round(SHEET_PEEK_FRACTION
                 * getResources().getDisplayMetrics().heightPixels);
         peek = Math.min(peek, panelNaturalHeight);
         return 1f - (float) peek / panelNaturalHeight;
@@ -2204,10 +2383,18 @@ public class MainActivity extends Activity {
             if (panelNaturalHeight <= 0) return;  // not measured yet; caller defers
         }
         lastSheetFraction = fraction;
+        lastSheetBelowPx = belowPx;
         float height = SheetMorph.heightFor(fraction, panelNaturalHeight,
                 dp(STRIP_HEIGHT_DP));
         int target = Math.round(height);
-        int margin = -Math.round(belowPx);
+        // The bottom margin carries TWO things and they compose additively, which is
+        // the only reason one field can hold both: the entrance offset pushes the
+        // panel down past the window's bottom edge, and the pill's inset lifts it
+        // back off it. At rest the offset is zero and this is exactly the inset.
+        int bottom = Math.round(SheetMorph.insetFor(fraction,
+                dp(PILL_BOTTOM_INSET_DP) + navBarInsetPx)) - Math.round(belowPx);
+        int side = Math.round(SheetMorph.pillSideMarginFor(fraction,
+                screenWidthPx(), PILL_WIDTH_FRACTION));
         // The radius is compared against the last one applied, because it changes
         // with the height and would otherwise be re-set on every frame of a drag
         // whose height had not moved. setCornerRadii invalidates the drawable: a
@@ -2219,42 +2406,128 @@ public class MainActivity extends Activity {
         // 2400px panel was given a 443px corner half way down the drag. The current
         // height is only the CEILING, which is what SheetMorph's fourth argument
         // clamping is for.
-        float radius = SheetMorph.cornerRadiusFor(fraction, target, dp(22),
+        // The bottom pair: the same function with a SQUARE open end, which is what
+        // the panel has always been. Passing the strip's own radius as the open end
+        // too would make it a constant, and a bottom corner that is 28dp from the
+        // first frame of the drag cuts an 83px notch out of the sheet's foot while
+        // the foot is still sitting on the screen edge -- the exact artefact the
+        // two-corner version was avoiding, reintroduced at the other end.
+        float pillRadius = SheetMorph.cornerRadiusFor(fraction, target, 0f,
                 dp(STRIP_HEIGHT_DP) * 0.5f);
-        if (panelLp.height == target && panelLp.bottomMargin == margin
-                && lastSheetRadius == radius) {
+        // The top pair targets that same number, so the two arrive together and the
+        // collapsed shape is a capsule rather than a bar with two soft ends.
+        //
+        // Both targets are the CONSTANT half-strip, never each other's current value.
+        // Easing the top toward the bottom's *animated* radius makes the top pair dip
+        // below the sheet's own 22dp half way down the drag -- measured at 18.0dp,
+        // because it is being pulled toward a radius that is itself still on its way
+        // up from zero. Measured on a sweep, not reasoned about: it is a 4dp change
+        // on a corner and would never have been noticed by eye.
+        float topRadius = SheetMorph.cornerRadiusFor(fraction, target, dp(22),
+                dp(STRIP_HEIGHT_DP) * 0.5f);
+        // Every number this method writes is in the guard. Leaving the fill out
+        // would be a way of shipping a colour that never moves until something else
+        // happened to invalidate the drawable, and the colour is the part a bounds
+        // check cannot see.
+        int fill = SheetMorph.blendColour(stripFillBase, PILL_PLATE,
+                SheetMorph.insetFor(fraction, 1f));
+        if (panelLp.height == target && panelLp.bottomMargin == bottom
+                && panelLp.leftMargin == side && panelLp.rightMargin == side
+                && lastSheetTopRadius == topRadius && lastSheetBottomRadius == pillRadius
+                && lastSheetFill == fill) {
             return;
         }
-        lastSheetRadius = radius;
+        lastSheetTopRadius = topRadius;
+        lastSheetBottomRadius = pillRadius;
         panelLp.height = target;
-        panelLp.bottomMargin = margin;
+        panelLp.bottomMargin = bottom;
+        panelLp.leftMargin = side;
+        panelLp.rightMargin = side;
         // setLayoutParams requests a layout, which is the repaint this needs.
         panel.setLayoutParams(panelLp);
-        applySheetRadius(radius);
+        applySheetRadius(topRadius, pillRadius);
+        applySheetTone(fraction, fill);
         // Same reasoning as the fade's line, and bounded by this method's own guard:
-        // this is reached only when the height, the margin or the radius moved, so
-        // it is one line per real change rather than one per frame.
+        // this is reached only when one of the numbers moved, so it is one line per
+        // real change rather than one per frame.
         android.util.Log.i("Basrelief", "morph f=" + fraction
                 + " height=" + target + "px (natural=" + panelNaturalHeight
                 + " pill=" + dp(STRIP_HEIGHT_DP) + ")"
-                + " radius=" + radius);
+                + " inset=" + side + "/" + bottom
+                + " radius=" + topRadius + "/" + pillRadius
+                + " fill=" + Integer.toHexString(fill));
     }
 
-    /** The radius last written, so an unchanged height does not rewrite it. */
-    private float lastSheetRadius = -1f;
+    /** The top radius last written, so an unchanged height does not rewrite it. */
+    private float lastSheetTopRadius = -1f;
+    /** The bottom radius last written, for the same reason. */
+    private float lastSheetBottomRadius = -1f;
 
     /**
-     * Round the panel and its strip together.
+     * Round the panel and its strip together, <b>all four corners</b>.
      *
-     * <p>Only the <b>top</b> corners, as the panel has always been. The pill is
-     * flush to the window's bottom edge, so rounding its bottom corners would show
-     * the render through them and read as a pill with its foot cut off, rather than
-     * as the same sheet at a smaller size.
+     * <p>The top pair is the existing interpolation: the sheet's own 22dp, easing to
+     * half a pill. The bottom pair is the same function asked the same question with
+     * {@code 0} as the open radius, so it goes from square to the pill's own radius
+     * and arrives at exactly the number the top pair arrives at — which is what makes
+     * it a <b>capsule</b> rather than a bar with two soft ends. One function, two
+     * arguments: there is no second rule to keep in step with the first, and the
+     * ceiling that clamped the top pair clamps the bottom pair for free.
+     *
+     * <p><b>The bottom corners could not be rounded while the panel was flush to the
+     * window's bottom edge.</b> The comment this replaces said so, and it was right
+     * about the morph and wrong about the pill: rounding a box that runs off the
+     * bottom of the screen shows the render through the notches and reads as a pill
+     * with its foot cut off. Lifting it {@link #PILL_BOTTOM_INSET_DP} is what makes
+     * the rounding mean something — which is the order these two fixes have to go in.
      */
-    private void applySheetRadius(float radius) {
-        float[] corners = new float[]{radius, radius, 0f, 0f, 0f, 0f, 0f, 0f};
+    private void applySheetRadius(float top, float bottom) {
+        float[] corners = new float[]{top, top, bottom, bottom, bottom, bottom, top, top};
         if (panelBackground != null) panelBackground.setCornerRadii(corners);
         if (stripBackground != null) stripBackground.setCornerRadii(corners);
+    }
+
+    /**
+     * The morph's colour: the strip's glass, and the panel's hairline leaving.
+     *
+     * <p><b>The fill is a lerp between two recovered numbers</b> — {@link
+     * #SHEET_GLASS}, the sheet's own glass, at {@code f = 0}, and {@link
+     * #PILL_PLATE}, the original pill's plate, at {@code f = 1}. Nothing is picked
+     * and nothing is invented; see the constants for both. The strip covers the
+     * panel's top {@link #STRIP_HEIGHT_DP} exactly, so this is the colour of the
+     * sheet's top edge, and at {@code f = 0} making it equal the panel's is what
+     * means the open sheet has no plate on it that the morph then has to explain.
+     *
+     * <p><b>Alpha blends with the channels.</b> The strip is glass over a live
+     * render — its whole job is that the photograph's edge continues underneath — so
+     * a pill that arrived opaque would stop floating and start sitting, and most of
+     * the distance between these two ends is alpha.
+     *
+     * <p><b>The panel's hairline retires, because the strip supplies the
+     * outline.</b> The panel draws a 1px 14%-white line along its top edge and the
+     * strip draws its own 1px 20% stroke around the same bounds, so while the sheet
+     * is open the two add up to the sheet's single top border. Once the panel is
+     * inset to the pill's own box that sum wraps a <i>capsule</i>, and what reads is
+     * one line a little brighter than the pill ever had. Fading the panel's out as
+     * {@code f → 1} leaves exactly the strip's stroke — the original pill's own
+     * single outline — and it is the reason this is a blend and not a swap.
+     *
+     * <p>Both are paint properties, so neither costs a relayout: the one
+     * {@code setLayoutParams} above is the only layout the morph asks for.
+     */
+    private void applySheetTone(float fraction, int fill) {
+        // The whole colour, not just its alpha: the blend moves the channels by ten
+        // levels and the alpha by eighty, so an alpha-only comparison would pass a
+        // half-finished blend and leave the strip at the wrong tone.
+        if (stripBackground != null && lastSheetFill != fill) {
+            lastSheetFill = fill;
+            stripBackground.setColor(fill);
+        }
+        if (panelBackground == null) return;
+        float edge = 1f - SheetMorph.insetFor(fraction, 1f);
+        if (Math.abs(lastSheetEdgeAlpha - edge) < 0.004f) return;
+        lastSheetEdgeAlpha = edge;
+        panelBackground.setEdgeAlpha(edge);
     }
 
     /**
@@ -2303,6 +2576,81 @@ public class MainActivity extends Activity {
             android.util.Log.i("Basrelief", "morph f=" + lastSheetFraction
                     + " contentAlpha=" + alpha
                     + " children=" + (panel.getChildCount() - 1));
+        }
+    }
+
+    /**
+     * Add Origin and Pan as two sibling sections.
+     *
+     * <p><b>{@link FramingRows} hands back ONE box</b> holding a caption, two rows,
+     * a caption and two more — and it cannot be asked for half of it, because every
+     * call builds all four sliders, registers them into the shared {@code sliders}
+     * map and installs a layout listener on the GL view. So it is built once and the
+     * rows are <b>re-parented</b>: each family caption opens a section and the rows
+     * after it are moved into that section's body. The sliders are the same objects
+     * either way; only their parent changes.
+     *
+     * <p><b>Each row is removed from the box before it is added to a section.</b>
+     * {@code addView} does not re-parent: it throws
+     * {@code IllegalStateException: The specified child already has a parent}. This
+     * was a crash on every launch until the {@code removeView} went in, so it is
+     * written down rather than left as a line that looks like tidiness.
+     *
+     * <p><b>Rows are filed by the caption above them, not by a hard-coded
+     * index.</b> A caption is a {@link TextView} and an axis row is a
+     * {@link BasreliefSlider}, which is a {@code LinearLayout} and not a
+     * {@code TextView}, so the two are told apart without depending on the order the
+     * rows were added in — and X before Y is preserved because the order inside each
+     * family is whatever {@code FramingRows} built, unchanged.
+     *
+     * <p><b>A shape this does not recognise is logged, not guessed at.</b> If a
+     * future change to {@code FramingRows} returns something that is not a vertical
+     * box, or a row appears before any caption, the layout degrades to "one section
+     * per caption found" and says so in logcat — rather than inventing a heading for
+     * rows it cannot place, which is the same class of bug as a caption over
+     * nothing.
+     */
+    private void addFramingSections() {
+        View built = FramingRows.build(this);
+        if (!(built instanceof LinearLayout)) {
+            android.util.Log.w("Basrelief", "framing: unexpected shape "
+                    + (built == null ? "null" : built.getClass().getName())
+                    + ", so no section was added for it");
+            return;
+        }
+        LinearLayout box = (LinearLayout) built;
+        // Snapshotted first: addView detaches from `box`, so iterating box's own
+        // child list while re-parenting would skip every second row.
+        List<View> children = new ArrayList<View>(box.getChildCount());
+        for (int i = 0; i < box.getChildCount(); i++) children.add(box.getChildAt(i));
+
+        SheetSection section = null;
+        int captions = 0;
+        int orphaned = 0;
+        for (View child : children) {
+            if (child instanceof TextView) {
+                // The caption's own words become the section heading, so the wording
+                // is the same string it always was and nothing is re-typed here.
+                section = addSection(((TextView) child).getText().toString());
+                captions++;
+                continue;
+            }
+            if (section == null) {
+                // Cannot happen with today's FramingRows, which opens with a caption.
+                // Counted rather than filed under a guessed heading.
+                orphaned++;
+                continue;
+            }
+            // Detach first: addView onto a view that still has a parent throws
+            // rather than moving it.
+            box.removeView(child);
+            section.body().addView(child);
+        }
+        // Loud on purpose: this is the shape assumption above, and it should be
+        // visible if it ever stops holding rather than quietly changing the sheet.
+        if (captions != 2 || orphaned > 0) {
+            android.util.Log.w("Basrelief", "framing: expected 2 family captions and no "
+                    + "leading rows, found " + captions + " and " + orphaned);
         }
     }
 
@@ -2590,15 +2938,27 @@ public class MainActivity extends Activity {
      * section is a single child of the scroll. Hiding the whole unit is the only
      * way to make a section absent -- the caption is never hidden on its own,
      * because that is the orphan this component exists to prevent.
+     *
+     * <p><b>{@link #syncCaption()} is that rule, enforced rather than
+     * remembered.</b> The paragraph above is a promise about every call site, and
+     * this project has a standing record of a promise about call sites not holding:
+     * "This photo's map" was added unconditionally while its row was added
+     * conditionally, and a caption stood over nothing. So the caption's visibility is
+     * derived from the body instead of being decided beside it -- one derivation, so
+     * a body emptied by a later refresh cannot leave a caption naming nothing, which
+     * is the reported orphan. It is a caption that may be hidden; the section as a
+     * whole is still only ever hidden as a unit.
      */
     private final class SheetSection extends LinearLayout {
 
+        private final TextView caption;
         private final LinearLayout body;
 
-        SheetSection(String caption) {
+        SheetSection(String captionText) {
             super(MainActivity.this);
             setOrientation(VERTICAL);
-            addView(captionView(caption, false));
+            caption = captionView(captionText, false);
+            addView(caption);
             body = new LinearLayout(MainActivity.this);
             body.setOrientation(VERTICAL);
             addView(body);
@@ -2608,14 +2968,62 @@ public class MainActivity extends Activity {
         LinearLayout body() {
             return body;
         }
+
+        /**
+         * Hide this section's caption while its body has nothing in it.
+         *
+         * <p>Re-checked whenever the body is built and whenever it is rebuilt, so
+         * the caption and its rows cannot drift apart across a selection change.
+         * {@code refreshMapSection} is the existing precedent for re-deriving a
+         * section's contents from the live selection; this is the same idea applied
+         * to the heading rather than the body.
+         *
+         * <p><b>Visibility, not emptiness.</b> A child that is itself GONE does not
+         * count: a caption over a hidden row is the same orphan as a caption over no
+         * row, and the sheet has a GONE body of its own (the Depth row, removed
+         * while the selected photo has no map).
+         */
+        void syncCaption() {
+            boolean anyVisible = false;
+            for (int i = 0; i < body.getChildCount(); i++) {
+                if (body.getChildAt(i).getVisibility() == View.VISIBLE) {
+                    anyVisible = true;
+                    break;
+                }
+            }
+            int want = anyVisible ? View.VISIBLE : View.GONE;
+            // Guarded so the common case costs nothing: this runs on every refresh,
+            // and setVisibility requests a layout even when it changes nothing.
+            if (caption.getVisibility() != want) {
+                caption.setVisibility(want);
+                android.util.Log.i("Basrelief", "orphan guard: hid the caption of \""
+                        + caption.getText() + "\" because its body is empty");
+            }
+        }
     }
 
-    /** Add one section to the scroll. */
+    /**
+     * Add one section to the scroll.
+     *
+     * <p>The caption is synced <b>once, posted</b>, rather than being left to the
+     * caller: at construction every body is empty, so the answer cannot be known
+     * yet, and a rule that depends on remembering to check after the last row is a
+     * rule that will be forgotten at the one section whose body can be empty. A
+     * posted runnable lands after the caller has finished filling the body and
+     * after this layout pass, so it sees the section as the user will.
+     */
     private SheetSection addSection(String caption) {
-        SheetSection section = new SheetSection(caption);
+        final SheetSection section = new SheetSection(caption);
         sheetContent.addView(section);
+        section.post(new Runnable() {
+            @Override
+            public void run() {
+                section.syncCaption();
+            }
+        });
         return section;
     }
+
 
     /**
      * The sheet has come to rest, or an entrance has placed it. The only two moments
@@ -3269,6 +3677,14 @@ public class MainActivity extends Activity {
      * row built once from the launch item -- produced both defects this replaces:
      * a caption over nothing for a launch photo with no map, and the previous
      * photo's row left behind after a selection change.
+     *
+     * <p><b>This is the one section whose body is emptied on purpose</b>, which is
+     * why the caption is re-synced at the end rather than only at construction: a
+     * selection change clears the body and rebuilds it, so a caption decided once
+     * would be describing whatever the body held when the sheet was built. The
+     * whole section is still hidden as a unit here — which is stronger than the
+     * caption guard and the right thing for this one — and the sync keeps the
+     * invariant true for the case where a caller later stops hiding the section.
      */
     private void refreshMapSection(AppState state) {
         if (mapSection == null) return;
@@ -3279,10 +3695,12 @@ public class MainActivity extends Activity {
         // there is no id to write a regenerated map against.
         if (item == null || item.depthName == null) {
             mapSection.setVisibility(View.GONE);
+            mapSection.syncCaption();
             return;
         }
         mapSection.body().addView(buildMapActions());
         mapSection.setVisibility(View.VISIBLE);
+        mapSection.syncCaption();
     }
 
     /**

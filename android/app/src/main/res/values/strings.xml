@@ -41,7 +41,13 @@
       caption named for it.
     -->
     <string name="group_light">Light</string>
-    <string name="group_framing">Where it sits</string>
+    <!-- No umbrella caption for the framing axes any more: "Where it sits" named a
+         group holding exactly two things, each of which is a section in its own
+         right. Origin and Pan are captioned by framing_origin_caption and
+         framing_pan_caption, promoted to section headings. group_framing and
+         group_framing_surface were deleted with the last caller. group_axis is
+         ALREADY unused (its job was taken by the two literal captions) and is left
+         alone rather than tidied inside an unrelated change. -->
     <string name="group_axis">%1$s (%2$s)</string>
     <string name="axis_origin">Origin</string>
     <string name="axis_pan">Pan</string>
@@ -141,7 +147,6 @@
     <string name="group_relief_surface">Standing out of the plane — %1$s</string>
     <string name="group_motion_surface">How it moves — %1$s</string>
     <string name="group_zoom_surface">Zoom — %1$s</string>
-    <string name="group_framing_surface">Where it sits — %1$s</string>
     <string name="group_picture_surface">Picture — %1$s</string>
     <string name="group_light_surface">Light — %1$s</string>
 
