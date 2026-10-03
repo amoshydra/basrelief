@@ -76,29 +76,33 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * were one glance apart with nothing to tell them apart. Pressed states come
  * from the shared plate ({@link #plate}), never from a row that styles itself.
  *
- * <p><b>The card's height follows the scroll.</b> A modal opens at
- * {@link #OPEN_FRACTION} of the screen and <b>grows as its content is scrolled</b>,
- * up to the fraction ceiling or until the whole content is showing, and shrinks back
- * on the way up. That is the one behaviour the user asked for across the whole
- * family, and it is the studio panel's own rule generalised: that panel is "a third
- * of the phone" at launch and its full height when expanded, and what made the
- * other sheets feel broken was not the fraction they pass (all four pass 0.88) but
- * that their height was <i>not</i> a function of where the content was — a long form
- * scrolled inside a card of constant height while three of the four could not scroll
- * at all, because a card exactly as tall as its content has nothing to scroll.
- * The height is one pure function of four numbers, so it lives in
- * {@link #viewportHeight} and {@link CappedScroll} only asks for a layout when the
- * answer changes.
+ * <p><b>The card's height is a function of the card, never of the scroll.</b> A
+ * modal opens at {@link #OPEN_FRACTION} of the screen and grows and shrinks <b>at
+ * its edges</b>: pull past the top and it expands, pull past the bottom and it
+ * collapses, and between the edges scrolling is reading and the height does not
+ * move at all.
  *
- * <p><b>What the growing card costs</b>, because it is not free: every scroll frame
- * that changes the answer costs a measure and layout pass of the card's tree, which
- * is why the rule is applied in {@code onMeasure} and not by setting a height after
- * the fact; and the card's top edge rises as the content scrolls, so during the
- * growth the content advances slightly faster than the finger — the price of a card
- * whose foot is pinned to the bottom of the screen, which is the only place a
- * bottom sheet's foot can be. What it buys is the thing the user asked for on all
- * four screens: scrolling a modal reaches more of the form instead of moving text
- * inside a fixed box.
+ * <p><b>That last sentence is a bug fix, not a preference, and it must stay that
+ * way.</b> The height was once {@code min(content, ceiling, open + scrollY)} — a
+ * function of the scroll position — and it made every modal jitter while its content
+ * scrolled. The loop: scrolling changed the viewport height, the height changed the
+ * scroll range, the new range moved where the content actually was, and that fed
+ * back into the height. The user's report was <i>scrolling inside the sheet made the content jitter up and down</i> and their diagnosis was exact: <i>the scroll
+ * is also trying to expand the sheet; it shouldn't</i>. It passed review because every
+ * <i>resting</i> bound was right — and a settled state is the one thing that cannot
+ * be checked from a screenshot. <b>If you are reading this to make a modal taller as
+ * it scrolls, that is the regression.</b> The whole rule is four small pure functions
+ * ({@link #viewportMax}, {@link #viewportMin}, {@link #viewportAtRest},
+ * {@link #viewportAfterOverScroll}) and one hook, {@link CappedScroll}'s
+ * {@code overScrollBy}.
+ *
+ * <p><b>What the growing card costs</b>, because it is not free: every frame the
+ * height is moving costs a measure and layout pass of the card's tree, which is why
+ * the rule is applied in {@code onMeasure} rather than by setting a height after the
+ * fact, and why a pull that has reached a stop costs nothing at all. What it buys is
+ * the thing asked for on all four screens: a form can be read at a comfortable size
+ * and then opened up, without scrolling ever moving the card out from under the
+ * finger.
  *
  * <p><b>The backdrop is blurred where the platform can blur, and darker where it
  * cannot.</b> This card is a real Dialog window, so on API 31+ it can ask the
@@ -606,6 +610,11 @@ final class ModalSheet {
         // that is a card twice the height it settles at, drawn behind the entrance
         // and then snapped away.
         applyHeight();
+        // A reused instance (the Depth AI panel is built once and reopened) reopens
+        // at the opening height rather than wherever the last user left it. The
+        // content's scroll position is kept on purpose; the height is not, and the
+        // two are no longer the same thing.
+        scroll.resetToOpen();
         // The fade is per child; a card dismissed mid-drag leaves them at the
         // alpha that drag reached, and the next open must not inherit it.
         for (int i = 0; i < card.getChildCount(); i++) {
@@ -826,23 +835,24 @@ final class ModalSheet {
     }
 
     /**
-     * Give the scrolling part its two heights: where it starts and where it stops.
+     * Give the scrolling part the two heights it is allowed to take: where it opens,
+     * and the tallest it may become.
      *
-     * <p><b>Two numbers, and the growth between them belongs to the scroll.</b> The
-     * card used to open at the ceiling and scroll inside it, which made the card's
-     * height a constant and left three of the four screens with nothing to scroll at
-     * all. It now opens at {@link #OPEN_FRACTION} of the screen and grows with the
-     * scroll; see {@link #viewportHeight} for the arithmetic and {@link CappedScroll}
-     * for where it is applied. Only the ceiling is computed here — it is the one
-     * number that is not about the scroll.
+     * <p><b>Two numbers and nothing else.</b> The card used to open at the ceiling and
+     * scroll inside it, which left three of the four screens with nothing to scroll at
+     * all, and the first repair made the height a function of the scroll position,
+     * which jittered ({@link CappedScroll} records that loop). This is the settled
+     * shape: the card opens at {@link #OPEN_FRACTION}, grows and shrinks at its
+     * edges, and the arithmetic in between is {@link #viewportAtRest}. Nothing here
+     * reads the scroll.
      *
      * <p><b>Derived, never measured.</b> The ceiling is the fraction of the screen
      * less the card's own chrome, and the chrome is derived from the card's padding
      * tokens and the footer's real measured height; measuring the card cannot work,
      * because the card's height is the thing being decided. That is also why the
      * opening height is not clamped against the ceiling here: the scroll's own
-     * {@code min()} against the content does it, and a card shorter than the opening
-     * height is a card that shrink-wraps.
+     * {@link #viewportMin} against the content does it, and a card shorter than the
+     * opening height is a card that shrink-wraps.
      *
      * <p>It runs again whenever an answer can have changed: the first layout, an
      * inset dispatch, a footer, a body swap — and once per {@link #show()}, before
@@ -895,45 +905,100 @@ final class ModalSheet {
     }
 
     /**
-     * The height the scrolling part takes, as a function of where the content is
-     * scrolled to. The whole of the growing card, in one expression.
+     * The tallest the scrolling part may be: never more than the content, never more
+     * than the ceiling.
      *
-     * <p>Three limits, and the smallest wins: the content's own height (a card is
-     * never taller than what is in it — this is what makes a short modal
-     * shrink-wrap), the ceiling (never past the screen fraction), and the opening
-     * height plus however far the content has been scrolled (this is the growth).
-     *
-     * <p><b>Why the growth cannot reach the ceiling on most screens, stated rather
-     * than hidden.</b> The viewport getting taller shrinks the scroll's own range by
-     * the same amount, so the two run out together: with a content of
-     * {@code natural} and an opening height of {@code open}, the card settles at
-     * {@code (natural + open) / 2} once the content's end is on screen, which is the
-     * ceiling only when the content is longer than {@code 2 × ceiling − open}. On a
-     * 1080×2340 device that is about 2620px of content — roughly 930dp — and the
-     * settings form is 1901px. A card therefore stops when it has shown everything,
-     * which is the honest ceiling for a form, and grows on the way. Forcing it to
-     * the fraction instead would mean growing faster than the finger travels, which
-     * reads as the card running away from the hand.
-     *
-     * <p><b>What it costs, exactly.</b> While the card is growing, its top edge
-     * rises as the content scrolls, so the content advances a little faster than the
-     * finger — the price of a foot pinned to the bottom of the screen, which is the
-     * only place a bottom sheet's foot can be. Once the growth stops, the content
-     * scrolls 1:1 inside the card as before.
-     *
-     * @param naturalPx the content's own height, unbounded — what a ScrollView
-     *                   measures its child to
-     * @param openPx where the card opens; see {@link #OPEN_FRACTION}
-     * @param ceilingPx the tallest the viewport may be
-     * @param scrollYPx how far the content is scrolled; negative is not a state, and
-     *                  is treated as none
+     * <p>The content's own height is the shrink-wrap rule — a card is never taller
+     * than what is in it — and it is why a two-option modal is still a two-option
+     * modal after all of this.
      */
-    static int viewportHeight(int naturalPx, int openPx, int ceilingPx, int scrollYPx) {
-        int target = naturalPx;
-        if (target > ceilingPx) target = ceilingPx;
-        int grown = openPx + (scrollYPx > 0 ? scrollYPx : 0);
-        if (grown < target) target = grown;
-        return target > 0 ? target : 0;
+    static int viewportMax(int naturalPx, int ceilingPx) {
+        int top = naturalPx < ceilingPx ? naturalPx : ceilingPx;
+        return top > 0 ? top : 0;
+    }
+
+    /**
+     * The shortest the scrolling part may be: the content, when the content is
+     * shorter than {@link #OPEN_FRACTION}, and otherwise the opening height.
+     *
+     * <p>Where the two are the same — a card with no scroll range — this is the
+     * shrink-wrap case, and {@link #viewportMax} returning the same number is what
+     * makes such a card unable to grow at all.
+     */
+    static int viewportMin(int naturalPx, int openPx, int ceilingPx) {
+        int top = viewportMax(naturalPx, ceilingPx);
+        return top < openPx ? top : openPx;
+    }
+
+    /**
+     * The height at rest: whatever the card is showing now, clamped into
+     * [{@link #viewportMin}, {@link #viewportMax}].
+     *
+     * <p><b>This is the whole bug in one line.</b> There is no scroll position in
+     * this signature, and there must not be one. The previous version was
+     * {@code min(content, ceiling, open + scrollY)}: scrolling resized the card,
+     * resizing the card changed the scroll range, the new range changed where the
+     * content actually was, and that fed straight back into the height. The user
+     * saw the loop as *scrolling inside the sheet made the content jitter up and down* and diagnosed it exactly: <i>the scroll is also trying to expand the
+     * sheet; it shouldn't</i>.
+     *
+     * <p>So the height is a function of <b>how big the card currently is</b>, and
+     * nothing else. Scrolling changes it only through
+     * {@link #viewportAfterOverScroll}, which is a separate, deliberate, edge-only
+     * path. <b>If you are here to make a modal taller as it is scrolled, do not —
+     * that is the regression this replaced, and it is the one that jitters.</b>
+     *
+     * @param currentPx the height the card is showing; negative means "not yet
+     *                  known", which the caller resolves to the opening height
+     */
+    static int viewportAtRest(int naturalPx, int openPx, int ceilingPx, int currentPx) {
+        int min = viewportMin(naturalPx, openPx, ceilingPx);
+        int max = viewportMax(naturalPx, ceilingPx);
+        int target = currentPx;
+        if (target < min) target = min;
+        if (target > max) target = max;
+        return target;
+    }
+
+    /**
+     * The height after an over-scroll the content could not consume: the card follows
+     * the finger by exactly that much, in the direction the finger was already going.
+     *
+     * <p><b>The sign convention, which is the easy thing to get backwards.</b>
+     * {@code ScrollView} computes its delta as {@code lastY - y}, so a
+     * <b>positive</b> delta is the finger moving <b>up</b> and a negative one is the
+     * finger moving <b>down</b>. A finger moving up at the bottom edge has nothing
+     * left to reveal, so the leftover goes to the card and the card <b>grows</b> —
+     * which is what "expand when there is nothing more to scroll up" means to the
+     * person doing it, and what every bottom sheet does. A finger moving down at the
+     * top edge has nothing left to un-reveal, and the card <b>shrinks</b>. Both are
+     * the same addition, because the card simply continues the motion the content
+     * could not finish — and because its foot is pinned to the bottom of the screen,
+     * continuing upward can only mean growing upward.
+     *
+     * <p><b>Which is what makes it monotone.</b> {@code current + unconsumed} moves
+     * the height one way for the whole gesture, and {@link #viewportAtRest} clamps it
+     * into [{@link #viewportMin}, {@link #viewportMax}], so a long pull cannot
+     * overshoot and a reversal cannot walk it back past a stop: once the card is at
+     * {@link #viewportMax} every further pull answers the same number. Growth and
+     * shrink therefore stop at a stop rather than springing back, and neither can
+     * oscillate — the property the jitter was.
+     *
+     * <p><b>Why it settles where the gesture ends.</b> A dialog is transient
+     * ({@link BottomSheet.Snap#TO_STOPS}) and the user is reading, not parking: the
+     * card resting at whatever height they pulled it to is the least surprising
+     * answer, and it is also the only one that needs no second animation to undo the
+     * first. The full-height stop is the ceiling; the smallest is the opening height.
+     *
+     * @param unconsumedYPx the edge delta the content could not scroll, in pixels,
+     *                      in {@code ScrollView}'s own sign: positive is the finger
+     *                      moving up. Only ever the <i>unconsumed</i> part — a delta
+     *                      the content did scroll is reading, not resizing, and
+     *                      {@link CappedScroll} checks the edge before it gets here.
+     */
+    static int viewportAfterOverScroll(int naturalPx, int openPx, int ceilingPx,
+                                       int currentPx, int unconsumedYPx) {
+        return viewportAtRest(naturalPx, openPx, ceilingPx, currentPx + unconsumedYPx);
     }
 
     /**
@@ -1614,13 +1679,60 @@ final class ModalSheet {
      */
     private final class SheetCard extends LinearLayout {
 
+        /**
+         * Where this gesture's finger went down, in screen coordinates.
+         *
+         * <p>One float, and it exists only to answer "is this drag upward?" — the
+         * question {@link #growthDrag} asks. The component tracks its own anchor for
+         * the same purpose but does not expose it, and the alternative would be for
+         * this class to re-implement the whole release rule.
+         */
+        private float downRawY;
+
         SheetCard(android.content.Context context) {
             super(context);
         }
 
         @Override
         public boolean onInterceptTouchEvent(MotionEvent e) {
+            if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                downRawY = e.getRawY();
+            }
+            if (growthDrag(e)) return false;
             return sheet != null && sheet.onIntercept(e, isInsideScroll(e.getY()));
+        }
+
+        /**
+         * Whether an upward drag that the content has already consumed to its end
+         * should still be offered to the content, so that the card grows.
+         *
+         * <p><b>Without this the expand gesture does not exist.</b> The component's
+         * rule is that the scroll keeps a drag it can use, and once the content is at
+         * its bottom edge {@code canScrollVertically(1)} is false — so the card claims
+         * an upward drag there and drags <i>itself</i> up, which does nothing at all
+         * because it is already open ({@link BottomSheet} tethers it with
+         * {@code resistUp}). The leftover delta, the one that means "show me more",
+         * would never reach {@link CappedScroll#overScrollBy} and the card could never
+         * grow.
+         *
+         * <p>So this one case is given back to the content, and the content's edge
+         * hook does the right thing with it: the delta is unconsumed, so the card
+         * follows the finger up. Gated on {@link CappedScroll#canGrow()} so that once
+         * the card is at its full-height stop the gesture goes back to the card and
+         * keeps the feel it has today.
+         *
+         * <p><b>The downward direction is deliberately untouched.</b> A finger going
+         * down at the content's top is the hand-over — the card drag that can dismiss
+         * — and that is a better answer than shrinking the card by the same few
+         * pixels, so it is left exactly as it was.
+         */
+        private boolean growthDrag(MotionEvent e) {
+            return sheet != null
+                    && e.getActionMasked() != MotionEvent.ACTION_DOWN
+                    && e.getRawY() < downRawY
+                    && isInsideScroll(e.getY())
+                    && !scroll.canScrollVertically(1)
+                    && scroll.canGrow();
         }
 
         /**
@@ -1636,19 +1748,36 @@ final class ModalSheet {
     }
 
     /**
-     * A ScrollView whose own height is a function of where its content is scrolled
-     * to, which is what the framework has no attribute for.
+     * A ScrollView with a height of its own — one the framework has no attribute
+     * for — which grows and shrinks only at its edges.
      *
-     * <p>It measures its child the way a ScrollView always does — the child's
-     * natural height, unbounded — and then decides its <i>own</i> measured height
-     * with {@link ModalSheet#viewportHeight}: the content's height, the opening
-     * height plus the scroll offset, and the ceiling, whichever is smallest. So a
-     * card shorter than its content shrink-wraps (the child is its own limit), a
-     * card taller than the screen stops at the ceiling, and in between the card is
-     * exactly as tall as the content the user has scrolled to. This is the
-     * capability the playlists screen used to carry privately; it applies to every
-     * modal, which is what makes a {@code body()} swap in that screen preserve its
-     * own look.
+     * <p>It measures its child the way a ScrollView always does (the child's natural
+     * height, unbounded) and then decides its <i>own</i> measured height from two
+     * numbers and what it is already showing: {@link ModalSheet#viewportAtRest}.
+     * <b>The scroll position is not an input to that, and the reason is the bug this
+     * class used to have.</b>
+     *
+     * <p><b>The feedback loop, written down so it cannot be rebuilt by accident.</b>
+     * The height used to be {@code min(content, ceiling, open + scrollY)}. Scrolling
+     * therefore changed the viewport height; the viewport height changed the scroll
+     * range; the new range changed where the content actually ended up; and
+     * {@code scrollY} is the input, so that fed straight back into the height. Each
+     * correction overshot the last and the content visibly oscillated — the user's
+     * report was <i>scrolling inside the sheet made the content jitter up and down</i>, and their diagnosis was exact: <i>the scroll is also trying to expand
+     * the sheet; it shouldn't</i>. It survived review because every <i>resting</i>
+     * bound was correct, and a settled state is the one thing a screenshot cannot
+     * check.
+     *
+     * <p><b>What replaces it: edge over-scroll drives the height.</b> Pull past the
+     * top edge and the card expands; pull past the bottom edge and it collapses. In
+     * between, scrolling is reading and the height does not move. This is the
+     * canonical nested-scroll hand-off, in the one shape available here —
+     * {@link #overScrollBy} rather than a {@code NestedScrollView}, because
+     * {@code NestedScrollView} is an <b>AndroidX</b> widget and this app has no
+     * AndroidX, no Material and no Maven dependency at all. {@code overScrollBy} is
+     * precisely the platform's
+     * "here is the delta, tell me what you did with it" hook, and the delta it is
+     * given <i>is</i> the unconsumed edge delta once the scroll has clamped.
      *
      * <p><b>Shrink-wrap survives, and the regression it guards is recorded.</b> An
      * earlier version weighed the scroll inside the card, which made a zero-height
@@ -1657,13 +1786,6 @@ final class ModalSheet {
      * the version after that measured the whole card and cut the scroll afterwards,
      * which could not either. This one never touches the card: it clamps its own
      * measured dimension, which is a property of the scroll and nothing else.
-     *
-     * <p><b>Applied in {@code onMeasure}, not after it.</b> A height set after the
-     * fact costs a second layout pass per change and leaves the card a frame behind
-     * the content; doing it here means the card is the right height in the same
-     * frame the content moved in. The cost is one measure and layout of the card's
-     * tree per scroll frame while the answer is still changing, which is why
-     * {@link #relayout} skips the frames where it does not.
      */
     private static final class CappedScroll extends ScrollView {
 
@@ -1671,24 +1793,26 @@ final class ModalSheet {
         private int openHeight;
         /** The tallest the viewport may be. See {@link #setBounds}. */
         private int maxHeight;
-        /** The child's natural height, from the last measure. */
+        /**
+         * The content's own height, from the last measure.
+         *
+         * <p>Read from the child rather than from {@code getMeasuredHeight()}; see
+         * {@link #onMeasure} for why that distinction is the whole difference between
+         * a content height and a parent-imposed one.
+         */
         private int naturalHeight;
-        /** The height this view last applied, so an unchanged scroll does no work. */
-        private int appliedHeight = -1;
+        /**
+         * The height this view is currently showing. Negative until the first measure.
+         *
+         * <p><b>This is the decoupling, as a field.</b> It is the height's only
+         * input besides the three bounds; nothing writes it from a scroll callback,
+         * and {@link #overScrollBy} writes it only for a delta the content could not
+         * consume.
+         */
+        private int currentHeight = -1;
 
         CappedScroll(Context context) {
             super(context);
-            // The height IS a function of the scroll position, so a scroll that
-            // changes the answer has to ask for a layout. Nothing else on this view
-            // listens: View's onScrollChange has no other user here. API 23+, and
-            // minSdk is 26, so there is no branch for the older listener shape.
-            setOnScrollChangeListener(new OnScrollChangeListener() {
-                @Override
-                public void onScrollChange(View v, int scrollX, int scrollY,
-                                           int oldScrollX, int oldScrollY) {
-                    relayout();
-                }
-            });
         }
 
         /**
@@ -1698,47 +1822,130 @@ final class ModalSheet {
          * what makes a card scrollable at all, the ceiling is what stops it running
          * off the screen, and a card can be given a very large ceiling without being
          * told to open there.
+         *
+         * <p>The current height is <b>not</b> reset. A keyboard, an inset or a body
+         * swap must not throw away a height the user pulled to; the bounds are a range
+         * and the card is re-clamped into it by {@link #onMeasure}.
          */
         void setBounds(int openPx, int maxPx) {
             if (openHeight == openPx && maxHeight == maxPx) return;
             openHeight = openPx;
             maxHeight = maxPx;
-            appliedHeight = -1;
             requestLayout();
+        }
+
+        /**
+         * Reopen at the opening height.
+         *
+         * <p>For a transient dialog whose instance is reused — the Depth AI panel is
+         * built once and reopened — so a second open does not inherit the height the
+         * last one was pulled to. The content's scroll position is deliberately
+         * <i>not</i> reset: where the user was reading is worth keeping, and it is no
+         * longer coupled to the height.
+         */
+        void resetToOpen() {
+            currentHeight = openHeight > 0 ? openHeight : -1;
         }
 
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-            naturalHeight = getMeasuredHeight();
+            // The CONTENT's own height, read from the child -- never
+            // getMeasuredHeight(). FrameLayout resolves its own measured height with
+            // resolveSizeAndState against the incoming spec, so this view's measured
+            // height is already bounded by whatever the card offered this pass: the
+            // screen, or a screen with the keyboard up, or a half-finished layout.
+            // Using it as "how tall is the content" therefore fed the parent back into
+            // the content, which is the same class of loop this class was rewritten to
+            // remove -- and it showed as a card collapsing to a few tens of pixels.
+            // The child's measured height is the answer, because ScrollView measures
+            // its child with an UNSPECIFIED height precisely so the child can be
+            // taller than the viewport. fillViewport is off, so that height is the
+            // content's natural one and not a stretched one.
+            naturalHeight = getChildCount() > 0 ? getChildAt(0).getMeasuredHeight() : 0;
             // No budget yet means this is the first layout of the dialog and there is
             // nothing to clamp to: leave the natural height, which is what the
             // version before setBounds did, and let applyHeight's own requestLayout
             // put the real answer in the next frame.
             if (maxHeight <= 0) return;
-            int target = ModalSheet.viewportHeight(naturalHeight, openHeight, maxHeight,
-                    getScrollY());
-            appliedHeight = target;
+            // A child that has not been measured yet is not a short card. Falling
+            // through would answer 0 and clamp the viewport to nothing, and a card
+            // that has collapsed to nothing measures its content even smaller.
+            if (naturalHeight <= 0) return;
+            if (currentHeight < 0) currentHeight = openHeight;
+            int target = ModalSheet.viewportAtRest(naturalHeight, openHeight, maxHeight,
+                    currentHeight);
+            currentHeight = target;
             if (target != naturalHeight) {
                 setMeasuredDimension(getMeasuredWidth(), target);
             }
         }
 
         /**
-         * Ask for a layout, but only when the new scroll position would change the
-         * height.
+         * The platform's "here is a scroll delta, tell me what you did with it" hook,
+         * and the only thing that may change this card's height.
          *
-         * <p>This runs on every frame of a fling, and the growth stops long before
-         * the content does: once the card is at its ceiling — or has shown the whole
-         * content — every further scroll frame answers the same number, and laying
-         * out for it would be a per-frame cost for nothing.
+         * <p><b>One question decides everything: did the content have anywhere to
+         * go?</b> {@code ScrollView} computes its delta as {@code lastY - y}, so a
+         * positive delta is the finger moving up. If the content can still scroll that
+         * way, it took the delta and this is reading — nothing here runs, and that is
+         * the user's correction made mechanical. If it cannot, the delta is
+         * <i>unconsumed</i>, and the card takes it: {@link #resize} moves the height
+         * by exactly that much in the same direction. Reading never resizes; an edge
+         * always continues the motion.
+         *
+         * <p><b>Only a finger may resize.</b> {@code isTouchEvent} is false for the
+         * fling path in {@code computeScroll}, and that matters: when a fling reaches
+         * an edge, {@code ScrollView.onOverScrolled} calls {@code mScroller.springBack},
+         * whose bounce-back arrives through this same hook with the opposite sign.
+         * Growing on the pull and shrinking on the spring-back is the same feedback
+         * loop wearing a different hat. A fling is also a reading gesture.
+         *
+         * <p>{@code super} is called first so the platform's edge glow still absorbs
+         * the over-scroll; this consumes nothing from the framework, it only reads the
+         * delta the framework could not use.
          */
-        private void relayout() {
-            if (maxHeight <= 0 || naturalHeight <= 0) return;
-            if (ModalSheet.viewportHeight(naturalHeight, openHeight, maxHeight,
-                    getScrollY()) == appliedHeight) {
-                return;
-            }
+        @Override
+        protected boolean overScrollBy(int dx, int dy, int scrollX, int scrollY,
+                                       int scrollRangeX, int scrollRangeY,
+                                       int maxScrollX, int maxScrollY,
+                                       boolean isTouchEvent) {
+            boolean over = super.overScrollBy(dx, dy, scrollX, scrollY, scrollRangeX,
+                    scrollRangeY, maxScrollX, maxScrollY, isTouchEvent);
+            if (!isTouchEvent || dy == 0 || maxHeight <= 0 || naturalHeight <= 0) return over;
+            // dy > 0 is the finger moving up, which wants to scroll the content
+            // further down; dy < 0 is the finger moving down, which wants to scroll it
+            // back up. Either way, "can it still go that way?" is the whole test.
+            boolean contentCouldTakeIt = dy > 0 ? canScrollVertically(1) : canScrollVertically(-1);
+            if (!contentCouldTakeIt) resize(dy);
+            return over;
+        }
+
+        /**
+         * Whether the card could still get taller.
+         *
+         * <p>For {@link SheetCard}'s gesture arbitration, which has to know this
+         * before the gesture starts: see the comment there.
+         */
+        boolean canGrow() {
+            return maxHeight > 0 && naturalHeight > 0 && currentHeight >= 0
+                    && currentHeight < ModalSheet.viewportMax(naturalHeight, maxHeight);
+        }
+
+        /**
+         * Move the card by an unconsumed edge delta, if that changes anything.
+         *
+         * <p>The layout request is the growth itself: the height is applied in
+         * {@link #onMeasure}, so asking for a layout is how the card gets taller, and
+         * it is one pass per frame the height is actually moving. Once the card is at
+         * a stop this returns without asking, so a long pull at the edge costs
+         * nothing after the first few pixels.
+         */
+        private void resize(int unconsumedYPx) {
+            int next = ModalSheet.viewportAfterOverScroll(naturalHeight, openHeight,
+                    maxHeight, currentHeight, unconsumedYPx);
+            if (next == currentHeight) return;
+            currentHeight = next;
             requestLayout();
         }
 
@@ -1755,6 +1962,30 @@ final class ModalSheet {
          * rule is exactly {@code canScrollVertically}. This is the same repair as
          * the studio's {@code BottomFadeScrollView}; the two scroll views are in
          * different windows, so neither can share the other's subclass.
+         *
+         * <p><b>Why this still matters now that the edges do something else.</b>
+         * The edges changed meaning, not the arbitration, and the two do not
+         * overlap:
+         *
+         * <ul>
+         *   <li>Dragging <b>down</b>: the scroll keeps the gesture while
+         *       {@code canScrollVertically(-1)} — while there is anything above to
+         *       read. Only at the content's <b>top</b> does the card claim, and that
+         *       is the hand-over: the same drag moves the card and can dismiss it.
+         *       A downward pull at the <i>bottom</i> edge is the collapse, and it
+         *       happens inside the scroll, so it never reaches here.
+         *   <li>Dragging <b>up</b>: the scroll keeps the gesture while
+         *       {@code canScrollVertically(1)}. At the content's <b>top</b> edge there
+         *       is still more content below, so the scroll keeps it and the pull
+         *       becomes the expand. This is why expanding is reachable at all: if the
+         *       card claimed the gesture at the top edge on the way up, an upward
+         *       pull would drag the card instead of opening it, and the expand would
+         *       be unreachable.
+         * </ul>
+         *
+         * <p>So the same edge answers two different gestures depending on direction,
+         * which is the user's own rule: up past the top expands, down past the top
+         * hands over. Neither branch needs to know about the other.
          */
         private void reofferGestureToParent() {
             android.view.ViewParent parent = getParent();
