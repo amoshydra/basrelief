@@ -286,6 +286,18 @@ public class DepthWallpaperService extends WallpaperService {
         Surface from = pendingGlideFrom;
         pendingGlideFrom = null;             // consumed: one glide per wake
         if (from == null) return null;       // not a wake: apply, do not smear
+        // The LOCK engine never glides, and the reason is physical rather than
+        // aesthetic: locking the phone turns the screen off, so nobody watches the
+        // lock engine's first frame -- but unlocking is watched. Gliding here only
+        // ever produced a start config the screen was not showing.
+        //
+        // Concretely, the case reported: home -> screen off -> screen on (locked).
+        // lastVisibleSurface was HOME, because that is where the user was before the
+        // screen went off, and the display was actually holding the lock window's own
+        // retained frame. So the lock engine glided from home -- goal, home, goal,
+        // the double-take again, from a start that was never on screen. Applying
+        // instead is a no-op: the retained frame is already the goal.
+        if (resolved.surface() == Surface.LOCK) return null;
         // The surface that was showing is the one to come from. NOT "the other
         // surface": that guess is what made every wake glide from a config nothing
         // was rendering. Same surface showing before and now -- returning to the
