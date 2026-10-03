@@ -104,7 +104,12 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
  * cannot.</b> This card is a real Dialog window, so on API 31+ it can ask the
  * compositor to blur what is behind it — the studio's render, the wallpaper, whatever
  * app is under — with {@link Window#setBackgroundBlurRadius}, gated on
- * {@link #blurSupported(Context)}. Below 31 there is no such call and some 31+ devices report
+ * {@link #blurSupported(Context)}. <b>Being able to blur and being allowed to are two
+ * different things</b>, and the second is why the window is built from the non-fullscreen
+ * theme and explicitly cleared of {@code FLAG_FULLSCREEN}: the blur region is composited
+ * only for a translucent, <i>floating</i> window, so the theme's "Fullscreen" took the
+ * capability away again and the radius was silently never drawn — on a device reporting
+ * {@code mBlurEnabled=true}. Below 31 there is no such call and some 31+ devices report
  * no cross-window blur support at all, in which case WMS draws nothing and leaves the
  * window background transparent. So the scrim carries the difference instead:
  * {@link #SCRIM} is the blurred value and {@link #darker} adds
@@ -138,32 +143,33 @@ final class ModalSheet {
     // SCRIM is the BLURRED backdrop, and there is a second, much darker one for the
     // devices that cannot blur -- see SCRIM_UNBLURRED_STEP for why "the same alpha"
     // would be wrong there, and darker() for how both variants darken together.
-    static final int SCRIM = 0x9E000000;
+    static final int SCRIM = 0xB3000000;
 
     /**
-     * How much darker the backdrop goes when nothing is blurring it: {@code +51} of
-     * alpha, so {@code .62 → .82} on the standard scrim.
+     * How much darker the backdrop goes when nothing is blurring it: {@code +38} of
+     * alpha, so {@code .70 → .85} on the standard scrim.
      *
      * <p><b>Why the fallback is darker and not equal.</b> A window blur does two
      * things to what is behind a scrim: it removes competing detail, and it lowers
      * apparent brightness, because a blurred image has less contrast for the eye to
-     * resolve and reads darker at the same mean level. {@code .62} over a blurred
-     * photograph therefore looks like a <i>heavier</i> backdrop than {@code .62} over
-     * a sharp one. Handing the unsupported devices the same alpha would give them a
-     * visibly lighter, flatter wash on exactly the photographs where the modal has
-     * most to separate itself from — the user's words for it were "make the
-     * background much darker", and they were right about the mechanism.
+     * resolve and reads darker at the same mean level. Handing the unsupported
+     * devices the same alpha would give them a visibly lighter, flatter wash on
+     * exactly the photographs where the modal has most to separate itself from —
+     * the user's words for it were "make the background much darker", and they were
+     * right about the mechanism.
      *
-     * <p><b>Twenty percent, measured by eye on the OnePlus (API 35) and reasoned for
-     * the rest.</b> Enough that the card is unmistakably the subject; not so much that
-     * the photograph behind is gone, which would be a black rectangle with a card on
-     * it rather than a modal over something.
+     * <p><b>The step is smaller than the blurred value is, on purpose, because the
+     * two now serve different jobs.</b> Once the blur actually composites, the
+     * blurred path is dark <i>and</i> soft, while the fallback is only dark; making
+     * the gap as wide as the old one would leave the unblurred device with a black
+     * rectangle and a card on it rather than a modal over something. What is left is
+     * enough that a device with no blur at all still separates unmistakably.
      */
-    static final int SCRIM_UNBLURRED_STEP = 0x33;
+    static final int SCRIM_UNBLURRED_STEP = 0x26;
 
     /**
-     * The no-blur counterpart of {@link #SCRIM}: {@code 0xD1000000},
-     * {@code rgba(0,0,0,.82)}. Derived, not picked, so the two paths cannot drift.
+     * The no-blur counterpart of {@link #SCRIM}: {@code 0xD9000000},
+     * {@code rgba(0,0,0,.85)}. Derived, not picked, so the two paths cannot drift.
      */
     static final int SCRIM_UNBLURRED = darker(SCRIM);
 
@@ -576,7 +582,28 @@ final class ModalSheet {
             ((ViewGroup) root.getParent()).removeView(root);
         }
         dialog = new Dialog(activity,
-                android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
+                android.R.style.Theme_DeviceDefault_NoActionBar);
+        // A window blur is only composited for a window that is TRANSLUCENT AND
+        // FLOATING, and "Fullscreen" in that theme name is the whole bug: it sets
+        // android:windowFullscreen, which adds FLAG_FULLSCREEN, and a fullscreen
+        // window is by definition not floating, so the blur radius below was
+        // accepted and then never drawn. Measured on a Pixel 7 Pro, which reports
+        // mBlurEnabled=true and showed no blur at all -- a capability check alone
+        // cannot catch this, because the device can blur and this window was not
+        // allowed to.
+        //
+        // So the theme is the plain one and the size is asked for explicitly. A
+        // Dialog's layout params are set from the theme at attach time and a
+        // window of WRAP_CONTENT would shrink-wrap to the card, so this must be
+        // applied rather than assumed -- and it is why the scrim is still ours to
+        // draw: the background is transparent either way, only the blur eligibility
+        // has changed.
+        dialog.getWindow().clearFlags(
+                android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        dialog.getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
+        dialog.getWindow().setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
         // Transparent, so the scrim is ours to draw and the platform's dim is not
         // stacked on top of it. Two dimmers is how a .62 scrim ends up at .8.
         dialog.getWindow().setBackgroundDrawable(
