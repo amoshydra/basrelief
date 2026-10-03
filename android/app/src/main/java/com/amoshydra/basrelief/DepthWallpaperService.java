@@ -83,6 +83,14 @@ public class DepthWallpaperService extends WallpaperService {
          */
         private Surface pendingGlideFrom;
         /**
+         * Whether this engine has ever been shown.
+         *
+         * <p>The system destroys and rebuilds wallpaper engines routinely, so the
+         * first show of each engine is a cold start with no previous frame. Only a
+         * later show is a transition.
+         */
+        private boolean everShown;
+        /**
          * The surface that was showing most recently, process-wide.
          *
          * <p>Static because both engines share this process (AGENTS.md), and it is
@@ -490,11 +498,30 @@ public class DepthWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             this.visible = visible;
             if (visible) {
-                // Captured AFTER resolveSurface so the flags are fresh, and BEFORE
-                // anything that can resolve: the applyFromPrefs this wake triggers
-                // consumes it, and a pref-listener fire from that same chain finds it
-                // already gone, which is what keeps a slider move an instant apply.
-                pendingGlideFrom = DepthWallpaperService.lastVisibleSurface;
+                // Only a SECOND show glides, never the first: a freshly created
+                // engine has nothing on screen to come from, and a from it invents is
+                // a from it will visibly snap to.
+                //
+                // This was the reported artifact, in three steps: the renderer's cold
+                // load applies its OWN config (the lock engine's zoom), then this wake
+                // armed a glide FROM the home config, whose apply() snapped to it, then
+                // the tween animated back to lock. Lock, home, lock -- a double-take
+                // on every screen-on. The three pieces were each correct; the
+                // sequence was not, which is the same shape as the three ordering bugs
+                // before it.
+                //
+                // The cost, stated rather than hidden: on a device that destroys and
+                // rebuilds the engine per screen-on -- and AGENTS.md says this one
+                // does -- the lock transition is now a correct instant rather than an
+                // ease. A genuine ease there needs the cold load itself to arm the
+                // glide before its first frame, which is a real change and not this
+                // one.
+                if (everShown) {
+                    pendingGlideFrom = DepthWallpaperService.lastVisibleSurface;
+                } else {
+                    pendingGlideFrom = null;
+                    everShown = true;
+                }
                 DepthWallpaperService.lastVisibleSurface = surface.surface();
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
