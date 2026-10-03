@@ -2183,12 +2183,16 @@ public class MainActivity extends Activity {
      * the user's finger.
      */
     private void applyStripFill() {
-        // Before the morph has ever placed the panel there is no fraction to blend
-        // from, and the strip's own constructor fill is the pill's -- so f = 1 is the
-        // honest answer, not f = 0.
-        float f = lastSheetFraction < 0f ? 1f : lastSheetFraction;
-        applySheetTone(f, SheetMorph.blendColour(stripFillBase, PILL_PLATE,
-                SheetMorph.insetFor(f, 1f)));
+        // Before the morph has ever placed the panel there is no fraction to blend from.
+        // The strip's own constructor fill is the pill's, but the PANEL has not yet been
+        // told to give its fill up -- so on a cold launch in the collapsed state the
+        // panel painted its glass at full alpha underneath the strip and the pill was
+        // opaque until something dragged the sheet. `applySheetPosition` is what tells
+        // the panel, so the honest answer here is to let it run rather than to fake a
+        // blend against a panel in an unknown state.
+        if (lastSheetFraction < 0f) return;
+        applySheetTone(lastSheetFraction, SheetMorph.blendColour(stripFillBase, PILL_PLATE,
+                SheetMorph.insetFor(lastSheetFraction, 1f)));
     }
 
     private TextView fieldCaption(String s) {
@@ -2277,7 +2281,12 @@ public class MainActivity extends Activity {
         final LinearLayout row = new LinearLayout(this);
         pillRow = row;
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        // CENTER_VERTICAL for the dot against the text, and CENTER_HORIZONTAL because the
+        // row is WRAP_CONTENT: without it the mark and label sit at the row's own left
+        // edge, which becomes the pill's left edge, and the content reads off-centre in a
+        // capsule that is symmetric. The row's own padding is the pill's inset, so the
+        // two side paddings are equal and the content is centred by construction.
+        row.setGravity(Gravity.CENTER_VERTICAL | Gravity.CENTER_HORIZONTAL);
         // Weight 1 with a ZERO minimum: the row takes whatever the grip band leaves, so
         // at f = 0 it is exactly nothing and the pill's text is not on the sheet at all.
         // Android honours a 0dp weighted child down to zero and only then applies
@@ -2310,8 +2319,16 @@ public class MainActivity extends Activity {
         row.addView(stripLabel, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        strip.addView(row, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        // WRAP_CONTENT, not MATCH_PARENT: the pill's width is what its content needs, and
+        // a MATCH_PARENT child measures to whatever the parent offers -- so the cap came
+        // back as the "measured" width, the panel was sized to the cap, and the label
+        // ellipsised inside it. "No dep..." was that. See pillWidthPx.
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 1f);
+        // The strip centres the row, so the pill's content is centred in the pill rather
+        // than pinned to the left of a full-width row. The grip band takes the slack above.
+        rowLp.gravity = Gravity.CENTER_HORIZONTAL;
+        strip.addView(row, rowLp);
 
         strip.setOnTouchListener(new View.OnTouchListener() {
             @Override
@@ -2421,6 +2438,19 @@ public class MainActivity extends Activity {
             // the strip's state on the way through — there is nothing to show or
             // hide, which is the point.
             sheet.restAt(1f, true);
+            // restAt places the panel and routes through applySheetPosition, which is
+            // what tells the panel to give up its fill -- but it runs before the strip's
+            // own children have been measured, so the pill's WIDTH may have been taken
+            // from an unmeasured row. Re-place once the layout has settled. This is the
+            // cold-launch-in-the-collapsed-state path the user reported: opaque until
+            // something dragged it, because only a drag re-ran the placement.
+            panel.post(new Runnable() {
+                @Override
+                public void run() {
+                    sheet.reapply();
+                    applyStripState();
+                }
+            });
             applyStripState();
             return;
         }
