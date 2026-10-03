@@ -144,3 +144,33 @@ word on the list row.
 - Only ONE playlist rotates per surface; the editor must say which one does.
 - NO special logic for the bundled item; only Settings' Reset restores it — the user
   restated this rule and it governs the map section's refusal guards too.
+
+## Playlists — make "is this running?" unmissable (2026-10-03)
+
+**The diagnosis, in one line:** a playlist has no visible state, so a saved list and a running
+list look identical, and an inert feature reads as a broken one. The switch being "hard to
+find" was the smaller half of the bug.
+
+**One signal, three places, derived from ONE function.** All of it must read
+`Playlists.rotating(surface)` — never a recomputation, or the three places will disagree and
+one of them will lie.
+
+1. **`:core` first: a `PlaylistStatus` derivation.** What is rotating, on which surfaces, and
+   when it next changes (`last_advanced_at` + the trigger's interval → "in 22 h", or "due
+   now"). Pure, tested, its own test class — `PlaylistTest` already pins that rotation writes
+   the index's own selection by the same two calls a tap makes, and **the blob's allowed keys
+   are enumerated by a test, so the status must be DERIVED AT RENDER TIME and never stored.**
+2. **The list row is the control.** Rotating: accent fill, a filled `Rotating` chip, and the
+   second line reads `Rotating on Home · next: in 22 h`. Not rotating: `Not rotating` and a
+   dedicated ≥48dp **Use** button at the row's end. Tapping Use turns it on **and advances
+   once immediately**, so the effect is visible in the same moment.
+3. **The editor gets a sticky primary action**, full width, in the thumb zone above the grip:
+   `Use this playlist` when off, `Stop rotating` when on, with the live status line beside it.
+   The Rotation group's switch stays as configuration; the button is the *action*.
+4. **Ambient proof outside the playlist screens**: the gallery header shows a count when one
+   is rotating, and the sheet's photo line names the playlist that owns the current photo
+   (`playlist: name · 2 of 3`), so the state is visible from the studio, not only from the
+   screen that set it.
+5. **Standing down is visible.** Only one playlist rotates per surface; using one must
+   visibly stand another down on that same surface, because a silently ignored list is
+   exactly the confusion being fixed.
