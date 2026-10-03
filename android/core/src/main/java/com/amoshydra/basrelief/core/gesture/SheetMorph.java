@@ -170,12 +170,17 @@ public final class SheetMorph {
      * it towards the pill while it is plainly a sheet reads as two objects.
      * </ul>
      *
-     * <p>So the geometry has two named ramps, both in this file, and a test holds each
-     * to its own. {@code 0.9} is a judgement and it is one number: late enough that the
-     * sheet is recognisably a sheet for almost the whole drag, early enough that the
-     * last tenth is a morph and not a cut.
+     * <p><b>"The very end" is not a number I picked — it is the sheet's own
+     * threshold.</b> {@code SheetIntent.SHEET.collapseThreshold} is the line past which
+     * a release commits to collapsing, so deriving from it means the pill's shape
+     * begins exactly where the sheet has stopped being able to rest: *"I want the width
+     * to start reducing only when we scroll past the threshold."* A sheet that is still
+     * coming to rest is still a sheet, and it must still look like one — which is also
+     * why this cannot be a smaller number than the threshold without reintroducing the
+     * two-timelines bug in its mildest form: a shape that starts moving on a sheet that
+     * then springs back open has visibly changed and un-changed in one gesture.
      */
-    public static final float SHAPE_BAND_START = 0.9f;
+    public static final float SHAPE_BAND_START = SheetIntent.SHEET.collapseThreshold;
 
     /**
      * The shape's progress: <b>the sheet's own shape until

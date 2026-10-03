@@ -149,6 +149,11 @@ public class SheetMorphTest {
         // cannot quietly break the story: the fade's band and the release policy are
         // two numbers that must not drift apart.
         assertEquals(SheetIntent.SHEET.collapseThreshold, SheetMorph.EDGE_BAND_START, 0f);
+        // And the shape waits for the SAME line, because "the very end" is not a
+        // number to pick: it is where the sheet stops being able to rest. A shape that
+        // began moving earlier would visibly change and un-change in one gesture,
+        // whenever a spring brought the sheet back.
+        assertEquals(SheetIntent.SHEET.collapseThreshold, SheetMorph.SHAPE_BAND_START, 0f);
     }
 
     /** Superseded by theGeometryHasNoStepAnywhereInTheTravel, which asserts the
