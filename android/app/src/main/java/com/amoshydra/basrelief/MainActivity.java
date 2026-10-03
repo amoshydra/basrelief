@@ -121,6 +121,16 @@ public class MainActivity extends Activity {
     /** How long the panel takes to slide, in ms. */
     private static final int SHEET_SLIDE_MS = 180;
     /**
+     * The height of the scroll's foot fade, in dp.
+     *
+     * <p>The mockup masks the last 22px ({@code final.html:57-59}), and this is
+     * a deliberate deviation from it: the user asked for the gradient to be
+     * "slightly taller" after seeing the 22dp version land. One named number,
+     * so a tune is an edit here and nowhere else; 32 is 22 plus the 10dp that
+     * reads as "slightly" on the devices this was checked on.
+     */
+    private static final int SHEET_FADE_DP = 32;
+    /**
      * How far down the sheet must be dragged before it counts as collapsed.
      *
      * <p>The only threshold in an otherwise snap-free sheet. Without it, a drag to
@@ -502,11 +512,12 @@ public class MainActivity extends Activity {
         sheetScroll.setFillViewport(true);
         sheetScroll.setClipToPadding(false);
         // The mockup masks the last 22px so a control below the fold is visibly
-        // scrollable rather than looking like the end of the list. The fade is at
-        // the foot only: BottomFadeScrollView suppresses Android's top edge fade,
-        // which the design does not draw. This is a child property -- not a
-        // transform -- so it is safe over the GLSurfaceView.
-        sheetScroll.setFadingEdgeLength(dp(22));
+        // scrollable rather than looking like the end of the list; the length
+        // itself lives on SHEET_FADE_DP, which deviates deliberately. The fade
+        // is at the foot only: BottomFadeScrollView suppresses Android's top
+        // edge fade, which the design does not draw. This is a child property
+        // -- not a transform -- so it is safe over the GLSurfaceView.
+        sheetScroll.setFadingEdgeLength(dp(SHEET_FADE_DP));
         sheetScroll.setVerticalFadingEdgeEnabled(true);
         // The sheet itself has no padding, so the content carries it: 14dp sides, and
         // the bottom gap lives on the CONTENT, not on the scroll. Android draws a
@@ -534,7 +545,7 @@ public class MainActivity extends Activity {
         // (View.getFadeHeight() is height minus padding), which is how the fade
         // came to stop 14dp short. On the content, the inset neither moves the
         // bounds nor clips the fade: content at rest ends above the bar, while
-        // the last 22dp of glass -- under the bar -- still fades.
+        // the last SHEET_FADE_DP of glass -- under the bar -- still fades.
         // ModalSheet.insetBottom is reused rather than re-derived so all five
         // surfaces resolve the bar identically.
         sheetScroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -4032,7 +4043,8 @@ public class MainActivity extends Activity {
      * A {@link ScrollView} whose edge fade is drawn only at the foot.
      *
      * <p>The design masks the last 22px of the scroll ({@code final.html:57-59})
-     * so a control below the fold is visibly reachable. Android's fading edge is
+     * so a control below the fold is visibly reachable; {@code SHEET_FADE_DP}
+     * makes it taller, a deliberate deviation. Android's fading edge is
      * all-or-nothing at the API level and draws at <b>both</b> ends, so the top of
      * the scroll grew a bright band under the grip that the design never draws --
      * the "not aligned correctly" the user reported. Suppressing the top

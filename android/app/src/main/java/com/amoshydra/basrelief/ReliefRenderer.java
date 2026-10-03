@@ -377,6 +377,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private float surfaceW, surfaceH;
 
     /**
+     * Surface pixels one whole unit of Origin moves the picture, per axis, at
+     * the zoom and geometry of the last frame.
+     *
+     * <p>Written on the GL thread by {@link #recomputeScale} — which every draw
+     * calls — and read on the UI thread by the framing rows, so both are
+     * volatile and both are written together: a reader can never see the X of
+     * one recompute beside the Y of the next. See
+     * {@link CameraModel#screenPixelsPerOrbit} for the maths.
+     *
+     * <p>Zero until the surface exists. The caller treats zero as "no tracking
+     * to compute" and falls back to its own rule rather than dividing by it.
+     */
+    private volatile float orbitPixelsPerUnitX = 0f, orbitPixelsPerUnitY = 0f;
+
+    /**
      * Ask for one still frame, for the lock screen on a platform with no second engine.
      *
      * <p>A one-shot, consumed by the next drawn frame. It is a field rather than a
@@ -528,6 +543,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public float getZoom() {
         return zoom;
+    }
+
+    /**
+     * How many surface pixels one whole unit of Origin moves the picture, at
+     * the zoom, image aspect and surface size of the last drawn frame.
+     *
+     * <p>For the framing rows, which turn it into finger travel per thousandth
+     * of Origin. Safe from the UI thread: a volatile read of a value the GL
+     * thread just wrote, exactly like {@link #getZoom}.
+     *
+     * @param horizontal true for the X axis, false for Y
+     * @return pixels per whole origin unit, or 0 before the first surface
+     */
+    float getOrbitPixelsPerUnit(boolean horizontal) {
+        return horizontal ? orbitPixelsPerUnitX : orbitPixelsPerUnitY;
     }
 
     public void setMotion(float v) {
@@ -1403,6 +1433,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         camera.setDepth(depth);
         camera.setMotion(motion);
         scale = camera.computeScale();
+        // Published for the framing rows' Origin sensitivity, from the camera's
+        // own values so the UI thread cannot derive a second, drifting answer.
+        // Both axes in one place, so the pair cannot be half-updated; see the
+        // fields' note. Cheap enough for the per-frame call: two multiplies.
+        orbitPixelsPerUnitX = camera.screenPixelsPerOrbit(true, surfaceH);
+        orbitPixelsPerUnitY = camera.screenPixelsPerOrbit(false, surfaceH);
     }
 
     private Bitmap decodeRaw(int resId) {

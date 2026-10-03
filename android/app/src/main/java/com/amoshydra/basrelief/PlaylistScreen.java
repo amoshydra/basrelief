@@ -87,7 +87,6 @@ final class PlaylistScreen {
     private static final int PRIMARY_INK = 0xFF0B0D10;
     /** A swatch with no photograph in it — the gallery's own tile fill. */
     private static final int TILE = 0xFF2E3B44;
-    private static final int TILE_BUNDLED = 0xFF4A423A;
     /** The mockup's `.locked`, which is how an unavailable row reads. */
     private static final float LOCKED_ALPHA = 0.42f;
 
@@ -622,7 +621,7 @@ final class PlaylistScreen {
     private View listRow(final Playlist p, Library lib) {
         LibraryItem first = firstPhoto(p, lib);
         LinearLayout r = option();
-        r.addView(swatch(tileFill(first), photoView(first), p.active));
+        r.addView(swatch(TILE, photoView(first), p.active));
         Row texts = texts(p.displayName(), summary(p));
         r.addView(texts.box, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1008,7 +1007,7 @@ final class PlaylistScreen {
                         str(R.string.playlists_photo_missing_sub));
                 announce(r, texts, R.string.playlists_state_missing);
             } else {
-                r.addView(swatch(tileFill(item), photoView(item), false));
+                r.addView(swatch(TILE, photoView(item), false));
                 texts = texts(item.displayName(), null);
                 announce(r, texts, R.string.playlists_state_in_list);
             }
@@ -1201,22 +1200,29 @@ final class PlaylistScreen {
         return null;
     }
 
-    private int tileFill(LibraryItem item) {
-        return item != null && item.isBundled() ? TILE_BUNDLED : TILE;
-    }
-
     /**
      * A decoded thumbnail for a row, or null.
      *
-     * <p>Null for the bundled demo, which has no file to decode: it ships inside
-     * {@code res/raw} and its tile keeps the app's own bundled fill, which is the
-     * same reason the filmstrip does not decode it either.
+     * <p>The bundled demo has no file, and that filelessness is exactly what
+     * makes it the bundled row — so it decodes its packaged {@code res/raw}
+     * bytes through the same preview path the gallery and the filmstrip use.
+     * This screen used to keep a flat brown fill for it, which made the one row
+     * whose photograph is always present the only one drawn as a colour; the
+     * marble was already in the app, just not here. One path, and one place
+     * that knows how a fileless row is drawn.
+     *
+     * <p>Null for a missing row, which keeps the plain tile fill; a row whose
+     * file has gone is a hole and says so in words beside the swatch.
      */
     private ImageView photoView(LibraryItem item) {
-        if (item == null || item.isBundled()) return null;
+        if (item == null) return null;
+        ImageView thumb = new ImageView(activity);
+        if (item.isBundled()) {
+            Io.decodeResourcePreview(activity, R.raw.image, thumb, dp(SWATCH_DP));
+            return thumb;
+        }
         File file = PrefFiles.resolve(activity.getFilesDir(), item.imageName);
         if (file == null) return null;
-        ImageView thumb = new ImageView(activity);
         Io.decodePreview(activity, file, thumb, dp(SWATCH_DP));
         return thumb;
     }

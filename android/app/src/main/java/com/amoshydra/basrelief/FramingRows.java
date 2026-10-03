@@ -39,6 +39,19 @@ final class FramingRows {
     private static final int ORIGIN_MAX = 1000;
 
     /**
+     * How much further than the picture the finger must travel on Origin.
+     *
+     * <p>1.0 would be exact tracking — the picture moves with the finger — and
+     * the user's request was "origin tracking sliding, slightly less sensitive",
+     * i.e. tracking with a deliberate margin. 1.3 asks a drag to be 30% longer
+     * than the picture's travel, and it keeps one feel at every zoom because the
+     * sensitivity is derived from the live camera rather than a fixed range.
+     * This is a FEEL constant: lower it toward 1.0 to make Origin bite sooner,
+     * raise it to make it calmer.
+     */
+    private static final float ORIGIN_DRAG_FACTOR = 1.3f;
+
+    /**
      * Pan is in pixels, and its bound is the renderer's, not a constant here.
      *
      * <p><b>The renderer is the truth and this control derives from it.</b>
@@ -71,6 +84,24 @@ final class FramingRows {
         if (w > 0 && h > 0) return Math.max(w, h);
         android.util.DisplayMetrics dm = activity.getResources().getDisplayMetrics();
         return Math.max(dm.widthPixels, dm.heightPixels);
+    }
+
+    /**
+     * Finger travel, in surface pixels, that one thousandth of Origin asks for.
+     *
+     * <p>Read at the start of every gesture, so a zoom changed since the sheet
+     * was built cannot leave the row stale. The renderer answers surface pixels
+     * per whole Origin unit at the zoom and image aspect of the last frame
+     * ({@code CameraModel.screenPixelsPerOrbit}); the slider counts in
+     * thousandths; and {@link #ORIGIN_DRAG_FACTOR} is the deliberate margin over
+     * exact tracking.
+     *
+     * <p>Zero before the surface exists, which the slider treats as "use the
+     * range rule"; see BasreliefSlider.unitTravel.
+     */
+    private static float originTravel(MainActivity activity, boolean isX) {
+        return activity.renderer.getOrbitPixelsPerUnit(isX)
+                * ORIGIN_DRAG_FACTOR / 1000f;
     }
 
     /** Build the whole section: readout, Origin caption, X, Y, Pan caption, X, Y. */
@@ -180,15 +211,26 @@ final class FramingRows {
         };
         // Pan's unit is a screen pixel, so its row drags 1:1 and its range is
         // the renderer's own bound; see panLimit. Origin is a fraction of the
-        // camera's own travel and its screen meaning does scale with zoom, so it
-        // keeps the range-scaled rule like every other key; see
-        // BasreliefSlider.createScreenPixels for the camera reasoning.
+        // camera's own travel, so its screen meaning scales with zoom and with
+        // the image's aspect; its travel therefore comes live from the renderer
+        // through the provider below, which is what makes the picture track the
+        // finger at any zoom instead of the range-scaled sweep's fixed,
+        // zoom-blind speed. Pan deliberately does NOT get the provider: its
+        // unit already is a pixel, and that is the whole distinction.
         final int limit = panLimit(activity);
         BasreliefSlider slider = fraction
                 ? BasreliefSlider.create(activity, key, read(activity, key, true),
                         ORIGIN_MIN, ORIGIN_MAX, fmt, changed)
                 : BasreliefSlider.createScreenPixels(activity, key, read(activity, key, false),
                         -limit, limit, fmt, changed);
+        if (fraction) {
+            slider.setPixelsPerUnit(new BasreliefSlider.PixelsPerUnit() {
+                @Override
+                public float pixelsPerUnit() {
+                    return originTravel(activity, key.endsWith("X"));
+                }
+            });
+        }
         // Live preview, the half these four rows were missing. The store is still
         // written once, on release, by OnChanged above; this only moves the
         // renderer's own fields, which is what makes pan and origin follow the

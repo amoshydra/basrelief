@@ -77,6 +77,64 @@ public class CameraModelTest {
         assertEquals("y round-trip (" + ndcX + "," + ndcY + ")", ndcY, ndc[1], 1e-4f);
     }
 
+    /**
+     * One whole Origin unit must move the picture by exactly the number of
+     * pixels {@code screenToOrbit} says a drag of that many pixels resolves to
+     * — the two are inverses, and that identity is the whole basis of the
+     * tracking rule the framing sliders use.
+     *
+     * <p>Deliberately a round-trip through the real unprojection rather than a
+     * restatement of the formula: a formula can be re-derived to match itself,
+     * the round-trip cannot.
+     */
+    @Test
+    public void originTravelIsTheInverseOfTapUnprojection() {
+        for (float zoom : new float[]{0.25f, 0.7f, 1f, 2f}) {
+            for (boolean horizontal : new boolean[]{true, false}) {
+                CameraModel m = model();
+                m.setZoom(zoom);
+                float d = 100f; // pixels from the screen centre
+                float ndcX = horizontal ? 2f * d / SURFACE_W : 0f;
+                float ndcY = horizontal ? 0f : 2f * d / SURFACE_H;
+                float[] orbit = new float[2];
+                assertTrue("tap should hit the plane at zoom " + zoom,
+                        m.screenToOrbit(ndcX, ndcY, SURFACE_W, SURFACE_H,
+                                0f, 0f, 0f, 0f, 0f, 0f, orbit));
+                float moved = horizontal ? orbit[0] : orbit[1];
+                float expected = d / m.screenPixelsPerOrbit(horizontal, SURFACE_H);
+                assertEquals("zoom " + zoom + (horizontal ? " x" : " y"),
+                        expected, moved, 1e-4f);
+            }
+        }
+    }
+
+    /**
+     * The tracking value is proportional to zoom (the model scale is), and the
+     * X axis is exactly {@code aspect} times Y. Both are pinned because a
+     * plausible "same pixels on both axes" rule passes a single-axis check and
+     * then mistracks one of them by the image's aspect.
+     */
+    @Test
+    public void originTravelScalesWithZoomAndAspect() {
+        CameraModel m = model();
+        float x1 = m.screenPixelsPerOrbit(true, SURFACE_H);
+        float y1 = m.screenPixelsPerOrbit(false, SURFACE_H);
+        assertEquals("X carries the image aspect", IMAGE_ASPECT * y1, x1, 1e-3f);
+        m.setZoom(2f);
+        assertEquals("tracking doubles with zoom", x1 * 2f,
+                m.screenPixelsPerOrbit(true, SURFACE_H), 1e-3f);
+        m.setZoom(0.25f);
+        assertEquals("tracking quarters with zoom", x1 * 0.25f,
+                m.screenPixelsPerOrbit(true, SURFACE_H), 1e-3f);
+    }
+
+    /** No surface means no tracking to compute; the caller must not divide by 0. */
+    @Test
+    public void originTravelIsZeroWithoutASurface() {
+        CameraModel m = model();
+        assertEquals(0f, m.screenPixelsPerOrbit(true, 0f), 0f);
+    }
+
     /** A resolved orbit is always inside the plane; it is never clamped into it. */
     @Test
     public void resolvedOrbitStaysOnThePlane() {

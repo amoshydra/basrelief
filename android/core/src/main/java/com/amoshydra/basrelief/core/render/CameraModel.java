@@ -86,6 +86,47 @@ public final class CameraModel {
     }
 
     /**
+     * Surface pixels the picture moves for one whole unit of orbit (Origin) on
+     * one axis, at the current zoom and geometry.
+     *
+     * <p><b>The maths.</b> {@link #frame} puts the camera pivot at
+     * {@code px = orbitX * aspect * scale} ({@code py = orbitY * scale}) and
+     * aims the camera at it, so a change in the orbit moves the camera and the
+     * whole plane together. The visible world height at the pivot plane is
+     * {@code visH = 2 * CAM_DIST * tan(FOV / 2)}, so one world unit there is
+     * {@code surfaceH / visH} pixels, and the answer is
+     * {@code (horizontal ? aspect : 1) * scale * surfaceH / visH}.
+     *
+     * <p><b>This is the exact inverse of the last step of
+     * {@link #screenToOrbit}</b> ({@code ox = wx / (aspect * scale)}), which is
+     * why multiplying a drag by it makes the picture track the finger 1:1 at
+     * any zoom. The X axis carries the {@code aspect} factor because the
+     * pivot's world x is scaled by the image's width/height ratio while y is
+     * not; a single "pixels per unit" shared by both axes would therefore
+     * mistrack one of them by the image's aspect, which is the kind of quiet
+     * wrongness {@code CameraModelTest} exists to catch.
+     *
+     * <p><b>What deliberately does not enter.</b> Depth only displaces the
+     * relief in z and the pivot plane is z = 0. Tilt does change the answer by
+     * up to ~14% at the maximum Motion (the eye-to-pivot distance grows while
+     * the lateral offset does not), and it is left out on purpose: the value is
+     * read once per gesture and a value that moved with the gyro would make the
+     * same drag change speed while the phone is in the hand. The caller applies
+     * its own margin over tracking anyway.
+     *
+     * @param horizontal true for the X axis, false for Y
+     * @param surfaceH   the drawing surface's height in pixels, as handed to
+     *                   {@link #frame}
+     * @return pixels, or 0 when there is no surface or no loaded image yet
+     */
+    public float screenPixelsPerOrbit(boolean horizontal, float surfaceH) {
+        float scale = computeScale();
+        if (scale <= 0f || surfaceH <= 0f) return 0f;
+        float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
+        return (horizontal ? aspect : 1f) * scale * surfaceH / visH;
+    }
+
+    /**
      * The deepest the relief may go at the current zoom without the camera
      * ending up inside it: the relief half-depth (0.5) times the model scale
      * must stay under 0.9x the camera distance.

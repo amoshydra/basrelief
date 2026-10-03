@@ -214,6 +214,27 @@ final class BasreliefSlider extends LinearLayout {
         void onEnd();
     }
 
+    /**
+     * Where one unit's worth of finger travel comes from, when the rule is not
+     * this class's to compute.
+     *
+     * <p>Origin is why this exists. Its unit is a fraction of the camera's own
+     * travel, and what that means in pixels depends on the zoom and the image's
+     * aspect — both owned by the renderer, and both changing under the slider
+     * while the sheet is open. A provider is asked once per gesture, at
+     * touch-down (see {@link Track#onTouchEvent}), rather than the caller
+     * pushing a value in, so every gesture starts from the sensitivity that is
+     * true at that moment and a zoom changed by any route — slider, pinch,
+     * glide, reload — cannot leave the row stale.
+     *
+     * <p>Pan deliberately does not use this: its unit already IS a screen
+     * pixel, which {@link #createScreenPixels} fixes at 1:1.
+     */
+    interface PixelsPerUnit {
+        /** Finger travel, in surface pixels, that one unit of this key asks for. */
+        float pixelsPerUnit();
+    }
+
     private final MainActivity activity;
     private final String name;
     /**
@@ -230,6 +251,8 @@ final class BasreliefSlider extends LinearLayout {
     private OnPreview onPreview;
     /** Optional. A host that does not dim the sheet simply never installs one. */
     private OnInteraction onInteraction;
+    /** Optional. Null means the range-scaled sweep rule above is the answer. */
+    private PixelsPerUnit pixelsPerUnit;
     /**
      * True between {@link #beginInteraction} and {@link #endInteraction}, so the
      * pair fires exactly once even if two fingers land on the control: the first
@@ -431,6 +454,28 @@ final class BasreliefSlider extends LinearLayout {
     /** Hear a gesture begin and end. Optional; see {@link OnInteraction}. */
     void setOnInteraction(OnInteraction listener) {
         this.onInteraction = listener;
+    }
+
+    /**
+     * Ask something else for the travel one unit takes. Optional; see
+     * {@link PixelsPerUnit}.
+     */
+    void setPixelsPerUnit(PixelsPerUnit provider) {
+        this.pixelsPerUnit = provider;
+    }
+
+    /**
+     * The travel one unit asks for, at the moment a gesture begins.
+     *
+     * <p>A non-positive answer means the provider has no surface yet and cannot
+     * say; the range-scaled rule is the fallback so a drag before the first
+     * frame still moves at a defined sensitivity instead of jumping the value
+     * by a divide-by-zero.
+     */
+    float unitTravel() {
+        if (pixelsPerUnit == null) return pxPerUnit;
+        float v = pixelsPerUnit.pixelsPerUnit();
+        return v > 0f ? v : pxPerUnit;
     }
 
     /**
@@ -659,6 +704,11 @@ final class BasreliefSlider extends LinearLayout {
         else if ("originY".equals(key)) res = R.string.framing_origin_y;
         else if ("panX".equals(key)) res = R.string.framing_pan_x;
         else if ("panY".equals(key)) res = R.string.framing_pan_y;
+        // The Settings screen's glide rate. It is not a sheet control, but it is
+        // the same slider and must resolve a label the same way -- without this
+        // case its only options were a row labelled "glide_ms" or a second,
+        // hand-rolled row that could (and did) disagree about the gaps.
+        else if ("glide_ms".equals(key)) res = R.string.slider_glide;
         else res = 0;
         return res == 0 ? key : a.getString(res);
     }
@@ -699,6 +749,15 @@ final class BasreliefSlider extends LinearLayout {
          */
         private float anchorX;
         private int anchorValue;
+        /**
+         * Finger travel per unit, fixed at touch-down.
+         *
+         * <p>Read once per gesture rather than per move, for the same reason
+         * {@link #anchorValue} is: a sensitivity that changed mid-drag would
+         * make the value jump under a finger that had not moved. See
+         * {@link BasreliefSlider#unitTravel}.
+         */
+        private float gesturePxPerUnit;
 
         Track(Context c, BasreliefSlider owner) {
             super(c);
@@ -719,6 +778,7 @@ final class BasreliefSlider extends LinearLayout {
                     downX = event.getX();
                     pressedAt = owner.value;
                     dragging = false;
+                    gesturePxPerUnit = owner.unitTravel();
                     owner.beginInteraction();
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -737,7 +797,7 @@ final class BasreliefSlider extends LinearLayout {
                         anchorValue = owner.value;
                     }
                     int next = anchorValue
-                            + Math.round((event.getX() - anchorX) / owner.pxPerUnit);
+                            + Math.round((event.getX() - anchorX) / gesturePxPerUnit);
                     if (next < owner.min || next > owner.max) {
                         // A stop, not a wind-up: discard the travel past the end and
                         // measure from the end itself, so reversing moves the value

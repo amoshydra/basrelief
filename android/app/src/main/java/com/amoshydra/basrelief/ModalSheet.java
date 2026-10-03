@@ -744,10 +744,13 @@ final class ModalSheet {
      * would give one control two announcements and let a tap on the switch fall
      * through to the row as a second toggle.
      *
-     * <p><b>Leading, in the swatch's own slot.</b> The mockup puts its state mark
-     * at the row's leading edge, so the switch replaces the mark rather than
-     * adding a second thing to the row; a trailing switch would be a layout the
-     * design does not draw.
+     * <p><b>Trailing, which is where a control goes.</b> The mockup draws its state
+     * mark in the leading slot, but that mark is a swatch -- a picture of a state --
+     * and a switch is a control you operate. Android and Material both put the label
+     * on the leading side and the control on the trailing one, and users' hands
+     * already know that: the right edge is where you reach for a toggle, and a
+     * leading switch reads as a second label. The user asked for the convention
+     * explicitly, so this deliberately departs from the mockup's mark position.
      *
      * @param onToggled called with the new state after each tap. May be null for a
      *                  row that shows state but owns none.
@@ -771,15 +774,17 @@ final class ModalSheet {
         sw.setThumbTintList(new ColorStateList(
                 new int[][]{ {android.R.attr.state_checked}, {} },
                 new int[]{ SWITCH_THUMB_ON, SWITCH_THUMB_OFF }));
-        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        // .opt{gap:12px}: the same space the swatch left, so the text column keeps
-        // the x the design gives it.
-        swLp.rightMargin = dp(activity, OPT_INNER_GAP_DP);
-        row.addView(sw, swLp);
-
+        // Text first, so the weight-1 column takes the space and the switch keeps
+        // its intrinsic width at the trailing edge. Reversing these two lines is
+        // what puts the switch back on the left.
         row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        // .opt{gap:12px}, now as the space between the text and the control.
+        swLp.leftMargin = dp(activity, OPT_INNER_GAP_DP);
+        row.addView(sw, swLp);
 
         describe(activity, row, titleText, subText, on);
         sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
