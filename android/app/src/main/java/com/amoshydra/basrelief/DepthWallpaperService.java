@@ -422,6 +422,15 @@ public class DepthWallpaperService extends WallpaperService {
                     + (holder != null && holder.getSurface() != null
                             && holder.getSurface().isValid()));
             renderer = new ReliefRenderer(DepthWallpaperService.this);
+            // Set BEFORE the surface exists, so the renderer's own cold load -- which
+            // runs inside onSurfaceCreated and resolves Framing.of(item, editSurface)
+            // -- resolves THIS engine's surface and not the renderer's default, HOME.
+            //
+            // It was only set later, from applyFromPrefs, which made the cold load a
+            // race: sometimes it painted the lock config, sometimes home's, depending
+            // on whether the visibility path had run yet. That is the flash -- two
+            // resolves, two configs, one of them wrong, before the transition.
+            renderer.setEditSurface(surface.surface());
             glView = new WallpaperGLSurfaceView(DepthWallpaperService.this);
             glView.setEGLContextClientVersion(2);
             ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
