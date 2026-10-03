@@ -263,3 +263,67 @@ from, and the "both are loaded together" invariant stands — the seed writes bo
 materialise that row into files once, or the user is left with the one special-cased item the
 work was meant to eliminate. Do it as one derivation over the stored index, not a special case
 at the render site.
+
+## Playlist naming was the bug, and it hid a status that matters (2026-10-03)
+
+**The user's words:** *'Rotate through this list' turned out to be the activation button rather than a rotation mode, and the
+    result was judged a failure of visual design*
+
+**The reading was correct and the design caused it.** `Rotate through this list` sat **directly above
+`Shuffle`, in the same group** — my own brief said "Rotation (Rotate, Shuffle)". Two controls
+whose words both talk about *how the list is walked*, side by side, read as two modes. **A label
+describing a mechanism is not a label describing a state.** Fix: name the activation for what it
+does to the *wallpaper*, and separate it from anything about picking order.
+
+| group | control | widget |
+|---|---|---|
+| — | **Use this playlist** (states what it does to the wallpaper) | primary action |
+| How it picks | In order / Shuffle | **radio** — one of two, exclusive |
+| Where it shows | Home / Lock | switch each — independent |
+| When it changes | Daily / Hourly / On unlock / On pickup | **radio** — one of four |
+
+**CORRECTION to the earlier brief: shuffle is NOT a switch.** Order and shuffle are mutually
+exclusive, which is precisely what a radio *is* — so it is the same single-choice group as
+trigger, and two switches in a screen where they should be two radio groups is the inconsistency
+the user is objecting to. Two radio groups, two switches, one primary action.
+
+**Two radio groups means exclusivity must be owned by the GROUP** (`RadioGroup.setOnCheckedChange`),
+never per row. Two groups = two instances, and the trap doubles: a row wired to the wrong group,
+or both groups sharing one, silently breaks the selection.
+
+## The three states the app only renders one of
+
+The user reported: playlist armed, yet gallery and film strip show an **active item that is not
+in the playlist**, and nothing explains it. That is **correct behaviour with a UI that lies by
+omission.** A playlist rotates the *selection* — the same pointer a tap writes, one pointer, no
+second cursor — so a manual tap to a non-member is legal, the playlist keeps its schedule, and
+it takes the screen back at the next trigger.
+
+`photo_line_playlist` fires **only when the current photo is a member**, so tapping a non-member
+**silently drops the playlist mention** and the screen reads "no playlist" while one is armed and
+will overwrite what is on screen. Three states exist; one is rendered:
+
+| reality | what must be shown |
+|---|---|
+| nothing armed | nothing |
+| armed, current photo is a member | `playlist: <name> · 2 of 3` |
+| **armed, current photo is NOT a member** | **`<name> is armed — it takes the screen back on unlock`** |
+
+**Do not move the active ring.** The ring means "what is on screen", because the pointer is the
+truth and moving it would make it lie about something else. The fix is showing the missing fact
+beside it. Same for the gallery: the header count alone ("1 playlist rotating") is too weak when
+the armed playlist does not own the current photo.
+
+**Rejected alternative:** a manual pick *suspending* the playlist. It adds a second piece of
+state to a model whose whole point is one pointer that cannot disagree with itself. Better to
+say plainly when the playlist takes the screen back.
+
+## Dialog backdrop: darker, and real blur where the platform allows
+
+- `ModalSheet` (a real window): **`Window.setBackgroundBlurRadius`**, API 31+, gated on
+  `WindowManager.isCrossWindowBlurSupported()`, with a **darker scrim** behind the card. Radius
+  tuned so text behind it stays unreadable-blurred rather than legible; measure, do not guess.
+- **The studio sheet cannot have blur.** It is a view over the `GLSurfaceView` in the same window,
+  and a window cannot be blurred from inside itself without a screenshot — which `AGENTS.md`
+  already forbids for appearance. Darker scrim only there, and say so rather than shipping a
+  promise the platform cannot keep on `minSdk 26`.
