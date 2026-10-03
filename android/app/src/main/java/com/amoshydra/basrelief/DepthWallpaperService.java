@@ -22,7 +22,10 @@ import android.view.SurfaceHolder;
  */
 public class DepthWallpaperService extends WallpaperService {
 
-
+    /** The surface that was showing most recently, process-wide. Both engines live
+     *  in this process, so this is the one honest answer to "what did the user just
+     *  see". See DepthEngine.pendingGlideFrom for why it exists. */
+    private static Surface lastVisibleSurface;
 
     /**
      * The component a user selects, i.e. what the studio hands to the system
@@ -78,7 +81,15 @@ public class DepthWallpaperService extends WallpaperService {
          * index change -- which also run applyFromPrefs -- cannot glide: only a wake
          * carries a "from", and it is consumed by the resolve that follows.
          */
-
+        private Surface pendingGlideFrom;
+        /**
+         * Whether this engine has ever been shown.
+         *
+         * <p>The system destroys and rebuilds wallpaper engines routinely, so the
+         * first show of each engine is a cold start with no previous frame. Only a
+         * later show is a transition.
+         */
+        private boolean everShown;
         /**
          * The surface that was showing most recently, process-wide.
          *
@@ -92,6 +103,9 @@ public class DepthWallpaperService extends WallpaperService {
          * unlocking, and on returning to the launcher. The truth is knowable: ask
          * whichever engine was visible.
          */
+        // Not static here: a non-static inner class cannot hold static fields, and
+        // the service is the process-wide home both engines already share.
+        // (Held as DepthWallpaperService.lastVisibleSurface.)
         private boolean tiltRunning = false;
         /**
          * Which screen this engine is drawing, resolved in :core from the raw
@@ -259,7 +273,41 @@ public class DepthWallpaperService extends WallpaperService {
      * here rather than passing it per call keeps the renderer's write path identical
      * to the studio's, which is what stops the two surfaces from drifting.
      */
+    /**
+     * The surface to glide FROM, or null when this resolve is not a surface change.
+     *
+     * <p>Only when this engine was hidden and is becoming visible: that is the one
+     * event that means the user was looking at the other screen a moment ago -- a lock
+     * engine waking as the phone locks, a home engine waking as it unlocks. A
+     * same-surface resolve (a slider moved, the index changed) is not a transition,
+     * and gliding it would smear every adjustment.
+     */
+    private Framing glideFromSurface(LibraryItem active, SurfaceResolver resolved) {
+        Surface from = pendingGlideFrom;
+        pendingGlideFrom = null;             // consumed: one glide per wake
+        if (from == null) return null;       // not a wake: apply, do not smear
+        // The surface that was showing is the one to come from. NOT "the other
+        // surface": that guess is what made every wake glide from a config nothing
+        // was rendering. Same surface showing before and now -- returning to the
+        // launcher, a same-surface wake -- is not a transition and must not ease.
+        if (from == resolved.surface()) return null;
+        if (!resolved.supportsPerSurfaceLock()) return null; // no second engine, no other side
+        return Framing.of(active, from);
+    }
 
+    /**
+     * The one glide rate, from the setting the user chose. Read here rather than
+     * cached so a glide that begins after the slider moved uses the speed just
+     * chosen.
+     */
+    private float glideSpanMs(SharedPreferences p) {
+        try {
+            return Math.max(1f, p.getInt(TiltController.KEY_GLIDE_MS,
+                    TiltController.GLIDE_DEFAULT_MS));
+        } catch (Exception e) {
+            return TiltController.GLIDE_DEFAULT_MS;
+        }
+    }
 
     private void tellRendererItsSurface() {
         SurfaceResolver which = surface;
@@ -297,6 +345,12 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(active, resolved.surface());
+            // The OTHER surface's framing, for the glide: becoming visible after a
+            // hidden period means the user was just looking at the other screen, so
+            // the first frame this engine draws should be the one they were looking
+            // at, easing into this surface's own config over the one glide rate --
+            // "a switch, not a cut".
+            final Framing otherSide = glideFromSurface(active, resolved);
             // At Motion 0 the tilt cannot change a pixel, so the sensor is pure
             // waste. Read from the resolved framing rather than from the renderer
             // so this stays on the calling thread and needs no hop to the GL
@@ -322,6 +376,10 @@ public class DepthWallpaperService extends WallpaperService {
             // is the difference between a diagnostic that gets read and one that
             // gets forgotten.
             prefs.edit().putString("wallpaper_debug", diagnostic).commit();
+            // The glide is one rate: re-centring, a surface switch, and a playlist
+            // advance are one motion, and three numbers nobody can predict is the
+            // thing the setting exists to prevent.
+            final float spanMs = glideSpanMs(p);
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
@@ -329,15 +387,11 @@ public class DepthWallpaperService extends WallpaperService {
                     // same-surface re-resolve (a slider moved, a photo changed)
                     // applies instantly, because there is no other config to come
                     // from and an instant apply is the honest render of it.
-                    // APPLIED, NEVER GLID. The engine's window is swapped by the
-                    // system when the screen locks and unlocks, so a glide here paints
-                    // a config the previous window was not showing -- and the
-                    // surface's retained last frame is already the goal, so the result
-                    // is goal -> other -> goal, a visible double-take. The engine's
-                    // rule is the user's: if the first frame is already the target,
-                    // do not animate. The studio is the opposite case and keeps the
-                    // glide: it is one live view with a genuine previous frame.
-                    renderer.apply(framing);
+                    if (otherSide != null) {
+                        renderer.glide(otherSide, framing, spanMs);
+                    } else {
+                        renderer.apply(framing);
+                    }
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own
                     // copy updated at request time, so a load that never landed
@@ -453,6 +507,31 @@ public class DepthWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             this.visible = visible;
             if (visible) {
+                // Only a SECOND show glides, never the first: a freshly created
+                // engine has nothing on screen to come from, and a from it invents is
+                // a from it will visibly snap to.
+                //
+                // This was the reported artifact, in three steps: the renderer's cold
+                // load applies its OWN config (the lock engine's zoom), then this wake
+                // armed a glide FROM the home config, whose apply() snapped to it, then
+                // the tween animated back to lock. Lock, home, lock -- a double-take
+                // on every screen-on. The three pieces were each correct; the
+                // sequence was not, which is the same shape as the three ordering bugs
+                // before it.
+                //
+                // The cost, stated rather than hidden: on a device that destroys and
+                // rebuilds the engine per screen-on -- and AGENTS.md says this one
+                // does -- the lock transition is now a correct instant rather than an
+                // ease. A genuine ease there needs the cold load itself to arm the
+                // glide before its first frame, which is a real change and not this
+                // one.
+                if (everShown) {
+                    pendingGlideFrom = DepthWallpaperService.lastVisibleSurface;
+                } else {
+                    pendingGlideFrom = null;
+                    everShown = true;
+                }
+                DepthWallpaperService.lastVisibleSurface = surface.surface();
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
                 // onCreate. Whether the flags are published by the time onCreate
