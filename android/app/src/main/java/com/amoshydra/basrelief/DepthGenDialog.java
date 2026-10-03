@@ -136,21 +136,6 @@ public final class DepthGenDialog {
 
     /** {@code .modal{max-height:88%}}. */
     private static final float MAX_HEIGHT = 0.88f;
-    /**
-     * The depth screen's own scrim, {@code rgba(0,0,0,.90)} — lighter than the
-     * {@link ModalSheet#SCRIM} the other modals use, and a difference in the design
-     * rather than an accident: this is a form, and a heavier scrim over a
-     * photograph makes it harder to read without making it more modal.
-     *
-     * <p><b>One value now, on every device.</b> It used to have a second, darker
-     * counterpart for devices that cannot blur a window's backdrop, derived by adding a
-     * fixed step; that pair is gone, and the reason is in {@link ModalSheet#SCRIM} —
-     * the blur is not composited for a {@code Dialog} on any device measured, so a
-     * backdrop that depended on it was depending on nothing. Two numbers that had to
-     * be kept in step is one more relationship than this is worth.
-     */
-    private static final int SCRIM_DEPTH = 0xCC000000;
-
     /** Output sizes offered. Pinned to the mockup's single row of nudges. */
     private static final int[] RESOLUTIONS = {256, 512, 768, 1024, 1536, 2048};
     private static final int DEFAULT_RESOLUTION = 1024;
@@ -679,7 +664,7 @@ public final class DepthGenDialog {
             }
         });
 
-        ModalSheet modal = new ModalSheet(activity, MAX_HEIGHT, SCRIM_DEPTH);
+        ModalSheet modal = new ModalSheet(activity, MAX_HEIGHT, ModalSheet.SCRIM);
         modal.body(root);
         modal.footerRow(cancel, generateBtn);
         return modal;
