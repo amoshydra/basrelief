@@ -2,7 +2,9 @@ package com.amoshydra.basrelief;
 
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.DialogInterface;
+import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -12,13 +14,17 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
@@ -43,6 +49,17 @@ import android.window.OnBackInvokedDispatcher;
  * otherwise, so the studio does not show through. That is the correct trade — a
  * correctly compositing modal over an invisible photograph beats a visible photograph
  * behind a modal that never appears.
+ *
+ * <p><b>No Material Components.</b> {@code :app} deliberately depends only on
+ * {@code :core}: no AndroidX, no Material, and no theme — which is why every
+ * widget here is styled by hand. Material's {@code BottomSheetDialog} and
+ * {@code SwitchCompat} are therefore not options, and adding the dependency to
+ * get them would be a redesign, not a fix. The honest equivalents live here: the
+ * platform {@link android.widget.Switch}, tinted with the app's own colours
+ * ({@link #switchRow}), and the card's own grip, which drags the card down to
+ * dismiss ({@link #grip}). One implementation, so the four screens built on this
+ * card cannot drift into four different ones — which is how this class came to
+ * exist.
  */
 final class ModalSheet {
 
@@ -57,6 +74,47 @@ final class ModalSheet {
     static final int ACCENT = 0xFF7FD1C1;
     /** The ink on an accent or white fill: the mockup's #08110f. */
     static final int INK_ON_FILL = 0xFF08110F;
+
+    // The mockup's spacing tokens, named once and used by every widget below, so
+    // a screen built on this card cannot carry a one-off gap. Each name is the
+    // CSS rule it comes from in .design/prototype/final.html.
+    /** {@code .opt{padding:12px}} — a row's own padding, all four sides. */
+    static final int OPT_PAD_DP = 12;
+    /** {@code .opt{display:flex;gap:12px}} — a row's mark to its text column. */
+    static final int OPT_INNER_GAP_DP = 12;
+    /** {@code .opt{margin-bottom:8px}} — the gap between two rows. */
+    static final int OPT_GAP_DP = 8;
+    /** {@code .caption{margin:16px 0 7px}} — above and below a group heading. */
+    static final int CAPTION_TOP_DP = 16;
+    static final int CAPTION_BOTTOM_DP = 7;
+    /**
+     * {@code .caption:first-child{margin-top:2px}} — the first caption sits right
+     * under the grip. The mockup says 2 and this screen has always shipped 4;
+     * this pass names values rather than tuning them.
+     */
+    static final int CAPTION_FIRST_TOP_DP = 4;
+    /** {@code .note{margin-top:7px}} — an aside under the control it qualifies. */
+    static final int NOTE_TOP_DP = 7;
+    /** The {@code margin-top:14px} every mockup modal's button row carries. */
+    static final int FOOTER_TOP_DP = 14;
+
+    // The grip: .grip{height:22px} and its 38x4 bar, rgba(255,255,255,.42).
+    private static final int GRIP_HEIGHT_DP = 22;
+    private static final int GRIP_BAR_WIDTH_DP = 38;
+    private static final int GRIP_BAR_HEIGHT_DP = 4;
+    private static final int GRIP_BAR = 0x6BFFFFFF;
+
+    /** How far down the grip must drag the card before that counts as a dismissal. */
+    private static final float GRIP_DISMISS_FRACTION = 0.25f;
+    private static final int GRIP_DISMISS_MIN_DP = 64;
+
+    // The platform switch, tinted with the app's own colours. On is the accent;
+    // off is the hairline family. The off thumb takes --dim rather than --line,
+    // because --line's 14% alpha leaves no visible thumb at all.
+    private static final int SWITCH_TRACK_ON = 0x997FD1C1;
+    private static final int SWITCH_TRACK_OFF = LINE;
+    private static final int SWITCH_THUMB_ON = ACCENT;
+    private static final int SWITCH_THUMB_OFF = DIM;
 
     /** The tallest a modal may be, as a fraction of the display. */
     private final float maxHeightFraction;
@@ -192,6 +250,10 @@ final class ModalSheet {
                 new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         dialog.setContentView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // A card dismissed from a half-finished grip drag keeps the translation it
+        // was showing, and this instance is reused (see the top of show()), so the
+        // next open must not start half way off the screen.
+        card.setTranslationY(0f);
         // ADJUST_RESIZE, because the depth panel's first field is an endpoint the user
         // has to be able to type. Without it the keyboard covers the box being typed
         // into and the dialog does not move -- which reads as the field being dead
@@ -224,6 +286,123 @@ final class ModalSheet {
                 applyHeight();
             }
         });
+    }
+
+    /**
+     * Add the mockup's {@code .grip} at the top of the card, above the scroll, and
+     * make dragging it move the card down and dismiss it.
+     *
+     * <p><b>Why the grip is not in the scroll.</b> The mockup draws it as a sibling
+     * above {@code .scroll} (final.html's {@code sheet()}), so it stays reachable
+     * however far the content is scrolled, and a drag on it can never dispute a
+     * vertical drag with the inner scroll — the two do not overlap. It used to be
+     * the caller's first body child, which scrolled away with the content it was
+     * supposed to close.
+     *
+     * <p><b>Why a transform is safe here, when the studio sheet may not use one.</b>
+     * The b/7179570 hazard recorded in AGENTS.md is a view in the <i>same window</i>
+     * as the {@code GLSurfaceView}: the surface's transparent region is computed from
+     * layout positions, so a sibling positioned by a post-layout transform is
+     * attached, opaque, {@code isShown()} and absent from the display. This card
+     * lives in a Dialog, which owns its own window and contains no SurfaceView; the
+     * studio's GL surface is in a different window with a different surface, so
+     * nothing about its transparent region can desync. That is the same distinction
+     * that makes this whole class a Dialog instead of a sibling view, and it is why
+     * the studio sheet — which IS the GLSurfaceView's sibling — still drags by
+     * layout height and must keep doing so.
+     *
+     * @param contentDescription what the handle does, for a screen reader. The bar
+     *                           itself is undrawn text.
+     */
+    void grip(CharSequence contentDescription) {
+        final Context context = root.getContext();
+        final int slop = ViewConfiguration.get(context).getScaledTouchSlop();
+
+        LinearLayout strip = new LinearLayout(context);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        strip.setGravity(Gravity.CENTER);
+        strip.setContentDescription(contentDescription);
+        strip.setClickable(true);
+
+        View bar = new View(context);
+        bar.setBackgroundColor(GRIP_BAR);
+        strip.addView(bar, new LinearLayout.LayoutParams(
+                dp(context, GRIP_BAR_WIDTH_DP), dp(context, GRIP_BAR_HEIGHT_DP)));
+
+        // A tap has always closed this sheet, and it is also the accessibility
+        // action; a drag past the threshold closes it too. Both gestures go the
+        // same way, so the handle does not advertise one thing and do another.
+        strip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dismiss();
+            }
+        });
+        strip.setOnTouchListener(new View.OnTouchListener() {
+            private float downRawY;
+            private float downTranslation;
+            private boolean crossedSlop;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawY = e.getRawY();
+                        downTranslation = card.getTranslationY();
+                        crossedSlop = false;
+                        // A half-finished settle would otherwise fight the finger.
+                        card.animate().cancel();
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        // Measured from the DOWN every time, like the studio
+                        // sheet's drag, so a double delivery is the same number
+                        // twice instead of twice the travel.
+                        float dy = downTranslation + e.getRawY() - downRawY;
+                        // Down only: dragging up would lift the card off its own
+                        // bottom edge with nothing above it to reveal.
+                        if (dy < 0f) dy = 0f;
+                        if (dy - downTranslation > slop) crossedSlop = true;
+                        card.setTranslationY(dy);
+                        if (dy >= dismissDistance()) {
+                            // Past the threshold with the finger still down:
+                            // dismiss now, the way the studio sheet collapses the
+                            // moment its own fraction passes rather than waiting
+                            // for the release.
+                            card.setTranslationY(card.getHeight());
+                            dismiss();
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (crossedSlop) {
+                            settleGrip();
+                        } else {
+                            v.performClick();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        settleGrip();
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+        card.addView(strip, 0, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(context, GRIP_HEIGHT_DP)));
+    }
+
+    /** The downward distance, in pixels, past which a grip drag dismisses. */
+    private float dismissDistance() {
+        return Math.max(card.getHeight() * GRIP_DISMISS_FRACTION,
+                dp(root.getContext(), GRIP_DISMISS_MIN_DP));
+    }
+
+    /** Put a dragged-but-not-dismissed card back. */
+    private void settleGrip() {
+        if (card.getTranslationY() != 0f) {
+            card.animate().translationY(0f).setDuration(180).start();
+        }
     }
 
     /**
@@ -271,7 +450,7 @@ final class ModalSheet {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = dp(root.getContext(), 14);
+            lp.topMargin = dp(root.getContext(), FOOTER_TOP_DP);
             footer.setLayoutParams(lp);
             card.addView(footer);
         }
@@ -417,7 +596,8 @@ final class ModalSheet {
         // No side padding: the stylesheet's .caption has none, and the 2dp this
         // used to carry put every caption 2dp right of the rows and fields under
         // it, which are laid out at the card's own edge.
-        t.setPadding(0, first ? dp(activity, 4) : dp(activity, 16), 0, dp(activity, 7));
+        t.setPadding(0, first ? dp(activity, CAPTION_FIRST_TOP_DP)
+                : dp(activity, CAPTION_TOP_DP), 0, dp(activity, CAPTION_BOTTOM_DP));
         return t;
     }
 
@@ -428,7 +608,7 @@ final class ModalSheet {
         t.setTextSize(11);
         t.setTextColor(DIMMER);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(0, dp(activity, 7), 0, 0);
+        t.setPadding(0, dp(activity, NOTE_TOP_DP), 0, 0);
         return t;
     }
 
@@ -460,29 +640,39 @@ final class ModalSheet {
         if (tap != null) holder.setOnClickListener(tap);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 dp(activity, 34), dp(activity, 34));
-        lp.rightMargin = dp(activity, 12);
+        lp.rightMargin = dp(activity, OPT_INNER_GAP_DP);
         holder.setLayoutParams(lp);
         return holder;
     }
 
-    /** {@code .opt} — a bordered row with a swatch, a title and a subtitle. */
-    static LinearLayout option(Activity activity, String titleText, String subText,
-                               boolean on, boolean locked, View.OnClickListener tap) {
+    /**
+     * The bordered frame every row shares: {@code .opt} minus its leading mark.
+     *
+     * <p>Extracted the moment a second kind of row existed. A switch row and a
+     * plain row must pad and gap exactly like a picker row, and the way that stops
+     * being true is two copies of the same padding edited once.
+     */
+    private static LinearLayout rowFrame(Activity activity) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(activity, 12), dp(activity, 12), dp(activity, 12), dp(activity, 12));
+        row.setPadding(dp(activity, OPT_PAD_DP), dp(activity, OPT_PAD_DP),
+                dp(activity, OPT_PAD_DP), dp(activity, OPT_PAD_DP));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.TRANSPARENT);
         bg.setCornerRadius(dp(activity, 11));
         bg.setStroke(dp(activity, 1), LINE);
         row.setBackground(bg);
-        // .locked: the WHOLE row at 42%, so it reads as unavailable rather than as a
-        // label whose text happens to be grey.
-        if (locked) row.setAlpha(0.42f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(activity, OPT_GAP_DP);
+        row.setLayoutParams(lp);
+        return row;
+    }
 
-        row.addView(swatch(activity, on, null));
-
+    /** {@code .opt b} over {@code .opt small}: the two-line text column. */
+    private static LinearLayout rowText(Activity activity, String titleText, String subText) {
         LinearLayout text = new LinearLayout(activity);
         text.setOrientation(LinearLayout.VERTICAL);
         TextView b = new TextView(activity);
@@ -495,18 +685,135 @@ final class ModalSheet {
         small.setTextSize(12);
         small.setTextColor(DIM);
         text.addView(small);
-        row.addView(text, new LinearLayout.LayoutParams(0,
+        return text;
+    }
+
+    /** {@code .opt} — a bordered row with a swatch, a title and a subtitle. */
+    static LinearLayout option(Activity activity, String titleText, String subText,
+                               boolean on, boolean locked, View.OnClickListener tap) {
+        LinearLayout row = rowFrame(activity);
+        // .locked: the WHOLE row at 42%, so it reads as unavailable rather than as a
+        // label whose text happens to be grey.
+        if (locked) row.setAlpha(0.42f);
+
+        row.addView(swatch(activity, on, null));
+        row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         row.setClickable(!locked && tap != null);
         if (!locked && tap != null) row.setOnClickListener(tap);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(activity, 8);
-        row.setLayoutParams(lp);
         return row;
+    }
+
+    /**
+     * A row with no state at all: a title and a subtitle, optionally tappable.
+     *
+     * <p>For facts (the About row) and one-off actions (Reset) that are not
+     * pickers. Deliberately no {@link #swatch}: an undotted chip still reads as a
+     * picture at the head of a row, and a switch on a fact would claim a state
+     * that does not exist.
+     */
+    static LinearLayout plainRow(Activity activity, String titleText, String subText,
+                                 View.OnClickListener tap) {
+        LinearLayout row = rowFrame(activity);
+        row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.setClickable(tap != null);
+        if (tap != null) row.setOnClickListener(tap);
+        return row;
+    }
+
+    /** A switch row's new state, once per user tap. */
+    interface OnToggled {
+        void onToggled(boolean on);
+    }
+
+    /**
+     * {@code .opt}, with the platform {@link Switch} where the mockup draws its
+     * swatch.
+     *
+     * <p><b>Why the platform widget.</b> The mockup's {@code .sw} is a 34dp tile
+     * with an accent dot, which reads as a picture or a colour chip rather than as
+     * something that can be moved. Material's {@code SwitchCompat} is not available
+     * (see the class javadoc), so the platform switch is the honest equivalent: it
+     * has the shape, the motion and the state channel users and screen readers
+     * already know.
+     *
+     * <p><b>It is a mark, not a second tap target.</b> The Switch itself is not
+     * clickable; the whole row is, and it calls {@code toggle()}. Two live targets
+     * would give one control two announcements and let a tap on the switch fall
+     * through to the row as a second toggle.
+     *
+     * <p><b>Leading, in the swatch's own slot.</b> The mockup puts its state mark
+     * at the row's leading edge, so the switch replaces the mark rather than
+     * adding a second thing to the row; a trailing switch would be a layout the
+     * design does not draw.
+     *
+     * @param onToggled called with the new state after each tap. May be null for a
+     *                  row that shows state but owns none.
+     */
+    static LinearLayout switchRow(final Activity activity, String titleText, String subText,
+                                  boolean on, final OnToggled onToggled) {
+        final LinearLayout row = rowFrame(activity);
+
+        final Switch sw = new Switch(activity);
+        // No ON/OFF thumb text: the tint carries the state and the words are
+        // already in the row.
+        sw.setShowText(false);
+        sw.setChecked(on);
+        // The row owns the tap; see the javadoc. Not focusable either, or a screen
+        // reader stops twice on one control.
+        sw.setClickable(false);
+        sw.setFocusable(false);
+        sw.setTrackTintList(new ColorStateList(
+                new int[][]{ {android.R.attr.state_checked}, {} },
+                new int[]{ SWITCH_TRACK_ON, SWITCH_TRACK_OFF }));
+        sw.setThumbTintList(new ColorStateList(
+                new int[][]{ {android.R.attr.state_checked}, {} },
+                new int[]{ SWITCH_THUMB_ON, SWITCH_THUMB_OFF }));
+        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        // .opt{gap:12px}: the same space the swatch left, so the text column keeps
+        // the x the design gives it.
+        swLp.rightMargin = dp(activity, OPT_INNER_GAP_DP);
+        row.addView(sw, swLp);
+
+        row.addView(rowText(activity, titleText, subText), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        describe(activity, row, titleText, subText, on);
+        sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                // Read from the widget that moved, not from a calculation: the
+                // switch cannot describe a state it does not hold.
+                describe(activity, row, titleText, subText, isChecked);
+                if (onToggled != null) onToggled.onToggled(isChecked);
+            }
+        });
+        row.setClickable(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sw.toggle();
+            }
+        });
+        return row;
+    }
+
+    /**
+     * Say a switch row's state out loud.
+     *
+     * <p>The visible switch is a shape and two colours, which nobody can hear, so
+     * the row's own description carries On or Off. Rewritten on every change rather
+     * than written once at build time, because a description that is right until
+     * the first tap is worse than none.
+     */
+    private static void describe(Activity activity, LinearLayout row, String title,
+                                 String sub, boolean on) {
+        String state = activity.getString(
+                on ? R.string.settings_state_on : R.string.settings_state_off);
+        row.setContentDescription(title + ". " + sub + ", " + state);
     }
 
     /** {@code .field} — the monospace endpoint box. */
