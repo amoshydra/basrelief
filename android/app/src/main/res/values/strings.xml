@@ -103,6 +103,10 @@
     <string name="apply_lock">Lock screen</string>
     <string name="apply_lock_sub">live, its own settings</string>
     <string name="apply_lock_unavailable">needs Android 15 or newer</string>
+    <!-- The one thing the user must do in the dialog that follows, and the reason.
+         "Home and lock" is one window, so the lock screen would composite the home
+         engine and the per-surface settings would never render. -->
+    <string name="apply_lock_note_separate">Choose “Lock screen only” in the next dialog. “Home and lock” is one window, so the lock screen would show your home settings.</string>
     <string name="apply_lock_note">Lock-screen wallpaper needs Android 15+. On older versions the lock screen keeps a still frame.</string>
     <string name="apply_continue">Continue</string>
     <!-- Says where to go rather than blaming the device: the picker is the only

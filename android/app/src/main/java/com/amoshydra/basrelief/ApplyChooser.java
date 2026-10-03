@@ -157,6 +157,15 @@ final class ApplyChooser {
         }
         modal.addView(lockOpt[0].view);
 
+        lockNote = new TextView(activity);
+        lockNote.setText(R.string.apply_lock_note_separate);
+        lockNote.setTextSize(11);
+        lockNote.setTextColor(DIMMER);
+        lockNote.setLineSpacing(0, 1.2f);
+        lockNote.setPadding(dp(2), dp(8), dp(2), 0);
+        lockNote.setVisibility(View.GONE);
+        modal.addView(lockNote);
+
         if (!lockSupported) {
             TextView note = new TextView(activity);
             note.setText(R.string.apply_lock_note);
@@ -384,6 +393,14 @@ final class ApplyChooser {
      * <p>"Apply to nothing" is not an outcome the button should offer, and below 35
      * Lock cannot be the only choice either -- there is no second engine to bind.
      */
+    /** Named in the note that appears when Lock is chosen. */
+    private TextView lockNote;
+
+    private void updateLockNote(java.util.Set<Surface> chosen) {
+        if (lockNote == null) return;
+        lockNote.setVisibility(chosen.contains(Surface.LOCK) ? View.VISIBLE : View.GONE);
+    }
+
     private void toggle(java.util.Set<Surface> chosen, Surface surface,
                         Option home, Option lock, boolean lockSupported) {
         if (chosen.contains(surface)) {
@@ -395,6 +412,7 @@ final class ApplyChooser {
         }
         home.setSelected(chosen.contains(Surface.HOME));
         lock.setSelected(chosen.contains(Surface.LOCK));
+        updateLockNote(chosen);
     }
 
     private void launchPicker() {
@@ -434,11 +452,17 @@ final class ApplyChooser {
         final boolean lockSupported = SurfaceResolver.supportsPerSurfaceLock(
                 android.os.Build.VERSION.SDK_INT);
         if (applied.isEmpty()) {
-            // Home, plus Lock wherever the platform can actually bind a second engine.
-            // Offering both by default is the point: it is what makes the sheet's
-            // Home/Lock switch reachable in one application rather than two.
+            // HOME ONLY. Defaulting to both was wrong, and the truth table says why:
+            // one wallpaper on home AND lock is ONE engine, one window, one set of
+            // values -- so the lock screen composites the home engine and the Lock
+            // settings are never rendered by anything. Defaulting to both therefore
+            // steered every user into the one state where per-surface settings cannot
+            // work, while the sheet offered a switch that stored values nothing read.
+            //
+            // Separate surfaces need two separate applications, each choosing its own
+            // destination in the system dialog. That is more steps, and it is the only
+            // route there is: re-binding is signature|privileged.
             applied.add(Surface.HOME);
-            if (lockSupported) applied.add(Surface.LOCK);
         } else if (!lockSupported) {
             // A restore can hand back a lock surface this platform cannot render.
             applied.remove(Surface.LOCK);
@@ -446,6 +470,7 @@ final class ApplyChooser {
 
         dialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
         View content = build(applied);
+        updateLockNote(applied);
         if (content.getLayoutParams() != null) {
             content.setLayoutParams(new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
