@@ -386,6 +386,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile boolean wantLockFrame;
 
+    /** An active glide between the two surfaces' configs, or a null glideTo. */
+    private volatile Framing glideFrom, glideTo;
+    private volatile long glideStartNanos;
+    private volatile float glideSpanMs;
+
     /**
      * Request a still frame, published to the lock screen off the GL thread.
      *
@@ -1015,6 +1020,104 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * <p>Taken from {@link Framing} rather than recomputed per surface, because
      * the two surfaces computing it themselves is how they came to disagree.
      */
+    /**
+     * Glide the whole framing from one surface's config to another's.
+     *
+     * <p>The wireframe's "a switch, not a cut": the same photo sits two ways, one per
+     * surface, and a surface change eases between them over the one glide rate rather
+     * than jumping. The caller says where the glide STARTS, because the two callers
+     * know different things: the wallpaper engine knows which surface the user was
+     * just looking at, and the studio knows what it is currently showing.
+     *
+     * <p>Driven by the draw clock, not an animator: this renderer is
+     * RENDERMODE_WHEN_DIRTY, and a ValueAnimator attached to a view nobody is
+     * requesting frames for is an animation that never runs. Every onDrawFrame during
+     * the span steps the tween and the values it sets are exactly the volatile fields
+     * the rest of the frame already reads -- so the glide composites with the gyro
+     * rather than fighting it.
+     *
+     * <p>Nine values, all lerped: the framing IS the config, and leaving any one out
+     * is a visible pop in the middle of an otherwise smooth motion.
+     */
+    void glide(Framing from, Framing to, float spanMs) {
+        if (to == null) return;
+        if (from == null) {
+            // "From what is showing": a snapshot of the current volatile values as a
+            // Framing, so a caller that does not know where the view was (the studio,
+            // mid-preview) can still ease rather than snap.
+            from = snapshot();
+        }
+        if (from == null) {
+            apply(to);
+            return;
+        }
+        // The start values are applied BEFORE the glide is armed, in that order.
+        // apply() ends a glide in flight -- it is the caller saying where the view
+        // IS -- and arming first meant the glide cancelled itself the instant it was
+        // created. That shipped: the studio's switch snapped, and the bug read as
+        // "the glide does not work" rather than as an ordering mistake.
+        apply(from);
+        glideFrom = from;
+        glideTo = to;
+        glideStartNanos = System.nanoTime();
+        glideSpanMs = Math.max(1f, spanMs);
+    }
+
+    /** True while a glide is in flight. Volatile-read from any thread. */
+    public boolean isGliding() {
+        return glideTo != null;
+    }
+
+    /** One step of an active glide, called at the top of every drawn frame. */
+    private void stepGlide() {
+        if (glideTo == null) return;
+        float t = (System.nanoTime() - glideStartNanos) / 1_000_000f / glideSpanMs;
+        if (t >= 1f) {
+            Framing end = glideTo;
+            glideFrom = null;
+            glideTo = null;
+            apply(end);
+            return;
+        }
+        // smoothstep, not linear: the same easing the tilt glide uses, so one rate
+        // reads as one motion in both places.
+        float e = t * t * (3f - 2f * t);
+        depth = lerp(glideFrom.depth, glideTo.depth, e);
+        zoom = lerp(glideFrom.zoom, glideTo.zoom, e);
+        motion = lerp(glideFrom.motion, glideTo.motion, e);
+        orbitX = lerp(glideFrom.orbitX, glideTo.orbitX, e);
+        orbitY = lerp(glideFrom.orbitY, glideTo.orbitY, e);
+        panX = lerp(glideFrom.panX, glideTo.panX, e);
+        panY = lerp(glideFrom.panY, glideTo.panY, e);
+        pendingBrightnessGain = lerp(glideFrom.brightnessGain, glideTo.brightnessGain, e);
+        pendingShadowLift = lerp(glideFrom.shadowLift, glideTo.shadowLift, e);
+    }
+
+    private static float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    /**
+     * The current volatile values as a Framing, for a glide "from what is showing".
+     *
+     * <p>Built here rather than handed in by the caller because only this class knows
+     * what it is currently drawing: a caller's idea of the current framing is the
+     * last one it applied, which a drag, a preview or a fade has already moved.
+     */
+    private Framing snapshot() {
+        // ofValues, not a reflective constructor: only Framing may build a Framing,
+        // and a reflective one is a second way that breaks the day a field is added.
+        return com.amoshydra.basrelief.core.render.Framing.ofValues(
+                depth, zoom, motion, orbitX, orbitY, panX, panY,
+                pendingBrightnessGain, pendingShadowLift);
+    }
+
+    /**
+     * Put a resolved framing onto the GL thread's state.
+     *
+     * <p>Taken from {@link Framing} rather than recomputed per surface, because
+     * the two surfaces computing it themselves is how they came to disagree.
+     */
     void apply(Framing f) {
         depth = f.depth;
         zoom = f.zoom;
@@ -1028,6 +1131,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // loop has no other way to learn the value changed.
         pendingBrightnessGain = f.brightnessGain;
         pendingShadowLift = f.shadowLift;
+        // An explicit apply ends any glide in flight: it is the caller saying where
+        // the view IS, and a tween arguing with that is a smear, not an ease.
+        glideFrom = null;
+        glideTo = null;
     }
 
     public void reloadFromPrefs() {
@@ -1112,6 +1219,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void onDrawFrame(GL10 gl) {
         // --- frame clock: pace draws explicitly ---
         long now = System.nanoTime();
+        // First, so a glide composites with the gyro for the whole frame: every value
+        // below reads what this just wrote.
+        stepGlide();
         // NOTE: there is deliberately NO frame-rate gate here. See the note on
         // FPS_NORMAL below before adding one back.
 

@@ -2,6 +2,7 @@ package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Playlists;
@@ -68,6 +69,16 @@ public class DepthWallpaperService extends WallpaperService {
         private SensorPolicy sensorPolicy;
         /** Last value onVisibilityChanged gave us, for the diagnostic line only. */
         private volatile boolean visible = true;
+        /**
+         * Set by becoming visible and consumed by the resolve that follows it.
+         *
+         * <p>The difference between the two events that both run applyFromPrefs:
+         * waking is a transition between the two surfaces' configs and glides; a
+         * slider move or an index change is a same-surface resolve and must apply
+         * instantly, or every adjustment would smear. Visible alone cannot tell them
+         * apart -- the engine is visible for both.
+         */
+        private boolean wokeThisTransition;
         private boolean tiltRunning = false;
         /**
          * Which screen this engine is drawing, resolved in :core from the raw
@@ -235,6 +246,38 @@ public class DepthWallpaperService extends WallpaperService {
      * here rather than passing it per call keeps the renderer's write path identical
      * to the studio's, which is what stops the two surfaces from drifting.
      */
+    /**
+     * The surface to glide FROM, or null when this resolve is not a surface change.
+     *
+     * <p>Only when this engine was hidden and is becoming visible: that is the one
+     * event that means the user was looking at the other screen a moment ago -- a lock
+     * engine waking as the phone locks, a home engine waking as it unlocks. A
+     * same-surface resolve (a slider moved, the index changed) is not a transition,
+     * and gliding it would smear every adjustment.
+     */
+    private Framing glideFromSurface(LibraryItem active, SurfaceResolver resolved) {
+        if (!wokeThisTransition) return null; // a same-surface resolve: apply, do not smear
+        wokeThisTransition = false;           // consumed: one glide per wake
+        if (!resolved.supportsPerSurfaceLock()) return null; // no second engine, no other side
+        Surface mine = resolved.surface();
+        Surface theirs = mine == Surface.HOME ? Surface.LOCK : Surface.HOME;
+        return Framing.of(active, theirs);
+    }
+
+    /**
+     * The one glide rate, from the setting the user chose. Read here rather than
+     * cached so a glide that begins after the slider moved uses the speed just
+     * chosen.
+     */
+    private float glideSpanMs(SharedPreferences p) {
+        try {
+            return Math.max(1f, p.getInt(TiltController.KEY_GLIDE_MS,
+                    TiltController.GLIDE_DEFAULT_MS));
+        } catch (Exception e) {
+            return TiltController.GLIDE_DEFAULT_MS;
+        }
+    }
+
     private void tellRendererItsSurface() {
         SurfaceResolver which = surface;
         if (tilt == null) return;
@@ -271,6 +314,12 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(active, resolved.surface());
+            // The OTHER surface's framing, for the glide: becoming visible after a
+            // hidden period means the user was just looking at the other screen, so
+            // the first frame this engine draws should be the one they were looking
+            // at, easing into this surface's own config over the one glide rate --
+            // "a switch, not a cut".
+            final Framing otherSide = glideFromSurface(active, resolved);
             // At Motion 0 the tilt cannot change a pixel, so the sensor is pure
             // waste. Read from the resolved framing rather than from the renderer
             // so this stays on the calling thread and needs no hop to the GL
@@ -296,10 +345,22 @@ public class DepthWallpaperService extends WallpaperService {
             // is the difference between a diagnostic that gets read and one that
             // gets forgotten.
             prefs.edit().putString("wallpaper_debug", diagnostic).commit();
+            // The glide is one rate: re-centring, a surface switch, and a playlist
+            // advance are one motion, and three numbers nobody can predict is the
+            // thing the setting exists to prevent.
+            final float spanMs = glideSpanMs(p);
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
-                    renderer.apply(framing);
+                    // Becoming visible glides FROM the other surface's config; a
+                    // same-surface re-resolve (a slider moved, a photo changed)
+                    // applies instantly, because there is no other config to come
+                    // from and an instant apply is the honest render of it.
+                    if (otherSide != null) {
+                        renderer.glide(otherSide, framing, spanMs);
+                    } else {
+                        renderer.apply(framing);
+                    }
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own
                     // copy updated at request time, so a load that never landed
@@ -406,6 +467,11 @@ public class DepthWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             this.visible = visible;
             if (visible) {
+                // Marked BEFORE anything that can resolve, so the applyFromPrefs this
+                // wake triggers glides from the other surface's config -- and the
+                // pref-listener fire from that same resolve chain finds it already
+                // consumed, which is what keeps a slider move an instant apply.
+                wokeThisTransition = true;
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
                 // onCreate. Whether the flags are published by the time onCreate

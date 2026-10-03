@@ -386,4 +386,30 @@ public class FramingTest {
         Framing f = home(after.activeItem());
         assertTrue("must land on the demo, not on nothing", f.bundled);
     }
+
+    /**
+     * ofValues hands back exactly what it was given, and never claims to be the
+     * bundled special case.
+     *
+     * <p>The surface glide's start point is a renderer handing its CURRENT numbers
+     * back in, so a value that came back changed would make the glide start from
+     * somewhere the view never was -- an invisible jump inside a visible ease.
+     */
+    @Test
+    public void ofValuesReturnsExactlyWhatItWasGiven() {
+        Framing f =
+                Framing.ofValues(
+                        0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f);
+        assertEquals(0.9f, f.depth, 0f);
+        assertEquals(1.2f, f.zoom, 0f);
+        assertEquals(0.3f, f.motion, 0f);
+        assertEquals(0.11f, f.orbitX, 0f);
+        assertEquals(-0.22f, f.orbitY, 0f);
+        assertEquals(40f, f.panX, 0f);
+        assertEquals(-60f, f.panY, 0f);
+        assertEquals(1.5f, f.brightnessGain, 0f);
+        assertEquals(0.5f, f.shadowLift, 0f);
+        assertFalse("a snapshot is numbers, not the bundled file case",
+                f.bundled);
+    }
 }

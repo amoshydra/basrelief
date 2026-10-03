@@ -980,6 +980,48 @@ public class MainActivity extends Activity {
      * getting out of the way, and the alternative is the controls vanishing under the
      * finger with no acknowledgement at all.
      */
+    /**
+     * The one glide rate, as the studio uses it. Same setting, same reading, as the
+     * engine's -- one motion, one number, or three numbers nobody can predict.
+     */
+    /**
+     * Keep frames coming while a glide is in flight.
+     *
+     * <p>The renderer steps the tween at the top of every drawn frame, which makes
+     * the glide composite with the gyro for free -- but only if frames are drawn.
+     * This surface is {@code RENDERMODE_WHEN_DIRTY} and a still phone produces no
+     * sensor events, so without this the preview would show the glide's first frame
+     * and freeze there.
+     *
+     * <p>Self-chaining on a handler rather than a ValueAnimator, for the same reason
+     * the tween lives in the draw loop: an animator attached to a view nobody is
+     * requesting frames for is an animation that never runs.
+     */
+    private final android.os.Handler glidePump = new android.os.Handler();
+    private final Runnable glideTick = new Runnable() {
+        @Override
+        public void run() {
+            if (renderer == null || !renderer.isGliding()) return;
+            glView.requestRender();
+            glidePump.postDelayed(this, 16);
+        }
+    };
+
+    private void pumpGlideFrames() {
+        glView.requestRender();
+        glidePump.removeCallbacks(glideTick);
+        glidePump.postDelayed(glideTick, 16);
+    }
+
+    private float glideSpanMs() {
+        try {
+            return Math.max(1f, prefs.getInt(TiltController.KEY_GLIDE_MS,
+                    TiltController.GLIDE_DEFAULT_MS));
+        } catch (Exception e) {
+            return TiltController.GLIDE_DEFAULT_MS;
+        }
+    }
+
     private void collapseSheet() {
         setSheetPosition(1f, true);
     }
@@ -2219,15 +2261,25 @@ public class MainActivity extends Activity {
      * an absent control cannot be tapped and cannot lie about what it would do.
      */
     private Surface surfaceForSegment() {
+        // The PLATFORM is the gate, not the applied-surfaces record.
+        //
+        // <p>This used to also require the photo to be applied to both surfaces, on
+        // the design's reasoning that "on one surface there is nothing to switch
+        // between". That reasoning is wrong on a platform that CAN run a second
+        // engine: before lock is bound, the switch still edits stored values and the
+        // preview, and those values take effect the moment the system binds lock --
+        // so the control is not dead, it is early. And gating on the app's own
+        // "applied" bookkeeping had a second cost: that record is the user's stated
+        // intent, not a measurement of what the system bound, so the gate could be
+        // wrong in both directions.
+        //
+        // <p>Below 35 this still returns null, because there the control IS dead --
+        // no lock engine can ever exist, so Lock's values would be permanently
+        // unread. Absent, per the design.
         if (!SurfaceResolver.supportsPerSurfaceLock(android.os.Build.VERSION.SDK_INT)) {
             return null;
         }
-        try {
-            return AppState.load(prefs, getFilesDir()).isOnBothSurfaces()
-                    ? Surface.HOME : null;
-        } catch (Exception e) {
-            return null;
-        }
+        return Surface.HOME;
     }
 
     /**
@@ -2284,14 +2336,25 @@ public class MainActivity extends Activity {
                     // and two-finger pan and tap-to-orbit wrote to HOME anyway -- so
                     // Lock looked edited and Home was what changed.
                     renderer.setEditSurface(surface);
-                    // The preview must move to the new surface's framing too, or the
-                    // sliders change while the relief on screen does not.
+                    // The preview eases to the new surface's framing rather than
+                    // snapping: the same glide the engine uses on a lock/unlock, the
+                    // same rate, because it is the same motion -- "a switch, not a
+                    // cut". Snapping here would also make the studio disagree with the
+                    // product about what a surface change looks like.
                     glView.queueEvent(new Runnable() {
                         @Override
                         public void run() {
-                            renderer.reloadFromPrefs();
+                            AppState st = AppState.load(prefs, getFilesDir());
+                            com.amoshydra.basrelief.core.render.Framing to =
+                                    com.amoshydra.basrelief.core.render.Framing.of(
+                                            st.activeItem(), surface);
+                            renderer.glide(null, to, glideSpanMs());
                         }
                     });
+                    // A tween that steps per frame animates nothing when nobody asks
+                    // for frames, and this surface is WHEN_DIRTY with the phone
+                    // lying still: no sensor, no frames, a frozen preview. Pump.
+                    pumpGlideFrames();
                     refreshSliders();
                     applyFiles();
                     setSegmentActive(surface);

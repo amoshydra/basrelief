@@ -122,4 +122,37 @@ public final class Framing {
     public static Framing of(LibraryItem item) {
         return new Framing(item, Surface.HOME);
     }
+
+    /**
+     * A framing from plain values, for a renderer that already has numbers and needs
+     * them as one thing.
+     *
+     * <p>Exists for the surface glide: a renderer easing between two configs needs to
+     * hand its <i>current</i> values back in as the start of a glide, and only this
+     * class may build one -- a builder in :app would be a second way to make a
+     * Framing, and the two could drift. {@code bundled} is false because a glide
+     * start is a snapshot of numbers, not a photo, and the bundled special case is
+     * about which FILE to read.
+     */
+    public static Framing ofValues(float depth, float zoom, float motion,
+                                   float orbitX, float orbitY, float panX, float panY,
+                                   float brightnessGain, float shadowLift) {
+        return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
+                brightnessGain, shadowLift);
+    }
+
+    private Framing(float depth, float zoom, float motion,
+                    float orbitX, float orbitY, float panX, float panY,
+                    float brightnessGain, float shadowLift) {
+        this.depth = depth;
+        this.zoom = zoom;
+        this.motion = motion;
+        this.orbitX = orbitX;
+        this.orbitY = orbitY;
+        this.panX = panX;
+        this.panY = panY;
+        this.brightnessGain = brightnessGain;
+        this.shadowLift = shadowLift;
+        this.bundled = false;
+    }
 }
