@@ -534,3 +534,42 @@ makes the user drag twice for one intent.
 (`ModalSheet`'s javadoc), and "grip" is the little drag-handle bar at the top of one. Say
 *sheet* and *the handle bar* with the user. They had to ask what a "card with a grip" was,
 which is a fair failure and not something to repeat.
+
+## "No depth" on a photo whose depth is EMBEDDED in its PNG (2026-10-04)
+
+**The user, verified on the Pixel:** *a dePH file showed its depth playing while the app reported no depth* And: **replace and regenerate depth were not needed yet** (for that
+case).
+
+**The bug.** `initialItemHasMap` (`MainActivity.java`) is `item == null || item.depthName !=
+null`, and `LibraryItem.hasDepth()` is `depthName != null`. Both only know about a **separate
+depth file**. A PNG can carry its depth **inside the image file** in a `dePH`/`dEPt` chunk —
+a documented feature of this app — and for such a photo `depthName` is null, so the status
+line says **"No depth" while the renderer is drawing the embedded map and the relief is
+playing.** The status line is lying about the photo on screen.
+
+**The gallery already gets this right**, which is the proof that it is a bug and not a
+policy: `Gallery` reads the file (`Io`'s `onEmbedded` callback) and shows its depth chip from
+`embedded && !hasFile`. **Two answers to one question** — the exact class of bug this project
+keeps paying for.
+
+**The fix, in the shape it must take:**
+1. **`:core` derivation, because this is where a decision about two booleans belongs.**
+   `DepthSource.resolve(hasDepthFile, embedded)` → `NONE | FILE | EMBEDDED`, with the actions
+   each permits. Pure, three inputs, fully testable:
+   - `NONE` → "No depth", **both** actions.
+   - `FILE` → has depth, **both** actions.
+   - `EMBEDDED` → **has depth, NO actions** (the user's decision: nothing to replace — there
+     is no depth file — and regenerating is out of scope for now).
+2. **One answer, two screens.** The gallery's chip and the sheet's line must read the SAME
+   derivation. Deriving it twice is how they drifted.
+3. **While the answer is unknown, say nothing — never "No depth".** The embedded flag needs a
+   file read off the UI thread, so on a selection there is a moment before it is known.
+   **Claiming "No depth" during that moment is the bug being reported**, so the line must have
+   a genuinely unknown state rather than defaulting to the wrong one. Cache per item id so
+   selecting back does not re-read.
+4. **Never on the GL thread.** The wallpaper parses state on the GL thread at cold start;
+   the embedded flag is a file read and must never join that path.
+
+**Not a regression from the file-backing work**: the bundled demo now correctly stores
+`"depth":"item-bundled-depth.png"` and reports `FILE`. This is the embedded case, which no
+code path consulted until now.
