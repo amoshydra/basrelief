@@ -374,6 +374,14 @@ public class MainActivity extends Activity {
 
     /** What {@link #applyStripState} last drew, so a drag does not redraw it. */
     private StripState stripDrawnState;
+    /**
+     * The quantised {@code shapeProgress} the strip's colours were last drawn at, and
+     * part of {@link #applyStripState}'s cache key. It is here because ATTENTION is a
+     * pill style: the same state is a different picture at the top of an open sheet
+     * than it is on the pill, so guarding on the state alone froze an amber border onto
+     * a sheet that had been dragged open again.
+     */
+    private int stripDrawnShape = -1;
     /** ...and the percentage it was drawn with, because PROGRESS carries one. */
     private int stripDrawnPercent = -1;
     private StripState stripState = StripState.IDLE;
@@ -1983,25 +1991,45 @@ public class MainActivity extends Activity {
         // here so the guard and the text cannot disagree about it.
         int percent = drawn == StripState.PROGRESS
                 ? DepthGenDialog.progressPercent() : -1;
-        if (stripDrawnState == drawn && stripDrawnPercent == percent) return;
+        // ATTENTION IS A PILL STYLE, and there is no pill when the sheet is open.
+        // `.pill.attention` in the design is a class on the pill; the expanded sheet
+        // has no `.pill`, so it cannot be amber. The morph put the pill's contents in
+        // the sheet's top strip and brought the pill's colours with them, so an
+        // expanded sheet wore an amber border and amber text -- the user caught it in
+        // a screenshot, and no measurement would ever have, because the state was
+        // correct and only its SCOPE was wrong.
+        //
+        // So the warning chrome cross-fades on shapeProgress: 0 while the strip is
+        // the sheet's own top edge, 1 once it has become the pill. Quantised to 16
+        // steps because it is part of the cache key below, and a stroke set is a
+        // repaint per call -- sixteen of those across a drag is invisible, sixty a
+        // second is not.
+        int shape = Math.round(SheetMorph.shapeProgress(lastSheetFraction) * 16f);
+        if (stripDrawnShape == shape && stripDrawnState == drawn
+                && stripDrawnPercent == percent) return;
         stripDrawnState = drawn;
         stripDrawnPercent = percent;
+        stripDrawnShape = shape;
+        float pillness = shape / 16f;
+        int hairline = 0x33FFFFFF;
+        int ink = 0xFFFFFFFF;
         switch (drawn) {
             case IDLE:
                 stripLabel.setText(R.string.pill_controls);
-                stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                stripLabel.setTextColor(ink);
+                stripBackground.setStroke(dp(1), hairline);
                 setStripMark(false);
                 break;
             case ATTENTION:
                 stripLabel.setText(R.string.pill_no_depth);
-                stripLabel.setTextColor(WARN_COLOUR);
+                stripLabel.setTextColor(SheetMorph.blendColour(ink, WARN_COLOUR, pillness));
                 // The BORDER carries the warning too. Changing only the text colour
                 // left a pill that read as informational at a glance, which is the
                 // opposite of the point -- the border is what you see first. It is
                 // also why the fill never blends toward the old PILL_DIM: a 55%
                 // white plate has no room for a 55% white border on it.
-                stripBackground.setStroke(dp(1), WARN_COLOUR);
+                stripBackground.setStroke(dp(1),
+                        SheetMorph.blendColour(hairline, WARN_COLOUR, pillness));
                 setStripMark(false);
                 break;
             case PROGRESS:
