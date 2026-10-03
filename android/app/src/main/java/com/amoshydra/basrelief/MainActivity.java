@@ -1702,6 +1702,34 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ gestures
 
+    /**
+     * Persist the renderer's framing, unless a surface glide is mid-flight.
+     *
+     * <p>A glide tweens all nine values over {@code glide_ms}, so for that window
+     * the renderer's orbit and pan are an interpolation between two surfaces, not
+     * either surface's framing. Persisting them would write the blend onto the
+     * surface being edited — a cross-surface write with no gesture that means it,
+     * and one that repeated switching drags both surfaces to their average. The
+     * values are settled by the next touch, so skipping here costs nothing and the
+     * glide's own destination is what a later save records.
+     *
+     * <p>This is the guard the two save sites below share. It is not the whole fix:
+     * a gesture made <i>during</i> a glide is still overwritten by the tween, which
+     * needs a glide cancel in {@code ReliefRenderer} and is reported rather than
+     * faked here. It does stop the tween from being stored as though it were the
+     * user's framing.
+     */
+    private void savePanIfSettled() {
+        if (renderer.isGliding()) return;
+        renderer.savePanToPrefs();
+    }
+
+    /** @see #savePanIfSettled — the tap-to-orbit variant, which saves origin too. */
+    private void saveViewIfSettled() {
+        if (renderer.isGliding()) return;
+        renderer.saveViewToPrefs();
+    }
+
     private boolean handleTouch(MotionEvent e) {
         int action = e.getActionMasked();
         int index = e.getActionIndex();
@@ -1747,13 +1775,18 @@ public class MainActivity extends Activity {
                         int pct = Math.round(renderer.getZoom() * 100f);
                         final int z = pct;
                         // Zoom belongs to the photo, so a pinch frames this one
-                        // and leaves every other photo at its own zoom.
+                        // and leaves every other photo at its own zoom -- and to the
+                        // surface being edited, like every other adjustment. This was
+                        // hard-coded to HOME, so pinching while the sheet said Lock
+                        // silently changed Home instead: the numbers moved, Lock did
+                        // not, and the two surfaces converged on whichever was last
+                        // pinched.
                         String zoomId = AppState.load(prefs, getFilesDir()).activeId();
                         if (zoomId != null) {
                             LibraryStore.editItem(prefs, zoomId, new LibraryStore.Editor() {
                                 @Override
                                 public LibraryItem edit(LibraryItem item) {
-                                    return item.withZoom(Surface.HOME, z);
+                                    return item.withZoom(editSurface, z);
                                 }
                             });
                         }
@@ -1783,7 +1816,7 @@ public class MainActivity extends Activity {
                     lastMidX = pointerMidX();
                     lastMidY = pointerMidY();
                 }
-                renderer.savePanToPrefs(); // persist pan state (volatile reads, UI-thread safe)
+                savePanIfSettled(); // persist pan state (volatile reads, UI-thread safe)
                 return true;
 
             case MotionEvent.ACTION_UP:
@@ -1801,7 +1834,7 @@ public class MainActivity extends Activity {
                             @Override
                             public void run() {
                                 renderer.screenToOrbit(fx, fy, fw, fh);
-                                renderer.saveViewToPrefs();
+                                saveViewIfSettled();
                             }
                         });
                         glView.requestRender();
@@ -1809,14 +1842,14 @@ public class MainActivity extends Activity {
                 }
                 pointers.remove(id);
                 tapCandidate = false;
-                renderer.savePanToPrefs(); // persist pan state
+                savePanIfSettled(); // persist pan state
                 return true;
 
             case MotionEvent.ACTION_CANCEL:
                 pointers.clear();
                 tapCandidate = false;
                 startDist = -1f;
-                renderer.savePanToPrefs();
+                savePanIfSettled();
                 return true;
         }
         return true;
@@ -2087,6 +2120,12 @@ public class MainActivity extends Activity {
             setBar("brightness", shownBrightness, true);
             setBar("shadow", shownShadow, true);
         }
+        // The four framing rows are sliders on this same sheet and must follow the
+        // same one resolution. They live in FramingRows and register under different
+        // keys, so this method never touched them -- leaving them showing the
+        // previous surface's origin and pan after a switch, which the next nudge
+        // then wrote onto the new surface. See FramingRows.refresh.
+        FramingRows.refresh(this);
         // Motion decides whether the sensor can change a pixel at all, so it
         // decides whether the sensor should be running -- and Motion belongs to the
         // active photo now, so switching photos at Motion 0 parks the sensor even

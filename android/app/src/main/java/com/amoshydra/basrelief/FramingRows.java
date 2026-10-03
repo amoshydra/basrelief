@@ -164,6 +164,44 @@ final class FramingRows {
     }
 
     /**
+     * Repopulate every framing control from the surface being edited.
+     *
+     * <p><b>Called from {@code MainActivity.refreshSliders}, and that is not
+     * optional.</b> These four rows register into the same {@code sliders} map as
+     * Depth and Zoom (see {@link #axis}), but they are addressed by a different set
+     * of keys and — unlike the other five — were never written back after the sheet
+     * was built. A surface switch or a gallery selection therefore left them showing
+     * the <i>previous</i> surface's origin and pan, and the next nudge committed
+     * that stale value onto the surface the user had just switched to. Switching
+     * Home → Lock and nudging repeated, so two surfaces the user had framed
+     * differently converged on one of them.
+     *
+     * <p>The rule is the one the whole sheet follows: a control must display
+     * exactly what the gesture will write, or the gesture writes what the control
+     * happened to be displaying.
+     */
+    static void refresh(MainActivity activity) {
+        setSlider(activity, "originX", true);
+        setSlider(activity, "originY", true);
+        setSlider(activity, "panX", false);
+        setSlider(activity, "panY", false);
+        refreshReadout(activity);
+    }
+
+    /**
+     * One framing row set from the stored value, silently.
+     *
+     * <p>{@link BasreliefSlider#setValue} is inert by construction — it has no
+     * listener to fire — so this cannot re-enter {@code onChanged} and write the
+     * value it is only trying to display.
+     */
+    private static void setSlider(MainActivity activity, String key, boolean fraction) {
+        BasreliefSlider slider = activity.sliders.get(key);
+        if (slider == null) return;
+        slider.setValue(read(activity, key, fraction));
+    }
+
+    /**
      * The one number the heading cannot carry, so it sits directly under it. The
      * wireframe draws the pair on one line because they are one question — where the
      * photograph sits — at two scales.
