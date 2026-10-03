@@ -6,6 +6,7 @@ import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
+import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.Surface;
@@ -3312,9 +3313,11 @@ public class MainActivity extends Activity {
             // not move: the ring means what is on screen, and the missing fact is
             // better said than moved. Both this and the gallery header's version
             // read PlaylistStatus, so the two screens cannot disagree.
+            long now = System.currentTimeMillis();
+            PlaylistStatus status = PlaylistStatus.of(lists, state.library, now);
             setPhotoLine(name, getString(R.string.photo_line_playlist_armed,
                     name, rotating.displayName(),
-                    PlaylistScreen.nextChangeLabel(this, rotating)));
+                    PlaylistScreen.nextChangeLabel(this, rotating, status, now)));
             return;
         }
 
