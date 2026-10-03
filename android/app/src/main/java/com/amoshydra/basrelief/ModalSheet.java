@@ -6,15 +6,19 @@ import android.content.DialogInterface;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 /**
  * The mockup's {@code .scrim + .modal}, built once.
@@ -60,6 +64,22 @@ final class ModalSheet {
     private Dialog dialog;
 
     /**
+     * The card's padding before the navigation-bar inset is folded into the
+     * bottom, held so the inset listener can re-apply the whole set without
+     * guessing which sides the inset touches.
+     */
+    private final int padLeft;
+    private final int padTop;
+    private final int padRight;
+    private final int padBottom;
+
+    /**
+     * The bottom system-bar inset, in pixels, added to {@link #padBottom}. Zero
+     * until the first inset dispatch, which is correct on a device with no bar.
+     */
+    private int bottomInset;
+
+    /**
      * A modal on the standard scrim: {@code .scrim} at {@code rgba(0,0,0,.62)}, which
      * is what the mockup draws behind three of its four modals.
      */
@@ -89,7 +109,11 @@ final class ModalSheet {
                 dp(activity, 20), dp(activity, 20), 0, 0});
         bg.setStroke(dp(activity, 1), LINE);
         card.setBackground(bg);
-        card.setPadding(dp(activity, 18), dp(activity, 16), dp(activity, 18), dp(activity, 16));
+        padLeft = dp(activity, 18);
+        padTop = dp(activity, 16);
+        padRight = dp(activity, 18);
+        padBottom = dp(activity, 16);
+        card.setPadding(padLeft, padTop, padRight, padBottom);
 
         scroll = new ScrollView(activity);
         // The mockup masks the last 22px; a fading edge is a child property, so this
@@ -107,6 +131,26 @@ final class ModalSheet {
         scrimView.addView(card, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
+
+        // The card is anchored to the bottom of the screen, so its footer would be
+        // drawn under the gesture/navigation bar on a full-screen dialog window.
+        // Fold the system's own bottom inset into the card's bottom padding: a
+        // hard-coded dp is wrong on a device with no bar and wrong on one with a
+        // tall one, and the inset is the only value that is right on both. The
+        // Dialog window does not fit system windows (PhoneWindow clears the fit
+        // sides for a non-floating window), so the insets are still delivered here.
+        scrimView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                bottomInset = insetBottom(insets);
+                card.setPadding(padLeft, padTop, padRight, padBottom + bottomInset);
+                // The scroll's height is derived from the card, and the padding just
+                // changed it, so re-cap. applyHeight() is a no-op before first layout;
+                // its own post() runs it once there is a height to compute against.
+                if (root.getHeight() > 0) applyHeight();
+                return insets;
+            }
+        });
 
         root = scrimView;
     }
@@ -136,19 +180,19 @@ final class ModalSheet {
                 dialog = null;
             }
         });
-        // A Dialog does not dismiss itself on back by default, and a modal you cannot
-        // leave with the system gesture is a trap.
-        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+        // A modal you cannot leave with the system back gesture is a trap. See
+        // dismissOnBack for why this is more than a key listener on targetSdk 36.
+        dismissOnBack(dialog, new Runnable() {
             @Override
-            public boolean onKey(DialogInterface d, int keyCode, KeyEvent event) {
-                if (keyCode == KeyEvent.KEYCODE_BACK) {
-                    dismiss();
-                    return true;
-                }
-                return false;
+            public void run() {
+                dismiss();
             }
         });
         dialog.show();
+        // Now that the window is attached, ask for the first inset dispatch so the
+        // navigation-bar inset is known before the card settles. Without this the
+        // first frame can draw the footer under the bar until the next pass.
+        root.requestApplyInsets();
         root.post(new Runnable() {
             @Override
             public void run() {
@@ -167,7 +211,10 @@ final class ModalSheet {
     private void applyHeight() {
         int screen = root.getHeight();
         if (screen <= 0) return;
-        int ceiling = (int) (screen * maxHeightFraction);
+        // The inset is inside the card's padding, so it is not height the card may
+        // use: subtract it from the ceiling and the card still fits the fraction.
+        int ceiling = (int) (screen * maxHeightFraction) - bottomInset;
+        if (ceiling <= 0) return;
         int natural = card.getMeasuredHeight();
         if (natural <= ceiling) {
             // Shrink-wrap: the card is as tall as it needs and no taller.
@@ -210,6 +257,76 @@ final class ModalSheet {
             dialog.dismiss();
             dialog = null;
         }
+    }
+
+    /**
+     * Make system BACK dismiss {@code dialog} and never let the key reach the
+     * Activity, which would finish the app.
+     *
+     * <p><b>Why this is not just a key listener.</b> The app targets SDK 36, and
+     * from Android 16 a back press is no longer delivered as
+     * {@link KeyEvent#KEYCODE_BACK} — it arrives as an
+     * {@link OnBackInvokedCallback}. The {@code OnKeyListener} below is therefore
+     * dead on a modern device; it is kept because it is the whole story on API 26
+     * through 32, where that API does not exist. The two branches are exact
+     * complements: {@code dismissOnBack} covers every API the app runs on.
+     *
+     * <p><b>Why it is explicit.</b> A {@link Dialog} does register a default back
+     * callback of its own, so a cancelable dialog happens to dismiss on back even
+     * without this. But that default is conditional on the manifest opt-in and on
+     * the API level, and inheriting it means the behaviour cannot be expressed where
+     * it matters. The manifest sets
+     * {@code android:enableOnBackInvokedCallback}, so the callback branch is live
+     * on 33+ and the key branch on 26–32.
+     *
+     * <p><b>No manual unregister.</b> The callback is registered on the dialog's
+     * own window dispatcher, which is cleared when the window is destroyed — and
+     * every path out of these dialogs destroys it. Registering before
+     * {@link Dialog#show()} is safe: the window's {@code ProxyOnBackInvokedDispatcher}
+     * buffers callbacks until the window attaches.
+     *
+     * @param dialog the dialog that must not let back through
+     * @param dismissAction what dismissing means to the caller — usually its own
+     *                      {@code dismiss()}, so a nulled-out holder and its cleanup
+     *                      still run
+     */
+    static void dismissOnBack(final Dialog dialog, final Runnable dismissAction) {
+        dialog.setCancelable(true);
+        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            @Override
+            public boolean onKey(DialogInterface d, int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                    dismissAction.run();
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            dialog.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    new OnBackInvokedCallback() {
+                        @Override
+                        public void onBackInvoked() {
+                            dismissAction.run();
+                        }
+                    });
+        }
+    }
+
+    /**
+     * The bottom system-bar inset, in pixels, or 0.
+     *
+     * <p>{@code systemBars()} names the bar on API 30+; below that the deprecated
+     * single bottom inset is the only source. minSdk is 26, so both branches are
+     * live and neither is a guess. Shared with every other full-screen dialog in the
+     * app, so the four of them cannot drift to four different values.
+     */
+    static int insetBottom(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return insets.getInsets(WindowInsets.Type.systemBars()).bottom;
+        }
+        return insets.getSystemWindowInsetBottom();
     }
 
     // ------------------------------------------------------------------ widgets

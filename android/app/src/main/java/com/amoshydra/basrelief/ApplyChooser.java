@@ -7,9 +7,11 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -209,6 +211,21 @@ final class ApplyChooser {
         modalLp.height = (int) (activity.getResources().getDisplayMetrics().heightPixels * 0.86f);
         modalLp.width = FrameLayout.LayoutParams.MATCH_PARENT;
         scrim.addView(scroll, modalLp);
+
+        // The same bottom-inset treatment ModalSheet folds into its card. This
+        // screen hand-rolls its scrim and card rather than using ModalSheet -- it
+        // predates it, and its scroll-and-0.86 layout is its own -- so it has to
+        // carry the inset itself or the Cancel/Continue row is drawn under the
+        // navigation bar. The value comes from ModalSheet so the two cannot drift.
+        final LinearLayout modalCard = modal;
+        scrim.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                int bottom = ModalSheet.insetBottom(insets);
+                modalCard.setPadding(dp(18), dp(16), dp(18), dp(18) + bottom);
+                return insets;
+            }
+        });
         return scrim;
     }
 
@@ -483,6 +500,14 @@ final class ApplyChooser {
                 dialog = null;
             }
         });
+        // Back dismisses and never reaches the Activity; see ModalSheet.dismissOnBack.
+        ModalSheet.dismissOnBack(dialog, new Runnable() {
+            @Override
+            public void run() {
+                dismiss();
+            }
+        });
         dialog.show();
+        content.requestApplyInsets();
     }
 }

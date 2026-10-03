@@ -126,6 +126,10 @@ final class PlaylistScreen {
     private EditText nameField;
     /** The navigation-bar inset, folded into the modal's bottom padding. */
     private int bottomInset;
+    // This screen builds its own window rather than using ModalSheet -- it
+    // predates it, and its capped scroll and per-state rebuild are its own -- so
+    // it carries the inset itself. It shares ModalSheet.insetBottom so the two
+    // cannot resolve the bar differently.
 
     private PlaylistScreen(MainActivity activity) {
         this.activity = activity;
@@ -469,6 +473,13 @@ final class PlaylistScreen {
             }
         });
         showList();
+        // Back closes this screen, not the studio; see ModalSheet.dismissOnBack.
+        ModalSheet.dismissOnBack(dialog, new Runnable() {
+            @Override
+            public void run() {
+                dismiss();
+            }
+        });
         dialog.show();
         frame.requestApplyInsets();
     }
@@ -491,10 +502,9 @@ final class PlaylistScreen {
     }
 
     private int insetBottom(WindowInsets insets) {
-        if (Build.VERSION.SDK_INT >= 30) {
-            return insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-        }
-        return insets.getSystemWindowInsetBottom();
+        // One resolution for all four dialogs: see ModalSheet.insetBottom, which
+        // also names the bar (systemBars on API 30+) and the minSdk 26 fallback.
+        return ModalSheet.insetBottom(insets);
     }
 
     /**
@@ -992,7 +1002,7 @@ final class PlaylistScreen {
             showList();
             return;
         }
-        new AlertDialog.Builder(activity)
+        final AlertDialog confirm = new AlertDialog.Builder(activity)
                 .setTitle(R.string.gallery_delete_title)
                 .setMessage(activity.getString(R.string.playlists_delete_message, p.displayName()))
                 .setPositiveButton(R.string.playlist_delete, new DialogInterface.OnClickListener() {
@@ -1003,7 +1013,16 @@ final class PlaylistScreen {
                     }
                 })
                 .setNegativeButton(R.string.action_cancel, null)
-                .show();
+                .create();
+        // A confirm is a dialog too: back dismisses it, never the studio. See
+        // ModalSheet.dismissOnBack.
+        ModalSheet.dismissOnBack(confirm, new Runnable() {
+            @Override
+            public void run() {
+                confirm.dismiss();
+            }
+        });
+        confirm.show();
     }
 
     private void dismiss() {
