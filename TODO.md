@@ -227,3 +227,39 @@ Delete at the bottom. Configuration first, consequence at the end.
 its *chrome alone* — same card, same grip, same row plates, same type scale, same Done in the
 same place, same scrim — with only the content differing. That test would have caught all three
 of the user's complaints by inspection, so it is the acceptance criterion, not the controls.
+
+## The bundled item is ordinary, so give it a file (2026-10-03)
+
+**The user, restated:** the bundled demo is an ordinary preloaded photo — **no special logic,
+no special-casing anywhere** — and the *only* special thing is that Settings' Reset brings it
+back.
+
+**A subagent audited the three depth-path refusal guards and recommended keeping all three**,
+because the bundled item has no image file. That audit is correct and the conclusion is wrong,
+because it accepts the premise. `LibraryItem.bundled()` stores **`imageName` and `depthName`
+both null**, and null image name is the renderer's signal to read `res/raw` — so there is no
+file to upload, no file to write a regenerated map to, and no file to replace. **The special
+logic is not "the marble is a demo"; it is "the marble has no file."**
+
+**So: make it file-backed.** On seed, copy `res/raw/image.png` and `res/raw/depth.png` into
+`filesDir` under ordinary filenames and store them in the item like any other photo. Then:
+
+- the renderer needs **no null branch** — every item is a file, and `null` becomes a
+  read-nothing path instead of a read-`res/raw` path;
+- all three refusal guards **lose their reason** and go: there is a real image to send to the
+  depth panel and a real file to write a regenerated or replaced map to;
+- the item is editable, renameable, depth-regenerable, and exportable **by the same code path
+  as every other photo**, which is the entire meaning of "ordinary";
+- deleting still works, because deletion is the index row plus its files — no different from
+  any photo, and Reset re-seeds by copying again.
+
+**What must survive:** Reset (and only Reset) brings it back, and a delete **sticks** — which
+the empty-only seed already guarantees, since seeding runs only when the index blob is
+**absent**. That invariant is unchanged by this work and must not be traded away for
+convenience. `res/raw/image.png` + `res/raw/depth.png` stay as the *source* the seed copies
+from, and the "both are loaded together" invariant stands — the seed writes both or neither.
+
+**Migration:** an existing install already has a stored index with the null-name row. On load,
+materialise that row into files once, or the user is left with the one special-cased item the
+work was meant to eliminate. Do it as one derivation over the stored index, not a special case
+at the render site.
