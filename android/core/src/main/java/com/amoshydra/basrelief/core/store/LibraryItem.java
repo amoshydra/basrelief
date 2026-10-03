@@ -113,48 +113,41 @@ public final class LibraryItem {
      *
      * <p>The six-argument constructor above is "a photo that has not been adjusted
      * yet", and it is the one a caller reaches for by accident. This one still
-     * defaults Motion and the two adjustments, so it carries the same hazard for
-     * those three: a caller updating an existing item through it silently resets
-     * them. It exists because the parser and a migration legitimately need it.
+     * defaults Motion, the two adjustments and the light, so it carries the same
+     * hazard for those: a caller updating an existing item through it silently
+     * resets them. It exists because a migration or a test legitimately holds a
+     * handful of loose numbers; every user-facing write goes through
+     * {@link #editSettings} and the {@code withX} mutators, which copy the values
+     * they do not name.
      */
     public LibraryItem(String id, String imageName, String depthName, String label,
                        long addedAt, long lastUsedAt,
                        int intensity, int zoom,
                        float orbitX, float orbitY, float panX, float panY) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                intensity, zoom, SurfaceSettings.DEFAULT_MOTION,
-                orbitX, orbitY, panX, panY, SurfaceSettings.DEFAULT_ADJUST,
-                SurfaceSettings.DEFAULT_ADJUST, null);
-    }
-
-    /**
-     * Everything: the six originals, plus the Motion that used to be global, the
-     * two picture adjustments, and the lock screen's override.
-     *
-     * <p>{@code lockSettings} is null for "the same as home", which is the default
-     * and the only state a photo needs before anyone customises it.
-     */
-    public LibraryItem(String id, String imageName, String depthName, String label,
-                       long addedAt, long lastUsedAt,
-                       int intensity, int zoom, int motion,
-                       float orbitX, float orbitY, float panX, float panY,
-                       int brightness, int shadow, SurfaceSettings lockSettings) {
-        this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                new SurfaceSettings(intensity, zoom, motion, orbitX, orbitY,
-                        panX, panY, brightness, shadow),
-                lockSettings);
+                new SurfaceSettings(intensity, zoom, SurfaceSettings.DEFAULT_MOTION,
+                        orbitX, orbitY, panX, panY,
+                        SurfaceSettings.DEFAULT_ADJUST, SurfaceSettings.DEFAULT_ADJUST,
+                        SurfaceSettings.DEFAULT_LIGHT_AZIMUTH,
+                        SurfaceSettings.DEFAULT_LIGHT_ELEVATION),
+                null);
     }
 
     /**
      * The form every write site uses: both surfaces as values.
      *
-     * <p>The fifteen-argument one above exists for the parser and for a site that
-     * genuinely holds nine loose numbers. A site that already has a
-     * {@link SurfaceSettings} — every mutation here — must use this one, because
-     * taking the values apart to pass them and putting them back together is a
-     * chance to pair the wrong surface with the wrong numbers. That mistake is not
-     * hypothetical: writing the lock screen through the loose constructor overwrote
-     * the home screen with it, and rendered correctly on both.
+     * <p>A site that already has a {@link SurfaceSettings} — every mutation here
+     * and the parser — must use this one, because taking the values apart to pass
+     * them and putting them back together is a chance to pair the wrong surface
+     * with the wrong numbers. That mistake is not hypothetical: writing the lock
+     * screen through a loose constructor overwrote the home screen with it, and
+     * rendered correctly on both.
+     *
+     * <p>There used to be a public constructor taking nine loose numbers plus the
+     * lock override. It was deleted when the light arrived rather than taught two
+     * more arguments: it defaulted everything it was not given, so it was the
+     * {@code withDepth} trap with a constructor's name, and after the parser moved
+     * here it had no callers left to justify keeping it alive for the next one.
      */
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
@@ -421,13 +414,15 @@ public final class LibraryItem {
     /** The Depth slider, 0..100, on one surface. */
     public LibraryItem withIntensity(Surface surface, int v) {
         return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
-                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation));
     }
 
     /** The Zoom slider, 25..200, on one surface. */
     public LibraryItem withZoom(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
-                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation));
     }
 
     /**
@@ -436,25 +431,38 @@ public final class LibraryItem {
        */
     public LibraryItem withMotion(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
-                s.originY, s.panX, s.panY, s.brightness, s.shadow));
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation));
     }
 
     /** Origin, a fraction of the plane, on one surface. */
     public LibraryItem withOrigin(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
-                s.panX, s.panY, s.brightness, s.shadow));
+                s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation));
     }
 
     /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
     public LibraryItem withPan(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
-                s.originX, s.originY, x, y, s.brightness, s.shadow));
+                s.originX, s.originY, x, y, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation));
     }
 
     /** Brightness and shadow, -100..100, on one surface. Render-time only. */
     public LibraryItem withAdjust(Surface surface, int brightness, int shadow) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
-                s.originX, s.originY, s.panX, s.panY, brightness, shadow));
+                s.originX, s.originY, s.panX, s.panY, brightness, shadow,
+                s.lightAzimuth, s.lightElevation));
+    }
+
+    /**
+     * The light's angles, on one surface. See {@link LightDirection} for the
+     * convention: azimuth runs counter-clockwise from the right and wraps,
+     * elevation is 0 at grazing and 90 head-on.
+     */
+    public LibraryItem withLight(Surface surface, float azimuthDegrees, float elevationDegrees) {
+        return editSettings(surface, s -> s.withLight(azimuthDegrees, elevationDegrees));
     }
 
     /**
@@ -558,7 +566,8 @@ public final class LibraryItem {
         // Any flat key at all, not just these three: a blob carrying only pan_x was
         // falling through to the defaults and quietly losing the user's framing.
         if (o.has("intensity") || o.has("zoom") || o.has("orbit_x") || o.has("origin_x")
-                || o.has("pan_x") || o.has("pan_y") || o.has("motion")) {
+                || o.has("pan_x") || o.has("pan_y") || o.has("motion")
+                || o.has("light_azimuth") || o.has("light_elevation")) {
             // "origin" was called "orbit" in the flat shape; both spellings are read
             // so a blob written by either version keeps the user's framing.
             float ox = (float) o.optDouble("origin_x", 0d);
@@ -573,7 +582,9 @@ public final class LibraryItem {
                     (float) o.optDouble("pan_x", SurfaceSettings.DEFAULT_PAN),
                     (float) o.optDouble("pan_y", SurfaceSettings.DEFAULT_PAN),
                     o.optInt("brightness", SurfaceSettings.DEFAULT_ADJUST),
-                    o.optInt("shadow", SurfaceSettings.DEFAULT_ADJUST));
+                    o.optInt("shadow", SurfaceSettings.DEFAULT_ADJUST),
+                    (float) o.optDouble("light_azimuth", SurfaceSettings.DEFAULT_LIGHT_AZIMUTH),
+                    (float) o.optDouble("light_elevation", SurfaceSettings.DEFAULT_LIGHT_ELEVATION));
         }
         return SurfaceSettings.defaults();
     }
@@ -605,14 +616,15 @@ public final class LibraryItem {
         if (img == null && !Library.BUNDLED_ID.equals(id)) return null;
         try {
             SurfaceSettings home = homeFrom(o);
+            // Both surfaces as resolved values, not nine loose numbers: the loose
+            // constructor this used to call defaulted anything it was not given,
+            // which is how a parse can quietly drop a value a future build added.
             return new LibraryItem(id, img,
                     str(o, "depth"),
                     str(o, "label"),
                     o.optLong("added_at", 0L),
                     o.optLong("last_used_at", 0L),
-                    home.depth, home.zoom, home.motion,
-                    home.originX, home.originY, home.panX, home.panY,
-                    home.brightness, home.shadow,
+                    home,
                     lockFrom(o));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor

@@ -390,6 +390,19 @@ final class Gallery {
         return grid != null;
     }
 
+    /**
+     * The strip, so the studio can treat it as sheet content.
+     *
+     * <p>The studio fades the sheet's contents as it collapses, and the strip is
+     * part of that content even though this class owns it. A getter rather than
+     * the host reaching into the field, because {@link #refreshStrip} can replace
+     * the view: the host's next fade reads whichever strip is current, instead of
+     * holding an alpha target that may have been unparented.
+     */
+    View stripView() {
+        return strip;
+    }
+
     /** Re-read the index and put the strip back, in the seat the studio gave. */
     private void refreshStrip() {
         if (strip == null || stripHost == null) return;

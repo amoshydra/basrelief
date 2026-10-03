@@ -378,7 +378,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 280 tests across sixteen classes:
+it**. 305 tests across eighteen classes:
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -443,6 +443,16 @@ it**. 280 tests across sixteen classes:
   that path on its first render. Brightness is hundredths of a *stop*, so it is
   exponential — a linear mapping passes a naive identity test while being visibly
   wrong. Shadow is signed, or "less contrast" becomes unreachable.
+- `LightDirectionTest` — the angle→vector mapping for `uLightDir`, which was a
+  literal in the shader's caller until now. The trap is the default: the two
+  constants are **derived from** `(-0.35f, 0.5f, 0.75f)` rather than picked as
+  round numbers, and the test holds the resolved direction to within `1e-6` per
+  component (measured ~7e-8), so an upgrade cannot quietly relight every photo.
+  It also pins the convention sliders will be built against (azimuth
+  counter-clockwise from the right, elevation 0 grazing and 90 head-on), that
+  azimuth wraps while elevation clamps, and that the surface glide takes the
+  short arc around 0/360 — neither spinning 340° nor passing through the zero
+  vector two opposite lights would produce.
 - `PlaylistTest` — rotation, and the invariant it exists to hold: rotation writes
   the index's own selection, by the same two calls a user's tap makes, so there is
   never a second pointer. The test asserts **byte-equality of the whole blob**, and
@@ -471,6 +481,15 @@ it**. 280 tests across sixteen classes:
   deleted files straight back and the delete never sticks. The bundled preload
   is deletable on those same terms, and what stops a reload resurrecting it is
   the empty-only seed, not a refusal to delete.
+- `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
+  a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
+  for. The trap is reading a *position* when the user changed *direction*: the
+  tests pin that the projection carries the last direction past the collapse
+  line, that the two thresholds leave a dead band where nothing changes, that a
+  decisive flick decides from either end by itself, and — honestly — that a
+  reversal too slow to change the projection still collapses from the bottom.
+  It is in `:core` because the rule is pure arithmetic in fractions of travel,
+  so no device and no pixels are involved.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the

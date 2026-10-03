@@ -73,11 +73,15 @@ import android.window.OnBackInvokedDispatcher;
  * were one glance apart with nothing to tell them apart. Pressed states come
  * from the shared plate ({@link #plate}), never from a row that styles itself.
  *
- * <p><b>The spring is shared with the studio sheet, the mechanism is not.</b> The
- * grip's drag and release live in {@link SpringSettle}, whose javadoc states the
- * one structural difference: this card is dragged by {@code translationY}, which
- * is safe in a Dialog's own window, while the studio's sheet is a sibling of the
- * {@code GLSurfaceView} and must move by layout height (b/7179570).
+ * <p><b>The grip runs on the shared sheet component; the mechanism is injected.</b>
+ * The drag, the entrance, the release rule and the fade live in
+ * {@link BottomSheet}. This card is its translation host — safe here because a
+ * Dialog owns its own window and contains no {@code SurfaceView} — while the
+ * studio sheet is the layout-height host beside a {@code GLSurfaceView}
+ * (b/7179570). It also asks for a different snap policy: a dialog is transient,
+ * so {@link BottomSheet.Snap#TO_STOPS} makes every release land on open or gone,
+ * never parked; the studio's persistent sheet is free. The policy is an argument
+ * to the component, so the two cannot silently swap.
  */
 final class ModalSheet {
 
@@ -147,6 +151,13 @@ final class ModalSheet {
      */
     private View gripHandle;
 
+    /**
+     * The card's own sheet behaviour: grip drag, entrance, release intent and
+     * fade. Null until {@link #grip} installs one; a card without a grip is a
+     * card without that gesture.
+     */
+    private BottomSheet sheet;
+
     /** Run after the window goes away, however it went away. See {@link #onDismiss}. */
     private Runnable dismissAction;
 
@@ -167,6 +178,14 @@ final class ModalSheet {
     private int bottomInset;
 
     /**
+     * The scrim's own colour, held so the fade can drive its alpha without
+     * reconstructing the colour: the drag tracks one progress value and the scrim
+     * brightens (becomes less opaque) as the card comes down, which is the
+     * background being revealed behind a modal that is leaving.
+     */
+    private final int scrim;
+
+    /**
      * A modal on the standard scrim: {@code .scrim} at {@code rgba(0,0,0,.62)}, which
      * is what the mockup draws behind three of its four modals.
      */
@@ -184,6 +203,7 @@ final class ModalSheet {
      */
     ModalSheet(Activity activity, float maxHeightFraction, int scrim) {
         this.maxHeightFraction = maxHeightFraction;
+        this.scrim = scrim;
 
         FrameLayout scrimView = new FrameLayout(activity);
         scrimView.setBackgroundColor(scrim);
@@ -287,11 +307,18 @@ final class ModalSheet {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // A card dismissed from a half-finished grip drag keeps the translation it
         // was showing, and this instance is reused (see the top of show()), so the
-        // next open must not start half way off the screen. Cancel first: a settle
-        // that was still running would otherwise animate from under the reset and
-        // then run its end action into the freshly opened dialog.
+        // next open must not start half way off the screen. Cancel the component's
+        // settle and entrance first: a running one would otherwise animate from
+        // under the reset and run its end action into the freshly opened dialog.
+        if (sheet != null) sheet.cancel();
         card.animate().cancel();
         card.setTranslationY(0f);
+        card.setAlpha(1f);
+        // The scrim too: a card dismissed mid-drag leaves it brightened, and the
+        // next open must not inherit a half-revealed backdrop for the frame before
+        // the component's first fade callback arrives.
+        android.graphics.drawable.Drawable scrimDrawable = root.getBackground();
+        if (scrimDrawable != null) scrimDrawable.setAlpha(Color.alpha(scrim));
         // ADJUST_RESIZE, because the depth panel's first field is an endpoint the user
         // has to be able to type. Without it the keyboard covers the box being typed
         // into and the dialog does not move -- which reads as the field being dead
@@ -325,6 +352,33 @@ final class ModalSheet {
                 applyHeight();
             }
         });
+        // The entrance needs a measured card, and a dialog's content is laid out
+        // on a later traversal than show(); see the retry.
+        springCardFromBelow();
+    }
+
+    /**
+     * Spring the card up from below, once it has a measured height.
+     *
+     * <p>{@link #show} can run before the dialog's first traversal, and a card
+     * that has not been laid out has a span of zero — the entrance would silently
+     * be a jump. A self-retrying post is enough because the traversal is
+     * guaranteed (the window is already being shown) and the retry stops the
+     * moment there is a height. This is the same shape as the studio sheet's
+     * {@code openAtPeek} deferral.
+     */
+    private void springCardFromBelow() {
+        if (sheet == null) return;
+        if (card.getHeight() <= 0) {
+            card.post(new Runnable() {
+                @Override
+                public void run() {
+                    springCardFromBelow();
+                }
+            });
+            return;
+        }
+        sheet.open(0f);
     }
 
     /**
@@ -378,100 +432,63 @@ final class ModalSheet {
                 dismiss();
             }
         });
-        strip.setOnTouchListener(new View.OnTouchListener() {
-            private SpringSettle.Drag drag;
-            private float downRawY;
-            private float downTranslation;
-            private boolean crossedSlop;
+        // The card is the component's translation host: a Dialog owns its own
+        // window and contains no SurfaceView, so moving by translationY cannot
+        // desync a transparent region the way it does for the studio sheet
+        // (b/7179570). The tap action duplicates the click listener above because
+        // the drag consumes every event; the click listener remains for the
+        // accessibility action, which arrives as a performClick and not as touches.
+        sheet = new BottomSheet(new BottomSheet.Host() {
+            @Override
+            public float spanPx() {
+                return card.getHeight();
+            }
 
             @Override
+            public void applyPosition(float fraction, float belowPx) {
+                card.setTranslationY(fraction * card.getHeight() + belowPx);
+            }
+
+            @Override
+            public void applyFade(float progress) {
+                // The card's contents and its glass are one view, so they fade
+                // together here; the scrim is the surface that follows, tracking
+                // the same progress so it brightens — becomes less opaque — as the
+                // card comes down and the background is revealed behind it. The
+                // drawable's own alpha is set rather than a fresh background
+                // colour, because this runs on every frame of a drag and
+                // setBackgroundColor would allocate a ColorDrawable per frame.
+                card.setAlpha(BottomSheet.contentAlpha(progress));
+                android.graphics.drawable.Drawable scrimDrawable = root.getBackground();
+                if (scrimDrawable != null) {
+                    int base = Color.alpha(scrim);
+                    scrimDrawable.setAlpha(Math.round(base * (1f - progress)));
+                }
+            }
+
+            @Override
+            public View scrollView() {
+                // The grip is this card's only drag surface; the content inside
+                // the scroll keeps its own gesture and is never offered to the
+                // sheet. The studio sheet is where content drags matter, because
+                // its strip and fix line sit next to the scroll.
+                return null;
+            }
+
+            @Override
+            public void onResting(float fraction, boolean collapsed) {
+                if (collapsed) dismiss();
+            }
+        }, SpringSettle.CARD, BottomSheet.Snap.TO_STOPS, slop, new Runnable() {
+            @Override
+            public void run() {
+                dismiss();
+            }
+        });
+        strip.setOnTouchListener(new View.OnTouchListener() {
+            @Override
             public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downRawY = e.getRawY();
-                        downTranslation = card.getTranslationY();
-                        crossedSlop = false;
-                        // A half-finished settle would otherwise fight the finger;
-                        // cancel() also drops the settlement's end action, so an
-                        // interrupted dismissal is not run when the finger lands.
-                        card.animate().cancel();
-                        if (drag != null) drag.end();
-                        drag = new SpringSettle.Drag();
-                        drag.add(e);
-                        return true;
-                    case MotionEvent.ACTION_MOVE: {
-                        if (drag != null) drag.add(e);
-                        // Measured from the DOWN every time, like the studio
-                        // sheet's drag, so a double delivery is the same number
-                        // twice instead of twice the travel.
-                        float dy = downTranslation + e.getRawY() - downRawY;
-                        // Tethered above the top: the card may lift a little,
-                        // against a resistance that stiffens, and never free.
-                        // SpringSettle says why it is a curve and not a clamp.
-                        dy = SpringSettle.resistUp(dy, card.getHeight());
-                        if (dy - downTranslation > slop) crossedSlop = true;
-                        card.setTranslationY(dy);
-                        // Deliberately NOT decided here. The finger is still
-                        // asking for the card to be where it is; the release is
-                        // the decision, and it is taken below.
-                        return true;
-                    }
-                    case MotionEvent.ACTION_UP: {
-                        float velocity = drag == null ? 0f : drag.velocityY();
-                        endDrag();
-                        if (crossedSlop) {
-                            release(velocity);
-                        } else {
-                            v.performClick();
-                        }
-                        return true;
-                    }
-                    case MotionEvent.ACTION_CANCEL: {
-                        // Only if the gesture is still tracked: an UP already
-                        // decided this drag, and a CANCEL delivered after it (a
-                        // quirk of injected input, and not of a finger) must not
-                        // re-decide it and cancel the settle the UP just began.
-                        if (drag == null) return true;
-                        float velocity = drag.velocityY();
-                        endDrag();
-                        release(velocity);
-                        return true;
-                    }
-                    default:
-                        return false;
-                }
-            }
-
-            private void endDrag() {
-                if (drag != null) {
-                    drag.end();
-                    drag = null;
-                }
-            }
-
-            /**
-             * The one release rule, shared with the studio sheet: project the
-             * fling, dismiss if it lands past a quarter of the card, otherwise
-             * spring back. See {@link SpringSettle#dismissesOnRelease}.
-             */
-            private void release(float velocityPxPerS) {
-                float dismiss = SpringSettle.dismissDistance(card.getHeight(),
-                        dp(root.getContext(), SpringSettle.DISMISS_MIN_DP));
-                if (SpringSettle.dismissesOnRelease(
-                        card.getTranslationY(), velocityPxPerS, card.getHeight(), dismiss)) {
-                    // Carry the fling off the bottom before closing, so the card
-                    // leaves in the direction the finger threw it instead of
-                    // being cut out from under the motion.
-                    SpringSettle.settleTranslation(card, card.getHeight(), velocityPxPerS,
-                            new Runnable() {
-                                @Override
-                                public void run() {
-                                    dismiss();
-                                }
-                            });
-                } else {
-                    SpringSettle.settleTranslation(card, 0f, velocityPxPerS, null);
-                }
+                return sheet.onTouch(v, e);
             }
         });
         card.addView(strip, 0, new LinearLayout.LayoutParams(
@@ -583,6 +600,12 @@ final class ModalSheet {
     }
 
     void dismiss() {
+        // Stop the card's own motion first: a dismissed dialog must not leave an
+        // entrance or settle running against a window that no longer exists, and
+        // the grip's dismissal arrives through onResting while the settle's end
+        // callback is still on the stack — cancel() is a no-op then, because the
+        // component has already cleared its animator before resting.
+        if (sheet != null) sheet.cancel();
         if (dialog != null) {
             dialog.dismiss();
             dialog = null;

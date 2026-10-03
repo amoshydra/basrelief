@@ -8,8 +8,8 @@ import com.amoshydra.basrelief.core.store.SurfaceSettings;
  * What to draw, resolved from the app's state.
  *
  * <p><b>This class exists because the studio and the wallpaper disagreed.</b>
- * Both surfaces have to turn "which item is selected" into five numbers, and when
- * they each did it inline they drifted: the wallpaper service reset the framing
+ * Both surfaces have to turn "which item is selected" into one set of numbers, and
+ * when they each did it inline they drifted: the wallpaper service reset the framing
  * to defaults for the bundled demo, while the studio's own reload left it at
  * whatever the previously selected photo had. Selecting the marble bust after
  * panning a photo therefore showed the bust through that photo's framing, in one
@@ -41,6 +41,20 @@ public final class Framing {
      */
     public final float brightnessGain;
     public final float shadowLift;
+
+    /**
+     * The light, as the two angles {@link LightDirection} defines.
+     *
+     * <p><b>Angles, not a vector, and the glide is why.</b> These are the values a
+     * person edits, so resolving to the vector would be fine for drawing — but the
+     * surface glide interpolates every render value, and interpolating the vector's
+     * components is wrong at exactly the seam this class exists to cross:
+     * 350°→10° lerps through 180° (a 340° spin the eye reads as a glitch), and two
+     * opposite lights produce a zero vector with no direction. Carrying the angles
+     * lets {@link LightDirection#lerpAzimuth} take the 20° the eye expects.
+     */
+    public final float lightAzimuth;
+    public final float lightElevation;
 
     /** True when the marble bust is showing, and the files are in res/raw. */
     public final boolean bundled;
@@ -84,6 +98,8 @@ public final class Framing {
             this.motion = SurfaceSettings.DEFAULT_MOTION / 100f * 3f;
             this.brightnessGain = 1f;
             this.shadowLift = 0f;
+            this.lightAzimuth = LightDirection.DEFAULT_AZIMUTH_DEG;
+            this.lightElevation = LightDirection.DEFAULT_ELEVATION_DEG;
             return;
         }
         this.depth = s.depthFraction();
@@ -95,6 +111,8 @@ public final class Framing {
         this.motion = s.motionScale();
         this.brightnessGain = Picture.brightnessGain(s.brightness);
         this.shadowLift = Picture.shadowLift(s.shadow);
+        this.lightAzimuth = s.lightAzimuth;
+        this.lightElevation = s.lightElevation;
     }
 
     /**
@@ -133,17 +151,23 @@ public final class Framing {
      * Framing, and the two could drift. {@code bundled} is false because a glide
      * start is a snapshot of numbers, not a photo, and the bundled special case is
      * about which FILE to read.
+     *
+     * <p>The light arrives as angles, matching the fields; the renderer derives the
+     * vector with {@link LightDirection#of} at the point of use. Passing a vector
+     * here would put the wrap on the caller.
      */
     public static Framing ofValues(float depth, float zoom, float motion,
                                    float orbitX, float orbitY, float panX, float panY,
-                                   float brightnessGain, float shadowLift) {
+                                   float brightnessGain, float shadowLift,
+                                   float lightAzimuth, float lightElevation) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
-                brightnessGain, shadowLift);
+                brightnessGain, shadowLift, lightAzimuth, lightElevation);
     }
 
     private Framing(float depth, float zoom, float motion,
                     float orbitX, float orbitY, float panX, float panY,
-                    float brightnessGain, float shadowLift) {
+                    float brightnessGain, float shadowLift,
+                    float lightAzimuth, float lightElevation) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -153,6 +177,8 @@ public final class Framing {
         this.panY = panY;
         this.brightnessGain = brightnessGain;
         this.shadowLift = shadowLift;
+        this.lightAzimuth = lightAzimuth;
+        this.lightElevation = lightElevation;
         this.bundled = false;
     }
 }

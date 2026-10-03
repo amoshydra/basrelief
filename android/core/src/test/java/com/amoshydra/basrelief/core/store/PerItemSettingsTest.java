@@ -6,6 +6,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.amoshydra.basrelief.core.render.LightDirection;
+
+import org.json.JSONObject;
 import org.junit.Test;
 
 /**
@@ -45,6 +48,8 @@ public class PerItemSettingsTest {
         assertEquals(0f, s.panX, 0f);
         assertEquals(0, s.brightness);
         assertEquals(0, s.shadow);
+        assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG, s.lightAzimuth, 0f);
+        assertEquals(LightDirection.DEFAULT_ELEVATION_DEG, s.lightElevation, 0f);
     }
 
     @Test
@@ -125,6 +130,54 @@ public class PerItemSettingsTest {
         assertEquals(0, home(item("a")).brightness);
     }
 
+    /**
+     * The light normalises on the way in: azimuth wraps, elevation clamps.
+     *
+     * <p>Wrapped rather than clamped is the deliberate half. 0° and 360° are the
+     * same light, so a clamp would leave a dead zone at the seam where a slider
+     * appeared to move and the render did not. A stored -30 is therefore 330, and
+     * both ends of that wrap must resolve to the same vector.
+     */
+    @Test
+    public void theLightNormalisesOnWrite() {
+        SurfaceSettings s = home(item("a").withLight(Surface.HOME, -30f, 120f));
+        assertEquals(330f, s.lightAzimuth, 1e-6f);
+        assertEquals(90f, s.lightElevation, 1e-6f);
+
+        assertEquals("750 and 30 are the same azimuth",
+                30f, home(item("a").withLight(Surface.HOME, 750f, 10f)).lightAzimuth, 1e-6f);
+        assertEquals("a negative elevation is clamped to grazing, not reflected",
+                0f, home(item("a").withLight(Surface.HOME, 10f, -40f)).lightElevation, 0f);
+
+        // and the normalised value is what persists: a round trip cannot bring
+        // back the out-of-range input and relight the photo differently.
+        LibraryItem r = Library.parse(libraryOf(
+                item("a").withLight(Surface.HOME, -30f, 120f))).activeItem();
+        assertEquals(330f, home(r).lightAzimuth, 1e-4f);
+        assertEquals(90f, home(r).lightElevation, 1e-4f);
+    }
+
+    /**
+     * An absent light key reads as the default, not as zero.
+     *
+     * <p>Every blob written before this build is missing both keys, and 0/0 is a
+     * different light (from the right, edge-on) than the historical
+     * {@code (-0.35, 0.5, 0.75)}. A default of 0 would relight every photo on
+     * upgrade — the exact failure the derived default constants exist to prevent.
+     */
+    @Test
+    public void absentLightKeysReadAsTheDefault() {
+        SurfaceSettings s = SurfaceSettings.fromJson(new JSONObject());
+        assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG, s.lightAzimuth, 0f);
+        assertEquals(LightDirection.DEFAULT_ELEVATION_DEG, s.lightElevation, 0f);
+
+        SurfaceSettings partial = SurfaceSettings.fromJson(
+                new JSONObject("{\"depth\":50,\"light_elevation\":10}"));
+        assertEquals("the present key is read", 10f, partial.lightElevation, 1e-6f);
+        assertEquals("the absent one still defaults",
+                LightDirection.DEFAULT_AZIMUTH_DEG, partial.lightAzimuth, 0f);
+    }
+
     // --------------------------------------------------------- round tripping
 
     @Test
@@ -135,7 +188,8 @@ public class PerItemSettingsTest {
                 .withMotion(Surface.HOME, 61)
                 .withOrigin(Surface.HOME, 0.2f, -0.3f)
                 .withPan(Surface.HOME, 11f, -22f)
-                .withAdjust(Surface.HOME, -40, 25);
+                .withAdjust(Surface.HOME, -40, 25)
+                .withLight(Surface.HOME, 312.5f, 67.25f);
         LibraryItem r = Library.parse(
                 Library.empty().withItem(it).withSelection(it.id).toJson()).activeItem();
         SurfaceSettings s = home(r);
@@ -146,6 +200,8 @@ public class PerItemSettingsTest {
         assertEquals(-22f, s.panY, 1e-3f);
         assertEquals(-40, s.brightness);
         assertEquals(25, s.shadow);
+        assertEquals(312.5f, s.lightAzimuth, 1e-4f);
+        assertEquals(67.25f, s.lightElevation, 1e-4f);
     }
 
     /**
@@ -159,7 +215,8 @@ public class PerItemSettingsTest {
     public void aLockOverrideSurvivesAJsonRoundTrip() {
         LibraryItem it = item("a")
                 .withIntensity(Surface.HOME, 80)
-                .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0));
+                .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0,
+                        s.lightAzimuth, s.lightElevation));
 
         LibraryItem r = Library.parse(libraryOf(it)).activeItem();
         assertTrue(r.hasOwnLockSettings());
@@ -192,7 +249,8 @@ public class PerItemSettingsTest {
                 .withMotion(Surface.HOME, 55)
                 .withOrigin(Surface.HOME, 0.1f, -0.2f)
                 .withPan(Surface.HOME, 30f, -40f)
-                .withAdjust(Surface.HOME, -15, 20);
+                .withAdjust(Surface.HOME, -15, 20)
+                .withLight(Surface.HOME, 205f, 35f);
 
         // the three identity-only mutators are the ones most likely to take a
         // shortcut through a short constructor
@@ -209,7 +267,42 @@ public class PerItemSettingsTest {
             assertEquals(-40f, s.panY, 1e-3f);
             assertEquals(-15, s.brightness);
             assertEquals(20, s.shadow);
+            assertEquals("the light was reset by an identity-only edit",
+                    205f, s.lightAzimuth, 1e-6f);
+            assertEquals(35f, s.lightElevation, 1e-6f);
         }
+    }
+
+    /**
+     * Editing the light must not reset the other values.
+     *
+     * <p>The same hazard as the test above, one field over: a {@code withLight} that
+     * built its result from a constructor naming only the light would reset Depth,
+     * Zoom, Motion, Origin, Pan and the adjustments. It goes through
+     * {@code editSettings} and {@link SurfaceSettings#withLight}, which read every
+     * other value from the settings being edited.
+     */
+    @Test
+    public void editingTheLightDoesNotResetTheOthers() {
+        LibraryItem before = item("a")
+                .withIntensity(Surface.HOME, 80)
+                .withZoom(Surface.HOME, 150)
+                .withMotion(Surface.HOME, 55)
+                .withOrigin(Surface.HOME, 0.1f, -0.2f)
+                .withPan(Surface.HOME, 30f, -40f)
+                .withAdjust(Surface.HOME, -15, 20);
+
+        LibraryItem after = before.withLight(Surface.HOME, 205f, 35f);
+        SurfaceSettings s = home(after);
+        assertEquals(80, s.depth);
+        assertEquals(150, s.zoom);
+        assertEquals(55, s.motion);
+        assertEquals(0.1f, s.originX, 1e-6f);
+        assertEquals(-40f, s.panY, 1e-3f);
+        assertEquals(-15, s.brightness);
+        assertEquals(20, s.shadow);
+        assertEquals(205f, s.lightAzimuth, 1e-6f);
+        assertEquals(35f, s.lightElevation, 1e-6f);
     }
 
     // ------------------------------------------------------------- migration

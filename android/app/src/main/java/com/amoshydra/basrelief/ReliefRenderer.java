@@ -21,6 +21,7 @@ import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
+import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.render.Picture;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
@@ -97,13 +98,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
 
     /**
-     * Opacity, pinned to 1. It was a 0.25s fade up from black, which cannot work
-     * here: the system snapshots the surface about 100 ms after it appears, so the
-     * black first frame was what got snapshotted. Kept as a uniform because a
-     * cross-fade between photos is the obvious next thing to want, and it has to be
-     * timed to fit inside that snapshot window. See the note where it is set.
+     * How long one photo takes to cross-fade into the next.
+     *
+     * <p>Short on purpose. This is not an animation the user asked for; it is
+     * long enough to read as a dissolve rather than a cut and short enough not to
+     * sit between the finger and the picture. The one hard constraint on it is
+     * the system's wallpaper snapshot: it is taken roughly 100 ms after the
+     * surface appears, so a fade must never cover the FIRST load of an engine --
+     * a half-faded frame would be what the launcher keeps forever. See
+     * {@link #install}, which only arms a fade when a pair is already on screen.
+     *
+     * <p>The timing is wall-clock rather than a frame count, so a 120 Hz surface
+     * and a 60 Hz surface show the same duration.
      */
-    private float fade = 1f;
+    private static final float CROSS_FADE_MS = 200f;
 
     private static final String VERT =
             "uniform mat4 uMVP;\n" +
@@ -151,7 +159,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "  color *= uBrightnessGain;\n" +
             "  color += uShadowLift * (1.0 - color);\n" +
             "  color *= 1.0 + 0.25 * diff;\n" +
-            "  gl_FragColor = vec4(color * uFade, 1.0);\n" +
+            // uFade is the ALPHA of a cross-fade, not a brightness multiplier:
+            // the outgoing pair draws opaque, the incoming pair draws over it at
+            // alpha = t with GL_BLEND, so the screen shows old*(1-t) + new*t.
+            // Multiplying RGB instead (the old semantics, pinned to 1) would
+            // darken the incoming pair by its own alpha and blend to a dip.
+            "  gl_FragColor = vec4(color, uFade);\n" +
             "}\n";
 
     private static final String MARKER_VERT =
@@ -187,10 +200,90 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile float pendingBrightnessGain = 1f;
     private volatile float pendingShadowLift = 0f;
-    private FloatBuffer posBuffer, uvBuffer, normalBuffer;
-    private int vertexCount;
 
-    private int textureColor = -1;
+    /**
+     * One complete relief render: the colour texture, the mesh built from its
+     * depth map, the aspect those two share, and the framing they are drawn
+     * with.
+     *
+     * <p><b>Why this is a thing.</b> The image and its depth map are one
+     * photograph and must arrive and leave together. Building them into a single
+     * object is what makes that structural rather than a rule to remember: the
+     * draw path takes a {@code Render} and never sees half of one, and an
+     * incoming pair can sit beside the outgoing pair without either being
+     * half-updated.
+     *
+     * <p>The framing lives here rather than staying in the volatile fields
+     * because two renders are on screen at once during a cross-fade, and each
+     * must be drawn through its OWN depth, zoom and pan. The old photo drawn
+     * with the new photo's Depth is exactly the mistiming this class was
+     * rewritten to remove.
+     */
+    private static final class Render {
+        int textureColor = -1;
+        int vertexCount;
+        FloatBuffer posBuffer, uvBuffer, normalBuffer;
+        /** Image width / height, baked into the mesh's x and the camera's aspect. */
+        float aspect = 1f;
+        /** The framing this render is drawn with while it is on screen or fading. */
+        Framing framing;
+        /** The light, resolved once per framing capture so no draw does trigonometry. */
+        float lightX, lightY, lightZ;
+
+        boolean isDrawable() {
+            return textureColor > 0 && vertexCount > 0;
+        }
+    }
+
+    /**
+     * The pair on screen, or null before the first install into this context.
+     *
+     * <p>While no fade is running this is the only render that matters, and its
+     * framing is refreshed from the live volatile fields every frame (so
+     * sliders, glides and previews are immediate). While a pair change is
+     * pending or fading, the framing is frozen: see {@link #pairChangePending}
+     * and {@link #incoming}.
+     */
+    private Render displayed;
+
+    /**
+     * The pair fading in, or null. At most one, ever.
+     *
+     * <p>A second change mid-fade releases the outgoing pair first, so a fast
+     * playlist holds two textures and two meshes at the peak and no more. That
+     * is the bound; nothing here accumulates, and a fade that is never stepped
+     * (no requester, no sensor) is still eventually finished by the next frame
+     * because the timestamp is checked, not a counter.
+     */
+    private Render incoming;
+
+    /** Wall-clock start of the cross-fade in {@link #incoming}, in nanos. */
+    private long fadeStartNanos;
+
+    /**
+     * True from the moment a pair DIFFERENT from {@link #displayed} is requested
+     * until its install lands (or fails).
+     *
+     * <p>While true, the live framing fields may already describe the incoming
+     * photo -- both hosts apply the new item's {@code Framing} before the decode
+     * finishes -- so the draw path must keep using {@link Render#framing}. Held
+     * as a volatile because the studio requests from the UI thread and the
+     * wallpaper from the GL thread; it is a flag, not a reference, so a torn
+     * read is impossible.
+     */
+    private volatile boolean pairChangePending;
+
+    /**
+     * The render whose attribute pointers are currently installed, so the
+     * per-install {@link #bindMeshAttribs} optimisation survives the fade.
+     *
+     * <p>Null means "unknown, bind before the next draw". During a cross-fade
+     * the two meshes alternate every frame, so this forces a rebind per draw for
+     * the FADE ONLY (200 ms). The alternative -- a combined morph mesh -- is a
+     * 12.6 MB buffer rebuilt per pair; two rebinds for two tenths of a second is
+     * the cheaper trade, and the steady state still binds exactly once per load.
+     */
+    private Render boundMesh;
 
     // marker overlay (studio only)
     private int markerProgram;
@@ -224,11 +317,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * RENDERMODE_WHEN_DIRTY, so a frame is only drawn when someone asks. The
      * image load is asynchronous, so the first frame after a surface change
      * almost always arrives BEFORE the texture exists: it clears and bails on
-     * textureColor < 0. When the decode finishes and applyPending() uploads the
-     * texture, nothing else in a live wallpaper will ask for a frame -- no
+     * {@code displayed == null}. When the decode finishes and applyPending()
+     * installs it, nothing else in a live wallpaper will ask for a frame -- no
      * preference changed, and the tilt callback only fires while the gyro is
      * awake. Without this the wallpaper loads its image and then stays black
-     * until something happens to nudge it.
+     * until something happens to nudge it. A cross-fade reuses the same request
+     * every frame for its span; see onDrawFrame.
      */
     private volatile Runnable renderRequester;
 
@@ -289,11 +383,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile boolean hasInstalled = false;
 
     /**
-     * Monotonic tag for the most recently issued load. Incremented on the GL
-     * thread (where every load is requested) and read on it (where results are
-     * applied), so no synchronisation is needed.
+     * Monotonic tag for the most recently issued load.
+     *
+     * <p>Written wherever a request is issued -- the wallpaper requests on the
+     * GL thread, the studio's {@code applyFiles} on the UI thread -- and read on
+     * the GL thread where results are applied, so it is volatile. The check is
+     * still "the newest REQUEST wins", which is the property that matters: a
+     * decode that finishes after a newer one is dropped however the two threads
+     * interleave. Only the comparison is load-bearing; two requests landing on
+     * the same tag is impossible because {@code ++} is serialised by the threads
+     * that issue requests (the UI thread hands the studio's requests over one at
+     * a time, and the wallpaper issues from one GL thread).
      */
-    private int loadSeq = 0;
+    private volatile int loadSeq = 0;
 
     /**
      * Whether the given pair is already on screen.
@@ -430,9 +532,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * was just drawn until {@code eglSwapBuffers} recycles it. The publish is handed to
      * the Io executor because {@code setBitmap} is a binder call plus file I/O and a
      * 1440x3120 frame on the main thread is an ANR.
+     *
+     * <p>A cross-fade defers rather than captures. The frame would be a blend of two
+     * photographs, and the lock screen keeps ONE still frame: a half-dissolved
+     * snapshot is wrong forever, while the request is still valid 200 ms later. The
+     * flag is left set on purpose so the first frame after the fade captures.
      */
     private void captureLockFrameIfWanted() {
         if (!wantLockFrame) return;
+        if (incoming != null) return; // half-faded; keep the request for after
         wantLockFrame = false;
         final Bitmap frame = StaticLockFrame.capture((int) surfaceW, (int) surfaceH);
         if (frame == null) return;
@@ -447,6 +555,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
     private volatile float motion = 1f;
     private volatile float depth = DEFAULT_DEPTH / 100f; // 0..1 fraction of maxZScale
+
+    /**
+     * The light: the two editable angles and the unit vector they map to.
+     *
+     * <p>Both representations are kept, but they are never edited independently:
+     * {@link #setLight} is the only writer, and it writes all five fields from one
+     * {@link LightDirection#of} call. The angles exist because they are what a
+     * glide interpolates and what {@link #snapshot} hands back to a Framing; the
+     * components exist so the draw path does no trigonometry and allocates nothing.
+     * All five are volatile for the same reason the sliders are: a live preview
+     * from the UI thread must be seen by the next frame.
+     *
+     * <p>The initial values are the resolved default, which is the old hard-coded
+     * {@code (-0.35, 0.5, 0.75)} literal expressed as angles. See
+     * {@link LightDirection} for why the constants are not round numbers.
+     */
+    private volatile float lightAzimuth = LightDirection.DEFAULT_AZIMUTH_DEG;
+    private volatile float lightElevation = LightDirection.DEFAULT_ELEVATION_DEG;
+    private volatile float lightDirX = LightDirection.DEFAULT.x;
+    private volatile float lightDirY = LightDirection.DEFAULT.y;
+    private volatile float lightDirZ = LightDirection.DEFAULT.z;
 
     /** Pure-JVM camera model: scale, projection, view, z-clamp, tap unprojection. */
     private final CameraModel camera = new CameraModel();
@@ -579,6 +708,32 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void setAdjust(int brightness, int shadow) {
         pendingBrightnessGain = Picture.brightnessGain(brightness);
         pendingShadowLift = Picture.shadowLift(shadow);
+    }
+
+    /**
+     * Live preview for the light sliders.
+     *
+     * <p>Writes only volatile fields and does not touch GL, so it is safe from the
+     * UI thread — the same rule {@link #setAdjust} follows. The mapping from angles
+     * to the vector the shader sees is {@link LightDirection}'s, called here so the
+     * slider, the stored value and the render cannot disagree. The caller then calls
+     * {@code requestRender()} and the draw loop uploads whatever this now says.
+     *
+     * <p>Angles are normalised exactly as {@code SurfaceSettings} stores them, so a
+     * preview of 370° and a later reload of the stored value are the same light.
+     * Storing the value is what persists it — a drag that never ends writes
+     * nothing.
+     *
+     * @param azimuthDegrees counter-clockwise from the right; wraps
+     * @param elevationDegrees 0 grazing, 90 head-on; clamps
+     */
+    public void setLight(float azimuthDegrees, float elevationDegrees) {
+        lightAzimuth = LightDirection.normaliseAzimuth(azimuthDegrees);
+        lightElevation = LightDirection.normaliseElevation(elevationDegrees);
+        LightDirection d = LightDirection.of(lightAzimuth, lightElevation);
+        lightDirX = d.x;
+        lightDirY = d.y;
+        lightDirZ = d.z;
     }
 
     public void setShowOrbitMarker(boolean show) {
@@ -780,13 +935,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Upload the texture and build the mesh. GL thread only.
+     * Put a decoded pair on screen. GL thread only.
+     *
+     * <p>The swap and the un-freeze happen here, in one GL event: the mesh, the
+     * texture, the recorded pair identity and {@link #pairChangePending} all
+     * move together, so no frame can observe the new pair under the old
+     * framing's wait or the old pair under the new framing.
      *
      * @return false if there was nothing to load
      */
     private boolean applyPending(Pending p) {
         if (p == null) {
             writeStatus("failed to read image");
+            // Nothing is coming, so the display must not stay frozen: the old
+            // pair is still drawable and the live framing is all there is to
+            // draw it with. A permanently held frame would be worse than the
+            // mismatch the hold exists to prevent.
+            pairChangePending = false;
             return false;
         }
         if (p.customImage && p.customDepth) {
@@ -798,7 +963,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         } else {
             writeStatus(p.flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
         }
-        if (!install(p.colorBmp, p.gray, p.w, p.h)) {
+        if (!install(p)) {
             // Nothing was installed, so nothing may be recorded as installed.
             //
             // Recorded here, at the swap, and only once the swap has actually
@@ -809,7 +974,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // install is the same mistake one level deeper, and it is sticky --
             // a texture that never existed is still texture 0 at the next
             // visibility change, so the black would survive being made visible
-            // again.
+            // again. install() uploads the new texture before it touches the old
+            // one, so a failure here leaves the previous pair alive and drawable.
+            pairChangePending = false;
             return false;
         }
         // Recorded HERE, where the swap actually happens, and not where the load
@@ -817,8 +984,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         loadedImagePath = p.requestedImage;
         loadedDepthPath = p.requestedDepth;
         hasInstalled = true;
+        // The wait is over in the same event that swapped the pair, so the live
+        // framing (the new item's, applied before the decode landed) starts
+        // reaching the screen only now -- with the mesh it belongs to.
+        pairChangePending = false;
         // The frame that revealed the empty texture has already been drawn;
-        // without this request the uploaded texture is never presented.
+        // without this request the uploaded texture is never presented. It also
+        // starts a cross-fade's frame pump.
         Runnable r = renderRequester;
         if (r != null) r.run();
         return true;
@@ -833,9 +1005,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * image changes, which is why sharing a photo looked like it had blanked the
      * wallpaper.
      *
-     * <p>Safe to call from any thread. Returns immediately: frames drawn before
-     * the result lands simply clear and bail, because there is no texture yet,
-     * and the existing fade-in covers the arrival.
+     * <p>Safe to call from any thread. Returns immediately: frames drawn while
+     * the result is in flight keep the PREVIOUS pair and that pair's own framing,
+     * and the arrival cross-fades into the new one.
      *
      */
     public void loadPairAsync(final String imagePath, final String depthPath) {
@@ -848,6 +1020,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // possible. The fix is a monotonic tag rather than a timestamp: two
         // requests can share a millisecond, and only the order of issue matters.
         final int seq = ++loadSeq;
+        // A request for a pair other than the one on screen freezes the drawn
+        // framing until the pair lands. Both hosts apply the incoming item's
+        // Framing through renderer.apply BEFORE this decode finishes
+        // (MainActivity.applyFiles queues it on the event loop;
+        // DepthWallpaperService.applyFromPrefs does it in the very same GL
+        // event), and without the freeze the OLD photograph is drawn through the
+        // NEW photo's Depth and Zoom for the whole decode -- the reported
+        // "depth arrives before the image". The freeze is lifted in applyPending,
+        // in the same GL event that swaps the mesh.
+        //
+        // Assigned for every request, not only a different pair: a request that
+        // matches the displayed pair must clear an earlier request's freeze, or a
+        // superseded decode would leave the display frozen forever.
+        pairChangePending = hasInstalled && !showingSamePair(imagePath, depthPath);
         final java.util.concurrent.Executor glThread = glDispatch;
         if (glThread == null) {
             // No dispatcher yet: we are almost certainly inside onSurfaceCreated
@@ -948,7 +1134,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /** Returns true if the tap landed on the quad and the orbit was set. */
     public boolean screenToOrbit(float sx, float sy, int w, int h) {
-        if (w == 0 || h == 0 || textureColor < 0) return false;
+        if (w == 0 || h == 0 || displayed == null || !displayed.isDrawable()) return false;
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
         recomputeScale();
@@ -997,26 +1183,33 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
 
         // A new surface means a new EGL context, and everything this renderer
-        // believed about the old one is now false: every texture and buffer name
-        // cached from it is meaningless here, and the surface is empty again.
+        // believed about the old one is now false: every texture name and every
+        // mesh cached from it is meaningless here, and the surface is empty
+        // again.
         //
-        // All four fields therefore reset together, and each one is a way this has
-        // already gone wrong. textureColor and vertexCount: reloadFromPrefs finds
-        // the pair it wants is "already showing" and returns without uploading,
-        // into a context holding no texture, so the wallpaper is black. loadedOnce:
-        // it gates the one blocking decode whose entire purpose is to stop the
-        // system snapshotting an empty surface, and a new surface is empty, so
-        // keeping it set skips exactly the guarantee that is needed. The result in
-        // both cases is a black wallpaper beside a diagnostic reporting the
-        // correct photo loaded.
+        // All of those fields therefore reset together, and each one is a way
+        // this has already gone wrong. displayed/incoming: reloadFromPrefs
+        // finds the pair it wants is "already showing" and returns without
+        // uploading, into a context holding no texture, so the wallpaper is
+        // black. loadedOnce: it gates the one blocking decode whose entire
+        // purpose is to stop the system snapshotting an empty surface, and a
+        // new surface is empty, so keeping it set skips exactly the guarantee
+        // that is needed. The result in both cases is a black wallpaper beside
+        // a diagnostic reporting the correct photo loaded.
         //
-        // This is the same failure as hasInstalled, one level up: there an unset
-        // field read as "the demo is loaded", here state belonging to a destroyed
-        // context read as still valid. Losing the context is routine for a live
-        // wallpaper, because the system tears the engine down and rebuilds it, so
-        // this is a normal event and not an error path.
-        textureColor = -1;
-        vertexCount = 0;
+        // This is the same failure as hasInstalled, one level up: there an
+        // unset field read as "the demo is loaded", here state belonging to a
+        // destroyed context read as still valid. Losing the context is routine
+        // for a live wallpaper, because the system tears the engine down and
+        // rebuilds it, so this is a normal event and not an error path.
+        //
+        // The old textures are not deleted: the context that held them is gone,
+        // and their names belong to it. Dropping the references is the whole
+        // cleanup.
+        displayed = null;
+        incoming = null;
+        pairChangePending = false;
+        boundMesh = null;
         hasInstalled = false;
         loadedOnce = false;
 
@@ -1024,24 +1217,26 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Bind the mesh attribute pointers. Called once from {@link #install}, and
-     * after a marker draw when the indices collide — deliberately NOT per frame.
+     * Bind one render's mesh attribute pointers, and remember which render they
+     * belong to. Deliberately NOT per frame in the steady state; see
+     * {@link #boundMesh} for why the cross-fade is the one bounded exception.
      *
      * <p>Re-specifying these every frame made the driver re-validate ~12.6 MB of
      * FloatBuffer on every frame for geometry that only changes on load. That was
      * the largest per-frame cost measured on a Snapdragon 835: 9.2 ms of CPU
      * submit, of which the vertex path was the overwhelming majority.
      */
-    private void bindMeshAttribs() {
-        posBuffer.position(0);
-        uvBuffer.position(0);
-        normalBuffer.position(0);
+    private void bindMeshAttribs(Render r) {
+        r.posBuffer.position(0);
+        r.uvBuffer.position(0);
+        r.normalBuffer.position(0);
         GLES20.glEnableVertexAttribArray(aPosition);
-        GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, posBuffer);
+        GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, r.posBuffer);
         GLES20.glEnableVertexAttribArray(aUV);
-        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 0, uvBuffer);
+        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 0, r.uvBuffer);
         GLES20.glEnableVertexAttribArray(aNormal);
-        GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, 0, normalBuffer);
+        GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, 0, r.normalBuffer);
+        boundMesh = r;
     }
 
     /**
@@ -1066,8 +1261,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the rest of the frame already reads -- so the glide composites with the gyro
      * rather than fighting it.
      *
-     * <p>Nine values, all lerped: the framing IS the config, and leaving any one out
-     * is a visible pop in the middle of an otherwise smooth motion.
+     * <p>Eleven values, all lerped: the framing IS the config, and leaving any one
+     * out is a visible pop in the middle of an otherwise smooth motion. The light
+     * is the one pair that needs more than {@code a + (b - a) * t}: its azimuth is
+     * interpolated through {@link LightDirection#lerpAzimuth}, which takes the
+     * short way around the circle rather than spinning 340° the wrong way.
      */
     void glide(Framing from, Framing to, float spanMs) {
         if (to == null) return;
@@ -1141,6 +1339,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         panY = lerp(glideFrom.panY, glideTo.panY, e);
         pendingBrightnessGain = lerp(glideFrom.brightnessGain, glideTo.brightnessGain, e);
         pendingShadowLift = lerp(glideFrom.shadowLift, glideTo.shadowLift, e);
+        // Angles, with the azimuth's shortest arc; setLight maps to the vector, so
+        // the glide never needs the inverse and never carries a stale component.
+        setLight(LightDirection.lerpAzimuth(glideFrom.lightAzimuth, glideTo.lightAzimuth, e),
+                lerp(glideFrom.lightElevation, glideTo.lightElevation, e));
     }
 
     private static float lerp(float a, float b, float t) {
@@ -1157,9 +1359,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private Framing snapshot() {
         // ofValues, not a reflective constructor: only Framing may build a Framing,
         // and a reflective one is a second way that breaks the day a field is added.
+        // The light goes back as angles so the glide interpolates the way the
+        // stored value does; setLight's vector is derived, not the source.
         return com.amoshydra.basrelief.core.render.Framing.ofValues(
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
-                pendingBrightnessGain, pendingShadowLift);
+                pendingBrightnessGain, pendingShadowLift,
+                lightAzimuth, lightElevation);
     }
 
     /**
@@ -1181,6 +1386,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // loop has no other way to learn the value changed.
         pendingBrightnessGain = f.brightnessGain;
         pendingShadowLift = f.shadowLift;
+        // Set here as well as in the setters, so a resolve always wins. The light
+        // is one call because its angles and vector must never be updated apart.
+        setLight(f.lightAzimuth, f.lightElevation);
         // An explicit apply ends any glide in flight: it is the caller saying where
         // the view IS, and a tween arguing with that is a smear, not an ease.
         glideFrom = null;
@@ -1284,46 +1492,125 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         smoothX = approach(smoothX, targetX, alpha);
         smoothY = approach(smoothY, targetY, alpha);
 
-        // Projection, view, z-clamp and the model scale all live in the
-        // pure-JVM CameraModel (unit-tested). One call fills a reusable Frame,
-        // so drawing allocates nothing.
-        CameraModel.Frame f = camera.frame(surfaceW, surfaceH, panX, panY,
-                orbitX, orbitY, smoothX, smoothY);
-
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
-        if (textureColor < 0) return;
+        if (displayed == null || !displayed.isDrawable()) {
+            // Nothing to draw yet. The readback is still offered so a lock-frame
+            // request is not silently dropped on an empty surface; it will
+            // capture black once, which is the honest answer there.
+            captureLockFrameIfWanted();
+            return;
+        }
 
-        GLES20.glUseProgram(program);
-        GLES20.glUniformMatrix4fv(uMVP, 1, false, f.mvp, 0);
-        GLES20.glUniform1f(uModelScale, f.scale);
-        GLES20.glUniform1f(uIntensity, f.zScale);
-        GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
-        GLES20.glUniform3f(uLightDir, -0.35f, 0.5f, 0.75f);
-        GLES20.glUniform1f(uBrightnessGain, pendingBrightnessGain);
-        GLES20.glUniform1f(uShadowLift, pendingShadowLift);
-        GLES20.glUniform1f(uFade, fade);
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureColor);
-        GLES20.glUniform1i(uColor, 0);
-
-        // Attribute pointers are NOT set here: they were bound by install() and
-        // stay bound. See bindMeshAttribs for why that is safe and what it buys.
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount);
-
-        if (showOrbitMarker) drawOrbitMarker(f);
+        if (incoming == null) {
+            // Steady state: the pair on screen follows every live write, so a
+            // slider, a preview or a surface glide is visible immediately. A
+            // pending pair change and a fade both opt out and draw from each
+            // render's own frozen framing instead; see pairChangePending.
+            if (!pairChangePending) captureFraming(displayed);
+            CameraModel.Frame f = drawRender(displayed, 1f);
+            if (showOrbitMarker) drawOrbitMarker(displayed, f);
+        } else {
+            float t = (now - fadeStartNanos) / 1_000_000f / CROSS_FADE_MS;
+            if (t >= 1f) {
+                finishFadeNow();
+                CameraModel.Frame f = drawRender(displayed, 1f);
+                if (showOrbitMarker) drawOrbitMarker(displayed, f);
+            } else {
+                // Two complete reliefs, blended. The outgoing pair draws
+                // opaque, the incoming over it at alpha t, so the glass shows
+                // old*(1-t) + new*t. The depth buffer is cleared between them
+                // so the incoming mesh is self-occluded correctly instead of
+                // being culled by the outgoing one: the geometry is blended as
+                // two full renders, not as one mesh wearing two textures.
+                drawRender(displayed, 1f);
+                GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
+                GLES20.glEnable(GLES20.GL_BLEND);
+                // Separate destination alpha: the RGB blend is the cross-fade,
+                // and the framebuffer's alpha is kept at 1 so a surface that
+                // composites alpha cannot go translucent mid-dissolve.
+                GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA,
+                        GLES20.GL_ONE_MINUS_SRC_ALPHA,
+                        GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+                CameraModel.Frame f = drawRender(incoming, t);
+                GLES20.glDisable(GLES20.GL_BLEND);
+                if (showOrbitMarker) drawOrbitMarker(incoming, f);
+                // RENDERMODE_WHEN_DIRTY: nobody else is guaranteeing frames
+                // for the span, so the fade pumps itself through the host's own
+                // requester -- the same mechanism install() uses, and NOT a
+                // frame-rate gate. A null requester simply means the fade
+                // advances on whatever frames happen next.
+                Runnable r = renderRequester;
+                if (r != null) r.run();
+            }
+        }
 
         // Last thing in the frame, and deliberately so: the readback needs the pixels
         // that were just drawn, and it stops being possible once the buffer swaps.
         captureLockFrameIfWanted();
     }
 
-    private void drawOrbitMarker(CameraModel.Frame f) {
+    /**
+     * Draw one complete render: its mesh, its texture, its framing.
+     *
+     * <p>Called once per frame in the steady state and twice per frame during a
+     * cross-fade. The camera and the adjustment uniforms come from the render,
+     * not from the live fields, because during a fade the two renders disagree
+     * about Depth, Zoom and Pan by design -- that disagreement is what makes the
+     * transition a blend of two photographs instead of the old photograph
+     * wearing the new one's depth.
+     *
+     * @param alpha the cross-fade weight; 1 draws opaque
+     * @return the camera frame, for the orbit marker
+     */
+    private CameraModel.Frame drawRender(Render r, float alpha) {
+        Framing fr = r.framing;
+        camera.setAspect(r.aspect);
+        camera.setSurfaceAspect(surfaceAspect);
+        camera.setZoom(fr.zoom);
+        camera.setDepth(fr.depth);
+        camera.setMotion(fr.motion);
+        // One shared reusable Frame, so this allocates nothing; its values must
+        // be consumed before the next call, which the uniform uploads do.
+        CameraModel.Frame f = camera.frame(surfaceW, surfaceH, fr.panX, fr.panY,
+                fr.orbitX, fr.orbitY, smoothX, smoothY);
+
+        GLES20.glUseProgram(program);
+        GLES20.glUniformMatrix4fv(uMVP, 1, false, f.mvp, 0);
+        GLES20.glUniform1f(uModelScale, f.scale);
+        GLES20.glUniform1f(uIntensity, f.zScale);
+        GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
+        GLES20.glUniform3f(uLightDir, r.lightX, r.lightY, r.lightZ);
+        GLES20.glUniform1f(uBrightnessGain, fr.brightnessGain);
+        GLES20.glUniform1f(uShadowLift, fr.shadowLift);
+        GLES20.glUniform1f(uFade, alpha);
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureColor);
+        GLES20.glUniform1i(uColor, 0);
+
+        // Attribute pointers are only re-specified when the draw switches
+        // renders; see boundMesh. In the steady state that is once per load --
+        // the measured optimisation -- and during a fade it is once per draw,
+        // bounded by CROSS_FADE_MS.
+        if (boundMesh != r) bindMeshAttribs(r);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, r.vertexCount);
+        return f;
+    }
+
+    /**
+     * The studio's orbit crosshair, drawn over a render.
+     *
+     * <p>Takes the render rather than reading the live orbit, so the marker sits
+     * on the photograph that was actually drawn: during a pending pair change or
+     * a cross-fade the live values already belong to the incoming photo while
+     * the outgoing one is still on the glass.
+     */
+    private void drawOrbitMarker(Render render, CameraModel.Frame f) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(markerProgram);
 
-        float cx = orbitX * aspect * f.scale;
-        float cy = orbitY * f.scale;
+        float cx = render.framing.orbitX * render.aspect * f.scale;
+        float cy = render.framing.orbitY * f.scale;
         float r = 0.035f * f.scale;
         Matrix.setIdentityM(markerMat, 0);
         Matrix.translateM(markerMat, 0, cx, cy, 0f);
@@ -1346,18 +1633,34 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
 
         // Only needed if the two programs' attribute indices overlap; see
-        // onSurfaceCreated. Costs three calls, and only in the studio.
-        if (markerClobbersMesh) bindMeshAttribs();
+        // onSurfaceCreated. The mesh pointers are stale after this draw, so the
+        // next drawRender re-binds whichever render it is about to draw.
+        if (markerClobbersMesh) boundMesh = null;
     }
 
     // ------------------------------------------------------------------ internals
 
     /**
-     * Put a decoded pair on screen. Returns false if nothing was installed, so the
-     * caller does not record a pair as loaded that never made it into a texture.
+     * Build one complete render from a decoded pair and put it on screen.
+     *
+     * <p><b>Upload first, delete second.</b> The old pair is not touched until
+     * the new texture exists and its mesh is built. The previous version deleted
+     * the outgoing texture first and uploaded second, so a failed upload
+     * (texture name 0, which is what a call with no current context returns)
+     * destroyed the pair that was working and left the surface black. Here a
+     * texture name of 0 is still never a success: nothing is recorded and the
+     * previous pair stays drawable.
+     *
+     * <p><b>Fade later loads only.</b> The first pair into a context is shown
+     * opaque, because the system snapshots a wallpaper surface about 100 ms
+     * after it appears and a half-faded first frame is the only frame the
+     * launcher would ever keep. A pair that replaces a pair already on screen
+     * cross-fades: see {@link #incoming}.
+     *
+     * @return false if the pair could not be made drawable
      */
-    private boolean install(Bitmap colorBmp, byte[] grayOut, int w, int h) {
-        if (colorBmp == null) return false;
+    private boolean install(Pending p) {
+        if (p == null || p.colorBmp == null) return false;
         // Nothing here recycles a bitmap, and that is load-bearing rather than
         // tidiness.
         //
@@ -1375,47 +1678,111 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // idiom for a bitmap heap that no longer exists, and its only remaining
         // effect is to make the bitmap impossible to share -- which is the
         // opposite of what this app now needs.
-        Bitmap upright = flipVertically(colorBmp);
-        colorBmp = upright;
+        Bitmap upright = flipVertically(p.colorBmp);
 
-        aspect = (float) colorBmp.getWidth() / colorBmp.getHeight();
-        if (textureColor >= 0) GLES20.glDeleteTextures(1, new int[] { textureColor }, 0);
-        textureColor = upload(colorBmp);
-        // TEMPORARY TRACING: a texture name of 0 is never a success, it is the
-        // default texture, which has no image and samples pure black. Cheap to
-        // assert here and impossible to infer from outside.
-        if (textureColor == 0) {
-            // The upload happened with no usable current context, so there is no
-            // texture and nothing to draw. Report it as a failed install so the
-            // pair is not recorded as loaded and the next visibility change
-            // retries, rather than leaving a black wallpaper that the renderer
-            // believes is correct.
-            textureColor = -1;
+        Render r = new Render();
+        r.aspect = (float) upright.getWidth() / upright.getHeight();
+        r.textureColor = upload(upright);
+        // A texture name of 0 is never a success, it is the default texture,
+        // which has no image and samples pure black. Cheap to assert here and
+        // impossible to infer from outside. The upload happened with no usable
+        // current context, so there is no texture and nothing to draw; report it
+        // as a failed install so the pair is not recorded as loaded and the next
+        // visibility change retries. The outgoing texture was NOT deleted before
+        // this check, so the old pair is still there to be drawn.
+        if (r.textureColor == 0) {
+            r.textureColor = -1;
             return false;
         }
+        ReliefMesh surf = ReliefMesh.build(p.gray, p.w, p.h, GRID, r.aspect);
+        r.vertexCount = surf.vertexCount;
+        r.posBuffer = toBuffer(surf.positions);
+        r.uvBuffer = toBuffer(surf.uvs);
+        r.normalBuffer = toBuffer(surf.normals);
+        // The framing this pair belongs to. While a pair change was pending the
+        // live fields stopped being drawn, so this is the value both hosts
+        // applied for the incoming item -- mesh, texture and framing meet in
+        // this one GL event.
+        captureFraming(r);
 
-        // Drawn at full opacity, deliberately: there is no fade-in.
-        //
-        // There used to be a 0.25s fade up from black, and it is incompatible with
-        // a live wallpaper. The system snapshots the surface roughly 100 ms after
-        // it appears, so the first frame, drawn at fade = 0 and therefore black, was
-        // what got snapshotted, and the engine was gone before the fade could
-        // finish. The wallpaper was black while the engine reported the correct
-        // photo uploaded, which is the most confusing way this could have failed.
-        //
-        // A cosmetic transition is not worth a broken wallpaper. The uniform is
-        // kept so a future cross-fade has somewhere to go, but it is pinned to 1,
-        // and any reintroduced fade has to fit inside the snapshot window.
-        fade = 1f;
-        ReliefMesh surf = ReliefMesh.build(grayOut, w, h, GRID, aspect);
-        vertexCount = surf.vertexCount;
-        posBuffer = toBuffer(surf.positions);
-        uvBuffer = toBuffer(surf.uvs);
-        normalBuffer = toBuffer(surf.normals);
+        // Any install ends a fade in flight: the newest pair wins now, and the
+        // outgoing pair of the old fade is released before a new outgoing is
+        // named. This is the "never more than one outgoing pair" bound.
+        if (incoming != null) finishFadeNow();
+
+        boolean samePair = hasInstalled
+                && samePath(p.requestedImage, loadedImagePath)
+                && samePath(p.requestedDepth, loadedDepthPath);
+        if (displayed == null || samePair) {
+            // The first pair into this context has nothing to blend from, and a
+            // re-upload of the pair already here has nothing to blend to. Both
+            // swap in place, opaque. This is also the path that keeps the first
+            // load of an engine out of the system's snapshot window.
+            releaseRender(displayed);
+            displayed = r;
+            aspect = r.aspect;
+        } else {
+            // A pair already on screen: keep it resident and blend to the new
+            // one over CROSS_FADE_MS. displayed is now the outgoing pair and is
+            // released either when the fade lands or when a newer pair arrives.
+            incoming = r;
+            fadeStartNanos = System.nanoTime();
+        }
+        // The markers and any previous fade may have left attribute pointers
+        // referencing another render's buffers; make the next draw bind the
+        // right ones. See boundMesh.
+        boundMesh = null;
         recomputeScale();
-        // New buffers: (re)bind the pointers now, once, rather than every frame.
-        bindMeshAttribs();
         return true;
+    }
+
+    /**
+     * Snapshot the live framing onto a render.
+     *
+     * <p>Called when a render is installed -- naming the framing it belongs to
+     * -- and once per frame for the displayed render while it is alone on
+     * screen. That per-frame refresh is what keeps sliders, previews and the
+     * surface glide immediate in the steady state; it is the frozen paths
+     * ({@link #pairChangePending} and {@link #incoming}) that opt out of it.
+     */
+    private void captureFraming(Render r) {
+        r.framing = snapshot();
+        // The vector, not the angles: the draw path must not run trigonometry,
+        // and setLight has already resolved exactly these values.
+        r.lightX = lightDirX;
+        r.lightY = lightDirY;
+        r.lightZ = lightDirZ;
+    }
+
+    /**
+     * Make the incoming pair the displayed one and release the outgoing pair.
+     *
+     * <p>Called when the fade's clock reaches its end and also from
+     * {@link #install} when another pair arrives mid-fade: the outgoing pair is
+     * dropped rather than kept alongside, which bounds the renderer to the pair
+     * on screen, the one fading in, and one decode in flight. Without the drop a
+     * fast playlist would grow a texture per swipe.
+     */
+    private void finishFadeNow() {
+        if (incoming == null) return;
+        releaseRender(displayed);
+        displayed = incoming;
+        incoming = null;
+        aspect = displayed.aspect;
+        boundMesh = null;
+    }
+
+    /** Delete a render's GL texture and drop its buffers. GL thread only. */
+    private static void releaseRender(Render r) {
+        if (r == null) return;
+        if (r.textureColor > 0) {
+            GLES20.glDeleteTextures(1, new int[] { r.textureColor }, 0);
+        }
+        r.textureColor = -1;
+        r.vertexCount = 0;
+        r.posBuffer = null;
+        r.uvBuffer = null;
+        r.normalBuffer = null;
     }
 
     private static Bitmap flipVertically(Bitmap src) {

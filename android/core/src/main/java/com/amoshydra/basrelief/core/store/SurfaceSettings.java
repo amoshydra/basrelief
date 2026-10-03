@@ -1,5 +1,7 @@
 package com.amoshydra.basrelief.core.store;
 
+import com.amoshydra.basrelief.core.render.LightDirection;
+
 import org.json.JSONObject;
 
 /**
@@ -14,7 +16,10 @@ import org.json.JSONObject;
  * photo had it at 60.
  *
  * <p>Clamped on construction, which is the only place clamping happens. A value
- * that is clamped on read as well is a value that can be read two ways.
+ * that is clamped on read as well is a value that can be read two ways. The one
+ * exception is azimuth, which wraps instead of clamping — 0° and 360° are the
+ * same light, so a clamp would create a dead zone at the seam; see
+ * {@link LightDirection}.
  *
  * <p><b>Pan is in pixels and is deliberately NOT clamped</b>, unlike everything
  * else here. It is consumed as {@code panX / surfaceWidth}, so its valid range is
@@ -61,6 +66,17 @@ public final class SurfaceSettings {
      */
     public static final int ADJUST_MIN = -100, ADJUST_MAX = 100, DEFAULT_ADJUST = 0;
 
+    /**
+     * The light's angles, stored here and mapped by {@link LightDirection}. The
+     * default is that class's {@code (-0.35, 0.5, 0.75)} literal expressed as
+     * angles, so an existing install upgrades without its shading moving. The
+     * convention — which way azimuth runs, what elevation 0 means — is
+     * documented on {@link LightDirection}, which is the single place the
+     * mapping exists.
+     */
+    public static final float DEFAULT_LIGHT_AZIMUTH = LightDirection.DEFAULT_AZIMUTH_DEG;
+    public static final float DEFAULT_LIGHT_ELEVATION = LightDirection.DEFAULT_ELEVATION_DEG;
+
     // ----------------------------------------------------------------- state
 
     public final int depth;
@@ -72,17 +88,23 @@ public final class SurfaceSettings {
     public final float panY;
     public final int brightness;
     public final int shadow;
+    /** Azimuth in degrees, wrapped into [0, 360); see {@link LightDirection}. */
+    public final float lightAzimuth;
+    /** Elevation in degrees, clamped into [0, 90]; see {@link LightDirection}. */
+    public final float lightElevation;
 
     /** Everything at its default — "a photo that has not been adjusted yet". */
     public static SurfaceSettings defaults() {
         return new SurfaceSettings(DEFAULT_DEPTH, DEFAULT_ZOOM, DEFAULT_MOTION,
                 DEFAULT_ORIGIN, DEFAULT_ORIGIN, DEFAULT_PAN, DEFAULT_PAN,
-                DEFAULT_ADJUST, DEFAULT_ADJUST);
+                DEFAULT_ADJUST, DEFAULT_ADJUST,
+                DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION);
     }
 
     public SurfaceSettings(int depth, int zoom, int motion,
                            float originX, float originY, float panX, float panY,
-                           int brightness, int shadow) {
+                           int brightness, int shadow,
+                           float lightAzimuth, float lightElevation) {
         this.depth = clamp(depth, DEPTH_MIN, DEPTH_MAX);
         this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
@@ -92,6 +114,11 @@ public final class SurfaceSettings {
         this.panY = panY;
         this.brightness = clamp(brightness, ADJUST_MIN, ADJUST_MAX);
         this.shadow = clamp(shadow, ADJUST_MIN, ADJUST_MAX);
+        // Normalised here, once, like every other bound in this class. The
+        // mapping's own clamp/wrap is in LightDirection so the UI, the JSON
+        // reader and the shader cannot each decide 370° for themselves.
+        this.lightAzimuth = LightDirection.normaliseAzimuth(lightAzimuth);
+        this.lightElevation = LightDirection.normaliseElevation(lightElevation);
     }
 
     // ------------------------------------------------------------- accessors
@@ -109,13 +136,29 @@ public final class SurfaceSettings {
      * This surface's settings, with the given overrides applied. A copy, never a
      * mutation: an immutable value that is edited in place is a value two owners
      * can be holding at once.
+     *
+     * <p><b>The parameter list is positional and complete on purpose.</b> Adding
+     * a field makes every call site of this method fail to compile, which is the
+     * only mechanical guard there is against the bug this class has already
+     * shipped: a {@code withDepth} written before Motion, brightness and shadow
+     * existed reset all three the first time it was called. There is deliberately
+     * no overload that omits the light; that overload would silently perform the
+     * same reset for the two new values. A caller that knows only the light must
+     * use {@link #withLight}, which reads the other values from {@code this}.
      */
     public SurfaceSettings with(int depth, int zoom, int motion,
                                 float originX, float originY,
                                 float panX, float panY,
-                                int brightness, int shadow) {
+                                int brightness, int shadow,
+                                float lightAzimuth, float lightElevation) {
         return new SurfaceSettings(depth, zoom, motion, originX, originY,
-                panX, panY, brightness, shadow);
+                panX, panY, brightness, shadow, lightAzimuth, lightElevation);
+    }
+
+    /** The light angles, with every other value read from this instance. */
+    public SurfaceSettings withLight(float azimuthDegrees, float elevationDegrees) {
+        return with(depth, zoom, motion, originX, originY, panX, panY,
+                brightness, shadow, azimuthDegrees, elevationDegrees);
     }
 
     // ------------------------------------------------------------- serialise
@@ -132,6 +175,11 @@ public final class SurfaceSettings {
             o.put("pan_y", (double) panY);
             o.put("brightness", brightness);
             o.put("shadow", shadow);
+            // Floats, unlike the ints above: the angle was picked on a slider and
+            // comes back exactly as stored. Wrapped/clamped first, so what is
+            // written is already the canonical value the renderer will use.
+            o.put("light_azimuth", (double) lightAzimuth);
+            o.put("light_elevation", (double) lightElevation);
         } catch (Exception ignored) {
             // A JSONObject put cannot fail on these types. If it somehow does, the
             // value is lost rather than the write: an item with default settings
@@ -158,7 +206,9 @@ public final class SurfaceSettings {
                 (float) o.optDouble("pan_x", DEFAULT_PAN),
                 (float) o.optDouble("pan_y", DEFAULT_PAN),
                 o.optInt("brightness", DEFAULT_ADJUST),
-                o.optInt("shadow", DEFAULT_ADJUST));
+                o.optInt("shadow", DEFAULT_ADJUST),
+                (float) o.optDouble("light_azimuth", DEFAULT_LIGHT_AZIMUTH),
+                (float) o.optDouble("light_elevation", DEFAULT_LIGHT_ELEVATION));
     }
 
     // ----------------------------------------------------------------- utils
@@ -175,6 +225,7 @@ public final class SurfaceSettings {
     public String toString() {
         return "depth=" + depth + " zoom=" + zoom + " motion=" + motion
                 + " origin=" + originX + "," + originY + " pan=" + panX + "," + panY
-                + " adj=" + brightness + "," + shadow;
+                + " adj=" + brightness + "," + shadow
+                + " light=" + lightAzimuth + "°," + lightElevation + "°";
     }
 }

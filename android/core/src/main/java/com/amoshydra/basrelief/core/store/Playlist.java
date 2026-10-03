@@ -187,6 +187,41 @@ public final class Playlist {
      * playlist means to someone who has just made one.
      */
     public boolean isDue(long now) {
+        return isDue(now, null);
+    }
+
+    /**
+     * Whether the reason given makes this playlist due: a clock ({@code event ==
+     * null}), or an event that just happened.
+     *
+     * <p><b>The two families never answer for each other.</b> A timed trigger is
+     * never due on an event, however overdue it is, because an interval measures
+     * a duration and an event is a moment; an event trigger is never due on a
+     * clock, because its interval is zero and "zero elapsed" would fire it on
+     * every read. Both rules live here so {@link Playlists#advance} asks one
+     * question rather than two that can disagree.
+     *
+     * <p><b>An event is due when it is newer than the last rotation.</b> An event
+     * is a moment, not a duration, so the playlist's own stamp is the ordering
+     * that matters: {@code now > lastAdvancedAt}. That is what makes one event
+     * delivered twice — two wallpaper engines in one process, both hearing the
+     * unlock — advance once rather than twice, provided both deliveries carry the
+     * same moment rather than each reading its own. It is also why a stored
+     * {@code on_pickup} does not fire from an unlock: the event must be the
+     * trigger itself.
+     *
+     * <p>A timed trigger handed in as an event is a caller mistake, not a second
+     * route to the clock branch: {@link Trigger#DAILY} is not something that
+     * <i>happens</i>, so it answers no.
+     *
+     * @param now   the moment of the event, or the clock reading
+     * @param event the trigger that just happened, or null for a clock
+     */
+    public boolean isDue(long now, Trigger event) {
+        if (event != null) {
+            if (event.isTimed() || trigger != event) return false;
+            return now > lastAdvancedAt;
+        }
         if (!trigger.isTimed()) return false;
         long elapsed = now - lastAdvancedAt;
         if (elapsed < 0L) return false; // the clock moved backwards

@@ -79,31 +79,15 @@ public class MainActivity extends Activity {
     private LinearLayout panel;
 
     // ------------------------------------------------------------ bottom sheet
-    // Three snap states instead of the old visible/hidden pair, because the
-    // panel is taller than the preview it is there to frame and two states were
-    // not enough: either the controls covered the picture or they were all gone.
+    /**
+     * The studio sheet's remembered position, as the collapse fraction. Written
+     * on every release and read on launch: a persistent panel reopens where the
+     * user left it, never corrected to a stop. 1.0 means it was put away, and
+     * that reopens as the pill.
+     */
     private static final String KEY_SHEET = "sheet_pos";
     /**
-     * How far down the panel sits, as a fraction of its own height: 0 is fully
-     * open, 1 is entirely off the bottom.
-     *
-     * <p>A fraction rather than pixels, because the panel's height changes with the
-     * screen, with the keyboard, and when the Framing grid expands. A pixel offset
-     * saved today would be a different position tomorrow.
-     *
-     * <p>There are no snap points, deliberately. The first version had three and
-     * every one was wrong: the panel is not a menu, and a position you cannot leave
-     * is a position you have to argue with.
-     */
-    private float sheetFraction = 0f;
-    /**
-     * A restored position is clamped to this, so launching never opens the app with
-     * no controls at all, which reads as a broken launch rather than as a
-     * remembered position.
-     */
-    private static final float MAX_RESTORED_FRACTION = 0.85f;
-    /**
-     * How much of the phone the sheet occupies when the studio opens.
+     * How much of the phone the sheet occupies when no position has been stored.
      *
      * <p>The render is the product; the controls are an invitation. Opening fully
      * spends two thirds of the screen on sliders before the user has seen the thing
@@ -111,15 +95,29 @@ public class MainActivity extends Activity {
      * enough sheet to show the grip, the filmstrip and the first row or two, and
      * two thirds of the screen left for the photograph.
      *
-     * <p>This is NOT the denominator {@link #SHEET_COLLAPSE_FRACTION} is derived
-     * from. That one is about how far a drag can travel from the handle, not about
-     * where the sheet opens; see its javadoc.
+     * <p>This is only the FIRST launch's position. The sheet does not snap, so
+     * after the first drag the stored fraction is what it reopens at; see
+     * {@link BottomSheet.Snap#FREE}.
      */
     private static final float SHEET_PEEK_FRACTION = 1f / 3f;
     /** A vertical move past this claims the gesture, so a tap on the strip is a no-op. */
     private static final int DRAG_SLOP_DP = 8;
-    /** How long the panel takes to slide, in ms. */
-    private static final int SHEET_SLIDE_MS = 180;
+
+    /**
+     * The sheet's one gesture: entrance, drag arbitration, release intent, settle
+     * and fade.
+     *
+     * <p>Everything about the <i>rule</i> is in {@link BottomSheet}; this class
+     * supplies the mechanism, because it owns the views. The policy is
+     * {@link BottomSheet.Snap#FREE}: the studio sheet is a persistent panel, so a
+     * release keeps the exact position it left unless it was a collapse — no
+     * snap points, no rounding — and that position is stored and restored. The
+     * panel moves by layout height with an entrance carried in its bottom margin,
+     * because a sibling of a {@code GLSurfaceView} cannot be positioned by a
+     * transform (b/7179570), and margins are a layout change, which the platform
+     * note itself recommends.
+     */
+    private BottomSheet sheet;
     /**
      * The height of the scroll's foot fade, in dp.
      *
@@ -130,58 +128,13 @@ public class MainActivity extends Activity {
      * reads as "slightly" on the devices this was checked on.
      */
     private static final int SHEET_FADE_DP = 32;
-    /**
-     * How far down the sheet must be dragged before it counts as collapsed.
-     *
-     * <p>The only threshold in an otherwise snap-free sheet. Without it, a drag to
-     * the bottom leaves a sliver of panel too short to grab, and the way back is a
-     * plus button sitting under the finger that just let go.
-     *
-     * <p><b>This cannot be 1.0, and that is not a matter of taste.</b> The handle
-     * sits about 76px below the panel's top edge, and a finger cannot leave the
-     * screen. So the furthest a drag can ever travel is the panel's visible height
-     * minus that 76px, which puts the ceiling on the reachable fraction at about
-     * 1 - 76/1623 = 0.95 no matter where the drag started. A threshold above that is
-     * dead code: it reads as a feature that was implemented and quietly does
-     * nothing, which is the worst of both. 0.9 leaves room under the ceiling.
-     *
-     * <p>It is derived from the handle offset and the panel height — how far a drag
-     * can go — and NOT from the peek. Shortening the launch peek to a third moves
-     * where the sheet starts, not how far a drag from the handle can reach, so this
-     * needs no re-deriving when {@link #SHEET_PEEK_FRACTION} changes. The strip
-     * joining the panel grows the panel's natural height, which only raises the
-     * ceiling above 0.95, so 0.9 stays reachable.
-     */
-    private static final float SHEET_COLLAPSE_FRACTION = 0.9f;
-    /**
-     * True from the moment a drag claims the sheet until the finger lifts, so a
-     * slide cannot fight a live drag.
-     *
-     * <p>Set by the grip strip and by {@link SheetPanel}'s arbitration alike, and
-     * only once the drag is past the slop: a tap on the panel is not a drag, and a
-     * flag left set by a tap would make every later slide skip its final
-     * placement.
-     */
-    private boolean sheetDragging = false;
-    /** The DOWN the current sheet drag is measured from, in raw screen pixels. */
-    private float sheetDragDownRawX;
-    private float sheetDragDownRawY;
-    /** {@link #sheetFraction} when the drag began; every move resolves from this. */
-    private float sheetDragDownFraction;
-    /** True once a vertical drag has claimed the sheet. */
-    private boolean sheetDragClaimed;
-    /**
-     * True when the current gesture began inside {@link #sheetScroll}, so the
-     * scroll gets first refusal on it. See {@link SheetPanel#onInterceptTouchEvent}.
-     */
-    private boolean sheetDragFromScroll;
 
     /**
      * The panel's own LayoutParams, kept so its height can be changed at runtime.
      *
-     * <p>Position is expressed as a layout height rather than as {@code translationY},
-     * and that is not a stylistic choice - it is the difference between working and
-     * not. See {@link #applySheetHeight}.
+     * <p>Position is expressed as a layout height plus an entrance bottom margin,
+     * rather than as {@code translationY}, and that is not a stylistic choice - it
+     * is the difference between working and not. See {@link #applySheetPosition}.
      */
     private FrameLayout.LayoutParams panelLp;
     /**
@@ -451,23 +404,11 @@ public class MainActivity extends Activity {
         // ViewGroup dispatch offers every touch to the children first, so the
         // ScrollView still scrolls and the sliders still drag; what lands here is
         // only what no control handled, which is exactly the "outside of controls"
-        // the user asked to be draggable. See {@link #moveSheetDrag}.
+        // the user asked to be draggable. The rule itself is in {@link BottomSheet}.
         panel.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        beginSheetDrag(e);
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        return moveSheetDrag(e);
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        finishSheetDrag();
-                        return true;
-                    default:
-                        return true;
-                }
+                return sheet.onTouch(v, e);
             }
         });
 
@@ -818,6 +759,44 @@ public class MainActivity extends Activity {
                 Gravity.BOTTOM);
         root.addView(panel, panelLp);
 
+        // The sheet's one gesture handler. Built here, after every view the host
+        // touches exists, and used by the grip's listener, the panel's own touch
+        // listener (installed above; the body runs at touch time) and the panel's
+        // intercept. The entrance offset becomes a bottom margin: a layout change,
+        // which is what a sibling of the GLSurfaceView is allowed to move by.
+        sheet = new BottomSheet(new BottomSheet.Host() {
+            @Override
+            public float spanPx() {
+                return panelHeight();
+            }
+
+            @Override
+            public void applyPosition(float fraction, float belowPx) {
+                applySheetPosition(fraction, belowPx);
+            }
+
+            @Override
+            public void applyFade(float progress) {
+                applySheetFade(progress);
+            }
+
+            @Override
+            public View scrollView() {
+                return sheetScroll;
+            }
+
+            @Override
+            public void onResting(float fraction, boolean collapsed) {
+                // Every release stores the exact position; the launch reads it
+                // back. A collapsed release stores 1.0, which reopens as the pill.
+                prefs.edit().putFloat(KEY_SHEET, fraction).apply();
+                // The committed state is what the pill, the system bars and the
+                // hint follow; nothing mid-drag pretends the sheet is away.
+                updatePillVisibility();
+                if (collapsed) dismissHintIfShown();
+            }
+        }, SpringSettle.SHEET, BottomSheet.Snap.FREE, dp(DRAG_SLOP_DP), null);
+
         // The collapsed representation of the sheet. This replaces a "+" button,
         // which could only ever mean one thing and had to guess which. The pill has
         // three states -- idle, attention, progress -- so it can say what is going on
@@ -920,7 +899,7 @@ public class MainActivity extends Activity {
                                        int ol, int ot, int or, int ob) {
                 panel.removeOnLayoutChangeListener(this);
                 // Posted, not called inline. The listener fires at the end of the
-                // layout pass, and applySheetHeight rewrites the panel's
+                // layout pass, and the entrance rewrites the panel's
                 // LayoutParams; a requestLayout() made from inside that pass is
                 // deferred to a second pass that measures the panel before the new
                 // height is known, so the peek was computed and silently not
@@ -930,7 +909,7 @@ public class MainActivity extends Activity {
                 panel.post(new Runnable() {
                     @Override
                     public void run() {
-                        openAtPeek();
+                        openInitial();
                     }
                 });
             }
@@ -1308,8 +1287,9 @@ public class MainActivity extends Activity {
             // Show or hide the bar through the controller, which is the supported
             // path on API 30+. The deprecated HIDE_NAVIGATION flag is not reliable
             // under Android 15's enforced edge-to-edge, and hiding is exactly what
-            // the collapsed state asks for. Collapsed is the SAME threshold the pill
-            // and the drag use, so "away" means one thing rather than three.
+            // the collapsed state asks for. Collapsed is the component's own
+            // committed state, the same one the pill and the drag settle follow, so
+            // "away" means one thing rather than three.
             android.view.WindowInsetsController controller =
                     window.getDecorView().getWindowInsetsController();
             if (controller != null) {
@@ -1318,7 +1298,7 @@ public class MainActivity extends Activity {
                 controller.setSystemBarsBehavior(
                         android.view.WindowInsetsController
                                 .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                if (sheetFraction >= SHEET_COLLAPSE_FRACTION) {
+                if (sheet != null && sheet.isCollapsed()) {
                     controller.hide(WindowInsets.Type.navigationBars());
                 } else {
                     controller.show(WindowInsets.Type.navigationBars());
@@ -1426,11 +1406,11 @@ public class MainActivity extends Activity {
             gallery.dismissGrid();
             return true;
         }
-        if (sheetFraction < SHEET_COLLAPSE_FRACTION) {
-            // "Expanded" is the drag's own threshold — the same constant a live drag
-            // compares against — rather than a second one that could disagree about
-            // what "open" means. One back press puts the sheet away; a second, with
-            // nothing else open, leaves the app.
+        if (sheet != null && !sheet.isCollapsed()) {
+            // "Expanded" is the component's committed state — the same one the pill
+            // and the system bars follow — rather than a second threshold that could
+            // disagree about what "open" means. One back press puts the sheet away;
+            // a second, with nothing else open, leaves the app.
             collapseSheet();
             return true;
         }
@@ -1448,8 +1428,8 @@ public class MainActivity extends Activity {
     /**
      * Retire the gesture hint, once, the first time the sheet is put away.
      *
-     * <p>Called from {@link #setSheetPosition} rather than from a control, because
-     * the sheet is now collapsed by dragging the handle and there is no button left
+     * <p>Called from the component's commit rather than from a control, because
+     * the sheet is collapsed by dragging the handle and there is no button left
      * to hang it on. Tying it to the control would mean the hint survived a drag.
      */
     private void dismissHintIfShown() {
@@ -1513,20 +1493,15 @@ public class MainActivity extends Activity {
     }
 
     private void collapseSheet() {
-        setSheetPosition(1f, true);
+        sheet.collapse();
     }
 
     private void expandUi() {
-        // Back to where it was, which is the useful answer: someone who works with
-        // the sheet most of the way down should not have to open it fully every
-        // time. Falls back to fully open if the stored position is the hidden one.
-        //
-        // Deliberately not animated. The plus button means "I want the controls back",
-        // and by the time the sheet has finished sliding they are there and usable -
-        // the wait is the app appearing to think about it. Snapping to the position
-        // costs one layout pass. The collapse still slides, because that is the user
-        // finishing with the panel and a short motion there costs nothing.
-        setSheetPosition(sheetFraction >= 1f ? 0f : sheetFraction, false);
+        // Spring up from below to the last place the sheet rested, not to a
+        // default: a persistent panel that the user positioned is not corrected
+        // for the convenience of the pill. A host that has never left it open
+        // falls back to fully open inside the component.
+        sheet.openLast();
     }
 
     // ------------------------------------------------------------ framing fields
@@ -1816,7 +1791,11 @@ public class MainActivity extends Activity {
      */
     private void updatePillVisibility() {
         if (pill == null) return;
-        boolean collapsed = sheetFraction >= SHEET_COLLAPSE_FRACTION;
+        // The committed state, not a live threshold: the pill appears when a
+        // collapse settle has LANDED, so a drag that reaches the bottom and then
+        // reverses never flashes it and a mid-settle every-frame redraw is not a
+        // second state machine.
+        boolean collapsed = sheet != null && sheet.isCollapsed();
         pill.setVisibility(collapsed ? View.VISIBLE : View.GONE);
         // The navigation bar is part of the same decision, driven by the one value
         // that decides "collapsed" here. Expanded, back is discoverable and the bar
@@ -1884,9 +1863,9 @@ public class MainActivity extends Activity {
      * The drag strip, added as the panel's FIRST child so it sits above the title.
      *
      * <p>The grip is the sheet's own affordance, so it always drags; {@link
-     * SheetPanel} arbitrates drags everywhere else. Both go through the same
-     * {@link #beginSheetDrag}/{@link #moveSheetDrag} pair, so the gesture cannot
-     * behave differently depending on where on the sheet it started.
+     * SheetPanel} arbitrates drags everywhere else. Both feed the same
+     * {@link BottomSheet} instance, so the gesture cannot behave differently
+     * depending on where on the sheet it started.
      */
     private View buildSheetHandle() {
         LinearLayout strip = new LinearLayout(this);
@@ -1916,141 +1895,26 @@ public class MainActivity extends Activity {
         strip.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        // The grip is a control of the sheet's own, so the panel's
-                        // arbitration stands down for the whole gesture rather than
-                        // deciding the same drag a second time.
-                        panel.requestDisallowInterceptTouchEvent(true);
-                        beginSheetDrag(e);
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        return moveSheetDrag(e);
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        finishSheetDrag();
-                        panel.requestDisallowInterceptTouchEvent(false);
-                        return true;
-                    default:
-                        return true;
-                }
+                // The grip is a control of the sheet's own, so the panel's
+                // arbitration stands down for the whole gesture rather than
+                // deciding the same drag a second time.
+                boolean end = e.getActionMasked() == MotionEvent.ACTION_UP
+                        || e.getActionMasked() == MotionEvent.ACTION_CANCEL;
+                panel.requestDisallowInterceptTouchEvent(!end);
+                return sheet.onTouch(v, e);
             }
         });
         return strip;
     }
 
-    // ------------------------------------------------------------- sheet dragging
-
-    /**
-     * Record where a sheet drag starts. Does not claim anything yet.
-     *
-     * <p>Called from the grip's DOWN and from {@link SheetPanel}'s intercept DOWN,
-     * which is the one event that is guaranteed to arrive before any child can
-     * claim the gesture. Claiming happens on the first MOVE past the slop, so a
-     * tap is not a drag.
-     */
-    private void beginSheetDrag(MotionEvent e) {
-        sheetDragDownRawX = e.getRawX();
-        sheetDragDownRawY = e.getRawY();
-        sheetDragDownFraction = sheetFraction;
-        sheetDragClaimed = false;
-    }
-
-    /**
-     * Follow a MOVE the sheet owns. Claims the gesture past {@link #DRAG_SLOP_DP}.
-     *
-     * @return true, so the caller's touch listener consumes the event.
-     */
-    private boolean moveSheetDrag(MotionEvent e) {
-        float dy = e.getRawY() - sheetDragDownRawY;
-        if (!sheetDragClaimed && Math.abs(dy) > dp(DRAG_SLOP_DP)) {
-            claimSheetDrag(dy);
-        }
-        if (sheetDragClaimed) dragSheet(dy);
-        return true;
-    }
-
-    /** The sheet takes the gesture: stop the animation and follow from here on. */
-    private void claimSheetDrag(float dy) {
-        sheetDragClaimed = true;
-        sheetDragging = true;
-        // A half-finished animation would otherwise leap to wherever the animator
-        // happened to be on the next frame.
-        panel.animate().cancel();
-        dragSheet(dy);
-    }
-
-    /**
-     * Move the sheet by a drag that has already claimed the gesture.
-     *
-     * <p>Measured from the DOWN every time, never incrementally: a double delivery
-     * (the intercept applying the claiming MOVE and the listener receiving it) is
-     * the same number twice instead of twice the travel.
-     *
-     * <p>Positive dy is a downward drag, and {@code sheetFraction} measures how far
-     * DOWN the sheet is, so the two add. Subtracting here is what made the handle
-     * run backwards: pull down and it opened further.
-     */
-    private void dragSheet(float dy) {
-        float h = panelHeight();
-        if (h <= 0f) return;
-        float next = sheetDragDownFraction + dy / h;
-        if (next < 0f) next = 0f;
-        if (next > 1f) next = 1f;
-        sheetFraction = next;
-        if (next >= SHEET_COLLAPSE_FRACTION) {
-            // Close enough to the bottom to count as gone. Collapsing here rather
-            // than on release means the sheet never rests as a useless sliver with
-            // the handle barely reachable, and the pill appears under the finger
-            // rather than after it lifts. The gesture is done moving the sheet.
-            sheetDragClaimed = false;
-            setSheetPosition(1f, false);
-        } else {
-            // Live and unsnapped: the panel goes exactly where the finger is and
-            // stays there on release. A layout height, not a translation - the same
-            // reason applySheetHeight exists.
-            applySheetHeight(1f - next);
-        }
-    }
-
-    /**
-     * The finger lifted or the gesture was taken away.
-     *
-     * <p>Only the saved position is updated. No snapping: where you let go is
-     * where it rests.
-     */
-    private void finishSheetDrag() {
-        if (sheetDragClaimed) setSheetPosition(sheetFraction, false);
-        sheetDragClaimed = false;
-        sheetDragging = false;
-    }
-
     /**
      * The sheet's panel, and the one place a vertical drag is arbitrated.
      *
-     * <p>The rule, in one sentence: <b>a vertical drag moves the sheet unless a
-     * control below it claimed the gesture, or the scrolling content can still use
-     * it in that direction.</b> It is explicit rather than a fight because each of
-     * the three claimants says so in its own way:
-     *
-     * <ul>
-     *   <li><b>Controls.</b> A slider track calls {@code
-     *       requestDisallowInterceptTouchEvent(true)} on touch-down, so the platform
-     *       never offers its gesture here at all. The strip's {@code
-     *       HorizontalScrollView} likewise claims horizontal drags. Those are the
-     *       "controls" the user's sentence excludes.</li>
-     *   <li><b>The scroll.</b> A touch that starts inside {@link #sheetScroll} is
-     *       offered to the scroll first: while it can scroll further in the drag's
-     *       direction, the sheet stays out. At the top or the bottom — "already at
-     *       the end" — it cannot, so the same drag moves the sheet, which is the
-     *       standard bottom-sheet feel.</li>
-     *   <li><b>The sheet.</b> Everything else — the grip, the filmstrip, the fix
-     *       line, captions, the gaps — reaches the panel and moves the sheet.</li>
-     * </ul>
-     *
-     * <p>A drag that is not clearly vertical (dy no larger than dx) is left for
-     * whoever under the finger wants it, so the strip's horizontal scroll and the
-     * scroll's diagonal flings are not stolen by a few pixels of drift.
+     * <p>The panel is only the ViewGroup the platform offers interception
+     * through; the rule itself is {@link BottomSheet#onIntercept}, shared with
+     * the modal cards. The scroll is resolved here because the panel is the
+     * thing that knows where its own children are, and the scroll's bound is
+     * what makes a nested drag hand over at its end.
      */
     private final class SheetPanel extends LinearLayout {
 
@@ -2060,33 +1924,7 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean onInterceptTouchEvent(MotionEvent e) {
-            switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    // Every gesture starts here: this runs before any child can
-                    // claim anything. The outcome is only recorded; it is claimed
-                    // on a MOVE.
-                    sheetDragFromScroll = isInsideScroll(e.getY());
-                    beginSheetDrag(e);
-                    return false;
-                case MotionEvent.ACTION_MOVE: {
-                    if (sheetDragClaimed) return true;
-                    float dy = e.getRawY() - sheetDragDownRawY;
-                    float dx = e.getRawX() - sheetDragDownRawX;
-                    if (Math.abs(dy) <= dp(DRAG_SLOP_DP)) return false;
-                    // A mostly-horizontal drag belongs to whatever scrolls
-                    // horizontally — the filmstrip — not to the sheet.
-                    if (Math.abs(dy) <= Math.abs(dx)) return false;
-                    if (sheetDragFromScroll && sheetScroll != null
-                            && sheetScroll.canScrollVertically(dy > 0f ? -1 : 1)) {
-                        // The scroll can use this one; it is not the sheet's.
-                        return false;
-                    }
-                    claimSheetDrag(dy);
-                    return true;
-                }
-                default:
-                    return false;
-            }
+            return sheet.onIntercept(e, isInsideScroll(e.getY()));
         }
 
         /**
@@ -2115,52 +1953,32 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Give the panel a height, and so place it on screen.
-     *
-     * <p>The argument is how much of the panel is <i>showing</i>: 0 is hidden, 1 is
-     * fully open. That is the complement of {@code sheetFraction}, which measures
-     * how far <i>down</i> the sheet is, and the two must not be confused - doing so
-     * collapses the sheet to nothing height the moment it opens.
-     *
-     * <p><b>Positioning by layout height rather than by {@code translationY} is a
-     * regression repair, not a new idea.</b> The panel used to be hidden and shown
-     * with nothing but {@code setVisibility(GONE)} and {@code setVisibility(VISIBLE)},
-     * and that worked. Replacing it with a transform broke it, and the symptom was
-     * maddening because every readable property stayed correct: visibility VISIBLE,
-     * {@code isShown()} true, {@code translationY} 0.0, {@code alpha} 1.0, sized and
-     * attached, in a window that had drawn 904 frames - operable to the touch and
-     * absent from the display, confirmed on a screenshot taken on the phone.
-     *
-     * <p>So the difference is layout versus transform. Changing visibility changes
-     * layout, and the platform re-lays-out and repaints the region. Changing a
-     * transform did not reliably repaint that region here: the panel kept the pixels
-     * it had while hidden while still accepting every tap.
-     *
-     * <p>Because the panel is anchored to the bottom, a smaller height shows its top
-     * portion, which is the direction a bottom sheet should collapse.
-     */
-    /**
-     * Put the sheet at {@link #SHEET_PEEK_FRACTION} of the phone, capped at its own
-     * content height.
+     * Put the sheet where the user last left it, springing it up from below; the
+     * peek is only the first launch's answer.
      *
      * <p>Capped, never padded: a sheet shorter than the fraction opens fully rather
      * than being inflated with padding to reach it, because padding would be a row
      * of dead space that looks like a control and is not one.
      *
-     * <p><b>The launch state is the peek, and measuring before applying is what makes
-     * that true.</b> This used to call {@code applySheetHeight(1f)} whenever the
-     * panel had not been measured, which is every fresh launch -- so the sheet opened
-     * at 100% of its natural height and the design's peek was never reached.
-     * Because the filmstrip sits on whatever is beneath it, the over-tall sheet is
-     * also why the strip rode up to y=0. Learning {@link #panelNaturalHeight} here,
-     * from a post-layout callback where {@code getHeight()} is already measured, is
-     * the whole fix.
+     * <p><b>Launch state is the stored position, and the peek is the fallback.</b>
+     * This used to always open at the peek, and before that it always opened at
+     * 100% because it called the full-open height whenever the panel had not been
+     * measured. The peek is kept as the fresh-install answer; after that the
+     * stored fraction wins, so a drag is never undone by closing the app. A stored
+     * 1.0 means the sheet was put away: it reopens as the pill, with no entrance
+     * animation, because the user already decided it was away.
+     *
+     * <p>The entrance itself is {@link BottomSheet#open}: the panel is laid out at
+     * the resting height first — the strip, the scroll and the renderer's first
+     * frame all read that layout — and the below offset then springs from an
+     * entirely off-screen position back to rest. The first frame's height is that
+     * resting height, never zero, which is the part the layout ordering depends on.
      */
-    private void openAtPeek() {
+    private void openInitial() {
         if (panelNaturalHeight <= 0) {
             // While no height has been imposed yet, getHeight() is the panel's
             // own wrap_content height -- the denominator the fraction is a fraction
-            // of, and the only chance to read it before applySheetHeight freezes it.
+            // of, and the only chance to read it before a height is imposed.
             panelNaturalHeight = panel.getHeight();
         }
         if (panelNaturalHeight <= 0) {
@@ -2169,159 +1987,104 @@ public class MainActivity extends Activity {
             panel.post(new Runnable() {
                 @Override
                 public void run() {
-                    openAtPeek();
+                    openInitial();
                 }
             });
             return;
         }
-        int peek = Math.round(SHEET_PEEK_FRACTION
-                * getResources().getDisplayMetrics().heightPixels);
-        peek = Math.min(peek, panelNaturalHeight);
-        float showing = (float) peek / panelNaturalHeight;
-        sheetFraction = 1f - showing;
-        applySheetHeight(showing);
+        float stored = prefs.getFloat(KEY_SHEET, -1f);
+        if (stored >= 1f) {
+            // Put away last time: the pill is the whole representation, and it
+            // must be there from the first frame rather than after a collapse
+            // animation the user did not ask for.
+            sheet.restAt(1f, true);
+            updatePillVisibility();
+            return;
+        }
+        float fraction = stored >= 0f ? stored : peekFraction();
+        sheet.open(fraction);
         updatePillVisibility();
     }
 
-    private void applySheetHeight(float showing) {
+    /** The first-launch fraction: a third of the phone, capped at the whole panel. */
+    private float peekFraction() {
+        int peek = Math.round(SHEET_PEEK_FRACTION
+                * getResources().getDisplayMetrics().heightPixels);
+        peek = Math.min(peek, panelNaturalHeight);
+        return 1f - (float) peek / panelNaturalHeight;
+    }
+
+    /**
+     * Place the panel from the component's fraction and entrance offset.
+     *
+     * <p>The height is how much of the panel is <i>showing</i>: 0 hidden, 1 fully
+     * open. That is the complement of the collapse fraction, which measures how far
+     * <i>down</i> the sheet is, and the two must not be confused - doing so
+     * collapses the sheet to nothing the moment it opens.
+     *
+     * <p><b>Positioning by layout height and margin rather than by
+     * {@code translationY} is a regression repair, not a new idea.</b> The panel
+     * used to be hidden and shown with {@code setVisibility}, which broke when it
+     * was replaced by a transform: every readable property stayed correct
+     * ({@code VISIBLE}, {@code isShown()}, {@code translationY} 0.0, {@code alpha}
+     * 1.0, sized and attached, in a window that had drawn 904 frames) and the panel
+     * was operable to the touch yet absent from the display. b/7179570 is the
+     * documented mechanism — a SurfaceView's transparent region is computed from
+     * layout positions, so a post-layout transform of a sibling can desync from it
+     * — and layout changes, including margins, are exactly what it does recompute.
+     * The entrance offset rides in {@code bottomMargin} for the same reason.
+     *
+     * <p>Over-opening is allowed a little past fully shown: that is the visible
+     * tether of {@link SpringSettle#resistUp}, the top edge rising above its
+     * resting place and falling back. The component's asymptote bounds it.
+     */
+    private void applySheetPosition(float fraction, float belowPx) {
         if (panelNaturalHeight <= 0) {
             // First time through, the panel is still unconstrained, so this is its
             // real height and the only chance to learn it.
             panelNaturalHeight = panel.getHeight();
             if (panelNaturalHeight <= 0) return;  // not measured yet; caller defers
         }
-        int target = Math.round(Math.max(0f, Math.min(1f, showing)) * panelNaturalHeight);
-        if (panelLp.height == target) return;
+        float showing = 1f - fraction;
+        float ceiling = 1f + SpringSettle.RESISTANCE_FRACTION + 0.01f;
+        if (showing < 0f) showing = 0f;
+        if (showing > ceiling) showing = ceiling;
+        int target = Math.round(showing * panelNaturalHeight);
+        int margin = -Math.round(belowPx);
+        if (panelLp.height == target && panelLp.bottomMargin == margin) return;
         panelLp.height = target;
+        panelLp.bottomMargin = margin;
         // setLayoutParams requests a layout, which is the repaint this needs.
         panel.setLayoutParams(panelLp);
     }
 
-    /**
-     * Put the panel at a fraction of its height, and update everything that follows
-     * from that: the plus button, and the remembered position.
-     *
-     * <p>Position is a layout height, not a transform - see {@link #applySheetHeight}
-     * for why, and for the measurement that forced it.
-     */
-    private void setSheetPosition(float fraction, boolean animate) {
-        if (panelHeight() <= 0f) {
-            // Not laid out yet. Defer rather than derive a position from a height of
-            // zero, which would park the panel somewhere arbitrary.
-            final float f = fraction;
-            final boolean a = animate;
-            panel.post(new Runnable() {
-                @Override
-                public void run() {
-                    setSheetPosition(f, a);
-                }
-            });
-            return;
-        }
-        sheetFraction = Math.max(0f, Math.min(1f, fraction));
-        // A little past the very bottom still counts as hidden, so dragging hard to
-        // the end does not leave a sliver of panel on screen.
-        // The same threshold the drag uses, so "far enough down to be gone" means one
-        // thing rather than two literals that can drift apart. This one was 0.98,
-        // which the drag could never reach - see SHEET_COLLAPSE_FRACTION.
-        boolean hidden = sheetFraction >= SHEET_COLLAPSE_FRACTION;
-
-        panel.animate().cancel();
-        updatePillVisibility();
-        // sheetFraction is "how far DOWN the sheet is": 0 is fully open, 1 closed.
-        // The height is its complement - how much of the panel is showing - and
-        // confusing the two collapses the sheet to nothing the instant it opens.
-        float showing = 1f - sheetFraction;
-        if (hidden) {
-            // Zero height: laid out, so painted, and showing nothing.
-            applySheetHeight(0f);
-            // The sheet has been put away, which is the moment the gesture hint has
-            // served its purpose. It used to hang off the minimise button, and that
-            // button is gone now that the drag does the job.
-            dismissHintIfShown();
-        } else if (animate) {
-            slideTo(showing);
-        } else {
-            applySheetHeight(showing);
-        }
-        if (!hidden) {
-            // Never remembered as hidden: launching with no controls reads as a
-            // broken launch, not as a remembered position.
-            prefs.edit().putFloat(KEY_SHEET, Math.min(sheetFraction, MAX_RESTORED_FRACTION))
-                    .apply();
-        }
-    }
+    /** The last fade progress applied, so a dim restore cannot undo the fade. */
+    private float sheetFadeProgress = 0f;
 
     /**
-     * Why the panel is moved rather than hidden, since the obvious implementation
-     * is wrong and fails in a way that looks like nothing at all happened.
+     * Fade the sheet's contents and its glass by one progress value.
      *
-     * <p>This was measured on a Pixel 7 Pro, not reasoned about. Every part of the
-     * restore ran correctly and the panel still did not appear: {@code visibility}
-     * was {@code VISIBLE}, {@code translationY} was {@code 0.0}, {@code alpha} was
-     * {@code 1.0}, the panel was 1440x1588 and attached to a window that was
-     * actively producing frames. It was operable but not on the glass.
+     * <p>The content leads — the scroll's contents, the fix line and the strip —
+     * and the glass follows with a much higher floor, because the glass is what
+     * still says "a sheet is here" once the contents have dissolved. One progress
+     * value drives both curves; they cannot disagree about how far the drag is.
+     * The glass is the panel's own background done as a drawable alpha, not the
+     * panel's view alpha: a view alpha would take the children with it and
+     * collapse the two curves into one.
      *
-     * <p>Two facts pinned it down. Dragging the sheet worked, because a drag writes
-     * {@code translationY} on every frame and each write invalidates the panel's
-     * region. And the panel reappeared the moment the user switched apps or pulled
-     * the notification shade down and back - both of which force a full window
-     * redraw. So the panel's pixels on screen were left over from the hidden frame,
-     * and nothing in the restore path ever marked that region dirty.
-     *
-     * <p>The cause was using {@code setVisibility(INVISIBLE)} to hide the panel.
-     * Making a view visible again does not reliably repaint the area it used to
-     * occupy, and nothing else in the restore touched that region, so the window
-     * went on showing the hidden frame. Translation has no such gap: it is a
-     * transform of a view that is always drawn, so restoring is just another
-     * position and the region is invalidated like any other change.
-     *
-     * <p>So the panel is always VISIBLE and "hidden" means translated off the bottom.
-     * It keeps its layout either way, which also means its measured height survives
-     * to be restored - the reason the earlier version used INVISIBLE rather than
-     * GONE no longer needs defending.
+     * <p>Alpha is a paint property, so unlike a translation of the same sibling it
+     * cannot desync from the SurfaceView's transparent region. The grip is
+     * deliberately not in the content set — it is the handle, and it has to stay
+     * legible while there is still a sheet to grab.
      */
-
-    /**
-     * Slide the panel open by animating its height.
-     *
-     * <p>Animating layout rather than a transform is deliberate and is the whole
-     * fix; {@link #applySheetHeight} explains why, and the measurement that forced
-     * it. The animator is driven explicitly and calls applySheetHeight on every
-     * frame, so the panel is re-laid-out continuously rather than being moved by a
-     * transform the display may not repaint.
-     */
-    private void slideTo(final float showing) {
-        panel.animate().cancel();
-        applySheetHeight(0f);
-        android.animation.ValueAnimator slide =
-                android.animation.ValueAnimator.ofFloat(0f, showing);
-        slide.setDuration(SHEET_SLIDE_MS);
-        slide.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
-            @Override
-            public void onAnimationUpdate(android.animation.ValueAnimator a) {
-                applySheetHeight((Float) a.getAnimatedValue());
-            }
-        });
-        slide.addListener(new android.animation.AnimatorListenerAdapter() {
-            private boolean cancelled;
-
-            @Override
-            public void onAnimationCancel(android.animation.Animator a) {
-                // onAnimationEnd also fires for a cancel; isRunning() cannot tell them
-                // apart, so the distinction has to be recorded here.
-                cancelled = true;
-            }
-
-            @Override
-            public void onAnimationEnd(android.animation.Animator a) {
-                // Skipped while a drag has taken over, which has already placed the
-                // panel where the finger wants it.
-                if (cancelled || sheetDragging) return;
-                applySheetHeight(showing);
-            }
-        });
-        slide.start();
+    private void applySheetFade(float progress) {
+        sheetFadeProgress = progress;
+        float content = BottomSheet.contentAlpha(progress);
+        sheetContent.setAlpha(content);
+        if (fixLine != null) fixLine.setAlpha(content);
+        View strip = gallery == null ? null : gallery.stripView();
+        if (strip != null) strip.setAlpha(content);
+        setSheetBackgroundAlpha(BottomSheet.glassAlpha(progress));
     }
 
     /**
@@ -2334,7 +2097,7 @@ public class MainActivity extends Activity {
         panel.post(new Runnable() {
             @Override
             public void run() {
-                setSheetPosition(sheetFraction, false);
+                sheet.reapply();
             }
         });
     }
@@ -2816,7 +2579,7 @@ public class MainActivity extends Activity {
         if (control != null && dimmedControl != control) return;
         if (dimmedControl == null && dimmedViews.isEmpty()) return;
         dimmedControl = null;
-        setSheetBackgroundAlpha(1f);
+        setSheetBackgroundAlpha(BottomSheet.glassAlpha(sheetFadeProgress));
         for (int i = 0; i < dimmedViews.size(); i++) {
             dimmedViews.get(i).setAlpha(dimmedAlphas.get(i));
         }
@@ -4083,6 +3846,43 @@ public class MainActivity extends Activity {
         protected float getTopFadingEdgeStrength() {
             // Zero disables the top fade without touching the bottom one.
             return 0f;
+        }
+
+        /**
+         * Keep the parent in the running for this gesture.
+         *
+         * <p>{@code ScrollView} declares itself the only vertical claimant for the
+         * rest of a drag: the moment it starts scrolling it calls
+         * {@code requestDisallowInterceptTouchEvent(true)} on its parent, so the
+         * panel's arbitration is never offered another event and the nested
+         * hand-over the sheet needs — scroll the content to its end, then the same
+         * drag moves the sheet — can never happen inside one gesture. Clearing the
+         * flag after every event puts the choice back with the panel, whose rule is
+         * exactly {@code canScrollVertically}: while the content can use the drag
+         * the panel declines, and the moment it cannot the panel claims it.
+         *
+         * <p>The clear is safe for the sliders: a slider's own
+         * {@code requestDisallowInterceptTouchEvent(true)} arrives on its DOWN,
+         * before this view is the touch target, and once a child owns the gesture
+         * this view's intercept and touch handlers are not called at all.
+         */
+        private void reofferGestureToParent() {
+            android.view.ViewParent parent = getParent();
+            if (parent != null) parent.requestDisallowInterceptTouchEvent(false);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            boolean intercepted = super.onInterceptTouchEvent(e);
+            reofferGestureToParent();
+            return intercepted;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            boolean handled = super.onTouchEvent(e);
+            reofferGestureToParent();
+            return handled;
         }
     }
 }

@@ -178,7 +178,8 @@ public class FramingTest {
         LibraryItem item = photo("a", 90, 100, 0f, 0f, 0f, 0f)
                 .withAdjust(Surface.HOME, 100, 0)
                 .editSettings(Surface.LOCK, s -> s.with(s.depth, s.zoom, s.motion,
-                        s.originX, s.originY, s.panX, s.panY, 0, -100));
+                        s.originX, s.originY, s.panX, s.panY, 0, -100,
+                        s.lightAzimuth, s.lightElevation));
         assertEquals(2f, home(item).brightnessGain, 1e-6f);
         assertEquals(0f, home(item).shadowLift, 1e-6f);
         assertEquals(1f, Framing.of(item, Surface.LOCK).brightnessGain, 1e-6f);
@@ -223,7 +224,7 @@ public class FramingTest {
     public void aLockOverrideIsUsedAndLeavesHomeAlone() {
         LibraryItem item = photo("a", 90, 100, 0f, 0f, 0f, 0f)
                 .editSettings(Surface.LOCK, s -> s.with(30, 140, 80, 0.1f, -0.2f,
-                        -40f, 15f, -20, 35));
+                        -40f, 15f, -20, 35, 200f, 15f));
 
         assertTrue(item.hasOwnLockSettings());
         Framing onLock = Framing.of(item, Surface.LOCK);
@@ -234,11 +235,36 @@ public class FramingTest {
         assertEquals(-0.2f, onLock.orbitY, 1e-6f);
         assertEquals(-40f, onLock.panX, 1e-6f);
         assertEquals(15f, onLock.panY, 1e-6f);
+        assertEquals(200f, onLock.lightAzimuth, 1e-6f);
+        assertEquals(15f, onLock.lightElevation, 1e-6f);
 
         assertEquals("home must not have followed the lock override",
                 0.9f, home(item).depth, 1e-6f);
         assertEquals(1.0f, home(item).zoom, 1e-6f);
         assertEquals(0f, home(item).orbitX, 0f);
+        assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG,
+                home(item).lightAzimuth, 1e-6f);
+    }
+
+    /**
+     * The light is per surface like every other render value.
+     *
+     * <p>The default really is the historical literal, expressed as angles; the
+     * wrong reading of this field is a slider that shows the default while the
+     * renderer draws the previous photo's light, which is why the resolved values
+     * are asserted here and not only on the stored settings.
+     */
+    @Test
+    public void theLightIsResolvedPerSurface() {
+        LibraryItem item = photo("a", 90, 100, 0f, 0f, 0f, 0f)
+                .withLight(Surface.HOME, 40f, 20f)
+                .withLight(Surface.LOCK, 300f, 80f);
+
+        assertEquals(40f, home(item).lightAzimuth, 1e-6f);
+        assertEquals(20f, home(item).lightElevation, 1e-6f);
+        Framing onLock = Framing.of(item, Surface.LOCK);
+        assertEquals(300f, onLock.lightAzimuth, 1e-6f);
+        assertEquals(80f, onLock.lightElevation, 1e-6f);
     }
 
     /** Two surfaces, two Motions, on the one photo. */
@@ -399,7 +425,8 @@ public class FramingTest {
     public void ofValuesReturnsExactlyWhatItWasGiven() {
         Framing f =
                 Framing.ofValues(
-                        0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f);
+                        0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f,
+                        330f, 12f);
         assertEquals(0.9f, f.depth, 0f);
         assertEquals(1.2f, f.zoom, 0f);
         assertEquals(0.3f, f.motion, 0f);
@@ -409,7 +436,31 @@ public class FramingTest {
         assertEquals(-60f, f.panY, 0f);
         assertEquals(1.5f, f.brightnessGain, 0f);
         assertEquals(0.5f, f.shadowLift, 0f);
+        assertEquals(330f, f.lightAzimuth, 0f);
+        assertEquals(12f, f.lightElevation, 0f);
         assertFalse("a snapshot is numbers, not the bundled file case",
                 f.bundled);
+    }
+
+    /**
+     * The default light a photo resolves to is the historical literal.
+     *
+     * <p>Asserted on {@link Framing}, not only on {@link SurfaceSettings}, because
+     * this is the value the renderer actually receives: the renderer used to hold
+     * the literal itself, and the whole point of this field is that an upgrade
+     * cannot change anyone's shading. The epsilon is discussed in
+     * {@code LightDirectionTest}, which pins the mapping.
+     */
+    @Test
+    public void theDefaultLightResolvesThroughEveryPath() {
+        assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG,
+                home(LibraryItem.bundled()).lightAzimuth, 1e-6f);
+        assertEquals(LightDirection.DEFAULT_ELEVATION_DEG,
+                home(LibraryItem.bundled()).lightElevation, 1e-6f);
+        assertEquals(LightDirection.DEFAULT_ELEVATION_DEG,
+                Framing.of(null, Surface.HOME).lightElevation, 1e-6f);
+        assertEquals(LightDirection.DEFAULT_AZIMUTH_DEG,
+                Framing.of(photo("a", 90, 100, 0f, 0f, 0f, 0f), Surface.HOME)
+                        .lightAzimuth, 1e-6f);
     }
 }
