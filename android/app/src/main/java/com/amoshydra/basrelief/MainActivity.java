@@ -2457,17 +2457,34 @@ public class MainActivity extends Activity {
      * so a wrong first frame is a pill that is briefly too wide rather than one that is
      * narrower than its own text.
      */
+    /**
+     * The pill's collapsed width in px: what its own row actually measures.
+     *
+     * <p><b>The ROW is asked, rather than reconstructed from its parts.</b> A previous
+     * version added the padding, the mark's width and a guessed dp gap, plus the
+     * label's {@code measureText} — and every one of those was wrong in a different
+     * way: the mark's {@code getWidth()} is zero before layout, its right margin is
+     * applied by the LinearLayout and not by the mark, and {@code measureText} ignores
+     * the TextView's own compound padding. The sum came out SHORTER than the row
+     * needed, so {@code wrap_content} was overruled, the panel clamped the label and the
+     * user saw "No dep…". Arithmetic that has to agree with a layout engine is
+     * arithmetic that will not.
+     *
+     * <p>So the row is measured, at the cap. {@code AT_MOST} means a long filename
+     * ellipsises at the cap instead of forcing the panel wider, and
+     * {@code UNSPECIFIED} height keeps this a width question only — it must not disturb
+     * a height the strip is mid-way through setting.
+     */
     private float pillWidthPx() {
         float cap = screenWidthPx() - dp(PILL_MAX_INSET_DP);
         if (pillRow == null) return cap;
-        // The row's own padding, then the mark and its gap, then the label.
-        int chrome = pillRow.getPaddingLeft() + pillRow.getPaddingRight();
-        if (stripMark != null) chrome += stripMark.getWidth() + dp(10);
-        float text = stripLabel == null ? 0f : stripLabel.getPaint().measureText(
-                stripLabel.getText() == null ? "" : stripLabel.getText().toString());
-        float width = chrome + text;
-        // Never wider than the cap, and never so narrow that the pill is a dot.
-        return Math.min(cap, Math.max(width, dp(PILL_MIN_WIDTH_DP)));
+        int widthSpec = View.MeasureSpec.makeMeasureSpec((int) cap, View.MeasureSpec.AT_MOST);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        pillRow.measure(widthSpec, heightSpec);
+        // At least the pill's floor, never more than the cap, and never wider than the
+        // screen on a device where the cap itself is under the floor.
+        float measured = pillRow.getMeasuredWidth();
+        return Math.min(Math.max(measured, dp(PILL_MIN_WIDTH_DP)), cap);
     }
 
     /** The first-launch fraction: a third of the phone, capped at the whole panel. */
@@ -2673,6 +2690,21 @@ public class MainActivity extends Activity {
         if (stripBackground != null && lastSheetFill != fill) {
             lastSheetFill = fill;
             stripBackground.setColor(fill);
+        }
+        // THE PANEL MUST GIVE UP ITS FILL AS THE STRIP BECOMES THE PILL, or the two
+        // opaque layers compose back to solid and the glass is invisible no matter what
+        // PILL_PLATE says. The panel is the sheet; the strip is the pill. At f = 1 the
+        // strip covers the panel exactly, so the panel painting its own plate underneath
+        // is a second coat of the same colour -- measured at roughly 80% composed from
+        // two 55% layers, which is exactly the "not translucent at all" the user has now
+        // reported three times while I moved the wrong number.
+        //
+        // They are one surface at two stages, not two surfaces, so only one of them
+        // paints at any moment: the panel while it is a sheet, the strip once it is a
+        // pill. The cross-fade is on shapeProgress, the same as everything else about the
+        // shape, so it cannot disagree with the corners or the width.
+        if (panelBackground != null) {
+            panelBackground.setFillAlpha(1f - SheetMorph.shapeProgress(fraction));
         }
         if (panelBackground == null) return;
         float edge = 1f - SheetMorph.insetFor(fraction, 1f);

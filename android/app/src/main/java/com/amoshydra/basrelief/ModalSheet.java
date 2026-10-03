@@ -2056,8 +2056,16 @@ final class ModalSheet {
     static final class TopEdgeBackground extends GradientDrawable {
 
         private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int fillColour;
         private final int edgeColour;
         private final float edgeWidth;
+        /**
+         * A multiplier on the FILL's alpha. The studio's panel is the sheet's glass and
+         * the strip is the pill's plate, and the panel gives its fill up as the strip
+         * takes over; two opaque layers of the same colour compose to solid, which is
+         * what made the pill opaque however translucent its own plate was.
+         */
+        private float fillAlpha = 1f;
         /**
          * A multiplier on the hairline's alpha, for a host that retires the line
          * over the course of an animation. 1.0 is "draw it as configured" and every
@@ -2070,6 +2078,10 @@ final class ModalSheet {
             this.edgeColour = edgeColour;
             this.edgeWidth = edgeWidthPx;
             setShape(RECTANGLE);
+            // GradientDrawable keeps its own fill, and setFillAlpha below rewrites the
+            // colour's alpha -- so the subclass does not paint the fill itself and
+            // setStroke's fill-clearing cannot take it away.
+            this.fillColour = fill;
             setColor(fill);
             setCornerRadii(new float[]{topCornerRadiusPx, topCornerRadiusPx,
                     topCornerRadiusPx, topCornerRadiusPx, 0, 0, 0, 0});
@@ -2093,8 +2105,32 @@ final class ModalSheet {
             edgeAlpha = Math.min(1f, Math.max(0f, alpha));
         }
 
+        /**
+         * Fade the FILL, leaving the hairline alone.
+         *
+         * <p><b>Because the sheet and the pill are one surface at two stages.</b> The
+         * studio's panel paints the sheet's glass; the strip paints the pill's plate on
+         * top of it. Two opaque layers compose to roughly eighty per cent even when each
+         * is set to fifty-five, so the pill was solid however translucent its own colour
+         * was -- the panel underneath was still painting. The panel gives its fill up as
+         * the strip becomes the pill, and the hairline follows {@link #setEdgeAlpha}
+         * separately because the two have different jobs: the edge is the sheet's top
+         * rule, which the pill does not want at all.
+         *
+         * @param alpha 1.0 as configured, 0.0 for no fill at all, clamped between
+         */
+        void setFillAlpha(float alpha) {
+            fillAlpha = Math.min(1f, Math.max(0f, alpha));
+            int a = Math.round(fillAlpha * (fillColour >>> 24));
+            setColor((a << 24) | (fillColour & 0x00FFFFFF));
+        }
+
         @Override
         public void draw(Canvas canvas) {
+            // The fill's own alpha is folded into the paint rather than into setAlpha,
+            // so it composes with getAlpha() the same way the edge does -- two callers
+            // fade this drawable for two different reasons and neither may clobber the
+            // other.
             super.draw(canvas);
             Rect b = getBounds();
             if (b.width() <= 0 || b.height() <= 0) return;
