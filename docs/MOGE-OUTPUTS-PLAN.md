@@ -323,6 +323,24 @@ codec: H.264/HEVC 4:2:0 subsamples two of the three components to half
 resolution, which corrupts a vector field. Preserving it needs 4:4:4, which
 hardware decoders do not universally offer.
 
+> **Updated 2026-10-05 — the 4:4:4 question is now measured, and the verdict
+> below is wrong for video.** `High 4:4:4 Predictive` configured and decoded on
+> an **Adreno 630** (OnePlus 6T, sdk 35) and a **Mali-G710** (Pixel 7 Pro,
+> sdk 37) — the two GPUs this app actually runs on. Measured cost on a 4 s,
+> 100-frame clip: **2.87 MB, against colour's 1.17 MB.** That is a real 2.4× on
+> the shading stream and it is *affordable at living-photo durations*, which is
+> the only regime §5 was pricing.
+>
+> So **video does store a normal**, as `VIDEO-PLAN.md` §3 step 5 says, and the
+> decision is the same one §5 already reaches for stills.
+>
+> **One correction to the reasoning below, though.** It ends by routing video
+> through "derive in the fragment shader, as `VIDEO-PLAN` §5 already plans".
+> That is not available: `AGENTS.md` records *shading is supplied, never
+> derived*, and `c7c2578` removed the derivation from both backends. A video
+> without a normal track is therefore **flat lit**, the same deliberate state a
+> still without one is — not silently derived.
+
 Raw bytes, 720×1366 = 983,520 px:
 
 | artifact | per frame | 60 s @ 30 fps |
@@ -344,11 +362,27 @@ resident, which is why `VIDEO-PLAN` §3 downscales at import.
   map on coarse geometry is the normal-map idiom, not a bug); grid resolution
   throws that detail away for no meaningful saving on a still. A PNG at render
   size is a few MB beside a photograph.
-- **Video: store no normal.** Derive in the fragment shader, as `VIDEO-PLAN` §5
-  already plans. Three independent reasons: 3× the bytes; 4:2:0 corruption of a
-  vector field; and a *third* decoder to hold in lockstep, when two already
-  carry the whole correctness burden. The video's banding is already addressed
-  by temporal smoothing plus the float blur before encode.
+- **Video: store the normal, at 4:4:4, full range.** *This reverses the verdict
+  above, on measurement rather than reasoning — see the update at the head of
+  §5.* The three reasons given are each real, and only the first two still
+  apply:
+
+  | reason | still true? |
+  |---|---|
+  | 3× the bytes | **yes, and affordable** — 2.87 MB vs colour's 1.17 MB on a 4 s clip, at living-photo durations |
+  | 4:2:0 corrupts a vector field | **yes** — which is why it must be **`yuv444p`**, not a default encode |
+  | a third decoder to hold in lockstep | **answered**: §4's clock gate is the primitive, and a third stream is just a third decoder on the same gate and the same latch tick |
+  | *(new)* decoder support for 4:4:4 | **measured on both target GPUs** — Adreno 630, Mali-G710 |
+
+  **And the shader-derivation route is closed anyway**, independently of the
+  bytes: `AGENTS.md` forbids deriving shading, so a video with no normal track
+  is **flat lit** — a deliberate state, reported as such — not silently derived.
+- **Encode it full range (`-color_range pc`, `yuvj444p`).** The decoder reported
+  `tv/studio` for a file tagged `pc`, and reading a full-range vector field as
+  16–235 expands and **clips it at both ends**. A clipped normal is not a unit
+  vector, so `normalize()` yields a skewed direction and the lighting is wrong in
+  a way that reads as "the normals are weak". Decide the range from the measured
+  field, per stream — the same correction the depth track needed.
 - **Do not store a half-resolution or octahedral normal for video either.** It
   is still a second stream to sync, and a coarse normal over a full-resolution
   fragment relief is inconsistent by construction.

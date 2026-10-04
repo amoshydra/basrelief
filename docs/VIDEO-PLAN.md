@@ -26,10 +26,13 @@ pipeline.
   is not close. The still path builds a mesh once per photo, which is why it
   gets away with it.
 - So the relief must move **into the fragment shader** — a depth texture
-  sampled per pixel, with normals derived in the shader. That is a different
-  renderer from the one shipping today.
-- Live displacement in a **vertex** shader is not an option: GLES2's minimum
-  vertex texture units is zero. That would need GLES3.
+  sampled per pixel. **With a supplied normal track, never derived** —
+  `AGENTS.md`: *shading is supplied, never derived*, and `c7c2578` removed the
+  derivation from both backends. A clip with no normal is **flat lit**, a
+  deliberate state.
+- Live displacement in a **vertex** shader **ships**: GLES3, `ec2dd69`, measured
+  60 fps at 1440×3120. GLES2's zero vertex texture units is why the build switch
+  exists, not why the path is unavailable.
 
 ---
 
@@ -142,12 +145,14 @@ texture), and §4 makes the third ring a non-issue: it is one more ring asked th
 same question with the same number. §1, §5 and `MOGE-OUTPUTS-PLAN.md` §5 are
 what need correcting, deliberately and together.
 
-Two more stale claims sit in those same two sections, left untouched for the
-same reason: §1's *"live displacement in a vertex shader is not an option"*, and
-§5's *"a **separate renderer**, not a mode"*. The first was overtaken by the
-spike's own result (§5); the second by the shipping renderer, which is one class
-with a GLES2/GLES3 build switch rather than two. `AGENTS.md` says the code and
-the log win over a written rule — but that is a deliberate edit, not a quiet one.
+**Resolved 2026-10-05, deliberately.** The two stale claims flagged above have
+now been edited rather than left standing: §1's *"live displacement in a vertex
+shader is not an option"* (overtaken by `ec2dd69` and by the spike's own 60 fps)
+and §5's *"a **separate renderer**, not a mode"* (the shipping renderer is one
+class with a build switch). §5's *"derive the normal from its neighbours in the
+shader"* is corrected for the same reason and the same rule: `AGENTS.md` forbids
+deriving shading. `AGENTS.md` says the code and the log win over a written rule —
+but that is a deliberate edit, not a quiet one.
 
 ---
 
@@ -175,27 +180,50 @@ the defect while reporting a metric immune to it: *"codec `decoded()` is not
 used: the colour SurfaceTexture queue makes it lead by a constant."* A metric
 dropped because the other one misbehaves is not a second opinion.
 
-**The rule: pair by timestamp, never by count.** Both streams leave the decoder
-as **CPU bytes tagged with the frame's own `presentationTimeUs`**, and the
-renderer asks both rings **the same question with the same number** — the newest
-frame at or before time *t*. A skew then cannot occur rather than merely being
-unlikely, because there is nothing in either path whose latency the other does
-not share. Anything queued between a decoder and the sampler (a `SurfaceTexture`,
-a double-buffered surface) is latency exactly one stream has, and nothing
-counted downstream of it can see that.
+**The rule: one clock, and the clock is the pairing.** Both decoders are gated
+against the **same wall clock**, so a clock-gated decoder produces frame *N* for
+tick *N* by construction. The renderer then **latches both streams on one shared
+tick** rather than per drawn frame, which makes the choice of frame identical for
+both. There is no per-stream timestamp to match on, so the tick *is* the pairing.
+
+**Gate on ABSOLUTE time, not on the extractor's PTS.** `BufferInfo.presentationTimeUs`
+**restarts at zero on every loop**, so a gate of the form `pts > now + lead` is
+false from the second loop onward, the gate never blocks again, and both decoders
+free-run at whatever rate their own frames cost. Measured before this was fixed:
+**82 fps / 17 loops against 15 loops, 7.5 s apart within 20 s.** The absolute time
+is `pts + loops × clipDurationUs`.
+
+**The two leads must be the same value.** Different leads cost a steady frame or
+two of skew on their own — a *policy* difference that looks exactly like a sync
+bug and is invisible until you make them equal and the offset vanishes.
 
 - **Never** drop or skip depth frames to catch up — drift is worse than a
   dropped frame, because the whole picture is wrong rather than briefly stale.
 - **A full ring blocks the decoder.** That is the back-pressure this section
   asks for, and it is why a slow draw stalls the decoder instead of
-  desynchronising it. The ring stays small on purpose: every frame held is 3.9 MB
-  of colour, and a deeper ring only lets the decoder run further ahead of the
-  clock.
+  desynchronising it.
+- **Bound the ring by TIME, not by frame count.** A frame count is not a bound at
+  all when the streams cost different amounts: a 256×256 depth track and a
+  720×1366 colour track sharing a two-frame ring raced **six clip-lengths apart**,
+  because one frame of depth costs a fraction of one frame of colour.
+- **Gate BEFORE releasing into the surface.** Releasing first renders the frame
+  into the `SurfaceTexture` immediately, so every tick spent parked leaves
+  another frame sitting there, and a later drain takes the whole burst — never
+  clock-checked frame by frame. Measured: frames 1.3 s *ahead* of the clock while
+  the gate reported itself waiting.
+- **Retire each ring unconditionally.** Gating the trim on "the pair matched" is
+  a deadlock wearing a correctness hat: when the streams are apart the pair never
+  forms, so neither ring is trimmed, so both fill, so both park forever.
 - **A loop seam clears both rings at once.** A rewind moves both streams
   together, and for a moment neither has a frame at the old clock — so a pair
   chosen at that instant mixes a pre-seek colour with a post-seek depth. The
   same bug in a different place.
 - `MediaExtractor` + `MediaCodec` per track; release both on pause.
+- **A codec call that loses a race with `stop()` must not be fatal.** With three
+  concurrent decoders the teardown interleavings multiply; an
+  `IllegalStateException` from `queueInputBuffer`/`dequeueOutputBuffer` means the
+  codec is being released underneath the thread, which is normal shutdown and
+  should end the loop, not kill the GL thread's source.
 - **The engine's lifecycle is the hard part.** A wallpaper engine is torn down
   and rebuilt routinely, and `AGENTS.md` is explicit that nothing may be cached
   across its lifetime. So decoders are created in `onSurfaceCreated`/visibility
@@ -210,24 +238,89 @@ is permanently in the loop, and the instinct to move all of it to the GPU cannot
 simply be obeyed.
 
 The one copy worth arguing about is colour through the CPU rather than onto a
-GPU surface: ~3.9 MB per 720×1366 frame, about **98 MB/s at 25 fps**. It buys
-exact timestamp pairing, which is what the clock above is built on. If a later
-build wants colour to stay zero-copy on a GPU surface, the record is: **the
-clock must then own that decoder's input schedule, not just the sampler.**
-Letting a decoder fill a queue and sampling whatever is newest is exactly what
-produced a constant two- or three-frame skew while every counter read zero.
+GPU surface: ~3.9 MB per 720×1366 frame, about **98 MB/s at 25 fps**.
+
+### The CPU-plane decode path does not work on this hardware
+
+An earlier draft of this section recommended taking **both** streams to the CPU
+as bytes tagged with `presentationTimeUs`, on the reasoning that a CPU handover
+removes every queue and therefore every latency. Measured on 2026-10-05, that
+path **produces data that is not the video**:
+
+| | on device | the file, all 100 frames |
+|---|---|---|
+| colour luma mean | 26.3 | 77.2 |
+| colour **U** mean | **7.3** | 125.5 |
+| colour **V** mean | **7.1** | 130.5 |
+
+The copied luma's first row (`8,8,8,8,0,0,0,81,4,65,0,0`) occurs **nowhere** in
+either clip's luma plane, at any byte offset, in any frame — while the `Image`'s
+own reported geometry is perfectly self-consistent (`rowStride=256 pixelStride=1`
+for a 256×256 track). **A swizzled vendor layout behind a stride that does not
+describe it.** Neither device's `media_codecs.xml` mentions it.
+
+Two more, from the same session:
+
+- **`ImageReader` will not convert for you.** Asking for `RGBA_8888` fails on the
+  first frame: *"producer output buffer format `0x7fa30c06` doesn't match the
+  ImageReader's configured buffer format `0x1`"*. `0x7fa30c06` is
+  `YUV_420_888`. MediaCodec decodes to its native format and expects the
+  **consumer** to convert — which is why a `SurfaceTexture` gets colour for free
+  and an `ImageReader` does not.
+- **`YUV_420_888` requires even dimensions.** So the 257² grid **cannot be a YUV
+  video at all.** The depth track is stored 256×256 and `blurredField(bytes, 256,
+  256, grid)` produces the 257² field at runtime.
+- **A Java YUV→RGB loop over 983k px/frame ANRs the process.** Measured, five
+  seconds after launch. Any conversion belongs in a shader.
+
+So the CPU is used for the **depth field only**, and colour stays on an external
+`SurfaceTexture` with the conversion done by the sampler. That is not a
+compromise forced by elegance: it is the only combination measured to work.
+
+### What the format decisions are, and what they cost
+
+- **4:4:4 for the normals video, and it is affordable.** `MOGE-OUTPUTS-PLAN.md`
+  §5 is right that 4:2:0 corrupts a vector field, because U and V carry X and Y.
+  Its open question — *"4:4:4, which hardware decoders do not universally
+  offer"* — is now **measured on two GPUs**: `High 4:4:4 Predictive` configured
+  and decoded on an **Adreno 630** (OnePlus 6T, sdk 35) and a **Mali-G710**
+  (Pixel 7 Pro, sdk 37). Cost on a 4 s / 100-frame clip: **2.87 MB against
+  colour's 1.17 MB.**
+- **Store the depth field ASPECT-MATCHED to the grid, not square.** The stored
+  field's dimensions are free — `resample(src, dw, dh, …)` indexes it by its own
+  `dw`/`dh` in normalised uv — while the *lattice* must be square, because
+  `resample` returns `n × n`. For a 2:1 portrait clip, 128×256 is
+  **~47% smaller than 256×256 for zero loss**, because the mesh samples 257²
+  points and nothing finer survives to a vertex. Square is the worst case for
+  bandwidth; **512 is not the lever** — that is the *MoGe inference* resolution
+  (`DepthGenDialog.RESOLUTIONS`), which is a different knob entirely.
+- **Blur the depth exactly once, at runtime.** `blurredField` takes a `byte[]`, so
+  it blurs the values the **decoder** produced, and the terraces are created *by*
+  the quantisation the encoder applied. Blurring at import as well is not
+  redundant, it is destructive: it collapsed the field from `max 255 / mean 44`
+  to `max 101 / mean 13.5`, flattening the relief to nothing.
+- **The runtime blur is cheap on the GPU and expensive on the CPU.**
+  `ReliefMesh.blurredField` measured **30–42 ms per call on the GL thread** — 775
+  ms of GL thread per second at 25 fps — against a 40 ms budget. It was replaced
+  by a GPU box filter, `(2r+1)²` taps over the 257² field, into an `RGBA16F`
+  target.
 
 ---
 
 ## 5. The renderer change
 
-This is the real work, and it is a **separate renderer**, not a mode:
+This is the real work. It is **one renderer with a per-frame source**, not a
+second class: `ec2dd69` is a single `ReliefRenderer` with a `BASRELIEF_RENDERER`
+build switch, and `ReliefMesh.blurredField` is shared.
 
 - Colour texture + depth texture, both uploaded per frame.
-- **Fragment-shader relief**: sample depth, derive the normal from its
-  neighbours in the shader (Sobel or a cheaper 4-tap), light it with the
-  existing `uLightDir`, apply `Picture` exactly as today so brightness and
-  shadow do not fork.
+- **Two shading paths, chosen per source.** Vertex displacement from the depth
+  field for the parallax, and/or a **supplied normal track** sampled per fragment
+  for the lighting — the normal-mapped path keeps the photo fixed while only the
+  shading follows the surface, so a high-contrast silhouette cannot separate from
+  its own geometry. Light it with the existing `uLightDir`, and apply `Picture`
+  exactly as today so brightness and shadow do not fork. **Never derive the
+  normal in the shader.**
 - **`CameraModel` is unchanged** — the tap→unproject→project contract is about
   the camera, not the geometry, and `CameraModelTest` still applies.
 - **The mesh path stays** for stills. Two paths is a cost, but the still path
