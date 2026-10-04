@@ -1395,12 +1395,75 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
+     * Why an {@code apply} is allowed to paint the framing instantly.
+     *
+     * <p><b>The rule the caller must state.</b> "Don't paint anything instantly. frame
+     * can only be rendered by gliding towards not immediately painting." An instant paint
+     * is legitimate for exactly two reasons, and a caller has to name which one it is:
+     */
+    enum Apply {
+        /**
+         * A resolve of stored state onto the view. The default, and the safe one: if the
+         * framing is already what is showing it is a no-op, and if it is not, the caller
+         * should have glided (see {@link #glide}).
+         */
+        RESOLVE,
+        /**
+         * A live gesture, where the value must lead the finger. A slider drag is the case:
+         * an ease here would sit between the finger and the picture.
+         */
+        GESTURE,
+        /**
+         * A different photograph is arriving. Its framing is a new picture, and gliding
+         * from the old photo's framing would smear two images together.
+         */
+        PAIR_CHANGE
+    }
+
+    /**
      * Put a resolved framing onto the GL thread's state.
      *
      * <p>Taken from {@link Framing} rather than recomputed per surface, because
      * the two surfaces computing it themselves is how they came to disagree.
+     *
+     * <p>This overload is the {@link Apply#RESOLVE} case; use {@link #apply(Framing,
+     * Apply)} to claim a gesture or a pair change.
      */
     void apply(Framing f) {
+        apply(f, Apply.RESOLVE);
+    }
+
+    /**
+     * Put a framing onto the GL thread's state, refusing the instant paint this rule
+     * forbids.
+     *
+     * <p><b>The guard lives HERE, not at the call sites, and that is the whole point.</b>
+     * Every bug this session came from one of five call sites resolving a framing and
+     * painting it instantly: the wallpaper's unlock origin, its return-to-launcher
+     * resolve, the studio's {@code applyFiles} on resume, and the lock-frame pre-hold.
+     * Four separate rules at four call sites is four chances to forget, and a sixth caller
+     * reintroduces the bug with nothing to stop it. `apply` is the one place every resolve
+     * funnels through, so the rule about what a resolve may paint belongs here.
+     *
+     * <p><b>What it refuses.</b> A {@link Apply#RESOLVE} whose framing is already what is
+     * on screen (within {@code Framing.sameAs}'s epsilon) is a no-op: painting it would be
+     * an instant paint of a picture that needs no change, and the measured symptom is the
+     * snap -- a resolve re-painting a frame a glide is already easing toward. Not touching
+     * the volatile fields also leaves any glide in flight alone, which is the point:
+     * a resolve that agrees with a running glide must not cancel it.
+     *
+     * <p><b>Why the other two reasons bypass it.</b> A gesture must lead the finger even
+     * when the value has not visibly moved yet, and a pair change is a genuinely different
+     * picture that {@code sameAs} would report as different anyway -- but stating the
+     * reason is what stops a future caller inheriting the no-op by accident, or inheriting
+     * the paint by accident. The default is the SAFE one: {@link Apply#RESOLVE}.
+     */
+    void apply(Framing f, Apply why) {
+        if (why == Apply.RESOLVE && snapshot().sameAs(f)) {
+            // Same picture, already showing: nothing to paint, and an in-flight glide
+            // toward it is exactly what a resolve must not cancel.
+            return;
+        }
         depth = f.depth;
         zoom = f.zoom;
         motion = f.motion;

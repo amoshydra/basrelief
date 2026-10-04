@@ -276,6 +276,33 @@ already cost real time.
   request and a result whose tag is not the newest is dropped.
 - **Matrix order.** `clip = proj * view * model`. Any unprojection must invert
   `proj * view` in that same order; `view * proj` is a real bug.
+- **`apply()` refuses an instant paint of a frame already on screen, and the guard
+  lives there -- not at the call sites -- with the two legitimate escapes named.**
+  The rule: *nothing may be painted instantly; a frame can only be reached by gliding towards it* `ReliefRenderer.apply(Framing, Apply)` no-ops a
+  `RESOLVE` whose framing `sameAs` the snapshot, and lets only `GESTURE` (a slider
+  must lead the finger) and `PAIR_CHANGE` (a different photo; gliding it would smear)
+  through. The default overload is `RESOLVE`, the safe one, so a future caller cannot
+  inherit the paint by accident. It is a method and not a rule copied to the five call
+  sites (`glide`'s origin, `stepGlide`'s completion, `cancelGlide`, the wallpaper's
+  resolve and pre-hold, the studio's `applyFiles`) because four of those five were
+  wrong at some point this session and a sixth would reintroduce it silently. The
+  measured symptom, twice: a resolve re-painted a frame a glide was easing toward --
+  lock's `2x` over home's `1x` -- which the eye reads as a snap. **A glide's ORIGIN
+  must be what is showing, never a guessed surface label**: `glide(null, to)` takes
+  `snapshot()`, and passing a `Framing` computed from `lastVisibleSurface` painted the
+  wrong config on the return to the launcher because the lock engine records itself as
+  last-visible while the keyguard is up.
+- **The lock frame is held on the HOME engine while the screen is dark, and that is
+  not the instant paint the rule forbids.** `holdLockFrameForUnlock` applies the LOCK
+  framing to the HOME engine on hide, but only when `!isInteractive()` or the keyguard
+  took over. `GLSurfaceView` queues the event and refuses to draw while paused
+  (`readyToDraw()` requires `!mPaused`), so no frame is presented: the next drawn frame
+  -- the one the keyguard reveals -- is already LOCK, and the unlock's
+  `glide(null, HOME)` origin-apply is a no-op. It is **load-bearing and not superseded
+  by `inheritFirstFrameFrom`**: measured, disabling it makes a surviving HOME engine
+  hold HOME across a lock cycle, so the unlock resolves `snap.zoom=1.42 dest.zoom=1.42`
+  and the glide is gone. Inheritance covers a *freshly created* engine; the pre-hold
+  covers a *surviving* one.
 - **Never hand-derive vendored matrix semantics and verify them against a
   reference you wrote yourself.** `Mat4.scaleM` shipped computing `S·m` instead of
   `m·S` because my hand-written AOSP reference was "corrected" to match my own

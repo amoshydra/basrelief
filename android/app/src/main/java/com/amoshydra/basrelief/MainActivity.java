@@ -5096,10 +5096,20 @@ public class MainActivity extends Activity {
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
         final Framing framing = Framing.of(state.activeItem(), editSurface);
+        // Same pair means this resolve only moves the framing: it goes through the
+        // apply guard (`RESOLVE`), so a framing already on screen is a no-op and a
+        // glide in flight is not cancelled. A DIFFERENT pair is a new picture, and
+        // its framing must be painted -- gliding it would smear one photo into the
+        // next -- so it states `PAIR_CHANGE` and bypasses the guard. Read here, on
+        // the calling thread, because the renderer's own record is the only honest
+        // answer and it is volatile.
+        final ReliefRenderer.Apply why = renderer.showingSamePair(img, dep)
+                ? ReliefRenderer.Apply.RESOLVE
+                : ReliefRenderer.Apply.PAIR_CHANGE;
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
-                renderer.apply(framing);
+                renderer.apply(framing, why);
             }
         });
         // Async for the same reason as the wallpaper: a synchronous load stalls

@@ -367,15 +367,15 @@ public class DepthWallpaperService extends WallpaperService {
         }
 
     /**
-     * Keep the renderer's writes on the engine's own surface.
+     * Whether a resolve is a surface transition that must EASE, or an ordinary resolve.
      *
-     * <p>A lock engine writes to Lock and a home engine to Home, from the same
-     * {@code SurfaceResolver} that already decides which engine this is. Reading it
-     * here rather than passing it per call keeps the renderer's write path identical
-     * to the studio's, which is what stops the two surfaces from drifting.
-     */
-    /**
-     * The surface to glide FROM, or null when this resolve is not a surface change.
+     * <p><b>The origin is always "what is showing", so all this decides is whether to
+     * glide at all.</b> It used to return the OTHER surface's framing as the glide's
+     * starting point, but that is a guess about a frame this engine may not be holding,
+     * and {@code glide()} paints its origin first -- so a wrong guess was an instant
+     * paint of the wrong config. The renderer's own {@code snapshot()} is the honest
+     * origin (see {@code glide(null, ...)}), so the framing this method once returned is
+     * gone; what remains is the one bit that was always the real question.
      *
      * <p>Only when this engine was hidden and is becoming visible: that is the one
      * event that means the user was looking at the other screen a moment ago -- a lock
@@ -383,10 +383,10 @@ public class DepthWallpaperService extends WallpaperService {
      * same-surface resolve (a slider moved, the index changed) is not a transition,
      * and gliding it would smear every adjustment.
      */
-    private Framing glideFromSurface(LibraryItem active, SurfaceResolver resolved) {
+    private boolean isSurfaceTransition(SurfaceResolver resolved) {
         Surface from = pendingGlideFrom;
-        pendingGlideFrom = null;             // consumed: one glide per wake
-        if (from == null) return null;       // not a wake: apply, do not smear
+        pendingGlideFrom = null;             // consumed: one transition per wake
+        if (from == null) return false;      // not a wake: apply, do not smear
         // The LOCK engine never glides, and the reason is physical rather than
         // aesthetic: locking the phone turns the screen off, so nobody watches the
         // lock engine's first frame -- but unlocking is watched. Gliding here only
@@ -398,24 +398,12 @@ public class DepthWallpaperService extends WallpaperService {
         // retained frame. So the lock engine glided from home -- goal, home, goal,
         // the double-take again, from a start that was never on screen. Applying
         // instead is a no-op: the retained frame is already the goal.
-        if (resolved.surface() == Surface.LOCK) return null;
-        // The surface that was showing is the one to come from. NOT "the other
-        // surface": that guess is what made every wake glide from a config nothing
-        // was rendering. Same surface showing before and now -- returning to the
-        // launcher, a same-surface wake -- is not a transition and must not ease.
-        if (!resolved.supportsPerSurfaceLock()) return null; // no second engine, no other side
+        if (resolved.surface() == Surface.LOCK) return false;
+        // No second engine means no other surface to have come from.
+        if (!resolved.supportsPerSurfaceLock()) return false;
         // Same surface showing before and now is not a surface transition: returning
-        // to the launcher, or a same-surface wake, must apply (or no-op) rather than
-        // ease. This used to return the LOCK framing for a HOME engine on the theory
-        // that an unlock's last painter is HOME; it is not, because the lock engine
-        // records itself as last visible while it is the foreground surface (see
-        // applyFromPrefs). What the branch actually produced was a LOCK -> HOME glide
-        // on every return to the launcher, whose origin apply painted LOCK over HOME's
-        // retained frame -- the same instant paint the unlock fix removes, in the other
-        // place a user sees it. Measured: opening Settings and pressing HOME armed a
-        // glide whose origin apply was sameAsShowing=false delta=[... zoom=1.42->2.0].
-        if (from == resolved.surface()) return null;
-        return Framing.of(active, from);
+        // to the launcher, or a same-surface wake, must no-op rather than ease.
+        return from != resolved.surface();
     }
 
     /**
@@ -531,6 +519,16 @@ public class DepthWallpaperService extends WallpaperService {
      * Make a hidden HOME engine's surface hold the LOCK framing, so the keyguard reveal
      * shows what the user was just looking at and the unlock glide starts from it.
      *
+     * <p><b>Load-bearing, and measured rather than assumed.</b> It was once thought to be
+     * an earlier attempt at what {@code inheritFirstFrameFrom} now does, and therefore
+     * removable. Disabling it and measuring a plain lock -> screen-on -> unlock shows it is
+     * not: the HOME engine <i>survives</i> a lock cycle, so it never cold-loads, so nothing
+     * inherits, and the retain-frame stays HOME. The unlock then resolves
+     * {@code snap.zoom=1.42 dest.zoom=1.42} -- a zero-travel no-op, the glide gone. With
+     * this in place the same wake logs {@code snap.zoom=2.0 snap.panY=26.0 dest.zoom=1.42},
+     * a real 2x -> 1x ease. The two mechanisms cover different engine lifetimes:
+     * inheritance is a freshly created engine, this is a surviving one.
+     *
      * <p><b>The snap this exists to remove.</b> On unlock the HOME engine wakes and the
      * platform reveals its surface. That surface still holds the last frame it drew —
      * HOME's own framing, from before the phone locked — and the engine only asks for the
@@ -539,14 +537,18 @@ public class DepthWallpaperService extends WallpaperService {
      * an instant paint the user filed as a snap — and only then the glide to home. Their
      * rule is explicit: nothing may be painted instantly; a frame can only be reached by gliding towards it
      *
-     * <p><b>The fix is to have the surface hold LOCK before the reveal.</b> GLSurfaceView
-     * processes queued events while paused but refuses to draw ({@code readyToDraw()}
-     * requires {@code !mPaused}), so this sets the renderer's framing while the screen is
-     * off. The first frame the engine draws after {@code onResume} is therefore already
-     * LOCK, which is what the platform reveals; {@code glide(LOCK, HOME)} then finds the
-     * origin equal to what is on screen and starts easing without painting anything.
-     * Measured: the unlock origin-apply changed from {@code sameAsShowing=false
-     * delta=[lightAzimuth=209.0->239.0, …]} to {@code sameAsShowing=true delta=none}.
+     * <p><b>Why the paint here is not the instant paint that rule forbids.</b> It is an
+     * {@code apply} of a genuinely different framing, so the guard in
+     * {@link ReliefRenderer#apply} permits it — but it runs while the surface is hidden
+     * and the screen is dark. GLSurfaceView queues the event but refuses to draw
+     * ({@code readyToDraw()} requires {@code !mPaused}), so the LOCK framing is written to
+     * the renderer's volatile fields and <i>no frame is presented</i>. The first frame the
+     * engine draws after {@code onResume} is that LOCK, which is what the platform reveals;
+     * {@code glide(null, HOME)} then finds the origin equal to what is on screen and its
+     * origin-apply is the guard's no-op. Measured on unlock to the launcher: the pre-hold
+     * is the one {@code applyPaint}, nine seconds before the reveal, and the glide that
+     * follows logs {@code origin=snapshot snap.zoom=2.0} with an origin-apply of
+     * {@code applyNoop} -- nothing painted while the user could see anything.
      *
      * <p><b>When, and why it is not every hide.</b> An app covering the wallpaper must not
      * make the home surface hold the lock config — the user was looking at nothing, and
@@ -555,7 +557,9 @@ public class DepthWallpaperService extends WallpaperService {
      * is the moment before the reveal this is preparing for. The {@code keyguard} terms
      * are the same two readings {@link #isForegroundSurface} uses; on this device
      * {@code isDeviceLocked()} is still false at the instant the screen starts to darken,
-     * so {@code isInteractive()} is the one that fires.
+     * so {@code isInteractive()} is the one that fires. Verified: when a studio covers the
+     * wallpaper the hide logs {@code interactive=true}, this returns, and the launcher
+     * return is a no-op rather than a glide from a screen nobody was looking at.
      *
      * <p><b>HOME only, and both engines only.</b> A LOCK engine is never seen at wake, and
      * on a one-engine setup there is no second config to hold — the same capability the
@@ -626,12 +630,10 @@ public class DepthWallpaperService extends WallpaperService {
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
             final Framing framing = Framing.of(active, resolved.surface());
-            // The OTHER surface's framing, for the glide: becoming visible after a
-            // hidden period means the user was just looking at the other screen, so
-            // the first frame this engine draws should be the one they were looking
-            // at, easing into this surface's own config over the one glide rate --
-            // "a switch, not a cut".
-            final Framing otherSide = glideFromSurface(active, resolved);
+            // Whether this resolve is a surface transition that must EASE. The origin
+            // is not resolved here: the renderer uses what it is actually showing, so
+            // the first frame of a transition is always the frame on screen.
+            final boolean transition = isSurfaceTransition(resolved);
             // At Motion 0 the tilt cannot change a pixel, so the sensor is pure
             // waste. Read from the resolved framing rather than from the renderer
             // so this stays on the calling thread and needs no hop to the GL
@@ -720,18 +722,34 @@ public class DepthWallpaperService extends WallpaperService {
             glView.queueEvent(new Runnable() {
                 @Override
                 public void run() {
-                    // Becoming visible glides FROM the other surface's config; a
-                    // same-surface re-resolve (a slider moved, a photo changed)
-                    // applies instantly, because there is no other config to come
-                    // from and an instant apply is the honest render of it.
-                    if (otherSide != null) {
-                        renderer.glide(otherSide, framing, spanMs);
+                    // Becoming visible glides FROM WHAT IS ON SCREEN -- not from the
+                    // surface label guessed a moment ago.
+                    //
+                    // That guess could disagree with the retained frame. On the return
+                    // to the launcher, lastVisibleSurface was LOCK (the lock engine
+                    // records itself while the keyguard is up), so this used to arm
+                    // glide(LOCK, HOME) -- and glide() paints its ORIGIN first, so the
+                    // HOME surface, which already held HOME, was painted with LOCK
+                    // (zoom 2.0) for a frame and then eased back to HOME (1.42).
+                    // Measured: the origin apply was sameAsShowing=false
+                    // delta=[zoom=1.42->2.0, panY=0.0->26.0, lightAzimuth=209.0->239.0].
+                    // That is the 1x snap followed by a glide from 2x to 1x.
+                    //
+                    // Passing null is "from what is showing": glide() takes snapshot()
+                    // as the origin and gives it one apply, a no-op when the retained
+                    // frame already matches. Where the engine really was holding the
+                    // other surface (the unlock, pre-held by holdLockFrameForUnlock) the
+                    // snapshot IS the lock framing, so the motion is unchanged; where it
+                    // was already this surface's framing, there is nothing to paint and
+                    // the glide eases from where the eye is.
+                    if (transition) {
+                        renderer.glide(null, framing, spanMs);
                     } else if (renderer.isGlidingToward(framing)) {
                         // DO NOT CANCEL A GLIDE THAT IS ALREADY HEADING HERE.
                         //
                         // A transition resolves more than once -- becoming visible, an
                         // insets dispatch, a pref write -- and every resolve after the
-                        // first arrives with no `otherSide` (the arm is consumed once),
+                        // first arrives with no transition armed (it is consumed once),
                         // so it took the apply branch and painted the destination over a
                         // glide that was still running. Measured: the glide armed at
                         // 13:35:38.568 with from=lock to=home, and a plain apply of the
@@ -927,7 +945,7 @@ public class DepthWallpaperService extends WallpaperService {
                         // A lock engine invents nothing -- nobody watches its first
                         // frame, the screen was off -- and a home engine waking with no
                         // departure behind it was not watching the lock screen at all.
-                        // No flag and no arming: glideFromSurface decides from
+                        // No flag and no arming: isSurfaceTransition decides from
                         // isDeviceLocked(), which is the reading that actually tracks
                         // the unlock. Anything armed here would be a second source of
                         // truth for a fact already available at the point of use.
