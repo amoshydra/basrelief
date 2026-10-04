@@ -137,3 +137,52 @@ that it does.
   pair is two more filenames and the same rule.
 - **Export** (the queued feature) must handle a video pair, or the format is
   write-only and therefore pointless.
+
+---
+
+## Appendix: the unlock transition, resolved (2026-10-04)
+
+Not video, but it was solved in the same session and the findings cost eight
+attempts. Recorded here because the code comments will move and this reasoning
+should not have to be rediscovered.
+
+### The requirement
+
+On unlock: **hold exactly what was on screen** (the lock screen's framing) and
+**glide to home's**. No frame painted at home's framing first. The user's words:
+*on unlock nothing should change, only a glide to 1x*
+
+### What works
+
+`isDeviceLocked()` — **not** `isKeyguardLocked()`. Measured across two full
+unlocks, `isKeyguardLocked()` read `true` on **every** sample of every cycle,
+including after the unlock completed. `isDeviceLocked()` reads `true` on the
+lock screen and `false` on home; it is the only reading that tracks the state.
+
+And the **first frame is inherited, not corrected**. The lock engine publishes
+its framing process-wide; the home engine, cold-loading while
+`!isDeviceLocked()`, glides *from* it. This is the actual fix — the engine never
+draws home's own framing at all, so there is nothing to correct. An earlier
+version painted home's framing and then glided back, which is the flicker.
+
+### Every signal that does NOT work here
+
+| signal | measured outcome |
+|---|---|
+| `isKeyguardLocked()` | never changes; useless as a transition signal |
+| `ACTION_USER_PRESENT` | **zero deliveries** to a receiver in this service |
+| `KeyguardManager.addKeyguardLockedStateListener` | `SecurityException` — `SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE` is not in the public SDK; calling it from `Service.onCreate` **crashes the wallpaper** |
+| `onWallpaperFlagsChanged` | zero fires — two permanently separate engines are never re-tasked |
+| lock engine `onVisibilityChanged(false)` | fires *after* home's callback, so a flag set there is consumed before written |
+| `Window.setBackgroundBlurRadius` | no blur region — a Dialog is `ty=BASE_APPLICATION`, and the region needs a translucent **floating** window |
+
+`onApplyWindowInsets` **does** fire at the transition and both readings flip
+there — but the first-frame inheritance made it unnecessary, since the origin
+no longer has to be armed late.
+
+### The rule that kept being violated
+
+*"Don't paint anything instantly — a frame is reached by gliding towards it."*
+An instant `apply` is legitimate only for a live gesture (a slider must lead
+the finger) or a genuine pair change. Every intermediate attempt failed by
+painting something and correcting it afterwards.

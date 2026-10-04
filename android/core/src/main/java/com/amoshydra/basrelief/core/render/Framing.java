@@ -59,6 +59,75 @@ public final class Framing {
     /** True when the marble bust is showing, or when nothing is selected. */
     public final boolean bundled;
 
+    /**
+     * Whether two framings would render the same picture.
+     *
+     * <p><b>Exists so a resolve can decline to paint.</b> A transition resolves more than
+     * once — becoming visible, an insets dispatch, a pref write — and each resolve builds
+     * a NEW {@code Framing} with the same values. Without a value comparison the renderer
+     * cannot tell "this is a different picture" from "this is the picture I am already
+     * gliding towards", so the second resolve cancels a glide in flight and paints the
+     * destination instantly. Measured on the device: the glide armed, and a plain apply
+     * of its own destination landed 1.2 seconds later, mid-flight — the frame the user
+     * reported as a snap.
+     *
+     * <p><b>Every field, and that is the point.</b> This class has eleven of them and no
+     * {@code equals} for the same reason {@code SurfaceSettings.with} takes eleven
+     * arguments: adding a value without teaching the comparison about it would make the
+     * renderer treat a real change as a no-op and silently drop the frame. The test
+     * reflects over the fields so a twelfth cannot be forgotten.
+     */
+    public boolean sameAs(Framing other) {
+        if (other == null) return false;
+        if (this == other) return true;
+        return near(depth, other.depth)
+                && near(zoom, other.zoom)
+                && near(motion, other.motion)
+                && near(orbitX, other.orbitX)
+                && near(orbitY, other.orbitY)
+                && near(panX, other.panX)
+                && near(panY, other.panY)
+                && near(brightnessGain, other.brightnessGain)
+                && near(shadowLift, other.shadowLift)
+                && near(lightAzimuth, other.lightAzimuth)
+                && near(lightElevation, other.lightElevation)
+                && bundled == other.bundled;
+    }
+
+    /**
+     * The tolerance, and why an exact comparison could never work here.
+     *
+     * <p><b>A glide lands a whisker off its destination, and that was the snap.</b>
+     * Measured: a glide easing to {@code lightAzimuth 209.0, panY 0.0} settled at
+     * {@code 209.00562, 0.00486}; a fresh resolve a second later asked for the exact
+     * values, an {@code ==} comparison said "a different picture", and the renderer painted
+     * it INSTANTLY — which is precisely what the user's rule forbids and what they saw as a
+     * snap mid-way through the transition.
+     *
+     * <p><b>Derived from the measurements on both sides, not chosen.</b> The largest
+     * residues a settled glide leaves, from three device logs: <b>0.007</b>, <b>0.00486</b>
+     * and <b>0.00024</b>. The smallest REAL differences that must still paint, from the same
+     * logs: azimuth <b>209 -> 239</b> (30), depth <b>0.9 -> 0.29</b> (0.61), zoom
+     * <b>1.0 -> 2.0</b> (1.0). One hundredth sits a hundredfold above the worst residue and
+     * sixtyfold below the smallest real step, so neither side is close.
+     *
+     * <p><b>The first attempt used {@code 1e-4} and was WRONG by construction</b> — set
+     * below residues that had already been measured at 0.005 and 0.007, so a glide
+     * settling with a 0.00024 residue still slipped through and painted instantly. A
+     * tolerance must be read off the numbers, never picked and then compared against
+     * them; the test below asserts both sides of the margin so the next adjustment has to
+     * confront both.
+     */
+    private static final float SAME_EPSILON = 1e-2f;
+
+    private static boolean near(float a, float b) {
+        // NOT `Math.abs(a - b) < e`: NaN fails every comparison, and two NaNs are "the same
+        // picture" in the only sense that matters here -- a resolve that produced NaN twice
+        // has not asked for anything new, and treating it as different would paint.
+        if (Float.isNaN(a) && Float.isNaN(b)) return true;
+        return Math.abs(a - b) <= SAME_EPSILON;
+    }
+
     private Framing(LibraryItem item, Surface surface) {
         this.bundled = item == null || item.isBundled();
         // Null only when there is no item at all -- not when there is a bundled one,

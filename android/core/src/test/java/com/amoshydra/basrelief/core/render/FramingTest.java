@@ -80,6 +80,107 @@ public class FramingTest {
      * The regression, stated as a test: two photos with different framing, and
      * resolving the second must not inherit any of the first.
      */
+    /**
+     * {@code sameAs}, and the reflection guard that makes it safe to add a field.
+     *
+     * <p>The wallpaper uses this to decide whether a repeat resolve of the same
+     * transition has anything to say. A resolve that returns a DIFFERENT picture must
+     * never compare equal, or the renderer drops a real frame; a resolve that returns the
+     * SAME picture must compare equal, or it cancels the glide running toward it — the
+     * measured snap the user reported.
+     */
+    @Test
+    public void sameAsComparesEveryValueAndCountsThemAll() throws Exception {
+        Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f);
+        Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f);
+        assertTrue("equal values must compare equal", a.sameAs(b));
+        assertTrue(a.sameAs(a));
+        assertFalse("a different item must not", a.sameAs(null));
+
+        // EVERY field, by rebuilding the framing with one value moved -- not by
+        // mutating in place, because the fields are final. The loop is driven by
+        // reflection over the field COUNT so a field added later is covered without
+        // editing this test, and the count is asserted because a new field would
+        // otherwise be silently uncompared and a real frame would be dropped.
+        java.lang.reflect.Field[] fields = Framing.class.getFields();
+        java.util.List<String> numeric = new java.util.ArrayList<String>();
+        for (java.lang.reflect.Field f : fields) {
+            if (f.getType() == float.class) numeric.add(f.getName());
+        }
+        assertEquals("sameAs must compare every float field, and there are this many",
+                11, numeric.size());
+
+        // One call per field: the same vector with exactly one component moved.
+        float[][] varied = {
+                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // depth
+                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // zoom
+                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // motion
+                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // orbitX
+                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f},   // orbitY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f},   // panX
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f},   // panY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f},   // brightness
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f},   // shadow
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f},   // azimuth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f},   // elevation
+        };
+        assertEquals("one varied vector per float field", numeric.size(), varied.length);
+        for (float[] v : varied) {
+            Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
+                    v[7], v[8], v[9], v[10]);
+            assertFalse("a moving value must make sameAs false", a.sameAs(moved));
+        }
+    }
+
+    /**
+     * A whisker is not a difference; a real step is.
+     *
+     * <p>The measured failure: a glide settled at {@code lightAzimuth 209.00562, panY
+     * 0.00486} against a target of exactly {@code 209.0, 0.0}. An {@code ==} comparison
+     * called that a different picture, so a later resolve painted it INSTANTLY -- the snap
+     * the user reported, mid-transition. The same log shows the genuine differences that
+     * MUST still count: {@code azimuth 124.99 -> 239.0}, {@code depth 0.9 -> 0.29}.
+     */
+    @Test
+    public void aRoundingWhiskerIsNotADifferenceButARealStepIs() {
+        // panY 0, from the log: the residue was against a target of exactly 0.
+        Framing target = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
+                0f, 0f, 209f, 46f);
+        // What a glide actually lands on.
+        Framing landed = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0.00486f,
+                0f, 0f, 209.00562f, 46.000908f);
+        assertTrue("a whisker from the glide must read as the same picture",
+                target.sameAs(landed));
+
+        // The real transition from the same log: lock framing to home framing.
+        assertFalse("azimuth 209 -> 239 and the rest is a real change",
+                target.sameAs(Framing.ofValues(29f, 2.0f, 33f, 0.1f, 0.2f, 14f, 26f,
+                        0f, 0f, 239f, 50.862324f)));
+
+        // EVERY residue measured on the device must read as the same picture. These are
+        // the real numbers from three logs, not invented ones: the first attempt at this
+        // tolerance was set below two of them, which is how a settle at 0.00024 still
+        // painted instantly.
+        float[] residues = {0.007f, 0.00486f, 0.00024f};
+        float[] base = {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f, 0f, 0f, 209f, 46f};
+        for (float residue : residues) {
+            float[] withResidue = base.clone();
+            withResidue[9] = 209f + residue;   // azimuth
+            withResidue[6] = residue;          // panY
+            assertTrue("a measured residue of " + residue + " must read as the same picture",
+                    target.sameAs(Framing.ofValues(withResidue[0], withResidue[1],
+                            withResidue[2], withResidue[3], withResidue[4], withResidue[5],
+                            withResidue[6], withResidue[7], withResidue[8], withResidue[9],
+                            withResidue[10])));
+        }
+
+        // And the OTHER side of the margin: the smallest real step in those logs must NOT
+        // read as the same, or a genuine change would stop painting.
+        assertFalse("depth 0.9 -> 0.29 is a real change",
+                target.sameAs(Framing.ofValues(29f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
+                        0f, 0f, 209f, 46f)));
+    }
+
     @Test
     public void eachPhotoResolvesItsOwnFraming() {
         Framing first = home(photo("a", 90, 100, 0f, 0f, 0f, 0f));

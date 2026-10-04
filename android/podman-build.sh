@@ -59,10 +59,17 @@ gradle_task() {
     # distribution, AGP and all transitives — locally and on every CI run.
     # Falls back to no cache where :Z is unavailable (macOS/Windows), rather
     # than failing the build.
+    # The commit is resolved HERE, on the host, where git and the repository exist --
+    # the container has neither (the repo is bind-mounted without .git, and the image
+    # ships no git binary). Passing it in is what makes BuildConfig.GIT_COMMIT a fact
+    # rather than the "unknown" a container-side lookup always produced.
+    local commit
+    commit="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     podman run --rm \
         -v "$SCRIPT_DIR:/workspace:Z" \
         ${GRADLE_CACHE_MOUNT:-} \
         ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
+        -e BASRELIEF_GIT_COMMIT="$commit" \
         -w /workspace \
         "$IMAGE_NAME" \
         bash -c "./gradlew $1 --no-daemon"

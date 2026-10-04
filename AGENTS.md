@@ -418,7 +418,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 378 tests across twenty-one classes:
+it**. 380 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -433,6 +433,15 @@ has run.**
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
   the v convention and dropping a face normal each fail it.
 - `Mat4ScaleTest` — the `scaleM` semantics, captured from the real Android API.
+- `FramingTest`'s `sameAs` — whether two framings render the same picture, which is how
+  the wallpaper decides whether a repeat resolve of one transition has anything to say. The
+  failure it prevents is a **cancelled glide**: a transition resolves more than once
+  (becoming visible, an insets dispatch, a pref write), each resolve builds a NEW `Framing`
+  with the same values, and without a value comparison the renderer cannot tell "a different
+  picture" from "the picture I am gliding towards" — so the second resolve painted the
+  destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
+  **eleven** fields is compared, and the field count is asserted, because a twelfth added
+  without teaching `sameAs` about it would make a real frame silently a no-op.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom".
 - `PrefFilesTest` — the restore case, which silently costs users their image.

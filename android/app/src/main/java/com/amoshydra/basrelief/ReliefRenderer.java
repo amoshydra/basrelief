@@ -1300,6 +1300,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         glideSpanMs = Math.max(1f, spanMs);
     }
 
+    /**
+     * Whether a glide is already heading to this framing.
+     *
+     * <p>Read by the wallpaper so a repeat resolve of the SAME transition does not cancel
+     * the glide that is running towards it. See {@link Framing#sameAs} for the measured
+     * failure: a plain apply of the glide's own destination, 1.2s after the glide armed.
+     */
+    boolean isGlidingToward(Framing f) {
+        // A resolve has nothing to say if what it wants is either already on screen or
+        // already on its way there. "Already on screen" is the half that survives the
+        // glide finishing, and it is the user's rule stated properly: a frame is reached
+        // by gliding TOWARDS it, so a resolve that asks for the frame already rendered is
+        // a no-op whatever the glide is doing. The same comparison is what makes a
+        // return to the launcher an instant rather than a spurious glide from lock.
+        if (glideTo != null && glideTo.sameAs(f)) return true;
+        return snapshot().sameAs(f);
+    }
+
     /** True while a glide is in flight. Volatile-read from any thread. */
     public boolean isGliding() {
         return glideTo != null;
@@ -1404,6 +1422,35 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         glideTo = null;
     }
 
+    /**
+     * The framing another engine was showing when this one started, or null.
+     *
+     * <p><b>Set by the host, consumed by the cold load.</b> On an unlock the home engine
+     * is handed the LOCK engine's last framing so its FIRST frame is what the user was
+     * already looking at, and it glides from there. Without it the cold load paints its
+     * own framing and every later glide is a correction -- the measured home, lock, home
+     * flicker.
+     *
+     * <p>Null is the safe default and means "no inheritance": a reboot, a first install,
+     * or a screen-on into the keyguard all take the normal instant apply, because in none
+     * of those was another engine showing something this one should continue from.
+     */
+    private volatile Framing inheritFirstFrame;
+
+    /** The span to use for that first inherited glide, set with the framing. */
+    private volatile float inheritSpanMs = 250f;
+
+    /**
+     * Hand this renderer the framing to glide from on its first frame.
+     *
+     * <p>Called by the wallpaper for a HOME engine that is starting BECAUSE the device
+     * was just unlocked. Passing null is the normal case and clears any pending one.
+     */
+    public void inheritFirstFrameFrom(Framing from, float spanMs) {
+        this.inheritFirstFrame = from;
+        this.inheritSpanMs = Math.max(1f, spanMs);
+    }
+
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         // The index owns the selection, so one dereference gives the files and the
@@ -1414,7 +1461,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final LibraryItem active = state.activeItem();
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
-        apply(Framing.of(state.activeItem(), editSurface));
+        Framing mine = Framing.of(state.activeItem(), editSurface);
+        // THE FIRST FRAME OF AN UNLOCK IS THE LOCK SCREEN, NOT THIS SCREEN.
+        //
+        // This line is the `1x` the user sees before the snap: the cold load paints
+        // home's own framing, and only afterwards does the service arm a glide back to
+        // lock's -- so the sequence is home, lock, home, with a visible flicker and a
+        // correction. Their instruction was explicit: when handing over to the home engine, the last frame should be taken from the lock engine and glided
+        // from rather than drawn again. That is exactly right, and the lock engine's framing is
+        // available because both engines share this process.
+        //
+        // Only on an unlock, and the two terms are both facts rather than guesses:
+        //   - inheritedFraming is non-null only when a LOCK engine drew and published
+        //     what it was showing, so a reboot or a first install cannot glide from a
+        //     screen that was never on; and
+        //   - the service clears it when the device is locked, so a screen-on into the
+        //     keyguard cannot make home glide from a value it is not destined for.
+        Framing inherit = inheritFirstFrame;
+        if (inherit != null) {
+            inheritFirstFrame = null;   // one unlock, one inheritance
+            glide(inherit, mine, inheritSpanMs);
+        } else {
+            apply(mine);
+        }
         // Resolved from the item and from nothing else. There is no branch for "the
         // demo": since the seed copied its pair into filesDir it is a file-backed row
         // like any other, and a null item -- nothing selected -- resolves to nothing

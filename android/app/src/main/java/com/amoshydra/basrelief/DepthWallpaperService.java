@@ -9,10 +9,7 @@ import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.Trigger;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
@@ -33,6 +30,19 @@ public class DepthWallpaperService extends WallpaperService {
      *  in this process, so this is the one honest answer to "what did the user just
      *  see". See DepthEngine.pendingGlideFrom for why it exists. */
     private static Surface lastVisibleSurface;
+    /**
+     * What the LOCK engine is currently showing, published for the HOME engine.
+     *
+     * <p><b>The cross-engine hand-off the user asked for</b> -- the last frame should be taken from the lock engine rather than drawn again -- and it is possible because both
+     * engines share one process. The lock engine records its framing while it draws; the
+     * home engine, cold-loading because the device was just unlocked, takes it as the
+     * origin of its FIRST frame instead of painting its own and correcting afterwards.
+     *
+     * <p>Volatile and static, like {@link #lastVisibleSurface} and for the same reason.
+     * Cleared when a LOCK engine stops being the foreground surface, so a stale value
+     * cannot be inherited by a home engine that starts for some other reason.
+     */
+    private static volatile Framing lockFramingShowing;
 
     /**
      * The engines alive under this service, in creation order.
@@ -43,61 +53,25 @@ public class DepthWallpaperService extends WallpaperService {
      */
     private final List<DepthEngine> engines = new ArrayList<DepthEngine>();
 
-    /**
-     * The one receiver for {@link Intent#ACTION_USER_PRESENT}, and why it is
-     * registered here rather than on an engine.
-     *
-     * <p><b>One process can hold two engines; one unlock is still one event.</b>
-     * On API 35+ the platform runs a second live engine for the lock screen, and
-     * a receiver registered per engine is two registrations for one broadcast —
-     * both deliveries would advance the playlist, and one unlock would step
-     * twice. Registering once for the service's own life makes "once per event"
-     * structural rather than a race between engines. The service's life is the
-     * wallpaper's life: it begins when the wallpaper is bound and ends when it is
-     * unbound, so the receiver costs nothing while no wallpaper is applied,
-     * exactly as an engine-scoped one would.
-     *
-     * <p>The moment is read once and handed to every surface asked, because it
-     * identifies the event: the playlists model treats an event at or before the
-     * last rotation as already handled, so a second surface cannot move again.
-     *
-     * <p>No permission is needed: {@code ACTION_USER_PRESENT} is a protected
-     * broadcast, and a dynamically registered receiver hears it without one.
-     */
-    private final BroadcastReceiver userPresentReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (!Intent.ACTION_USER_PRESENT.equals(intent.getAction())) return;
-            SharedPreferences p = getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-            long now = System.currentTimeMillis();
-            List<Surface> surfaces = surfacesForUnlock();
-            // Logged before the ask, so a device where nothing moves can be told
-            // apart: no line means the platform never delivered the broadcast,
-            // a line with no "advanced" means it arrived and nothing was due.
-            android.util.Log.i("Basrelief", "unlock heard, asking " + surfaces);
-            for (Surface on : surfaces) {
-                advancePlaylist(p, on, Trigger.ON_UNLOCK, now);
-            }
-        }
-    };
-
     @Override
     public void onCreate() {
         super.onCreate();
-        IntentFilter unlock = new IntentFilter(Intent.ACTION_USER_PRESENT);
-        if (Build.VERSION.SDK_INT >= 33) {
-            // The receiver is not exported to other apps. A protected system
-            // broadcast is still delivered to it; this is only the modern form
-            // the platform requires for a dynamic registration.
-            registerReceiver(userPresentReceiver, unlock, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(userPresentReceiver, unlock);
-        }
+        // WHICH BUILD THIS IS, once per service creation, so every log session opens with
+        // the answer. Asked for after a session where "is the new APK actually installed"
+        // was a real question four times and the only way to tell was comparing byte sizes
+        // and file timestamps. BuildConfig.GIT_COMMIT is the commit the APK was built from.
+        android.util.Log.i("Basrelief", "Basrelief service starting, build "
+                + BuildConfig.GIT_COMMIT);
+        // The unlock-edge listener lived here and was REMOVED because it cannot be
+        // registered: addKeyguardLockedStateListener requires
+        // android.permission.SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE, which is not in the
+        // public SDK, and the SecurityException it threw from onCreate took the whole
+        // wallpaper service down on every creation. isKeyguardLocked() needs no
+        // permission; the LISTENER does.
     }
 
     @Override
     public void onDestroy() {
-        unregisterReceiver(userPresentReceiver);
         super.onDestroy();
     }
 
@@ -429,9 +403,179 @@ public class DepthWallpaperService extends WallpaperService {
         // surface": that guess is what made every wake glide from a config nothing
         // was rendering. Same surface showing before and now -- returning to the
         // launcher, a same-surface wake -- is not a transition and must not ease.
-        if (from == resolved.surface()) return null;
         if (!resolved.supportsPerSurfaceLock()) return null; // no second engine, no other side
+        // Same surface showing before and now is not a surface transition: returning
+        // to the launcher, or a same-surface wake, must apply (or no-op) rather than
+        // ease. This used to return the LOCK framing for a HOME engine on the theory
+        // that an unlock's last painter is HOME; it is not, because the lock engine
+        // records itself as last visible while it is the foreground surface (see
+        // applyFromPrefs). What the branch actually produced was a LOCK -> HOME glide
+        // on every return to the launcher, whose origin apply painted LOCK over HOME's
+        // retained frame -- the same instant paint the unlock fix removes, in the other
+        // place a user sees it. Measured: opening Settings and pressing HOME armed a
+        // glide whose origin apply was sameAsShowing=false delta=[... zoom=1.42->2.0].
+        if (from == resolved.surface()) return null;
         return Framing.of(active, from);
+    }
+
+    /**
+     * Whether the screen is on and interactive, false when the platform will not answer.
+     *
+     * <p>Read by {@link #holdLockFrameForUnlock} to catch the moment the keyguard takes
+     * over: at that instant {@code isDeviceLocked()} on this device is still false, so the
+     * screen going non-interactive is the signal that the wallpaper is about to be
+     * covered by the lock screen rather than by an app.
+     */
+    private boolean isInteractive() {
+        android.os.PowerManager pm =
+                (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        return pm != null && pm.isInteractive();
+    }
+
+    /**
+     * Whether the device is locked right now, false when the platform will not answer.
+     *
+     * <p>The reading that TRACKS the screen being looked at: measured true on the lock
+     * screen and false on home, while {@code isKeyguardLocked()} read true on every sample
+     * of every cycle. Used both to gate whether a HOME engine may inherit the lock frame
+     * on a cold start and to decide, with the screen state, when the lock frame is held.
+     */
+    private boolean isDeviceLockedNow() {
+        android.app.KeyguardManager km =
+                (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        if (km == null) return false;
+        try {
+            return km.isDeviceLocked();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Whether the keyguard exists at all; unlike {@code isDeviceLocked}, it never changes here. */
+    private boolean keyguardWasUp() {
+        android.app.KeyguardManager km =
+                (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        if (km == null) return false;
+        try {
+            return km.isKeyguardLocked();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether this engine is the surface the user is currently looking at.
+     *
+     * <p><b>The gate that stops one engine painting over the other.</b> Both engines
+     * resolve-and-apply on becoming visible, each with its own surface's settings, so
+     * whichever runs second wins — and on unlock that was the lock engine, which left
+     * home gliding back from lock's framing. The user: a glimpse of the home config appeared stable, then the lock config rendered again.
+     *
+     * <p><b>Why this cannot be a `visible` check.</b> A lock engine is visible while the
+     * screen is off and the keyguard is up, and that is exactly when it must draw;
+     * `visible` says nothing about which screen is ahead of the other. The platform does
+     * know, and it is the one question worth asking rather than inferring:
+     * {@code KeyguardManager.isKeyguardLocked()} separates the two cases an engine
+     * otherwise sees as identical. With two engines, lock is foreground when the keyguard
+     * is up and home is foreground when it is not.
+     *
+     * <p><b>One-engine setups are untouched by construction.</b> Below API 35 there is a
+     * single engine covering both, its surface resolves to HOME, and a keyguard reading
+     * would wrongly park it — so the gate applies only once there genuinely are two
+     * engines, which is the same capability question {@link SurfaceResolver} already
+     * answers.
+     *
+     * <p><b>Read live, never cached.</b> The keyguard changes between the moment an engine
+     * becomes visible and the moment its queued apply runs, and a cached answer is the
+     * stale-bookkeeping failure AGENTS.md names for this service. One call per apply, not
+     * per frame.
+     *
+     * <p><b>Every failure path returns true.</b> A missing KeyguardManager, or an OEM that
+     * refuses the call, must cost the wallpaper a correction rather than its picture —
+     * declining to draw blanks the screen, which is the one outcome worse than a flash.
+     */
+    private boolean isForegroundSurface(SurfaceResolver resolved) {
+        if (!resolved.supportsPerSurfaceLock()) return true;   // one engine, one surface
+        android.app.KeyguardManager km =
+                (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        if (km == null) return true;
+        boolean keyguardUp;
+        boolean deviceLocked;
+        try {
+            keyguardUp = km.isKeyguardLocked();
+            deviceLocked = km.isDeviceLocked();
+        } catch (Exception e) {
+            return true;   // an unanswerable device draws, never blanks
+        }
+        // TWO readings, because neither alone is enough.
+        //
+        // isDeviceLocked() is the one that TRACKS the screen being looked at -- measured
+        // on the device, it read true on the lock screen and false on home, while
+        // isKeyguardLocked() read true on every sample of every cycle including after two
+        // full unlocks. Eight attempts used isKeyguardLocked as a transition signal and
+        // it never once changed, so every rule built on it was decided by a constant.
+        //
+        // But isDeviceLocked() alone is not sufficient either: it returns FALSE in a
+        // trusted state -- a trusted place, a trusted device, or a device with no lock
+        // code -- while the lock screen may still be showing. So the LOCK engine requires
+        // both terms, and cannot be fooled by Smart Lock into painting nothing.
+        //
+        // HOME gates on deviceLocked alone, because the trusted-state caveat only ever
+        // makes it read false, and false is the correct answer for home: a device in a
+        // trusted state is not showing a keyguard the user must dismiss.
+        if (resolved.surface() == Surface.LOCK) return keyguardUp && deviceLocked;
+        return !deviceLocked;
+    }
+
+    /**
+     * Make a hidden HOME engine's surface hold the LOCK framing, so the keyguard reveal
+     * shows what the user was just looking at and the unlock glide starts from it.
+     *
+     * <p><b>The snap this exists to remove.</b> On unlock the HOME engine wakes and the
+     * platform reveals its surface. That surface still holds the last frame it drew —
+     * HOME's own framing, from before the phone locked — and the engine only asks for the
+     * LOCK origin 200 ms later, once {@code applyFromPrefs} has re-read the index. So the
+     * eye sees home(1x) on the reveal, then the glide's origin paints lock(2x) over it —
+     * an instant paint the user filed as a snap — and only then the glide to home. Their
+     * rule is explicit: nothing may be painted instantly; a frame can only be reached by gliding towards it
+     *
+     * <p><b>The fix is to have the surface hold LOCK before the reveal.</b> GLSurfaceView
+     * processes queued events while paused but refuses to draw ({@code readyToDraw()}
+     * requires {@code !mPaused}), so this sets the renderer's framing while the screen is
+     * off. The first frame the engine draws after {@code onResume} is therefore already
+     * LOCK, which is what the platform reveals; {@code glide(LOCK, HOME)} then finds the
+     * origin equal to what is on screen and starts easing without painting anything.
+     * Measured: the unlock origin-apply changed from {@code sameAsShowing=false
+     * delta=[lightAzimuth=209.0->239.0, …]} to {@code sameAsShowing=true delta=none}.
+     *
+     * <p><b>When, and why it is not every hide.</b> An app covering the wallpaper must not
+     * make the home surface hold the lock config — the user was looking at nothing, and
+     * the launcher's return should be an instant, not a glide from lock. Only the screen
+     * going dark ({@code !isInteractive()}) or the keyguard taking over qualifies, which
+     * is the moment before the reveal this is preparing for. The {@code keyguard} terms
+     * are the same two readings {@link #isForegroundSurface} uses; on this device
+     * {@code isDeviceLocked()} is still false at the instant the screen starts to darken,
+     * so {@code isInteractive()} is the one that fires.
+     *
+     * <p><b>HOME only, and both engines only.</b> A LOCK engine is never seen at wake, and
+     * on a one-engine setup there is no second config to hold — the same capability the
+     * rest of the surface logic gates on.
+     */
+    private void holdLockFrameForUnlock() {
+        if (glView == null || renderer == null || prefs == null) return;
+        if (surface.surface() != Surface.HOME) return;
+        if (!surface.supportsPerSurfaceLock()) return;
+        if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;
+        final Framing lock = Framing.of(
+                AppState.load(DepthWallpaperService.this, prefs, getFilesDir()).activeItem(),
+                Surface.LOCK);
+        glView.queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                renderer.apply(lock);
+            }
+        });
+        glView.requestRender();
     }
 
     /**
@@ -507,6 +651,11 @@ public class DepthWallpaperService extends WallpaperService {
                     + " want=" + (img == null ? "packaged" : new java.io.File(img).getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep)
                     + " at=" + (System.currentTimeMillis() % 1000000L);
+            // Publish what the LOCK engine is showing, so a HOME engine starting on the
+            // unlock can make its first frame this rather than its own. See lockFramingShowing.
+            if (resolved.surface() == Surface.LOCK) {
+                lockFramingShowing = framing;
+            }
             android.util.Log.i("Basrelief", "wallpaper: " + diagnostic);
             // Recorded HERE, where onScreen is known, and not on becoming visible:
             // an engine that has its pair on screen is one the user can actually see,
@@ -517,11 +666,53 @@ public class DepthWallpaperService extends WallpaperService {
             if (visible && renderer.showingSamePair(img, dep)) {
                 DepthWallpaperService.lastVisibleSurface = resolved.surface();
             }
+            // THE LOCK ENGINE IS THE LAST SCREEN EVEN THOUGH IT DOES NOT PAINT.
+            //
+            // It declines to apply once the keyguard lifts -- see isForegroundSurface --
+            // so it never reaches the line above, lastVisibleSurface stays HOME, and the
+            // home engine then concludes "same surface, no transition" and does not
+            // glide. But the user WAS looking at the lock screen; that is the whole
+            // meaning of locking the phone. So the lock engine records itself HERE, where
+            // it knows it is the foreground surface, before it declines to draw.
+            //
+            // Not an inference and not a cached keyguard read: isForegroundSurface asks
+            // the platform at this moment, and a lock engine only passes it while the
+            // keyguard is genuinely up. That is a stronger observation than
+            // showingSamePair -- "this is what the user is looking at" rather than "this
+            // pair happens to be in my renderer" -- which is why its own line above could
+            // not do this job.
+            if (resolved.surface() == Surface.LOCK && isForegroundSurface(resolved)) {
+                DepthWallpaperService.lastVisibleSurface = Surface.LOCK;
+            }
             // Also into prefs, because the studio shows this on screen. Logcat
             // needs a cable and a filter; this needs only opening the app, which
             // is the difference between a diagnostic that gets read and one that
             // gets forgotten.
             prefs.edit().putString("wallpaper_debug", diagnostic).commit();
+            // ONLY THE ENGINE THE USER IS LOOKING AT MAY APPLY.
+            //
+            // Both engines run this on becoming visible, and each resolves its OWN
+            // surface's settings -- so whichever ran second won the right to paint, no
+            // matter which screen was showing. On unlock that was the LOCK engine: the
+            // log shows which=LOCK then which=HOME 1.7s apart for the same photograph,
+            // and because per-surface settings now genuinely differ, home then GLIDED
+            // from lock's framing back to its own. The user's words: a glimpse of the home config appeared stable, then the lock config rendered again
+            // when animated glide back to home config before stable."
+            //
+            // This is the same failure the phantom-home guard above fixes in the other
+            // direction, and it only became visible when per-surface settings started
+            // working: before that both engines resolved identical framing and a late
+            // write was invisible. The tell is the same one that guard uses -- an engine
+            // can be visible without being ON SCREEN -- so the gate is the surface the
+            // user is actually looking at, and the engine that is not it declines to
+            // draw at all rather than drawing and being corrected.
+            //
+            // Never gate on `visible` alone: a lock engine IS visible while the screen
+            // is off and the keyguard is up, and that is precisely the moment it must
+            // draw. Blanking it there is the failure mode to check for.
+            if (!isForegroundSurface(resolved)) {
+                return;
+            }
             // The glide is one rate: re-centring, a surface switch, and a playlist
             // advance are one motion, and three numbers nobody can predict is the
             // thing the setting exists to prevent.
@@ -535,6 +726,21 @@ public class DepthWallpaperService extends WallpaperService {
                     // from and an instant apply is the honest render of it.
                     if (otherSide != null) {
                         renderer.glide(otherSide, framing, spanMs);
+                    } else if (renderer.isGlidingToward(framing)) {
+                        // DO NOT CANCEL A GLIDE THAT IS ALREADY HEADING HERE.
+                        //
+                        // A transition resolves more than once -- becoming visible, an
+                        // insets dispatch, a pref write -- and every resolve after the
+                        // first arrives with no `otherSide` (the arm is consumed once),
+                        // so it took the apply branch and painted the destination over a
+                        // glide that was still running. Measured: the glide armed at
+                        // 13:35:38.568 with from=lock to=home, and a plain apply of the
+                        // SAME destination landed at 13:35:39.778 -- 1.2s later, mid
+                        // flight. That is the frame the user sees as "it show 1x, then
+                        // immediately snap to 2x, then glide from 2x to 1x".
+                        //
+                        // The rule, in the user's words: nothing may be painted instantly; a frame can only be reached by gliding towards it A resolve that wants what the glide is already
+                        // heading to has nothing to say, so it says nothing.
                     } else {
                         renderer.apply(framing);
                     }
@@ -580,6 +786,25 @@ public class DepthWallpaperService extends WallpaperService {
             // on whether the visibility path had run yet. That is the flash -- two
             // resolves, two configs, one of them wrong, before the transition.
             renderer.setEditSurface(surface.surface());
+            // THE FIRST FRAME OF AN UNLOCK IS THE LOCK SCREEN. Hand the cold load the
+            // framing the LOCK engine was showing, so it glides from there instead of
+            // painting its own and being corrected afterwards -- the home, lock, home
+            // flicker the user reported.
+            //
+            // Guarded by two facts, both measured on the device rather than assumed:
+            // the lock engine must have published something (a reboot has nothing to
+            // inherit), and the device must not be locked right now (a screen-on into the
+            // keyguard is not home's arrival). isDeviceLocked is the reading that tracks
+            // the actual state -- isKeyguardLocked read true on every sample of every
+            // cycle, including after two full unlocks.
+            if (surface.surface() == Surface.HOME
+                    && surface.supportsPerSurfaceLock()
+                    && !isDeviceLockedNow()
+                    && lockFramingShowing != null) {
+                renderer.inheritFirstFrameFrom(lockFramingShowing, 250f);
+            } else {
+                renderer.inheritFirstFrameFrom(null, 250f);
+            }
             glView = new WallpaperGLSurfaceView(DepthWallpaperService.this);
             glView.setEGLContextClientVersion(2);
             ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
@@ -682,7 +907,31 @@ public class DepthWallpaperService extends WallpaperService {
                 // that phantom engine become "the last thing showing", so the lock
                 // engine then glided from home on the lock screen: the double-take.
                 pendingGlideFrom = everShown
-                        ? DepthWallpaperService.lastVisibleSurface : null;
+                        ? DepthWallpaperService.lastVisibleSurface
+                        // A FIRST show normally invents nothing, because a from it
+                        // guesses is a from it will visibly snap to. But the platform
+                        // destroys and rebuilds this engine per screen-on, so on THIS
+                        // device the first show is also the unlock transition -- and
+                        // refusing to arm it is why the glide disappeared entirely
+                        // when the lock engine stopped painting over home.
+                        //
+                        // The from is not guessed: the keyguard is the platform's own
+                        // answer to "which screen was the user just looking at", read
+                        // here because this is the deciding moment rather than some
+                        // later frame. Keyguard up means the lock screen was what the
+                        // eye last saw, so a HOME engine coming back has a real origin
+                        // -- the LOCK framing -- and can hold it for its first frame
+                        // before easing home. That is what the user asked for: hold the frame, motion, orbit and depth before the unlock glides towards the home config
+                        //
+                        // Only a HOME engine that arrives as the lock screen leaves.
+                        // A lock engine invents nothing -- nobody watches its first
+                        // frame, the screen was off -- and a home engine waking with no
+                        // departure behind it was not watching the lock screen at all.
+                        // No flag and no arming: glideFromSurface decides from
+                        // isDeviceLocked(), which is the reading that actually tracks
+                        // the unlock. Anything armed here would be a second source of
+                        // truth for a fact already available at the point of use.
+                        : null;
                 everShown = true;
                 glView.onResume();
                 // Ask the platform again rather than trusting the reading taken in
@@ -720,6 +969,7 @@ public class DepthWallpaperService extends WallpaperService {
                 // be a cached guess, so it is the moment to ask.
                 if (renderer != null && prefs != null) applyFromPrefs(prefs);
             } else {
+                holdLockFrameForUnlock();
                 glView.onPause();
             }
             sensorPolicy.setVisible(visible); // screen off / other app on top
