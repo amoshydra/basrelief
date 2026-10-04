@@ -323,11 +323,15 @@
     <string name="gallery_playlists_caption">Playlists</string>
     <string name="gallery_playlist_new_row">New playlist</string>
     <!-- The row's two targets, each spoken apart: the edit plate is its own
-         live control; the radio is a mark and the row is the toggle. -->
+         live control; the switch is a mark and the row is the toggle. -->
     <string name="gallery_playlist_edit">Edit %1$s</string>
     <string name="gallery_playlist_rotate">Rotate %1$s</string>
     <string name="gallery_playlist_stop">Stop rotating %1$s</string>
     <string name="gallery_playlist_edit_glyph">✎</string>
+    <!-- The state mark's own description. It is a Switch drawn as a mark, so it
+         is IMPORTANT_FOR_ACCESSIBILITY_NO and the ROW carries this instead: a
+         screen reader hears one control, not two, and hears the state. -->
+    <string name="gallery_playlist_control_talk">%1$s, %2$s</string>
     <!-- The header indicator: the glyph is decoration, the name is the content. -->
     <string name="gallery_rotating_glyph">▶</string>
     <string name="gallery_rotating_indicator">%1$s</string>

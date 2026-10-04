@@ -146,6 +146,42 @@ final class Gallery {
     /** The playlist row's hairline, the mockup's --line. */
     private static final int HAIRLINE = 0x24FFFFFF;
     /**
+     * The header's reserved height, and the reason the sort does not move.
+     *
+     * <p>48dp is the platform's minimum touch target, so the rotating indicator
+     * keeps a comfortable one, and it is a FIXED band: the header is this tall
+     * with or without a name, so showing or hiding the name cannot change the
+     * header's height or the sort's bounds. The indicator no longer carries a
+     * min-height of its own -- see {@link #buildHeaderIndicator}.
+     */
+    private static final int HEADER_MIN_HEIGHT_DP = 48;
+    /**
+     * The row's vertical divider: configure on one side, state on the other.
+     *
+     * <p>A {@code View}, not a {@code "|"} glyph: a text bar carries its own
+     * font's side bearings and baseline, so it neither aligns with the two marks
+     * beside it nor sizes predictably, and it moves when the control's state
+     * changes if it is baked into a neighbour. This is a sibling between them,
+     * the same idiom as {@code android.widget}'s action-bar dividers, and it
+     * stays put when the switch flips. Brighter than the row hairline because it
+     * separates two <i>controls</i> rather than outlining the row.
+     */
+    private static final int DIVIDER_WIDTH_DP = 1;
+    private static final int DIVIDER_HEIGHT_DP = 22;
+    private static final int DIVIDER_COLOUR = 0x3DFFFFFF;
+    /**
+     * The state switch's tints, the same tokens {@link ModalSheet#switchRow}
+     * uses. A real {@link android.widget.Switch}, so the shape, the motion and
+     * the state a screen reader hears are the ones the platform already teaches —
+     * see {@link #playlistRow} for why a switch and not a radio.
+     */
+    private static final int SWITCH_TRACK_ON = 0x997FD1C1;
+    private static final int SWITCH_TRACK_OFF = HAIRLINE;
+    private static final int SWITCH_THUMB_ON = PhotoTile.ACCENT;
+    /** --dim. Spelled out because {@link #DIM} is declared later in the file and
+     *  a static initialiser cannot forward-reference it. */
+    private static final int SWITCH_THUMB_OFF = 0x8CFFFFFF;
+    /**
      * `.thumb`/`.cell`'s 11px radius. The photograph tiles get it passed to
      * {@link PhotoTile}; the two glyph tiles here carry it themselves.
      */
@@ -369,7 +405,7 @@ final class Gallery {
 
     /**
      * One playlist row's live views, so a toggle can move the accent wash and the
-     * radio mark between two rows without rebuilding the section.
+     * control between two rows without rebuilding the section.
      *
      * <p>The subtitle and the description are rewritten together, because they are
      * the same fact at two distances — the row's coloured state is the glance and
@@ -380,13 +416,37 @@ final class Gallery {
         final View row;
         final TextView name;
         final TextView sub;
-        final View dot;
+        /**
+         * The state mark: a switch, driven by {@link #refreshPlaylistRowVisual}
+         * from the same status the wash and the subtitle are. Never tapped itself
+         * — {@link #toggleZone} is its target, so a tap beside it cannot fall
+         * through to the edit half — so it is a picture of the state inside a
+         * control, not a control with its own listener. See {@link #playlistRow}.
+         */
+        final android.widget.Switch control;
 
-        PlaylistRow(View row, TextView name, TextView sub, View dot) {
+        /**
+         * The row's right half: divider and switch in one target, so the whole
+         * state zone flips the playlist and the whole left half opens the editor.
+         * It carries the spoken state, because the switch inside it is
+         * {@code IMPORTANT_FOR_ACCESSIBILITY_NO} and would never speak its own.
+         */
+        final View toggleZone;
+
+        /**
+         * What this row was built from — see {@link #playlistRowSignature}. A
+         * rebuild that produces the same string reuses this row's views, and
+         * with them the collage's four decodes. Null until first built.
+         */
+        String signature;
+
+        PlaylistRow(View row, TextView name, TextView sub,
+                    android.widget.Switch control, View toggleZone) {
             this.row = row;
             this.name = name;
             this.sub = sub;
-            this.dot = dot;
+            this.control = control;
+            this.toggleZone = toggleZone;
         }
     }
 
@@ -926,9 +986,23 @@ final class Gallery {
         // which one is rotating. The sort keeps its intrinsic width and never
         // moves; the indicator is the only flexible part, so a long name
         // ellipsises rather than pushing the sort off the edge.
+        //
+        // THE HEADER HAS A FIXED HEIGHT, and that is the whole fix for the layout
+        // shift the user reported (the layout shifted down). The
+        // indicator carries a 48dp minimum height for its touch target, while the
+        // sort link is only its text plus 10dp of padding -- so showing the name
+        // made the indicator the tallest child and the header grew by ~28px,
+        // pushing the sort, the hint line and the whole grid down. GONE also
+        // removed it from the row, so the two states genuinely had two heights.
+        // Reserving one 48dp band for the header means the sort's bounds are
+        // byte-identical with and without the name, and only the name itself
+        // appears; see the invariant in AGENTS.md. Reserve rather than overlay:
+        // the indicator is inside the same weight-1 right slot, so nothing has to
+        // be positioned against a measured width that is not final at build time.
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setMinimumHeight(activity.dp(HEADER_MIN_HEIGHT_DP));
         TextView title = text(activity.getString(R.string.gallery_title), 16);
         header.addView(title, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -938,10 +1012,10 @@ final class Gallery {
         headerRight.setOrientation(LinearLayout.HORIZONTAL);
         headerRight.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         headerRight.setLayoutParams(new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                LinearLayout.LayoutParams.MATCH_PARENT, 1f));
         headerIndicator = buildHeaderIndicator();
         headerRight.addView(headerIndicator, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                LinearLayout.LayoutParams.MATCH_PARENT, 1f));
         headerRight.addView(headerLink(activity.getString(R.string.gallery_sort)
                 + " · " + lib.sort().label(), DIM, false, new View.OnClickListener() {
             @Override
@@ -1052,14 +1126,22 @@ final class Gallery {
             cells.addView(emptyGallery(), rowSpacing(first));
             first = false;
         } else {
-            // The add tile is the FIRST cell, before every photograph. It is not a
-            // photo, so it is not sorted among them: it is a fixed leading
-            // affordance, and hoisting it changes render order only -- no index
-            // write, no comparator. The photographs follow it.
-            cells.addView(addCellRow(), rowSpacing(first));
+            // The add tile FLOWS with the photographs: it is the first CELL of
+            // the first row, and the photographs follow it in the same row rather
+            // than starting a new one. It is not a photograph, so it is not sorted
+            // among them -- it is a fixed leading affordance -- but hoisting it out
+            // of the flow made it a row of its own and cost a whole row of height
+            // at the top of the grid. Now a 3-column grid of the add tile plus
+            // eight photos is three rows of three, exactly as the photographs
+            // alone would be. See {@link #cellRowReuse} for the arithmetic.
+            cells.addView(cellRowReuse(rows, 0, activeId, false, true), rowSpacing(first));
             first = false;
-            for (int start = 0; start < rows.size(); start += GRID_COLUMNS) {
-                cells.addView(cellRowReuse(rows, start, activeId, false), rowSpacing(first));
+            // The first row spent its leading column on the add tile, so the
+            // photographs start one column in: the next row resumes at
+            // GRID_COLUMNS - 1, not at GRID_COLUMNS.
+            for (int start = GRID_COLUMNS - 1; start < rows.size(); start += GRID_COLUMNS) {
+                cells.addView(cellRowReuse(rows, start, activeId, false, false),
+                        rowSpacing(first));
                 first = false;
             }
         }
@@ -1074,7 +1156,7 @@ final class Gallery {
             first = false;
             if (archiveOpen) {
                 for (int start = 0; start < archived.size(); start += GRID_COLUMNS) {
-                    cells.addView(cellRowReuse(archived, start, activeId, true),
+                    cells.addView(cellRowReuse(archived, start, activeId, true, false),
                             rowSpacing(first));
                     first = false;
                 }
@@ -1162,24 +1244,6 @@ final class Gallery {
             }
         });
         return row;
-    }
-
-    /**
-     * The first row of the grid: the add tile in the leading column, blanks
-     * beside it.
-     */
-    private LinearLayout addCellRow() {
-        LinearLayout line = new LinearLayout(activity);
-        line.setOrientation(LinearLayout.HORIZONTAL);
-        line.addView(addCell(true));
-        for (int i = 1; i < GRID_COLUMNS; i++) {
-            View blank = new View(activity);
-            LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(cellPx, 0);
-            blankLp.leftMargin = activity.dp(GRID_GAP_DP);
-            blank.setLayoutParams(blankLp);
-            line.addView(blank);
-        }
-        return line;
     }
 
     /**
@@ -1350,8 +1414,8 @@ final class Gallery {
     }
 
     /**
-     * One row of {@link #GRID_COLUMNS} slots: photographs, the rest padded with
-     * blanks.
+     * One row of {@link #GRID_COLUMNS} slots: photographs (and optionally the
+     * leading add tile), the rest padded with blanks.
      *
      * <p>Fixed rows rather than a wrapping container, because a grid that measures
      * itself against variable-width children produces rows of differing heights,
@@ -1362,7 +1426,10 @@ final class Gallery {
      * gutter <i>between</i> columns, so the grid's first photograph starts at the
      * panel's own 14dp edge, in the same column as the header and the hint line.
      * Every column used to carry the 8dp, which indented the whole grid by one
-     * gap and made it ragged against the text above it.
+     * gap and made it ragged against the text above it. When
+     * {@code withAddTile} is set the add tile IS that first column, and every
+     * photograph after it carries the gutter as its column demands -- so the
+     * first photograph is no longer flush left, it is in column 1.
      *
      * <p><b>A cell is reused when one exists for its id.</b> This is what makes a
      * relayout free: the view already holds the decoded bitmap, so re-parenting it
@@ -1370,26 +1437,37 @@ final class Gallery {
      * its id appears. The layout params are re-applied on reuse because a cell can
      * move columns, and the gutter belongs to the column.
      *
-     * <p>The add tile is NOT here: it leads the grid in its own row, so this is
-     * photographs only. See {@link #addCellRow}.
+     * <p><b>The add tile flows in the first row when {@code withAddTile} is set</b>
+     * and is absent from every other row. It is cheap to rebuild each time (it
+     * holds no decode), so a relayout re-creates it rather than keying it: only
+     * photographs need the {@link #cellMarks} reuse.
      *
      * @param archivedDraw true for an archived section's muted cells
+     * @param withAddTile  true on the one row that leads with the {@code ＋} tile
      */
     private LinearLayout cellRowReuse(List<LibraryItem> rows, int start, String activeId,
-                                      boolean archivedDraw) {
+                                      boolean archivedDraw, boolean withAddTile) {
         LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < GRID_COLUMNS; i++) {
+        final int lead = withAddTile ? 1 : 0;
+        if (withAddTile) {
+            // Column 0. The blank spacers below never apply to it: this row
+            // always has a tile there, whatever the photograph count.
+            line.addView(addCell(true));
+        }
+        for (int i = 0; i < GRID_COLUMNS - lead; i++) {
+            int column = lead + i;
             int at = start + i;
+            boolean firstInRow = column == 0;
             if (at < rows.size()) {
                 LibraryItem item = rows.get(at);
                 PickedCell mark = cellMarks.get(item.id);
                 View c;
                 if (mark == null) {
-                    c = cell(item, item.id.equals(activeId), i == 0, archivedDraw);
+                    c = cell(item, item.id.equals(activeId), firstInRow, archivedDraw);
                 } else {
                     c = mark.cell;
-                    c.setLayoutParams(cellLayoutParams(i == 0));
+                    c.setLayoutParams(cellLayoutParams(firstInRow));
                 }
                 line.addView(c);
             } else {
@@ -1399,7 +1477,7 @@ final class Gallery {
                 View blank = new View(activity);
                 LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(
                         cellPx, 0);
-                if (i > 0) blankLp.leftMargin = activity.dp(GRID_GAP_DP);
+                if (column > 0) blankLp.leftMargin = activity.dp(GRID_GAP_DP);
                 blank.setLayoutParams(blankLp);
                 line.addView(blank);
             }
@@ -2743,15 +2821,23 @@ final class Gallery {
     /**
      * Fill the section for the playlists on disk.
      *
-     * <p>The rows are rebuilt here rather than patched, because a rename, a
-     * trigger change or a membership change can move several of them and the
-     * editor is the only thing that causes it. A rotation TOGGLE does not come
-     * here: it repaints the two rows it moves between, so the collages are not
-     * decoded again. See {@link #togglePlaylist}.
+     * <p><b>A row whose picture has not changed is reused, not rebuilt.</b> A
+     * rebuild costs the collage's up-to-four decodes, and the editor is the thing
+     * that causes rebuilds: opening it and dismissing it without editing writes
+     * nothing, so nothing about the rows differs, so every collage on screen was
+     * being decoded again to produce an identical picture. That is why the
+     * membership is compared here rather than the section simply being rebuilt.
+     *
+     * <p>It is a reuse and not a patch, because a rename, a trigger change or a
+     * membership change really can move several rows, and only a rebuild gets the
+     * collage right. The comparison is per row, so editing ONE playlist
+     * redraws ONE collage and leaves the rest of the section alone.
+     *
+     * <p>A rotation TOGGLE never comes here at all: it repaints the rows it moves
+     * between in place. See {@link #togglePlaylist}.
      */
     private void fillPlaylistsSection(LinearLayout section, Library lib) {
         section.removeAllViews();
-        playlistRows.clear();
         Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
         long now = System.currentTimeMillis();
         PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
@@ -2765,9 +2851,30 @@ final class Gallery {
         section.addView(caption);
 
         section.addView(newPlaylistRow());
+
+        // The rows this pass keeps, so a playlist that has been deleted takes its
+        // holder with it: a stale holder would be reused by a future row that
+        // happened to reuse the id, and would draw the old playlist's collage.
+        Map<String, PlaylistRow> live = new HashMap<String, PlaylistRow>();
         for (Playlist p : lists.playlists()) {
-            section.addView(playlistRow(p, lib, status, now));
+            PlaylistRow held = playlistRows.get(p.id);
+            View row;
+            if (held != null && playlistRowSignature(p).equals(held.signature)) {
+                // THE SAME PICTURE. Reuse the views, and with them the collage's
+                // up to four decodes -- which is the whole cost of this section.
+                // Only the state text is rewritten, and refreshPlaylistRowVisual
+                // does exactly that: subtitle, wash, switch, spoken state.
+                row = held.row;
+                refreshPlaylistRowVisual(held, p, status, now);
+            } else {
+                row = playlistRow(p, lib, status, now);
+                held = playlistRows.get(p.id);
+            }
+            if (held != null) live.put(p.id, held);
+            section.addView(row);
         }
+        playlistRows.clear();
+        playlistRows.putAll(live);
         playlistsSignature = playlistsSignature();
     }
 
@@ -2776,17 +2883,24 @@ final class Gallery {
      * not part of any ordering. Creating and opening the editor is one tap,
      * because a New row that only announced itself would be a row that does
      * nothing.
+     *
+     * <p><b>Neutral, not accent.</b> It is the same weight of chrome as the
+     * gallery's own {@code ＋} add tile and the rest of the section: accent is
+     * the app's "this is the live thing" colour, and spending it on a row that
+     * merely creates an empty playlist makes the one row nothing rotates on the
+     * loudest thing in the section. The {@code ＋} and the dashed plate are the
+     * grid's own add treatment, so the two add affordances read as one family.
      */
     private View newPlaylistRow() {
         TextView row = text(activity.getString(R.string.add_photo_glyph) + "  "
                 + activity.getString(R.string.gallery_playlist_new_row), 13.5f);
-        row.setTextColor(PhotoTile.ACCENT);
+        row.setTextColor(0x99FFFFFF); // --ink, dimmed, exactly as addCell's glyph
         row.setTypeface(medium());
         row.setGravity(Gravity.CENTER);
         row.setPadding(activity.dp(12), activity.dp(12),
                 activity.dp(12), activity.dp(12));
         row.setBackground(new DashBorder(activity.dp(1), activity.dp(4),
-                0x8A7FD1C1, activity.dp(11)));
+                0x57FFFFFF, activity.dp(11)));
         row.setContentDescription(activity.getString(R.string.gallery_playlist_new));
         row.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -2809,18 +2923,21 @@ final class Gallery {
     }
 
     /**
-     * One playlist row: {@code [collage] name · trigger · screens [✎] [radio]}.
+     * One playlist row: {@code [collage] name · trigger · screens [✎] │ [switch]}.
      *
      * <p>The label leads and the controls trail, which is
      * {@link ModalSheet#switchRow}'s convention: the right edge is where a hand
      * reaches for a control, and a leading control reads as a second label.
      *
-     * <p><b>The row is the toggle; the radio is a mark, not a target.</b> The
+     * <p><b>The row is the toggle; the switch is a mark, not a target.</b> The
      * pencil is its own live 38dp target so configure and activate never share a
-     * hit area. And it is a toggle wearing a radio's clothes: tapping the active
-     * row clears the flag, and zero selected is legal — a radio that can be turned
-     * off. Enabling stands the others down (the model enforces one) and steps once
-     * so the wallpaper changes in the moment.
+     * hit area, and a hairline divider separates that configure half from the
+     * state half. And the state mark is a <b>switch, not a radio</b>: the
+     * interaction really is on/off (tapping the active row clears the flag, and
+     * zero selected is legal), so the radio's filled dot was a lie about what a
+     * tap does. Enabling stands the others down -- the model enforces one -- and
+     * steps once so the wallpaper changes in the moment. See the call site for
+     * why the exclusivity does not earn a radio's clothes.
      */
     private View playlistRow(final Playlist p, Library lib, PlaylistStatus status, long now) {
         LinearLayout row = new LinearLayout(activity);
@@ -2844,57 +2961,38 @@ final class Gallery {
         row.addView(text, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // The pencil: a separate live target. Added before the radio so the
-        // control trail reads label -> edit -> state, per the accepted row shape.
+        // The pencil: a MARK, not a target. It sits inside the row's left half,
+        // which opens the editor, so giving it its own listener would be a second
+        // target for one action -- and it would be the only part of the left half
+        // that behaves differently from the rest of it, which is exactly what a
+        // divider is there to prevent. See playlistRow's shape.
         TextView edit = new TextView(activity);
         edit.setText(activity.getString(R.string.gallery_playlist_edit_glyph));
         edit.setTextSize(15);
         edit.setTextColor(0xCCFFFFFF);
         edit.setGravity(Gravity.CENTER);
         edit.setBackground(plain(0x14FFFFFF, activity.dp(9)));
-        edit.setContentDescription(activity.getString(
-                R.string.gallery_playlist_edit, p.displayName()));
-        edit.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openEditor(p.id);
-            }
-        });
+        edit.setClickable(false);
+        edit.setFocusable(false);
+        edit.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(
                 activity.dp(38), activity.dp(38));
         editLp.leftMargin = activity.dp(10);
         edit.setLayoutParams(editLp);
         row.addView(edit);
 
-        FrameLayout radio = new FrameLayout(activity);
-        View ring = new View(activity);
-        GradientDrawable ringBg = new GradientDrawable();
-        ringBg.setShape(GradientDrawable.OVAL);
-        ringBg.setStroke(activity.dp(2), 0x59FFFFFF);
-        ring.setBackground(ringBg);
-        radio.addView(ring, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        View dot = new View(activity);
-        GradientDrawable dotBg = new GradientDrawable();
-        dotBg.setShape(GradientDrawable.OVAL);
-        dotBg.setColor(PhotoTile.ACCENT);
-        dot.setBackground(dotBg);
-        radio.addView(dot, new FrameLayout.LayoutParams(
-                activity.dp(12), activity.dp(12), Gravity.CENTER));
-        // The row describes itself; the mark is a picture of the choice.
-        radio.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams radioLp = new LinearLayout.LayoutParams(
-                activity.dp(22), activity.dp(22));
-        radioLp.leftMargin = activity.dp(12);
-        row.addView(radio, radioLp);
-
-        final PlaylistRow holder = new PlaylistRow(row, name, sub, dot);
-        playlistRows.put(p.id, holder);
-        refreshPlaylistRowVisual(holder, p, status, now);
-
-        row.setClickable(true);
-        row.setOnClickListener(new View.OnClickListener() {
+        // The state half: divider and switch in ONE target. It is a container
+        // rather than the switch itself so that the gap between the divider and
+        // the track is part of the toggle's hit area — a bare switch leaves a
+        // strip to its left where a tap would fall through to the row and open
+        // the editor, which is the one place a mis-hit is worst because the two
+        // halves do different things.
+        LinearLayout toggleZone = new LinearLayout(activity);
+        toggleZone.setOrientation(LinearLayout.HORIZONTAL);
+        toggleZone.setGravity(Gravity.CENTER_VERTICAL);
+        toggleZone.setClickable(true);
+        toggleZone.setFocusable(true);
+        toggleZone.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // By id, not the captured Playlist: the row can be toggled more
@@ -2903,7 +3001,109 @@ final class Gallery {
                 togglePlaylist(p.id);
             }
         });
+
+        // The divider: a sibling between configure and state, so it stays put
+        // when the switch flips and neither neighbour draws it. A hairline view,
+        // not a "|" glyph -- see DIVIDER_COLOUR. It lives INSIDE the toggle zone,
+        // so it is the boundary the eye reads and the tap zones agree on.
+        View divider = new View(activity);
+        divider.setBackgroundColor(DIVIDER_COLOUR);
+        LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(
+                activity.dp(DIVIDER_WIDTH_DP), activity.dp(DIVIDER_HEIGHT_DP));
+        dividerLp.leftMargin = activity.dp(10);
+        dividerLp.rightMargin = activity.dp(10);
+        divider.setLayoutParams(dividerLp);
+        toggleZone.addView(divider);
+
+        // The control: A SWITCH, NOT A RADIO.
+        //
+        // The interaction is on/off -- tapping the state zone turns it off, and
+        // zero selected is legal -- so a radio's filled dot lies about what a tap
+        // does: a radio cannot be deselected, and it reads "one of these" for a
+        // row whose whole behaviour is flip. The exclusivity (only one playlist
+        // rotates) is not a radio's rule here, it is a consequence the model
+        // enforces -- Playlists.withActive stands the others down -- so it
+        // belongs on the model, not on the control's clothes. This is the app's
+        // own precedent: ModalSheet.switchRow's javadoc says the platform Switch
+        // "has the shape, the motion and the state channel users and screen
+        // readers already know", and it is "a mark, not a second tap target".
+        // That is exactly this: the zone is the toggle, the switch only reports.
+        //
+        // The two-switches-on-at-once risk is closed by WHEN the stand-down is
+        // applied: togglePlaylist writes through PlaylistScreen.setActive
+        // (which commits the whole playlists blob) and only then repaints every
+        // row, so the switch that went off and the one that went on move in the
+        // same synchronous pass -- no frame shows two on.
+        android.widget.Switch control = new android.widget.Switch(activity);
+        control.setShowText(false);
+        control.setClickable(false);
+        control.setFocusable(false);
+        control.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        control.setTrackTintList(new android.content.res.ColorStateList(
+                new int[][] { { android.R.attr.state_checked }, {} },
+                new int[] { SWITCH_TRACK_ON, SWITCH_TRACK_OFF }));
+        control.setThumbTintList(new android.content.res.ColorStateList(
+                new int[][] { { android.R.attr.state_checked }, {} },
+                new int[] { SWITCH_THUMB_ON, SWITCH_THUMB_OFF }));
+        LinearLayout.LayoutParams controlLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        toggleZone.addView(control, controlLp);
+
+        // The zone gets the row's trailing padding, so the switch is not flush to
+        // the row's edge while the label is padded on the left, and a min width of
+        // 48dp so the target meets the platform minimum whatever the track
+        // measures (AGENTS.md: touch targets are >= 48dp).
+        LinearLayout.LayoutParams zoneLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        zoneLp.leftMargin = activity.dp(4);
+        toggleZone.setMinimumWidth(activity.dp(48));
+        row.addView(toggleZone, zoneLp);
+
+        final PlaylistRow holder = new PlaylistRow(row, name, sub, control, toggleZone);
+        holder.signature = playlistRowSignature(p);
+        playlistRows.put(p.id, holder);
+        refreshPlaylistRowVisual(holder, p, status, now);
+
+        // The row is the EDIT half. Tapping the collage, the name, the subtitle
+        // or the pencil opens this playlist's editor; only the zone right of the
+        // divider flips it. Two halves, two actions, one divider -- and the
+        // divider is the boundary in both the drawing and the hit testing, so
+        // what the eye reads is what the finger gets.
+        row.setClickable(true);
+        row.setContentDescription(activity.getString(
+                R.string.gallery_playlist_edit, p.displayName()));
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openEditor(p.id);
+            }
+        });
         return row;
+    }
+
+    /**
+     * What a playlist row is built from, as one comparable string.
+     *
+     * <p>Exactly the fields the row DRAWS, and deliberately not {@code
+     * lastAdvancedAt}: that moves on every rotation step, so including it would
+     * make the signature differ on every tick and the reuse below would never
+     * fire. The time-dependent text it feeds is rewritten by
+     * {@link #refreshPlaylistRowVisual}, which is called either way.
+     *
+     * <p>Membership is in ORDER, because the collage draws the first four in
+     * order: a reorder changes what the collage shows and must rebuild it, and a
+     * set comparison would call that unchanged.
+     */
+    private static String playlistRowSignature(Playlist p) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(p.name).append(' ');
+        for (String id : p.itemIds) sb.append(id).append('');
+        sb.append(' ').append(p.trigger).append(' ');
+        for (Surface s : p.surfaces) sb.append(s.name()).append('');
+        sb.append(' ').append(p.shuffle).append(' ').append(p.active);
+        return sb.toString();
     }
 
     /** The row's fill and border: the accent wash while it rotates, a hairline otherwise. */
@@ -2944,7 +3144,17 @@ final class Gallery {
             holder.sub.setTextColor(DIM);
         }
         holder.row.setBackground(playlistRowBackground(rotating));
-        holder.dot.setVisibility(rotating ? View.VISIBLE : View.GONE);
+        holder.control.setChecked(rotating);
+        // The ZONE speaks, not the switch: the switch is
+        // IMPORTANT_FOR_ACCESSIBILITY_NO so that a screen reader hears one control
+        // per half of the row rather than the mark and its container both. So the
+        // state has to be in the zone's description, or the row's two halves would
+        // be one silent button and one button with no state.
+        holder.toggleZone.setContentDescription(activity.getString(
+                R.string.gallery_playlist_control_talk, p.displayName(),
+                activity.getString(rotating
+                        ? R.string.playlists_state_rotating
+                        : R.string.playlists_state_idle)));
         holder.row.setContentDescription(activity.getString(R.string.playlists_talk,
                 p.displayName(), holder.sub.getText(),
                 activity.getString(rotating
