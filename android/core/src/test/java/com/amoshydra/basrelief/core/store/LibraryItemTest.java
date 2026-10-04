@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -261,6 +262,95 @@ public class LibraryItemTest {
         LibraryItem relabelled = s.withLabel("Beach");
         assertEquals("Beach", relabelled.label);
         assertEquals(s.imageName, relabelled.imageName);
+    }
+
+    // -------------------------------------------------------------- archive
+
+    /**
+     * The flag survives a round trip, and a live item does not write the key.
+     *
+     * <p>The second half is a size/byte-stability property and not a style
+     * choice: a library with nothing archived must serialise exactly as it did
+     * before this feature existed, so the key is absent rather than false.
+     */
+    @Test
+    public void archiveSurvivesARoundTripAndIsAbsentWhenFalse() {
+        LibraryItem live = sample();
+        assertFalse(live.isArchived());
+        assertFalse("a live item must not write an archived key",
+                live.toJson().contains("archived"));
+
+        LibraryItem hidden = live.withArchived(true);
+        assertTrue(hidden.isArchived());
+        LibraryItem back = LibraryItem.fromJson(json(hidden.toJson()));
+        assertNotNull(back);
+        assertTrue("the archive flag must survive a round trip", back.isArchived());
+
+        // and restoring is the same bit off, through the same round trip
+        LibraryItem shown = back.withArchived(false);
+        assertFalse(shown.isArchived());
+        assertFalse(shown.toJson().contains("archived"));
+    }
+
+    /**
+     * An old v3 blob has no archived key at all, and must parse as live.
+     *
+     * <p>This is the whole reason the feature needed no version bump and no
+     * migration: {@code optBoolean("archived", false)} reads the absent key as
+     * live, so an upgraded user's photos all stay in the gallery.
+     */
+    @Test
+    public void anOldBlobWithNoArchivedKeyParsesAsLive() {
+        LibraryItem old = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1}"));
+        assertNotNull(old);
+        assertFalse("absent means live", old.isArchived());
+    }
+
+    /**
+     * Archiving is an identity-only edit: it must carry every render value and
+     * the lock override.
+     *
+     * <p>The {@code withDepth} trap again, one field over. A {@code withArchived}
+     * built from a constructor naming only the identity fields would reset the
+     * eight settings and the lock override.
+     */
+    @Test
+    public void withArchivedCarriesEveryRenderValueAndTheLockOverride() {
+        LibraryItem full = sample()
+                .withIntensity(Surface.HOME, 70)
+                .withZoom(Surface.HOME, 140)
+                .withMotion(Surface.HOME, 55)
+                .withAdjust(Surface.HOME, -12, 18)
+                .withSettings(Surface.LOCK, sample().settings(Surface.LOCK)
+                        .with(30, 120, 20, 0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f));
+
+        LibraryItem hidden = full.withArchived(true);
+        assertTrue(hidden.hasOwnLockSettings());
+        assertEquals(70, hidden.settings(Surface.HOME).depth);
+        assertEquals(140, hidden.settings(Surface.HOME).zoom);
+        assertEquals(55, hidden.settings(Surface.HOME).motion);
+        assertEquals(-12, hidden.settings(Surface.HOME).brightness);
+        assertEquals(18, hidden.settings(Surface.HOME).shadow);
+        assertEquals(30, hidden.settings(Surface.LOCK).depth);
+        assertEquals(210f, hidden.settings(Surface.LOCK).lightAzimuth, 1e-6f);
+
+        // Every other identity field, too.
+        assertEquals(full.id, hidden.id);
+        assertEquals(full.imageName, hidden.imageName);
+        assertEquals(full.depthName, hidden.depthName);
+        assertEquals(full.label, hidden.label);
+        assertEquals(full.addedAt, hidden.addedAt);
+        assertEquals(full.lastUsedAt, hidden.lastUsedAt);
+    }
+
+    /** Setting the value it already is returns the same instance, not a write. */
+    @Test
+    public void withArchivedIsIdempotent() {
+        LibraryItem live = sample();
+        assertSame(live, live.withArchived(false));
+        LibraryItem hidden = live.withArchived(true);
+        assertSame(hidden, hidden.withArchived(true));
     }
 
     // --------------------------------------------------------- never throws

@@ -233,9 +233,21 @@ final class ContextMenu {
         /** What a tap runs, after the menu is gone. May be null on a disabled item. */
         final Runnable action;
 
+        /**
+         * Why the item cannot run yet, or null. Rendered as a dimmed second line
+         * under a disabled row's label.
+         *
+         * <p>This is where the footer's job moved: the grid used to show the
+         * selection requirement on a dimmed Paste button's description, and with
+         * the footer gone the row menu is the only place left to say it. A
+         * control that silently does nothing is the failure this app avoids, so
+         * the reason is stated rather than implied.
+         */
+        final CharSequence reason;
+
         /** An enabled, ordinary command. */
         Item(CharSequence label, Runnable action) {
-            this(label, action, false, true);
+            this(label, action, false, true, null);
         }
 
         /**
@@ -245,10 +257,27 @@ final class ContextMenu {
          * @param enabled     false to show the command without offering it
          */
         Item(CharSequence label, Runnable action, boolean destructive, boolean enabled) {
+            this(label, action, destructive, enabled, null);
+        }
+
+        /**
+         * A disabled command with the sentence that says what would enable it.
+         *
+         * <p>Used for Paste with nothing picked: the row dims and the reason
+         * sits under it, exactly the state the footer's dimmed button used to
+         * teach.
+         */
+        static Item needsSelection(CharSequence label, CharSequence reason) {
+            return new Item(label, null, false, false, reason);
+        }
+
+        private Item(CharSequence label, Runnable action, boolean destructive,
+                     boolean enabled, CharSequence reason) {
             this.label = label;
             this.action = action;
             this.destructive = destructive;
             this.enabled = enabled;
+            this.reason = reason;
         }
 
         /** Delete: the same row language as every other command, in the app's bad ink. */
@@ -522,19 +551,42 @@ final class ContextMenu {
      * <p>A disabled row keeps the app's one disabled treatment —
      * {@code ModalSheet.option}'s {@code .locked}, the whole row at 42% — and
      * no click listener, so it cannot run and cannot announce itself as
-     * tappable.
+     * tappable. A disabled row with a reason carries it as a dimmed second line,
+     * so the requirement the footer used to state has a home.
      */
-    private static TextView row(Context context, final Item item, final PopupWindow popup) {
-        TextView row = new TextView(context);
-        row.setText(item.label);
-        row.setTextSize(14);
-        row.setTextColor(item.destructive ? DESTRUCTIVE_INK : ModalSheet.INK);
-        row.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+    private static View row(Context context, final Item item, final PopupWindow popup) {
+        TextView label = new TextView(context);
+        label.setText(item.label);
+        label.setTextSize(14);
+        label.setTextColor(item.destructive ? DESTRUCTIVE_INK : ModalSheet.INK);
+
+        View content;
+        if (item.reason != null) {
+            LinearLayout column = new LinearLayout(context);
+            column.setOrientation(LinearLayout.VERTICAL);
+            column.addView(label);
+            TextView why = new TextView(context);
+            why.setText(item.reason);
+            why.setTextSize(11);
+            why.setTextColor(0x57FFFFFF); // --dimmer
+            column.addView(why);
+            content = column;
+        } else {
+            label.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            content = label;
+        }
+
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         int side = ModalSheet.dp(context, ModalSheet.OPT_PAD_DP);
         row.setPadding(side, ModalSheet.dp(context, 12), side, ModalSheet.dp(context, 12));
         row.setMinimumHeight(ModalSheet.dp(context, ITEM_HEIGHT_DP));
         row.setBackground(rowPlate());
         row.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(content, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 

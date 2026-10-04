@@ -458,18 +458,27 @@ public final class Playlists {
     }
 
     /**
-     * The ids of a playlist's photos that the index can still resolve.
+     * The ids of a playlist's photos that the index can still resolve and that are
+     * not archived.
      *
      * <p>The filter that makes a hole survivable. A playlist can name a photo the
      * gallery no longer holds — the delete missed it, or a restore brought back
      * the blob without the files — and rotation has to step over it rather than
      * refuse the whole list. It also means a rotation can never select something
      * the index cannot render, because every candidate came out of the index.
+     *
+     * <p><b>An archived member is skipped exactly as a missing one is, but it is
+     * NOT removed.</b> That is the deliberate difference from delete:
+     * {@link #afterRemoving} takes the id out of every playlist, because the photo
+     * is gone; archive leaves the membership real, so restoring the photo brings
+     * back the place the user arranged for it. Rotation simply does not *select* an
+     * archived photo while it is hidden.
      */
     private static List<String> livingIds(Playlist playlist, Library index) {
         List<String> out = new ArrayList<String>();
         for (String id : playlist.itemIds) {
-            if (index.contains(id)) out.add(id);
+            LibraryItem item = index.find(id);
+            if (item != null && !item.isArchived()) out.add(id);
         }
         return out;
     }

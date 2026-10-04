@@ -233,6 +233,55 @@ public class PerItemSettingsTest {
     }
 
     /**
+     * A single-field ARCHIVE edit resets no render value.
+     *
+     * <p>{@link LibraryItem#withArchived} is an identity-only edit and must be
+     * built like {@link LibraryItem#copy}, not through a constructor that names
+     * only the flag — the exact trap that shipped once, when {@code withDepth}
+     * reset Motion, brightness and shadow.
+     */
+    @Test
+    public void archivingResetsNoRenderValue() {
+        LibraryItem full = item("a")
+                .withIntensity(Surface.HOME, 80)
+                .withZoom(Surface.HOME, 150)
+                .withMotion(Surface.HOME, 55)
+                .withOrigin(Surface.HOME, 0.1f, -0.2f)
+                .withPan(Surface.HOME, 30f, -40f)
+                .withAdjust(Surface.HOME, -15, 20)
+                .withLight(Surface.HOME, 205f, 35f);
+
+        SurfaceSettings s = home(full.withArchived(true));
+        assertEquals(80, s.depth);
+        assertEquals(150, s.zoom);
+        assertEquals("Motion was reset by archiving", 55, s.motion);
+        assertEquals(0.1f, s.originX, 1e-6f);
+        assertEquals(-40f, s.panY, 1e-3f);
+        assertEquals(-15, s.brightness);
+        assertEquals(20, s.shadow);
+        assertEquals(205f, s.lightAzimuth, 1e-6f);
+        assertEquals(35f, s.lightElevation, 1e-6f);
+    }
+
+    /**
+     * A v3 item with no {@code archived} key reads live, and the key is omitted
+     * when false — so an upgraded blob is byte-identical to one this build never
+     * touched.
+     */
+    @Test
+    public void anItemWithNoArchivedKeyReadsLiveAndDoesNotGainTheKey() {
+        LibraryItem old = item("a");
+        assertFalse("an old blob has no archived key, which means live",
+                old.isArchived());
+        assertFalse("a live item must not write the key",
+                old.toJson().contains("\"archived\""));
+
+        LibraryItem hidden = old.withArchived(true);
+        assertTrue(Library.parse(Library.empty().withItem(hidden).toJson())
+                .find("a").isArchived());
+    }
+
+    /**
      * Editing one value must not reset the others.
      *
      * <p>This is the hazard the {@code withX} mutators exist to prevent, and it is

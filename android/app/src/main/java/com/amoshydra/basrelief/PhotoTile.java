@@ -63,6 +63,15 @@ final class PhotoTile extends FrameLayout {
      */
     private static final int PICK_TINT = 0x4D7FD1C1;
 
+    /**
+     * The archived cell's mute. A near-black wash that dims the photograph so an
+     * archived row reads as set aside while still being recognisably the photo —
+     * it is not deleted, and hiding it entirely would say it was. The mockup's
+     * {@code .cell.archived} is a darker fill; a wash over the real photograph is
+     * the same reading without a second decode path.
+     */
+    private static final int MUTE_TINT = 0xB3080B0E;
+
     /** The active ring: `.thumb[aria-current=true]`'s 2px white border. */
     private static final int RING_ACTIVE_DP = 2;
 
@@ -86,11 +95,13 @@ final class PhotoTile extends FrameLayout {
     private final int radiusPx;
 
     private final ImageView photo;
+    private final View mute;
     private final View wash;
     private final TextView badge;
 
     private boolean active;
     private boolean picked;
+    private boolean muted;
 
     /**
      * One tile of the given edge and corner radius.
@@ -125,6 +136,16 @@ final class PhotoTile extends FrameLayout {
         photo = new ImageView(activity);
         photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
         addView(photo, new LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
+        // The mute, for an archived cell. Added after the photograph so it dims
+        // it, and before the pick wash so a picked archived row still shows its
+        // accent. GONE until a host asks for it, so the cost on the strip, the
+        // grid and every playlist swatch is one invisible view.
+        mute = new View(activity);
+        mute.setBackgroundColor(MUTE_TINT);
+        mute.setVisibility(GONE);
+        addView(mute, new LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         // The wash and the badge are built for every tile and only their
@@ -216,6 +237,19 @@ final class PhotoTile extends FrameLayout {
         wash.setVisibility(next ? VISIBLE : GONE);
         badge.setVisibility(next ? VISIBLE : GONE);
         drawRing();
+    }
+
+    /**
+     * Whether this photograph is hidden in the archive.
+     *
+     * <p>One wash, and no ring of its own: the mute says "set aside", and it is
+     * independent of active and picked, so an archived photo that is also on the
+     * wallpaper still wears the white ring. See {@link #MUTE_TINT}.
+     */
+    void setMuted(boolean next) {
+        if (muted == next) return;
+        muted = next;
+        mute.setVisibility(next ? VISIBLE : GONE);
     }
 
     /** Redraw the outline for the current pair of states. */

@@ -254,6 +254,35 @@
     <string name="gallery_deleted">Deleted</string>
     <string name="gallery_deleted_active">Deleted · showing the marble bust</string>
 
+    <!--
+      Archive. One quiet disclosure over the grid, reached only from the row's
+      context menu. It shows only while something is archived, and looks the
+      same whether the grid is full or empty; nothing is promoted and the empty
+      state never names it. Archiving the active photo keeps the wallpaper — the
+      contrast with delete, which loses it.
+    -->
+    <string name="gallery_archived_toggle">Archived · %1$d</string>
+    <string name="gallery_archived_toggle_show">Show archived photos, %1$d</string>
+    <string name="gallery_archived_toggle_hide">Hide archived photos, %1$d</string>
+    <string name="gallery_archived_toggle_show_glyph">▸</string>
+    <string name="gallery_archived_toggle_hide_glyph">▾</string>
+    <string name="gallery_archive">Archive</string>
+    <string name="gallery_restore">Restore</string>
+    <string name="gallery_archive_selected">Archive %1$d selected</string>
+    <string name="gallery_restore_selected">Restore %1$d selected</string>
+    <string name="gallery_archived">Archived</string>
+    <string name="gallery_restored">Restored</string>
+    <plurals name="gallery_archived_many">
+        <item quantity="one">%1$d archived</item>
+        <item quantity="other">%1$d archived</item>
+    </plurals>
+    <plurals name="gallery_restored_many">
+        <item quantity="one">%1$d restored</item>
+        <item quantity="other">%1$d restored</item>
+    </plurals>
+    <!-- Spoken state of an archived cell, drawn as a muted fill. -->
+    <string name="gallery_talk_archived">%1$s, archived</string>
+
     <!-- Playlists, reached from the gallery header. The picker's rows are the
           playlist's own name over its photo count, which is the plurals the
           playlists screen already uses, so the two screens cannot disagree

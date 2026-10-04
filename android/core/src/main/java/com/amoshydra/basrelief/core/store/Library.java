@@ -238,6 +238,59 @@ public final class Library {
         return find(id) != null;
     }
 
+    /**
+     * The photos shown in the live grid and filmstrip: everything not archived.
+     *
+     * <p>An archived photo is still a row in {@link #items} and still resolves by
+     * id — that is what lets archiving the active photo keep the wallpaper — but
+     * it is not listed. The empty state and the disclosure both key off this
+     * count, not off {@link #size()}.
+     */
+    public List<LibraryItem> sortedLive() {
+        return sortedLive(sort);
+    }
+
+    /** {@link #sortedLive()} in the given order. See {@link #sorted(SortOrder)}. */
+    public List<LibraryItem> sortedLive(SortOrder order) {
+        return filterArchived(sorted(order), false);
+    }
+
+    /** The archived photos, for the disclosure's inline section. */
+    public List<LibraryItem> sortedArchived() {
+        return sortedArchived(sort);
+    }
+
+    /** {@link #sortedArchived()} in the given order. */
+    public List<LibraryItem> sortedArchived(SortOrder order) {
+        return filterArchived(sorted(order), true);
+    }
+
+    private static List<LibraryItem> filterArchived(List<LibraryItem> in, boolean archived) {
+        List<LibraryItem> out = new ArrayList<LibraryItem>();
+        for (LibraryItem item : in) {
+            if (item.isArchived() == archived) out.add(item);
+        }
+        return out;
+    }
+
+    /** How many photos the live grid holds. The empty state reads this, not {@link #size()}. */
+    public int liveCount() {
+        int n = 0;
+        for (LibraryItem item : items) {
+            if (!item.isArchived()) n++;
+        }
+        return n;
+    }
+
+    /** How many photos are hidden. The disclosure is shown only when this is not zero. */
+    public int archivedCount() {
+        int n = 0;
+        for (LibraryItem item : items) {
+            if (item.isArchived()) n++;
+        }
+        return n;
+    }
+
     /** @return the item holding this image filename, or null */
     public LibraryItem findByImage(String imageName) {
         String name = LibraryItem.normaliseName(imageName);
@@ -308,6 +361,52 @@ public final class Library {
         // photo is on surfaces nobody applied it to -- and the segment would offer to
         // edit a lock screen that does not exist.
         return of(items, id, sort, null);
+    }
+
+    /**
+     * Hide a photo from the live gallery, or bring it back.
+     *
+     * <p><b>The selection is not touched, and that is the decision.</b> Archiving
+     * the active photo keeps the wallpaper: the row is hidden, not destroyed, so
+     * the pointer still resolves and the engine keeps drawing the same relief.
+     * Delete is the contrast — {@link #remove} clears the selection — and the two
+     * must not be collapsed. "The active row is archived" is a legal state, and
+     * {@link #of} requires only that the active id resolve to an item in
+     * {@code items}, which an archived row still does. No self-heal exists for
+     * this, because self-healing here would be doing the delete the user chose
+     * not to do.
+     *
+     * <p><b>{@code appliedSurfaces} is carried through</b>, the {@link #withItem}
+     * trap: this rebuilds through the four-argument {@code of} rather than the
+     * three-argument one, or every archive silently records that the photo was
+     * never applied to the lock screen.
+     *
+     * <p>An unknown id is a no-op, so a caller cannot invent a row.
+     */
+    public Library withArchived(String id, boolean on) {
+        LibraryItem item = find(id);
+        if (item == null) return this;
+        return withItem(item.withArchived(on));
+    }
+
+    /**
+     * Archive or restore a whole set in one write.
+     *
+     * <p>For the mixed-pick verbs: one commit, so a multi-select archive cannot be
+     * observed half-applied. Unknown ids are skipped, exactly as the single form.
+     */
+    public Library withArchived(Set<String> ids, boolean on) {
+        if (ids == null || ids.isEmpty()) return this;
+        List<LibraryItem> next = new ArrayList<LibraryItem>(items);
+        boolean changed = false;
+        for (int i = 0; i < next.size(); i++) {
+            LibraryItem item = next.get(i);
+            if (ids.contains(item.id) && item.isArchived() != on) {
+                next.set(i, item.withArchived(on));
+                changed = true;
+            }
+        }
+        return changed ? of(next, activeId, sort, appliedSurfaces) : this;
     }
 
     /**

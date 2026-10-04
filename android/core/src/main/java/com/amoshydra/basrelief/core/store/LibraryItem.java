@@ -92,6 +92,24 @@ public final class LibraryItem {
     private final SurfaceSettings lock;
 
     /**
+     * Whether this photo is hidden from the live gallery without being deleted.
+     *
+     * <p><b>One boolean, not a second container and not a timestamp.</b> Archive
+     * hides a row from the gallery while leaving its file in {@code filesDir};
+     * restore is the same bit off. There is deliberately no {@code archivedAt}:
+     * no sort order reads one, and a value nothing reads is the
+     * {@code powerSave} trap the project already paid for. The row is still an
+     * ordinary row in {@link Library#items} and still resolves — archiving the
+     * active photo deliberately leaves it on the wallpaper.
+     *
+     * <p>Default false, so an old v3 blob that has no {@code archived} key parses
+     * as live. It is not a new schema: the key is written only when true, so a
+     * library with no archived photos is byte-identical to one this build never
+     * touched.
+     */
+    private final boolean archived;
+
+    /**
      * @param id        {@link #isValidId}, else this throws
      * @param imageName image filename or path; reduced to a basename
      * @param depthName depth filename or path, or null
@@ -152,6 +170,14 @@ public final class LibraryItem {
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings) {
+        this(id, imageName, depthName, label, addedAt, lastUsedAt,
+                home, lockSettings, false);
+    }
+
+    private LibraryItem(String id, String imageName, String depthName, String label,
+                        long addedAt, long lastUsedAt,
+                        SurfaceSettings home, SurfaceSettings lockSettings,
+                        boolean archived) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -188,6 +214,7 @@ public final class LibraryItem {
         // range check without knowing the units.
         this.home = home;
         this.lock = lockSettings;
+        this.archived = archived;
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -421,7 +448,8 @@ public final class LibraryItem {
         boolean lockSurface = surface == Surface.LOCK;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
-                lockSurface ? next : lock);
+                lockSurface ? next : lock,
+                archived);
     }
 
     /**
@@ -529,6 +557,26 @@ public final class LibraryItem {
     }
 
     /**
+     * Hide this photo from the live gallery, or bring it back.
+     *
+     * <p>An identity-only edit in the {@link #copy} sense: every render value and
+     * the lock override carry over untouched, and so does every other identity
+     * field. It cannot touch the library's selection — that pointer lives on
+     * {@link Library} and this row has no copy of it — which is exactly what
+     * makes archiving the active photo legal and reversible.
+     */
+    public LibraryItem withArchived(boolean on) {
+        if (this.archived == on) return this;
+        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
+                home, lock, on);
+    }
+
+    /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
+    public boolean isArchived() {
+        return archived;
+    }
+
+    /**
      * A copy of this item with only its identity fields replaced; every render
      * value carries over.
      *
@@ -540,7 +588,7 @@ public final class LibraryItem {
     private LibraryItem copy(String id, String imageName, String depthName,
                              String label, long addedAt, long lastUsedAt) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock);
+                home, lock, archived);
     }
 
     // ---------------------------------------------------------- serialise
@@ -564,6 +612,10 @@ public final class LibraryItem {
             // missing key reads as "not set" without a special case.
             if (depthName != null) o.put("depth", depthName);
             if (label != null) o.put("label", label);
+            // Written only when true, so a library with nothing archived stays
+            // byte-identical to one an older build wrote. Absent means live --
+            // see fromJson's optBoolean default.
+            if (archived) o.put("archived", true);
         } catch (JSONException e) {
             throw new AssertionError("LibraryItem.toJson cannot fail", e);
         }
@@ -663,7 +715,11 @@ public final class LibraryItem {
                     o.optLong("added_at", 0L),
                     o.optLong("last_used_at", 0L),
                     home,
-                    lockFrom(o));
+                    lockFrom(o),
+                    // Absent means live. An old v3 blob has no key here and
+                    // parses unchanged, which is the whole reason this feature
+                    // needed no version bump.
+                    o.optBoolean("archived", false));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -673,6 +729,7 @@ public final class LibraryItem {
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt
+                + (archived ? " ARCHIVED" : "")
                 + " home=" + home + (lock == null ? "" : " lock=" + lock) + "}";
     }
 }

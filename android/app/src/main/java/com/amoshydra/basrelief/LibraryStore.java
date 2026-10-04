@@ -197,9 +197,36 @@ final class LibraryStore {
         return next;
     }
 
-    /** The rows to show, in the stored order. Never null. */
+    /** The live rows to show, in the stored order. Never null. */
     static List<LibraryItem> rows(SharedPreferences prefs) {
-        return load(prefs).sorted();
+        return load(prefs).sortedLive();
+    }
+
+    /** The archived rows, for the disclosure's section. Never null. */
+    static List<LibraryItem> archivedRows(SharedPreferences prefs) {
+        return load(prefs).sortedArchived();
+    }
+
+    /**
+     * Archive or restore one photo. One blob, unlike delete's two.
+     *
+     * <p>Archive never touches the playlists: a playlist keeps an archived member
+     * and skips it (see {@code Playlists.livingIds}), because restoring the photo
+     * must bring back the place the user arranged. Delete is the other half — it
+     * removes the id everywhere in the same derivation — and this is the
+     * deliberate contrast, so this write is the index and nothing else.
+     */
+    static Library setArchived(SharedPreferences prefs, String id, boolean archived) {
+        Library next = loadForWrite(prefs).withArchived(id, archived);
+        saveNow(prefs, next);
+        return next;
+    }
+
+    /** Archive or restore a whole set in one write. See {@link Library#withArchived(java.util.Set, boolean)}. */
+    static Library setArchived(SharedPreferences prefs, java.util.Set<String> ids, boolean archived) {
+        Library next = loadForWrite(prefs).withArchived(ids, archived);
+        saveNow(prefs, next);
+        return next;
     }
 
     interface Editor {

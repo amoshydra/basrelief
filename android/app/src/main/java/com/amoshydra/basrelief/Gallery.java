@@ -210,6 +210,18 @@ final class Gallery {
     private final Set<String> picked = new LinkedHashSet<String>();
 
     /**
+     * Whether the archived section is expanded under the grid.
+     *
+     * <p>UI state and deliberately not persisted, for the reason {@link #picked}
+     * is not: it is a moment's disclosure rather than a setting, and the next
+     * visit starts quiet. Cleared with the pick set by {@link #dismissGrid}, and
+     * the <i>open</i> state is derived — {@code showArchived && archivedCount() > 0}
+     * — so an archive emptied while the row is open simply stops producing rows
+     * and the row follows them out, with no second flag to keep in step.
+     */
+    private boolean showArchived;
+
+    /**
      * Each grid cell's picked decoration, by item id.
      *
      * <p>A pick changes one cell's wash, badge and description — and the count
@@ -269,12 +281,16 @@ final class Gallery {
         final View cell;
         final PhotoTile tile;
         final boolean active;
+        /** True when this cell is in the archived section, so its description says so. */
+        final boolean archived;
 
-        PickedCell(LibraryItem item, View cell, PhotoTile tile, boolean active) {
+        PickedCell(LibraryItem item, View cell, PhotoTile tile, boolean active,
+                   boolean archived) {
             this.item = item;
             this.cell = cell;
             this.tile = tile;
             this.active = active;
+            this.archived = archived;
         }
     }
 
@@ -489,7 +505,7 @@ final class Gallery {
         // refreshStrip/dismiss, so it can never address a detached row.
         stripRow = row;
 
-        for (LibraryItem item : lib.sorted()) {
+        for (LibraryItem item : lib.sortedLive()) {
             row.addView(stripThumb(item, item.id.equals(activeId)));
         }
         // The add tile first, then the grid. Add photo is the only way in, and it
@@ -712,6 +728,7 @@ final class Gallery {
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;
+        showArchived = false;
         root.removeView(grid);
         grid = null;
         gridScroller = null;
@@ -735,7 +752,15 @@ final class Gallery {
         selectionLineView = null;
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         final Library lib = state.library;
-        final List<LibraryItem> rows = lib.sorted();
+        // The live rows are what the grid lists. An archived photo is still a row
+        // in the index and still resolves -- that is what keeps the wallpaper when
+        // the active photo is archived -- but it is not in the live grid.
+        final List<LibraryItem> rows = lib.sortedLive();
+        final List<LibraryItem> archived = lib.sortedArchived();
+        // The open state is DERIVED: an archive emptied while the disclosure is
+        // open stops producing rows and the row follows them out.
+        final boolean archiveOpen = showArchived && !archived.isEmpty();
+        showArchived = archiveOpen;
         String activeId = lib.activeId();
 
         final int pad = activity.dp(GRID_PAD_DP);
@@ -832,21 +857,40 @@ final class Gallery {
         // gutter, and a row of photographs touched the row below it.
         boolean first = true;
         if (rows.isEmpty()) {
-            // An empty gallery is legitimate now -- the last row can be deleted
-            // and nothing re-seeds it -- so the cell area must say so rather than
-            // draw the lone ＋ of a grid with nothing in it. The placeholder is
-            // the fix line's shape: name the condition, then the one action that
-            // answers it.
-            cells.addView(emptyGallery());
+            // The ONE empty state. It does not know why the grid is empty --
+            // archived, deleted, or never added are the same answer to "what can
+            // I tap?" -- so the message is fixed and the archive never gets a
+            // hero here. An archived count, if any, still draws the same quiet
+            // disclosure below.
+            cells.addView(emptyGallery(), rowSpacing(first));
+            first = false;
         } else {
-            // The add tile is a CELL in this flow, not a row of its own. It takes
-            // the column after the last photograph, so it is a sibling of the
-            // cells -- same width arithmetic, same gutter, same row gap -- and
-            // {@code addCellRow} is gone rather than kept beside this.
-            int count = rows.size() + 1;
-            for (int start = 0; start < count; start += GRID_COLUMNS) {
-                cells.addView(cellRow(rows, start, activeId), rowSpacing(first));
+            // The add tile is the FIRST cell, before every photograph. It is not a
+            // photo, so it is not sorted among them: it is a fixed leading
+            // affordance, and hoisting it changes render order only -- no index
+            // write, no comparator. The photographs follow it.
+            cells.addView(addCellRow(), rowSpacing(first));
+            first = false;
+            for (int start = 0; start < rows.size(); start += GRID_COLUMNS) {
+                cells.addView(cellRow(rows, start, activeId, first), rowSpacing(first));
                 first = false;
+            }
+        }
+
+        // The archive: one quiet disclosure, shown only when something is
+        // archived, identical in a full grid and an empty one. It sits below the
+        // photos (and the add tile, or the empty box) and above the playlists
+        // section that follows the grid in the scroll.
+        if (!archived.isEmpty()) {
+            cells.addView(archiveDisclosure(archived.size(), archiveOpen),
+                    rowSpacing(first));
+            first = false;
+            if (archiveOpen) {
+                for (int start = 0; start < archived.size(); start += GRID_COLUMNS) {
+                    cells.addView(cellRow(archived, start, activeId, first, true),
+                            rowSpacing(first));
+                    first = false;
+                }
             }
         }
         scroll.addView(cells, new ScrollView.LayoutParams(
@@ -855,44 +899,73 @@ final class Gallery {
         panel.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // ---- the many-at-once actions
-        //
-        // The two actions that act on the picked set are live only while there
-        // is a set. A disabled button is visibly unavailable, which is honest:
-        // nothing is selected to paste onto, and promising the action and then
-        // toasting is the silently-does-nothing failure this design removes.
-        // Copy settings stays live because it acts on a source, not on the
-        // selection; Done stays live because leaving the grid must never be
-        // gated on picking. Set as wallpaper lives on the studio sheet's foot.
-        panel.addView(actionRow(
-                compact(activity.getString(R.string.gallery_copy_settings),
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                showCopySourcePicker();
-                            }
-                        }),
-                selectionAction(
-                        activity.getString(R.string.gallery_paste_onto_selected),
-                        R.string.gallery_paste_needs_selection,
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                pasteOnto(targetsFor(null));
-                            }
-                        })));
-        panel.addView(actionRow(
-                selectionAction(
-                        activity.getString(R.string.gallery_add_to_playlist),
-                        R.string.gallery_playlist_needs_selection,
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                showPlaylistPicker(null);
-                            }
-                        }),
-                doneButton()));
+        // No footer. Every action the footer duplicated -- Copy settings, Paste,
+        // Add to playlist -- and Archive / Restore are all in the row's context
+        // menu, and Done was the same exit BACK takes. A row of redundant
+        // controls drawing over the render was four things to keep in step.
         return panel;
+    }
+
+    /**
+     * The one archive treatment: a quiet, full-width disclosure row.
+     *
+     * <p>12sp, dim ink, no rule, no accent, and the same in a full grid and an
+     * empty one. It keeps a 48dp touch target because it is the only route to
+     * archived photos -- reachable is not prominent, but a route that is hard to
+     * hit is a route that is not there.
+     */
+    private View archiveDisclosure(final int count, final boolean open) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(activity.dp(48));
+        row.setPadding(activity.dp(2), activity.dp(9), activity.dp(2), activity.dp(9));
+
+        TextView label = text(activity.getString(R.string.gallery_archived_toggle, count),
+                12);
+        label.setTextColor(0x57FFFFFF); // --dimmer
+        row.addView(label);
+
+        TextView chev = text(open
+                ? activity.getString(R.string.gallery_archived_toggle_hide_glyph)
+                : activity.getString(R.string.gallery_archived_toggle_show_glyph), 10);
+        chev.setTextColor(0x57FFFFFF);
+        LinearLayout.LayoutParams chevLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        chevLp.leftMargin = activity.dp(6);
+        row.addView(chev, chevLp);
+
+        row.setContentDescription(activity.getString(open
+                        ? R.string.gallery_archived_toggle_hide
+                        : R.string.gallery_archived_toggle_show, count));
+        row.setClickable(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showArchived = !open;
+                rebuildGrid();
+            }
+        });
+        return row;
+    }
+
+    /**
+     * The first row of the grid: the add tile in the leading column, blanks
+     * beside it.
+     */
+    private LinearLayout addCellRow() {
+        LinearLayout line = new LinearLayout(activity);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.addView(addCell(true));
+        for (int i = 1; i < GRID_COLUMNS; i++) {
+            View blank = new View(activity);
+            LinearLayout.LayoutParams blankLp = new LinearLayout.LayoutParams(cellPx, 0);
+            blankLp.leftMargin = activity.dp(GRID_GAP_DP);
+            blank.setLayoutParams(blankLp);
+            line.addView(blank);
+        }
+        return line;
     }
 
     /**
@@ -975,8 +1048,8 @@ final class Gallery {
     }
 
     /**
-     * One row of {@link #GRID_COLUMNS} slots: photographs, then the add tile in
-     * the next free column, the rest padded with blanks.
+     * One row of {@link #GRID_COLUMNS} slots: photographs, the rest padded with
+     * blanks.
      *
      * <p>Fixed rows rather than a wrapping container, because a grid that measures
      * itself against variable-width children produces rows of differing heights,
@@ -989,21 +1062,20 @@ final class Gallery {
      * Every column used to carry the 8dp, which indented the whole grid by one
      * gap and made it ragged against the text above it.
      *
-     * <p>The add tile is handled here, at index {@code rows.size()}, because a
-     * row of its own put it at the left edge under a row of zero-height blanks --
-     * floating rather than sitting beside the last photograph.
+     * <p>The add tile is NOT here any more: it leads the grid in its own row, so
+     * this is photographs only. See {@link #addCellRow}.
+     *
+     * @param archivedDraw true for an archived section's muted cells
      */
-    private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId) {
+    private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId,
+                                 boolean firstInFlow, boolean archivedDraw) {
         LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < GRID_COLUMNS; i++) {
             int at = start + i;
             if (at < rows.size()) {
                 LibraryItem item = rows.get(at);
-                line.addView(cell(item, item.id.equals(activeId), i == 0));
-            } else if (at == rows.size()) {
-                // Exactly the slot the next photograph would take.
-                line.addView(addCell(i == 0));
+                line.addView(cell(item, item.id.equals(activeId), i == 0, archivedDraw));
             } else {
                 // A spacer, and deliberately zero-height: it exists only to hold a
                 // column open so the last row keeps the first row's column widths,
@@ -1017,6 +1089,12 @@ final class Gallery {
             }
         }
         return line;
+    }
+
+    /** A row of live photographs. See {@link #cellRow}. */
+    private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId,
+                                 boolean firstInFlow) {
+        return cellRow(rows, start, activeId, firstInFlow, false);
     }
 
     /**
@@ -1111,6 +1189,22 @@ final class Gallery {
      */
     private View cell(final LibraryItem item, final boolean isActive,
                       boolean firstInRow) {
+        return cell(item, isActive, firstInRow, false);
+    }
+
+    /**
+     * One cell, live or archived.
+     *
+     * <p>An archived cell is the same cell muted: the same tile, the same depth chip and
+     * the same {@code \u22ef} menu, with the photograph turned down. It cannot SELECT --
+     * an archived photo is not put on the wallpaper from here, and selecting it would be a
+     * route the disclosure exists to gate -- but it can still be PICKED, because the
+     * mixed-pick Restore verb acts on a selection.
+     *
+     * @param archivedDraw true when this cell is drawn in the archived section
+     */
+    private View cell(final LibraryItem item, final boolean isActive,
+                      boolean firstInRow, final boolean archivedDraw) {
         final boolean isPicked = picked.contains(item.id);
         LinearLayout cell = new LinearLayout(activity);
         cell.setOrientation(LinearLayout.VERTICAL);
@@ -1128,6 +1222,10 @@ final class Gallery {
         final PhotoTile tile = new PhotoTile(activity, cellPx, activity.dp(TILE_RADIUS_DP));
         tile.setActive(isActive);
         tile.setPicked(isPicked);
+        // The archived section's rows are the same cells, muted: the wash is the
+        // disclosure's whole visual difference, so an archived photo reads as set
+        // aside rather than as a second kind of row.
+        tile.setMuted(archivedDraw);
         // Square by arithmetic, not by measurement: cellPx is the column's width, so
         // using it as the height is what makes the cell a square. MATCH_PARENT width
         // and the computed height, because the two have to agree and only one of them
@@ -1160,6 +1258,11 @@ final class Gallery {
                     togglePick(item);
                     return;
                 }
+                // An archived photo is not selectable from the live grid: it is
+                // hidden, and putting it on the wallpaper is a route the
+                // disclosure exists to gate. Restore it first, then tap it. The
+                // menu still opens, because Restore lives there.
+                if (archivedDraw) return;
                 select(item.id);
             }
         });
@@ -1176,8 +1279,8 @@ final class Gallery {
                 return true;
             }
         });
-        cellMarks.put(item.id, new PickedCell(item, cell, tile, isActive));
-        cell.setContentDescription(stateDescription(item, isActive, isPicked));
+        cellMarks.put(item.id, new PickedCell(item, cell, tile, isActive, archivedDraw));
+        cell.setContentDescription(stateDescription(item, isActive, isPicked, archivedDraw));
         return cell;
     }
 
@@ -1220,7 +1323,8 @@ final class Gallery {
         PickedCell mark = cellMarks.get(id);
         if (mark == null) return;
         mark.tile.setPicked(on);
-        mark.cell.setContentDescription(stateDescription(mark.item, mark.active, on));
+        mark.cell.setContentDescription(
+                stateDescription(mark.item, mark.active, on, mark.archived));
     }
 
     /**
@@ -1268,13 +1372,30 @@ final class Gallery {
      * using the photograph is what a bare cell offers.
      */
     private String stateDescription(LibraryItem item, boolean isActive, boolean isPicked) {
+        return stateDescription(item, isActive, isPicked, item.isArchived());
+    }
+
+    /**
+     * As above, plus the archived fact for a cell drawn in the archived section.
+     *
+     * <p>The wash is colour, which nobody can hear, so an archived cell says so.
+     * The state composes with the other two rather than replacing them: an
+     * archived photo can still be on the wallpaper, and it can still be picked.
+     */
+    private String stateDescription(LibraryItem item, boolean isActive, boolean isPicked,
+                                    boolean archived) {
         String name = item.displayName();
+        String state;
         if (isActive && isPicked) {
-            return activity.getString(R.string.gallery_talk_active_selected, name);
+            state = activity.getString(R.string.gallery_talk_active_selected, name);
+        } else if (isActive) {
+            state = activity.getString(R.string.gallery_talk_active, name);
+        } else if (isPicked) {
+            state = activity.getString(R.string.gallery_talk_selected, name);
+        } else {
+            state = activity.getString(R.string.gallery_thumb_use, name);
         }
-        if (isActive) return activity.getString(R.string.gallery_talk_active, name);
-        if (isPicked) return activity.getString(R.string.gallery_talk_selected, name);
-        return activity.getString(R.string.gallery_thumb_use, name);
+        return archived ? activity.getString(R.string.gallery_talk_archived, state) : state;
     }
 
     /** Top-LEFT, clear of the row menu, which is top-right. */

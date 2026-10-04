@@ -196,6 +196,74 @@ public class PlaylistTest {
     }
 
     /**
+     * An archived member is skipped by rotation but KEPT in the playlist.
+     *
+     * <p>The deliberate difference from delete: archive leaves the membership
+     * real, so restoring the photo brings back the place the user arranged for
+     * it. The rotation steps over it exactly as it steps over a hole, but the
+     * blob still names it.
+     */
+    @Test
+    public void rotationStepsOverAnArchivedMemberWithoutLosingIt() {
+        Playlists p = daily("p", "a", "b", "c");
+        Library l = lib("a", "b", "c").withSelection("a").withArchived("b", true);
+
+        Playlists.Result first = Playlists.advance(p, l, Surface.HOME, DAY, new Random(7));
+        assertEquals("c", first.selectedId);
+        assertEquals("the playlist must keep the archived photo",
+                "[a, b, c]", ids(first.playlists.active()));
+
+        // Round trip: the membership the user arranged is still there, hidden or not.
+        Playlists reloaded = Playlists.parse(first.playlists.toJson());
+        assertEquals("[a, b, c]", ids(reloaded.active()));
+    }
+
+    /**
+     * Restoring an archived photo brings its playlist place straight back.
+     *
+     * <p>Nothing has to be re-added: the membership never went away, so the very
+     * next rotation can select it again.
+     */
+    @Test
+    public void restoringAnArchivedMemberMakesItSelectableAgain() {
+        Playlists p = daily("p", "a", "b", "c");
+        Library hidden = lib("a", "b", "c").withSelection("a").withArchived("b", true);
+        Library shown = hidden.withArchived("b", false);
+
+        // Rotate several times and collect everything that comes up; b must be
+        // among the results once it is live again.
+        boolean sawB = false;
+        Playlists lists = p;
+        Library lib = shown;
+        for (int i = 1; i <= 6; i++) {
+            Playlists.Result r = Playlists.advance(lists, lib, Surface.HOME,
+                    i * DAY, new Random(i));
+            if ("b".equals(r.selectedId)) sawB = true;
+            lists = r.playlists;
+            lib = r.library;
+        }
+        assertTrue("a restored photo must be selectable again", sawB);
+    }
+
+    /**
+     * A deleted photo is removed from every playlist even when it was archived.
+     *
+     * <p>Delete is the contrast with archive: it takes the id out of the blob,
+     * so a playlist can never name a photo that is gone — archived or not.
+     */
+    @Test
+    public void deletingAnArchivedPhotoRemovesItFromEveryPlaylist() {
+        Playlists p = daily("p", "a", "b", "c");
+        Library l = lib("a", "b", "c").withSelection("a").withArchived("b", true);
+        Playlists.Result r = Playlists.afterRemoving(p, l, "b");
+        assertNull("the row must be gone from the index too", r.library.find("b"));
+        for (Playlist pl : r.playlists.playlists()) {
+            assertFalse("a playlist still names the deleted photo", pl.contains("b"));
+        }
+        assertEquals("[a, c]", ids(r.playlists.active()));
+    }
+
+    /**
      * A deleted photo must never come back.
      *
      * <p>The trap is that this needs <i>two</i> halves and only one of them is
