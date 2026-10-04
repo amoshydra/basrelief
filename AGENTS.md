@@ -160,15 +160,29 @@ already cost real time.
   Deleting it while it is active clears the selection like any delete, and a
   null selection still renders `res/raw`, so the picture on screen does not
   change until another row is picked.
-- **The bundled demo is a pair, and an unreferenced asset fails silently.**
-  `android/app/src/main/res/raw/image.png` and
-  `android/app/src/main/res/raw/depth.png` are loaded together; ship one
-  without wiring it and the loader falls back to a flat map, which renders
-  correctly and has *no relief at all*. The status line is the only tell, which
-  is why it distinguishes "bundled demo + depth" from "bundled demo, FLAT". If
-  you add or replace an asset, confirm something actually reads it — this has
-  now bitten twice, and an asset with zero references is indistinguishable from
-  a working one in a build log.
+- **The bundled demo is a trio, and an unreferenced asset fails silently.**
+  `android/app/src/main/res/raw/image.png`,
+  `android/app/src/main/res/raw/depth.png` and
+  `android/app/src/main/res/raw/normal.png` are loaded together; ship one
+  without wiring it and the loader falls back — a flat map with *no relief at
+  all*, or a normal the shader never samples and a demo that lands **flat lit**.
+  The status line is the only tell, which is why it distinguishes
+  "bundled demo + depth + normals" from "bundled demo + depth (flat lit)" from
+  "bundled demo, FLAT (no depth found)". If you add or replace an asset, confirm
+  something actually reads it — this has now bitten twice, and an asset with zero
+  references is indistinguishable from a working one in a build log.
+- **Shading is supplied, never derived, and flat lit is a deliberate state.**
+  The old path derived a normal from the depth gradient
+  (`normalize(-dzdx, -dzdy, 1)`); it is gone from both backends, as is the
+  GLES3 vertex shader's central-difference code. A photo with depth and no
+  normal has *correct displacement and plane shading* — `NormalSource` reports
+  it and the sheet says "Flat lit — depth, no normals" with the fix. Do not
+  reintroduce a derivative to make an unshaded photo "look right": that is the
+  banding artifact the float blur exists to hide, and it makes the sheet's state
+  a lie. The normal is a texture (`normal_opengl`, OpenGL convention, so G is
+  **not** negated) sampled per fragment; it is part of the loaded pair identity,
+  so a photo that gains one is re-installed rather than reported as already
+  showing.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -459,7 +473,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 381 tests across twenty-one classes:
+it**. 438 tests across twenty-three classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -508,7 +522,35 @@ has run.**
   fraction range.
 - `ComfyWorkflowTest` — the ComfyUI graph wiring, especially that the depth
   node reads node 1 and `SaveImage` reads node **2**, not 1. An off-by-one
-  there renders the wrong tensor with no error.
+  there renders the wrong tensor with no error. Its second theme is the **second
+  graph shape**: MoGe is a pipeline (`LoadMoGeModel → MoGeInference → MoGeRender`),
+  not a single node, so it gets its own seven-node builder and the tests pin each
+  wire to its node *and* output index. **MoGe emits `depth` and `normal_opengl`
+  from one `MoGeInference`** — two render nodes sharing the one cached
+  inference, each with its own `SaveImage` and a distinct filename prefix
+  (`depthmap_`/`normal_`), because a second output the fetch path does not
+  expect is the failure that is silent. The MoGe picker entries are the
+  discovered `LoadMoGeModel.model_name` options — one per checkpoint — so a
+  server without the whole pipeline offers nothing and an ordinary node on the
+  same server is untouched; a test asserts the two shapes have different node
+  counts and different `SaveImage` sources so an edit cannot collapse them.
+- `ModelRankingTest` — the model chooser's ordering: the most recently used
+  models first, then discovery order. It exists because the dialog preferred the
+  first MoGe entry it found, so the default checkpoint followed the server's
+  listing order — the device selected MoGe 2 while MoGe 3 sat unselected. There is
+  no version ranking and no model named in `:core`: `rank` is a permutation, so a
+  history entry the server no longer offers is **skipped, never invented**, and
+  the rest keep their order. The history is capped and deduplicated by `remember`,
+  called on the **selection** rather than a finished run, and `encode`/`decode`
+  are the newline prefs form — an empty history is the empty string, so a fresh
+  install is discovery order exactly as before.
+- `NormalSourceTest` — the new middle state: a photo with depth and no normal is
+  **flat lit**, not shaded and not broken. The trap is the state that no longer
+  exists: `DERIVED` is deliberately absent, so a kind that named it would put
+  "shaded" on the sheet while the shader drew flat. A normal with no depth is
+  inert, nothing selected is the packaged trio (which ships a normal), and
+  exactly one kind reports supplied normals — pinned over every reachable answer
+  so a future kind cannot inherit a default.
 - `FramingTest` — the one resolution of what should be on screen. It
   is in `:core` rather than `:app` for a reason: it lived in `:app` for one
   commit, and in that window the studio loaded a newly selected photo's

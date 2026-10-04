@@ -54,54 +54,95 @@ final class BundledFiles {
     static final String DEPTH = LibraryItem.depthFileName(Library.BUNDLED_ID);
 
     /**
-     * Put the demo's pair in {@code filesDir} if it is not already there.
+     * The demo's normal map. The third file, and the one that decides whether a
+     * fresh install lands shaded or flat lit.
+     */
+    static final String NORMAL = LibraryItem.normalFileName(Library.BUNDLED_ID);
+
+    /**
+     * Put the demo's files in {@code filesDir} if they are not already there.
      *
      * <p><b>Copying is not the same as seeding.</b> This only moves bytes; whether
      * the index should name them is {@code Library.withBundledFiles} (repairing a
      * row) or {@code Library.withBundled} (adding one), and keeping those apart is
      * what stops this from re-adding a demo the user deleted. A caller must
      * therefore only ask for the copy when a demo row exists or is about to be
-     * seeded — otherwise a deleted demo leaves two orphan files behind forever.
+     * seeded — otherwise a deleted demo leaves orphan files behind forever.
      *
-     * @return {@code {imageName, depthName}} when both files are present
-     *         afterwards, or null when the copy could not be made. Null is not a
-     *         shrug: the caller then stores no filename at all, which the renderer
-     *         reads as "use the packaged pair" — the state this app shipped in for
-     *         its whole life, and a far better outcome than a filename that names
-     *         a file which is not there.
+     * <p><b>Three files, and the normal is optional to the pair.</b> The image and
+     * depth are the renderable pair and must arrive together or not at all. The
+     * normal is the shading: an install that predates the asset, or a copy that
+     * failed, is missing it and renders flat lit — which the sheet reports — so a
+     * missing normal does not null the pair. That is the difference between the
+     * two failure modes and it is deliberate.
+     *
+     * @return {@code {imageName, depthName, normalName}} when the image and depth
+     *         are present afterwards, with {@code normalName} possibly null; or
+     *         null when the pair could not be made. Null is not a shrug: the caller
+     *         then stores no filename at all, which the renderer reads as "use the
+     *         packaged trio" — the state this app shipped in for its whole life, and
+     *         a far better outcome than a filename that names a file which is not
+     *         there.
      */
     static String[] ensure(Context context, File filesDir) {
         if (context == null || filesDir == null) return null;
         File image = new File(filesDir, IMAGE);
         File depth = new File(filesDir, DEPTH);
-        if (image.isFile() && depth.isFile()) return new String[]{IMAGE, DEPTH};
+        File normal = new File(filesDir, NORMAL);
+
+        // Copy only what is missing, so an upgraded install missing the normal
+        // copies 176 KB and not the 2.5 MB image beside it.
+        boolean wantImage = !image.isFile();
+        boolean wantDepth = !depth.isFile();
+        boolean wantNormal = !normal.isFile();
+        if (!wantImage && !wantDepth && !wantNormal) {
+            return new String[]{IMAGE, DEPTH, NORMAL};
+        }
 
         File stagedImage = new File(filesDir, IMAGE + ".part");
         File stagedDepth = new File(filesDir, DEPTH + ".part");
+        File stagedNormal = new File(filesDir, NORMAL + ".part");
         try {
-            copy(context, R.raw.image, stagedImage);
-            copy(context, R.raw.depth, stagedDepth);
-            // Renamed into place, both or neither. One of the two succeeding
-            // leaves the pair broken and unfixable by this method, because its own
-            // test is "are both there" and the next call would see the half and
-            // repair it -- but only after a launch in which the demo has rendered
-            // flat with nothing on screen to say why.
-            if (!stagedImage.renameTo(image)) throw new IOException("staged image would not move");
-            if (!stagedDepth.renameTo(depth)) throw new IOException("staged depth would not move");
+            if (wantImage) copy(context, R.raw.image, stagedImage);
+            if (wantDepth) copy(context, R.raw.depth, stagedDepth);
+            if (wantNormal) copy(context, R.raw.normal, stagedNormal);
+            // Renamed into place. The image and depth are the pair: if either
+            // cannot be moved, nothing is kept, because a half pair renders flat
+            // with no relief and no error. The normal is renamed independently --
+            // a failed normal copy leaves a real, shaded-less demo and the sheet
+            // says so.
+            if (wantImage && !stagedImage.renameTo(image)) {
+                throw new IOException("staged image would not move");
+            }
+            if (wantDepth && !stagedDepth.renameTo(depth)) {
+                throw new IOException("staged depth would not move");
+            }
+            boolean haveNormal = normal.isFile();
+            if (wantNormal) {
+                haveNormal = stagedNormal.renameTo(normal);
+            }
+            // The pair must be there; a normal that did not move is only flat lit.
+            if (!image.isFile() || !depth.isFile()) {
+                throw new IOException("the demo pair is incomplete after the copy");
+            }
+            return new String[]{IMAGE, DEPTH, haveNormal ? NORMAL : null};
         } catch (IOException | RuntimeException e) {
             // The rare states are a full disk and a packaged asset that will not
             // open. Neither is worth a crash on the read path -- the wallpaper
             // parses this on the GL thread at cold start, where an exception means
             // no wallpaper at all -- and the caller copes: no filename stored, the
-            // packaged pair rendered, and the next attempt tries again.
+            // packaged trio rendered, and the next attempt tries again.
             android.util.Log.w("Basrelief", "bundled demo copy failed: " + e);
             stagedImage.delete();
             stagedDepth.delete();
-            image.delete();
-            depth.delete();
+            stagedNormal.delete();
+            // Only delete what this call was creating; a pre-existing pair must not
+            // be destroyed by a failed normal copy.
+            if (wantImage) image.delete();
+            if (wantDepth) depth.delete();
+            if (wantNormal) normal.delete();
             return null;
         }
-        return new String[]{IMAGE, DEPTH};
     }
 
     private static void copy(Context context, int resource, File to) throws IOException {

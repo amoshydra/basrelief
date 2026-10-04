@@ -54,10 +54,22 @@ public final class ComfyWorkflow {
     private static final String MOGE_LOAD_ID = "2";
     /** Node id of {@code MoGeInference}; {@code MoGeRender} reads its output. */
     private static final String MOGE_INFER_ID = "3";
-    /** Node id of {@code MoGeRender}; {@code SaveImage} reads its output. */
+    /** Node id of the depth {@code MoGeRender}; its {@code SaveImage} reads it. */
     private static final String MOGE_RENDER_ID = "4";
-    /** Node id of the MoGe shape's {@code SaveImage}. */
+    /** Node id of the depth shape's {@code SaveImage}. */
     private static final String MOGE_SAVE_ID = "5";
+    /**
+     * Node id of the normal {@code MoGeRender}.
+     *
+     * <p>A second renderer, not a second output on the first: {@code MoGeRender}
+     * selects exactly one of its five outputs through its {@code output} input, so
+     * "depth and normal from one inference" is two cheap render nodes sharing the
+     * expensive {@link #MOGE_INFER_ID}. ComfyUI caches the inference, so it runs
+     * once.
+     */
+    private static final String MOGE_NORMAL_RENDER_ID = "6";
+    /** Node id of the normal {@code SaveImage}. */
+    private static final String MOGE_NORMAL_SAVE_ID = "7";
 
     /** The three classes that make up the MoGe pipeline, in order. */
     static final String MOGE_LOADER = "LoadMoGeModel";
@@ -78,10 +90,38 @@ public final class ComfyWorkflow {
      */
     static final String MOGE_STILL_OUTPUT = "depth";
 
+    /**
+     * The second {@code MoGeRender.output} the still path asks for: the normal map
+     * that shades the relief.
+     *
+     * <p><b>{@code normal_opengl}, not {@code normal_directx}.</b> The renderer's
+     * normals are OpenGL-convention (+Y up, +Z toward the viewer); OpenGL and
+     * DirectX differ only in the green channel, and picking the wrong one inverts
+     * the vertical lighting cue. This is a device-only check: it cannot be settled
+     * off the phone.
+     *
+     * <p>It rides the same {@code MoGeInference} as {@link #MOGE_STILL_OUTPUT}: the
+     * inference is the expensive part, and the two renders are nearly free.
+     */
+    public static final String MOGE_NORMAL_OUTPUT = "normal_opengl";
+
     private static final int FIRST_OUTPUT = 0;
 
-    /** The SaveImage prefix. One builder writes it, for both shapes. */
-    private static final String SAVE_PREFIX = "depthmap_";
+    /**
+     * The depth {@code SaveImage}'s prefix. Public because the fetch path tells the
+     * returned files apart by it: two {@code SaveImage} nodes run in one prompt and
+     * the history names them by filename, not by node.
+     */
+    public static final String DEPTH_FILE_PREFIX = "depthmap_";
+
+    /**
+     * The normal {@code SaveImage}'s prefix. See {@link #DEPTH_FILE_PREFIX}.
+     *
+     * <p>Distinct from the depth prefix on purpose: the second output the fetch
+     * path does not expect is the failure that is silent, so the file names are the
+     * association and a test pins them.
+     */
+    public static final String NORMAL_FILE_PREFIX = "normal_";
 
     /**
      * Assemble the ComfyUI graph for the chosen depth model.
@@ -133,7 +173,7 @@ public final class ComfyWorkflow {
         depth.put("inputs", depthIn);
 
         // Save the DEPTH node's image output (not LoadImage's).
-        JSONObject save = saveImageNode(DEPTH_ID, FIRST_OUTPUT, timestampMs);
+        JSONObject save = saveImageNode(DEPTH_ID, FIRST_OUTPUT, DEPTH_FILE_PREFIX, timestampMs);
 
         JSONObject wf = new JSONObject();
         wf.put(LOAD_ID, load);
@@ -143,14 +183,14 @@ public final class ComfyWorkflow {
     }
 
     /**
-     * Assemble the four-node MoGe pipeline:
+     * Assemble the seven-node MoGe pipeline:
      *
      * <pre>
      * LoadImage
      *   → LoadMoGeModel(model_name)
      *   → MoGeInference(moge_model, image, resolution_level, …)
-     *   → MoGeRender(moge_geometry, output=depth)
-     *   → SaveImage
+     *       ├→ MoGeRender(output=depth)         → SaveImage(depthmap_…)
+     *       └→ MoGeRender(output=normal_opengl) → SaveImage(normal_…)
      * </pre>
      *
      * <p>Every scalar input is discovered from {@code /object_info}, so a
@@ -158,10 +198,17 @@ public final class ComfyWorkflow {
      * inputs cannot come from {@code /object_info} and are wired here by name:
      * {@code LoadMoGeModel}'s {@code moge_model} output feeds
      * {@code MoGeInference.moge_model}, {@code LoadImage}'s image feeds
-     * {@code MoGeInference.image}, and {@code MoGeInference}'s geometry feeds
+     * {@code MoGeInference.image}, and {@code MoGeInference}'s geometry feeds each
      * {@code MoGeRender.moge_geometry}. Their values are links, not scalars —
-     * the schema can only name their types. {@code MoGeRender.output} is also
-     * forced, for the reason on {@link #MOGE_STILL_OUTPUT}.
+     * the schema can only name their types. Each {@code MoGeRender.output} is also
+     * forced, for the reason on {@link #MOGE_STILL_OUTPUT} and
+     * {@link #MOGE_NORMAL_OUTPUT}.
+     *
+     * <p><b>Two renders from one inference.</b> {@code MoGeRender} selects one
+     * output, so the displacement and the shading cannot come from one node; both
+     * render nodes read the one {@link #MOGE_INFER_ID}, which ComfyUI caches and so
+     * runs once. Losing the normal half is the failure that is silent, which is why
+     * the two saver prefixes are distinct and pinned.
      *
      * @param info         the parsed {@code /object_info} body
      * @param model        the checkpoint filename, or {@code MoGeInference} to
@@ -191,22 +238,44 @@ public final class ComfyWorkflow {
         inferIn.put("image", link(LOAD_ID));
         infer.put("inputs", inferIn);
 
-        JSONObject render = new JSONObject();
-        render.put("class_type", MOGE_RENDER);
-        JSONObject renderIn = discoveredInputs(renderInfo, "moge_geometry");
-        renderIn.put("moge_geometry", link(MOGE_INFER_ID));
-        renderIn.put("output", MOGE_STILL_OUTPUT);
-        render.put("inputs", renderIn);
+        // Two renderers off the one inference. Built by one factory so the two
+        // cannot drift in which scalar inputs they discover or which node they
+        // read their geometry from; only the forced output differs.
+        JSONObject depthRender = moGeRenderNode(renderInfo, MOGE_STILL_OUTPUT);
+        JSONObject normalRender = moGeRenderNode(renderInfo, MOGE_NORMAL_OUTPUT);
 
-        JSONObject save = saveImageNode(MOGE_RENDER_ID, FIRST_OUTPUT, timestampMs);
+        JSONObject depthSave = saveImageNode(MOGE_RENDER_ID, FIRST_OUTPUT,
+                DEPTH_FILE_PREFIX, timestampMs);
+        JSONObject normalSave = saveImageNode(MOGE_NORMAL_RENDER_ID, FIRST_OUTPUT,
+                NORMAL_FILE_PREFIX, timestampMs);
 
         JSONObject wf = new JSONObject();
         wf.put(LOAD_ID, load);
         wf.put(MOGE_LOAD_ID, loader);
         wf.put(MOGE_INFER_ID, infer);
-        wf.put(MOGE_RENDER_ID, render);
-        wf.put(MOGE_SAVE_ID, save);
+        wf.put(MOGE_RENDER_ID, depthRender);
+        wf.put(MOGE_SAVE_ID, depthSave);
+        wf.put(MOGE_NORMAL_RENDER_ID, normalRender);
+        wf.put(MOGE_NORMAL_SAVE_ID, normalSave);
         return wf.toString();
+    }
+
+    /**
+     * One {@code MoGeRender} selecting one of its outputs.
+     *
+     * <p>Every renderer reads the same inference, so it is built twice per graph
+     * with only {@code output} differing. The factory exists so a future scalar the
+     * server adds reaches both renders rather than one.
+     */
+    private static JSONObject moGeRenderNode(JSONObject renderInfo, String output)
+            throws JSONException {
+        JSONObject render = new JSONObject();
+        render.put("class_type", MOGE_RENDER);
+        JSONObject renderIn = discoveredInputs(renderInfo, "moge_geometry");
+        renderIn.put("moge_geometry", link(MOGE_INFER_ID));
+        renderIn.put("output", output);
+        render.put("inputs", renderIn);
+        return render;
     }
 
     // --------------------------------------------------------------- graph pieces
@@ -219,17 +288,19 @@ public final class ComfyWorkflow {
     }
 
     /**
-     * The one {@code SaveImage} for both shapes. Sharing it keeps the node id
-     * reference, the output index and the filename prefix in one place, so the
-     * MoGe path cannot quietly name a different file than the classical one.
+     * The one {@code SaveImage} factory for both shapes and both MoGe outputs.
+     * Sharing it keeps the node id reference, the output index and the filename
+     * prefix in one place, so the MoGe path cannot quietly name a different file
+     * than the classical one, nor the depth saver the normal prefix.
      */
-    private static JSONObject saveImageNode(String sourceId, int outputIndex, long timestampMs)
+    private static JSONObject saveImageNode(String sourceId, int outputIndex,
+                                            String prefix, long timestampMs)
             throws JSONException {
         JSONObject save = new JSONObject();
         save.put("class_type", "SaveImage");
         JSONObject saveIn = new JSONObject();
         saveIn.put("images", new JSONArray().put(sourceId).put(outputIndex));
-        saveIn.put("filename_prefix", SAVE_PREFIX + timestampMs);
+        saveIn.put("filename_prefix", prefix + timestampMs);
         save.put("inputs", saveIn);
         return save;
     }
@@ -430,8 +501,15 @@ public final class ComfyWorkflow {
         return out;
     }
 
-    /** Whether a model argument names the MoGe pipeline rather than an ordinary node. */
-    private static boolean isMoGeModel(JSONObject info, String model) {
+    /**
+     * Whether a model argument names the MoGe pipeline rather than an ordinary node.
+     *
+     * <p>Public because it is also the answer to "does this run also emit a
+     * normal": the MoGe graph does, and any single-node model does not. The fetch
+     * path records it when the run is submitted, so a missing normal on a run that
+     * was supposed to have one fails loudly instead of going quietly flat.
+     */
+    public static boolean isMoGeModel(JSONObject info, String model) {
         if (model == null || !hasMoGePipeline(info)) return false;
         // MoGeInference on its own asks for the discovered default checkpoint.
         if (MOGE_INFERENCE.equals(model)) return true;
@@ -537,6 +615,20 @@ public final class ComfyWorkflow {
             b.append(c);
         }
         return b.toString();
+    }
+
+    /**
+     * Whether a chooser entry is a MoGe checkpoint, which is also the entries that
+     * produce a normal map.
+     *
+     * <p>Used to preselect the model that can answer "Generate normals" — the
+     * picker's default would otherwise be the alphabetically first node, which is
+     * never MoGe because capitalised class names sort before the lowercase
+     * checkpoint filenames. It is a preference, not a filter: every entry stays in
+     * the list and the user can choose any of them.
+     */
+    public static boolean isMoGeCheckpoint(String name) {
+        return name != null && name.toLowerCase().contains("moge");
     }
 
     /**

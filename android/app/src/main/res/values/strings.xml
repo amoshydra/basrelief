@@ -99,6 +99,15 @@
     -->
     <string name="fix_no_depth">No depth</string>
     <string name="fix_no_depth_actions">Generate a map</string>
+    <!--
+      The middle state: the photo HAS depth and therefore relief, but no normal
+      map, so it is lit as a flat plane. This is not an error and the wording must
+      not read as one — it says why there is no shading and the action offers the
+      fix. "Flat lit" is the renderer's own term for it, and "depth, no normals"
+      names the two files so the sentence is answerable without the code.
+    -->
+    <string name="fix_flat_lit">Flat lit — depth, no normals</string>
+    <string name="fix_flat_lit_actions">Generate normals</string>
     <string name="fix_choose_map">Choose a map</string>
     <string name="fix_generating">Generating depth · %1$d%%</string>
     <string name="fix_run_in_background">Run in background</string>
@@ -304,6 +313,28 @@
     </plurals>
     <!-- %2$s is the playlist's next change, in the trigger's own words. -->
     <string name="gallery_playlist_armed">%1$s is armed · next change: %2$s</string>
+
+    <!--
+      The playlists section INSIDE the gallery scroll. It is always present, even
+      at zero, because a playlist has no precondition: hiding it would mean the
+      first one cannot be created. New leads the list and is not sorted; the
+      section sits below the archive disclosure and above nothing.
+    -->
+    <string name="gallery_playlists_caption">Playlists</string>
+    <string name="gallery_playlist_new_row">New playlist</string>
+    <!-- The row's two targets, each spoken apart: the edit plate is its own
+         live control; the radio is a mark and the row is the toggle. -->
+    <string name="gallery_playlist_edit">Edit %1$s</string>
+    <string name="gallery_playlist_rotate">Rotate %1$s</string>
+    <string name="gallery_playlist_stop">Stop rotating %1$s</string>
+    <string name="gallery_playlist_edit_glyph">✎</string>
+    <!-- The header indicator: the glyph is decoration, the name is the content. -->
+    <string name="gallery_rotating_glyph">▶</string>
+    <string name="gallery_rotating_indicator">%1$s</string>
+    <string name="gallery_rotating_indicator_talk">Rotating: %1$s</string>
+    <!-- The collage's overflow cell and its spoken form. -->
+    <string name="gallery_playlist_more">+%1$d</string>
+    <string name="gallery_playlist_collage_talk">Playlist artwork, %1$d photos</string>
 
     <!--
       Seams this build cannot close on its own. Both are reported rather than

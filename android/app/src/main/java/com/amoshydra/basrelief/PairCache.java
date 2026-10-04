@@ -38,6 +38,7 @@ final class PairCache {
 
     private static String imagePath;
     private static String depthPath;
+    private static String normalPath;
     private static Object cached; // a ReliefRenderer.Pending, opaque on purpose
 
     /**
@@ -46,11 +47,12 @@ final class PairCache {
      * <p>Called on whichever thread finished the decode, which is the IO
      * executor, not the GL thread.
      */
-    static void put(String image, String depth, Object pending) {
+    static void put(String image, String depth, String normal, Object pending) {
         if (pending == null) return;
         synchronized (LOCK) {
             imagePath = image;
             depthPath = depth;
+            normalPath = normal;
             cached = pending;
         }
     }
@@ -63,12 +65,16 @@ final class PairCache {
      * longer how the bundled demo normally draws — the seed copies it into
      * filesDir, so it comes through here like any other photograph — but "nothing of
      * the user's is selected" still reaches this path.
+     *
+     * <p><b>The normal is part of the key.</b> A photo can gain a normal after its
+     * depth (the "Generate normals" run), and a cached entry that ignored the third
+     * path would hand back the flat-lit decode for a photo that is now shaded.
      */
-    static Object get(String image, String depth) {
+    static Object get(String image, String depth, String normal) {
         if (image == null) return null;
         synchronized (LOCK) {
             if (cached != null && eq(imagePath, image) && eq(depthPath, depth)
-                    && ReliefRenderer.isUsable(cached)) {
+                    && eq(normalPath, normal) && ReliefRenderer.isUsable(cached)) {
                 return cached;
             }
             return null;
@@ -80,6 +86,7 @@ final class PairCache {
         synchronized (LOCK) {
             imagePath = null;
             depthPath = null;
+            normalPath = null;
             cached = null;
         }
     }

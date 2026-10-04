@@ -264,6 +264,130 @@ public class LibraryItemTest {
         assertEquals(s.imageName, relabelled.imageName);
     }
 
+    // ------------------------------------------------------- supplied normals
+
+    /**
+     * A normal name is a bare filename and rides the same rules as the image and
+     * the depth: absent when null, and a path is reduced to its basename so a
+     * restore onto another device cannot keep a path into the old filesDir.
+     */
+    @Test
+    public void normalNameSurvivesARoundTripAndIsAbsentWhenNull() {
+        LibraryItem shaded = sample().withDepthAndNormal("a-depth.png", "a-normal.png");
+        assertEquals("a-normal.png", shaded.normalName);
+        LibraryItem back = LibraryItem.fromJson(json(shaded.toJson()));
+        assertNotNull(back);
+        assertEquals("a-normal.png", back.normalName);
+        assertTrue(back.hasSuppliedNormals());
+
+        // Absent rather than null, so a flat-lit library stays byte-identical to
+        // one an older build wrote.
+        LibraryItem flat = sample();
+        assertNull(flat.normalName);
+        assertFalse("no normal, no key", flat.toJson().contains("normal"));
+        assertNull(LibraryItem.fromJson(json(flat.toJson())).normalName);
+
+        // The literal "null" heals to absent, like every other name.
+        LibraryItem literal = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"depth\":\"a-depth.png\",\"normal\":\"null\"}"));
+        assertNotNull(literal);
+        assertNull(literal.normalName);
+    }
+
+    /**
+     * <b>A new depth invalidates the old normal, and this pins that.</b> A normal
+     * predicts one depth map's surface; keeping it across a depth replacement is
+     * shading that disagrees with the geometry, which is worse than going flat.
+     */
+    @Test
+    public void withDepthClearsTheSuppliedNormal() {
+        LibraryItem shaded = sample().withDepthAndNormal("a-depth.png", "a-normal.png");
+        LibraryItem remapped = shaded.withDepth("b-depth.png");
+        assertEquals("b-depth.png", remapped.depthName);
+        assertNull("the old normal describes the old shape", remapped.normalName);
+        assertFalse(remapped.hasSuppliedNormals());
+    }
+
+    /** The paired writer is the only way both are set, and sets both together. */
+    @Test
+    public void withDepthAndNormalSetsBothAndCarriesEverythingElse() {
+        LibraryItem base = sample()
+                .withIntensity(Surface.HOME, 70)
+                .withMotion(Surface.HOME, 55);
+        LibraryItem paired = base.withDepthAndNormal("d.png", "n.png");
+        assertEquals("d.png", paired.depthName);
+        assertEquals("n.png", paired.normalName);
+        assertEquals(70, paired.settings(Surface.HOME).depth);
+        assertEquals(55, paired.settings(Surface.HOME).motion);
+        assertEquals(base.label, paired.label);
+        assertEquals(base.imageName, paired.imageName);
+
+        // A classical run passes no normal, and that is the same as withDepth.
+        LibraryItem flat = base.withDepthAndNormal("d.png", null);
+        assertNull(flat.normalName);
+        assertFalse(flat.hasSuppliedNormals());
+    }
+
+    /**
+     * The single-field-edit trap, including the new field: a setter for one render
+     * value must not reset another, and a depth write must not be reached from a
+     * brightness slider.
+     *
+     * <p>This shipped broken once — {@code withDepth} reset Motion, brightness and
+     * shadow because the values it did not pass had been added after it was
+     * written — so it is asserted over the whole set rather than one convenient
+     * pair.
+     */
+    @Test
+    public void aSingleFieldEditResetsNothingItDoesNotName() {
+        LibraryItem full = sample()
+                .withDepthAndNormal("d.png", "n.png")
+                .withIntensity(Surface.HOME, 66)
+                .withZoom(Surface.HOME, 133)
+                .withMotion(Surface.HOME, 44)
+                .withAdjust(Surface.HOME, 12, -9)
+                .withLight(Surface.HOME, 200f, 40f);
+
+        LibraryItem brightened = full.withAdjust(Surface.HOME, 20, -9);
+        assertEquals("d.png", brightened.depthName);
+        assertEquals("n.png", brightened.normalName);
+        assertEquals(66, brightened.settings(Surface.HOME).depth);
+        assertEquals(133, brightened.settings(Surface.HOME).zoom);
+        assertEquals(44, brightened.settings(Surface.HOME).motion);
+        assertEquals(200f, brightened.settings(Surface.HOME).lightAzimuth, 1e-6f);
+
+        LibraryItem relit = full.withLight(Surface.HOME, 210f, 35f);
+        assertEquals("n.png", relit.normalName);
+        assertEquals(44, relit.settings(Surface.HOME).motion);
+        assertEquals(20, brightened.settings(Surface.HOME).brightness);
+
+        LibraryItem motioned = full.withMotion(Surface.HOME, 10);
+        assertEquals("n.png", motioned.normalName);
+        assertEquals(133, motioned.settings(Surface.HOME).zoom);
+    }
+
+    /**
+     * An old blob with no normal key parses with null, which is the flat-lit
+     * state — the correct degradation, and the reason this needed no version bump.
+     */
+    @Test
+    public void anOldBlobWithNoNormalKeyParsesFlat() {
+        LibraryItem old = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"depth\":\"a-depth.png\","
+                        + "\"added_at\":1}"));
+        assertNotNull(old);
+        assertNull(old.normalName);
+        assertFalse("depth with no normal is flat lit", old.hasSuppliedNormals());
+    }
+
+    /** A normal name is reduced to a basename like every other stored filename. */
+    @Test
+    public void normalNameIsStrippedToItsBasename() {
+        LibraryItem item = sample().withDepthAndNormal("d.png", "/old/device/files/n.png");
+        assertEquals("n.png", item.normalName);
+    }
+
     // -------------------------------------------------------------- archive
 
     /**

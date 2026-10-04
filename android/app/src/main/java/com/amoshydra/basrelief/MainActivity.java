@@ -7,6 +7,7 @@ import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.NormalSource;
 import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Playlists;
@@ -628,12 +629,12 @@ public class MainActivity extends Activity {
                 pickFile(REQ_IMAGE);
             }
         });
-        // Playlists are their own slice. Until then the header entry says so rather
-        // than opening nothing.
+        // Playlists are their own slice. The gallery's section opens the editor
+        // for one playlist; the host owns the screen, this installs the route.
         gallery.setPlaylistsNavigator(new Gallery.PlaylistsNavigator() {
             @Override
-            public void openPlaylists() {
-                PlaylistScreen.show(MainActivity.this);
+            public void openEditor(String playlistId) {
+                PlaylistScreen.edit(MainActivity.this, playlistId);
             }
         });
 
@@ -4251,23 +4252,44 @@ public class MainActivity extends Activity {
                     });
             return;
         }
+        if (depth.isUnknown()) {
+            // The window while an embedded depth map is still being read. The line
+            // says <b>nothing</b> rather than claiming an absence it has not
+            // established, and it deliberately also does not report flat lit: until
+            // the depth is known, whether this photo is shaded is not known either.
+            // The next refresh fills it in.
+            setFixLine(null, null, null, null, null);
+            setStripState(StripState.IDLE);
+            return;
+        }
         if (!depth.reportsNoDepth()) {
-            // Nothing to report, and that is a state rather than a gap. Three
-            // different photographs land here and all of them are fine:
+            // The photograph HAS depth. Shading is the separate question: it is
+            // supplied by a normal map or it is not, and if it is not the relief is
+            // flat lit. This is the new middle state — displaced correctly, lit as a
+            // plane — and it is neither "No depth" nor a fault, so it says why there
+            // is no shading and offers the fix rather than reading as broken.
             //
-            //  - the packaged pair, when nothing is selected;
-            //  - a photo with a separate depth file, the ordinary case;
-            //  - a photo whose depth is INSIDE its own PNG, which is the reported
-            //    bug — this used to fall through to "No depth" and print it over a
-            //    relief that was visibly playing.
-            //
-            // and a fourth that is not a photograph at all: the window while an
-            // embedded map is still being read. UNKNOWN lands here too, which is the
-            // point of it — the line says <b>nothing</b> rather than claiming an
-            // absence it has not established, and the next refresh fills it in.
-            //
-            // The old "Bundled demo / Add a photo" sentence was stale guidance in any
-            // case: adding a photo is the filmstrip's add tile.
+            // The one resolution of that question, so this line, the renderer and the
+            // status line cannot disagree. Nothing selected is the packaged trio,
+            // which ships a normal, so it is silent like every shaded photo.
+            NormalSource.Answer normals = NormalSource.forItem(item);
+            if (normals.needsNormals()) {
+                setFixLine(getString(R.string.fix_flat_lit),
+                        getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                // The ordinary Depth AI panel, and not a special
+                                // path: it already prefers MoGe, which is the model
+                                // that emits the normal this state is missing. The
+                                // user can change checkpoint, resolution and host
+                                // there exactly as any other run.
+                                openDepthGen();
+                            }
+                        }, null, null, false);
+                return;
+            }
+            // Shaded, or the packaged trio: nothing to report. A line that can only
+            // inform is a status paragraph, and this is one sentence.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;
@@ -5097,8 +5119,13 @@ public class MainActivity extends Activity {
         // lands in.
         java.io.File imgF = PrefFiles.resolve(getFilesDir(), active == null ? null : active.imageName);
         java.io.File depF = PrefFiles.resolve(getFilesDir(), active == null ? null : active.depthName);
+        // The supplied normal, resolved from the same item as the other two. Null
+        // is a real answer -- flat lit -- and not a failure: it is the state of every
+        // photo whose depth predates normals, and the renderer draws it deliberately.
+        java.io.File nrmF = PrefFiles.resolve(getFilesDir(), active == null ? null : active.normalName);
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
+        final String nrm = nrmF == null ? null : nrmF.getAbsolutePath();
         final Framing framing = Framing.of(state.activeItem(), editSurface);
         // Same pair means this resolve only moves the framing: it goes through the
         // apply guard (`RESOLVE`), so a framing already on screen is a no-op and a
@@ -5106,8 +5133,9 @@ public class MainActivity extends Activity {
         // its framing must be painted -- gliding it would smear one photo into the
         // next -- so it states `PAIR_CHANGE` and bypasses the guard. Read here, on
         // the calling thread, because the renderer's own record is the only honest
-        // answer and it is volatile.
-        final ReliefRenderer.Apply why = renderer.showingSamePair(img, dep)
+        // answer and it is volatile. The normal is part of the identity: a photo
+        // that gains one is a pair change, or the new texture is never uploaded.
+        final ReliefRenderer.Apply why = renderer.showingSamePair(img, dep, nrm)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
         glView.queueEvent(new Runnable() {
@@ -5118,7 +5146,7 @@ public class MainActivity extends Activity {
         });
         // Async for the same reason as the wallpaper: a synchronous load stalls
         // the GL thread for the length of a full decode plus mesh build.
-        renderer.loadPairAsync(img, dep);
+        renderer.loadPairAsync(img, dep, nrm);
         glView.requestRender();
         refreshStatus();
     }

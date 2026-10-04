@@ -52,6 +52,27 @@ public final class LibraryItem {
     /** Bare filename in filesDir, or null for a flat item with no depth map. */
     public final String depthName;
 
+    /**
+     * Bare filename in filesDir of a supplied normal map, or null when there is
+     * none.
+     *
+     * <p><b>Shading is separate from displacement, and this is the file that
+     * supplies it.</b> Null does not mean "derive one" — there is deliberately no
+     * derived-normal path any more — it means the photo renders <b>flat lit</b>:
+     * displaced correctly by its depth, but lit as a flat plane because no normal
+     * map says which way each cell faces. A photo can therefore have a map and no
+     * shading, which is a legitimate state the sheet reports rather than a missing
+     * asset quietly worked around.
+     *
+     * <p>Scoped to {@link #depthName}: a normal predicts the surface for one depth
+     * map, so any write that replaces the depth must clear this (see
+     * {@link #withDepth}), and the only writer that sets both is
+     * {@link #withDepthAndNormal}. A stale normal — shading that disagrees with the
+     * geometry — is worse than no shading at all, so it cannot be produced by a code
+     * path.
+     */
+    public final String normalName;
+
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
 
@@ -171,13 +192,19 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, false);
+                home, lockSettings, false, null);
+    }
+
+    private LibraryItem(String id, String imageName, String depthName,
+                        String normalName, String label, long addedAt, long lastUsedAt) {
+        this(id, imageName, depthName, label, addedAt, lastUsedAt,
+                SurfaceSettings.defaults(), null, false, normalName);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
-                        boolean archived) {
+                        boolean archived, String normalName) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -196,6 +223,12 @@ public final class LibraryItem {
         this.id = id;
         this.imageName = img;
         this.depthName = normaliseName(depthName);
+        // Same bare-filename reduction as the image and the depth: a restore onto
+        // another device must not carry a path, and a corrupt blob's ../ must not
+        // escape filesDir. Not gated on depthName: a normal with no depth is inert
+        // (see hasSuppliedNormals) and dropping it here would lose a value a repair
+        // could still pair with a depth later.
+        this.normalName = normaliseName(normalName);
         this.label = (label == null || label.isEmpty()) ? null : label;
         // A negative stamp from a corrupt blob would sort ahead of everything
         // and could never be reached again. Unknown is 0, which sorts last in
@@ -249,8 +282,20 @@ public final class LibraryItem {
      * @param depthName the copied map's bare filename, or null
      */
     public static LibraryItem bundled(String imageName, String depthName) {
-        return new LibraryItem(Library.BUNDLED_ID, imageName, depthName, "Marble bust",
-                0L, 0L);
+        return bundled(imageName, depthName, null);
+    }
+
+    /**
+     * The bundled demo, with the shipped normal map.
+     *
+     * @param normalName the copied normal map's bare filename, or null when the
+     *                   asset was not copied. Null is a deliberate state: the demo
+     *                   then renders flat lit, which the sheet reports, rather than
+     *                   inventing a normal nothing on disk backs.
+     */
+    public static LibraryItem bundled(String imageName, String depthName, String normalName) {
+        return new LibraryItem(Library.BUNDLED_ID, imageName, depthName, normalName,
+                "Marble bust", 0L, 0L);
     }
 
     // ------------------------------------------------------------- identity
@@ -389,6 +434,11 @@ public final class LibraryItem {
         return requireValidId(id, "item-" + id + "-depth.png");
     }
 
+    /** The normal filename to write for a new item. See {@link #imageFileName}. */
+    public static String normalFileName(String id) {
+        return requireValidId(id, "item-" + id + "-normal.png");
+    }
+
     private static String requireValidId(String id, String candidate) {
         // The id is checked rather than trusted, because the candidate is then
         // only sanitised, not rejected: a traversal id would collapse to a name
@@ -405,6 +455,21 @@ public final class LibraryItem {
     /** Whether this item can actually produce relief. No depth file = flat. */
     public boolean hasDepth() {
         return depthName != null;
+    }
+
+    /**
+     * Whether this item can produce <b>shaded</b> relief: it has a normal map
+     * for the depth map it renders.
+     *
+     * <p><b>Both are required, and that is the point.</b> A normal with no depth
+     * is inert — there is no geometry for it to shade — so it must not be reported
+     * as present. And a depth with no normal is the flat-lit state, not a shaded
+     * one. This is the one derivation, so the sheet, the status line and the
+     * renderer cannot disagree about which of the three states a photograph is in.
+     * See {@link NormalSource}, which is the resolved form callers should use.
+     */
+    public boolean hasSuppliedNormals() {
+        return normalName != null && depthName != null;
     }
 
     /**
@@ -449,7 +514,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived);
+                archived, normalName);
     }
 
     /**
@@ -529,8 +594,32 @@ public final class LibraryItem {
 
     // ------------------------------------------------- single-field updates
 
+    /**
+     * Replace the depth map, and <b>clear the supplied normal</b>.
+     *
+     * <p>A normal predicts the surface of one depth map, so a new depth makes the
+     * old normal a lie: shading that describes a shape the geometry no longer has.
+     * Clearing it is why a regenerated depth first renders flat lit and offers to
+     * generate normals — a deliberate, visible state — rather than keeping a normal
+     * that silently disagrees. The paired writer is {@link #withDepthAndNormal},
+     * which is the only way both are set.
+     */
     public LibraryItem withDepth(String depth) {
-        return copy(id, imageName, depth, label, addedAt, lastUsedAt);
+        return withDepthAndNormal(depth, null);
+    }
+
+    /**
+     * Replace the depth map and its normal together.
+     *
+     * <p><b>The only writer that sets {@code normalName}.</b> It exists so that
+     * depth and normal, which come from one MoGe run, can never be half-applied or
+     * written from two derivations that disagree. A null normal is legal and means
+     * "this depth has no supplied normal", which is exactly what a classical
+     * (Depth-Anything) run produces; the result is then identical to
+     * {@link #withDepth}.
+     */
+    public LibraryItem withDepthAndNormal(String depth, String normal) {
+        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt);
     }
 
     /**
@@ -542,18 +631,35 @@ public final class LibraryItem {
      * only because the migration that gives the demo its files has to go through
      * here rather than through a loose constructor, which would default the render
      * values it is not given.
+     *
+     * <p>The supplied normal is cleared: a different image/depth pair is a different
+     * surface, so any normal this item carried belonged to the pair being replaced.
+     * Use {@link #withFiles(String, String, String)} when the new pair ships with
+     * its own normal.
      */
     public LibraryItem withFiles(String image, String depth) {
-        return copy(id, image, depth, label, addedAt, lastUsedAt);
+        return withFiles(image, depth, null);
+    }
+
+    /**
+     * This item's image, depth and normal replaced together.
+     *
+     * <p>For an import or a bundled repair whose normal arrives with the pair. A
+     * separate two-argument form exists because most callers have no normal, and
+     * naming only what you have is the point: this is the three-file paired write,
+     * and the two-argument form is that write with an absent normal.
+     */
+    public LibraryItem withFiles(String image, String depth, String normal) {
+        return copy(id, image, depth, normal, label, addedAt, lastUsedAt);
     }
 
     public LibraryItem withLabel(String newLabel) {
-        return copy(id, imageName, depthName, newLabel, addedAt, lastUsedAt);
+        return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return copy(id, imageName, depthName, label, addedAt, when);
+        return copy(id, imageName, depthName, normalName, label, addedAt, when);
     }
 
     /**
@@ -568,7 +674,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on);
+                home, lock, on, normalName);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -585,10 +691,10 @@ public final class LibraryItem {
      * resetting the other three. Three call sites had exactly that waiting in
      * them.
      */
-    private LibraryItem copy(String id, String imageName, String depthName,
+    private LibraryItem copy(String id, String imageName, String depthName, String normalName,
                              String label, long addedAt, long lastUsedAt) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived);
+                home, lock, archived, normalName);
     }
 
     // ---------------------------------------------------------- serialise
@@ -611,6 +717,11 @@ public final class LibraryItem {
             // Absent rather than null: JSONObject drops nulls anyway, and a
             // missing key reads as "not set" without a special case.
             if (depthName != null) o.put("depth", depthName);
+            // Written only when there is one, so a library of flat-lit photos is
+            // byte-identical to one an older build wrote -- which is why this needed
+            // no version bump. An old build reading a new blob ignores the unknown
+            // key; a new build reading an old blob reads null and renders flat.
+            if (normalName != null) o.put("normal", normalName);
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -719,7 +830,11 @@ public final class LibraryItem {
                     // Absent means live. An old v3 blob has no key here and
                     // parses unchanged, which is the whole reason this feature
                     // needed no version bump.
-                    o.optBoolean("archived", false));
+                    o.optBoolean("archived", false),
+                    // Read through str(), so JSON null and the literal "null" both
+                    // become null and heal on the next write. Absent is null, which
+                    // is the correct degradation: flat lit, never a derived normal.
+                    str(o, "normal"));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -728,6 +843,7 @@ public final class LibraryItem {
     @Override
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
+                + (normalName != null ? " +normal" : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt
                 + (archived ? " ARCHIVED" : "")
                 + " home=" + home + (lock == null ? "" : " lock=" + lock) + "}";

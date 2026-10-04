@@ -754,6 +754,60 @@ public class PerItemSettingsTest {
         assertTrue("and so it can stand out of its plane like any other row", b.hasDepth());
     }
 
+    /**
+     * The demo ships a normal, so a fresh install lands shaded — and the two-arg
+     * seed is the flat-lit state, which is what an install that predates the asset
+     * gets until the copy repairs it.
+     */
+    @Test
+    public void theBundledItemIsShadedWhenTheNormalShips() {
+        LibraryItem shaded = LibraryItem.bundled(
+                LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "item-bundled-normal.png");
+        assertEquals("item-bundled-normal.png", shaded.normalName);
+        assertTrue(shaded.hasSuppliedNormals());
+        assertEquals(NormalSource.Kind.SUPPLIED, NormalSource.forItem(shaded).kind());
+
+        // The old two-arg seed names no normal, which is flat lit — a real state,
+        // not a missing file, and the one the repair upgrades.
+        assertNull(demo().normalName);
+        assertFalse(demo().hasSuppliedNormals());
+    }
+
+    /**
+     * The bundled repair decides each of the three files from the row's contents:
+     * a fileless row gets all three, a row missing only the normal gets that one,
+     * and a normal the row already has is never replaced.
+     */
+    @Test
+    public void theBundledRepairCarriesTheNormalAndNeverReplacesOne() {
+        Library seeded = Library.empty().withBundled(
+                LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "n.png");
+        assertEquals("n.png", seeded.find(Library.BUNDLED_ID).normalName);
+
+        // A pre-migration row is named all three in one write.
+        Library repaired = Library.empty()
+                .withItem(LibraryItem.bundled(null, null))
+                .withBundledFiles(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "n.png");
+        LibraryItem demo = repaired.find(Library.BUNDLED_ID);
+        assertEquals(LibraryTest.DEMO_IMAGE, demo.imageName);
+        assertEquals(LibraryTest.DEMO_DEPTH, demo.depthName);
+        assertEquals("n.png", demo.normalName);
+
+        // A file-backed row missing only the normal is repaired, idempotently.
+        Library once = Library.empty()
+                .withBundled(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, null)
+                .withBundledFiles(LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "n.png");
+        assertEquals("n.png", once.find(Library.BUNDLED_ID).normalName);
+        Library twice = once.withBundledFiles(
+                LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "n.png");
+        assertEquals("the repair must be idempotent", once.toJson(), twice.toJson());
+
+        // A later copy does not overwrite a normal the row already carries.
+        Library kept = once.withBundledFiles(
+                LibraryTest.DEMO_IMAGE, LibraryTest.DEMO_DEPTH, "other.png");
+        assertEquals("n.png", kept.find(Library.BUNDLED_ID).normalName);
+    }
+
     /** The demo's settings are ordinary settings, and this class writes them. */
     @Test
     public void theBundledItemTakesAnEditLikeAnyOtherRow() {

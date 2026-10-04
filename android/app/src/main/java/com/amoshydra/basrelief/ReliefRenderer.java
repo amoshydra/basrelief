@@ -43,10 +43,12 @@ import javax.microedition.khronos.opengles.GL10;
  *
  * <p><b>Two backends, one class, chosen at build time.</b> The shipping path is
  * GLES3: the mesh is a static grid and the vertex shader samples a
- * {@code (GRID+1)^2} float depth field to displace Z and derive normals, so the
- * CPU never builds or uploads the ~393k-vertex mesh. This is the whole reason
- * for GLES3 -- its minimum vertex texture unit count is non-zero, GLES2's is
- * zero, so GLES2's vertex shader could never sample depth at all. The legacy
+ * {@code (GRID+1)^2} float depth field to displace Z. Shading is <b>separate</b>:
+ * a supplied normal map is sampled per fragment, and a photo with no normal map
+ * is drawn <b>flat lit</b> — displaced correctly, lit as a plane. That is a
+ * deliberate state and not a fallback; see {@link #FRAG}. This is the whole
+ * reason for GLES3 -- its minimum vertex texture unit count is non-zero, GLES2's
+ * is zero, so GLES2's vertex shader could never sample depth at all. The legacy
  * GLES2 + CPU-built mesh path is retained for A/B comparison and as a fallback,
  * and is selected by {@link BuildConfig#RENDERER_GLES3}, which also sets the EGL
  * context version in both hosts. The two share everything except the programs
@@ -146,17 +148,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uIntensity;\n" +
             "attribute vec3 aPosition;\n" +
             "attribute vec2 aUV;\n" +
-            "attribute vec3 aNormal;\n" +
             "varying vec2 vUv;\n" +
             "varying vec3 vWorldPos;\n" +
-            "varying vec3 vWorldNormal;\n" +
             "void main() {\n" +
             "  vUv = aUV;\n" +
             "  vec3 p = aPosition * uModelScale;\n" +
             "  p.z *= uIntensity;\n" +
             "  vWorldPos = p;\n" +
-            "  // inverse-transpose of the non-uniform z scale (model diag(1,1,uIntensity))\n" +
-            "  vWorldNormal = normalize(vec3(aNormal.x, aNormal.y, aNormal.z / max(uIntensity, 1e-3)));\n" +
             "  gl_Position = uMVP * vec4(aPosition, 1.0);\n" +
             "}\n";
 
@@ -164,20 +162,37 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "precision highp float;\n" +
             "varying vec2 vUv;\n" +
             "varying vec3 vWorldPos;\n" +
-            "varying vec3 vWorldNormal;\n" +
             "uniform sampler2D uColor;\n" +
+            // The supplied normal map, or nothing. uHasNormal is 0 for a photo with
+            // depth and no normals, which is the flat-lit state -- a deliberate
+            // render, not a fallback. There is no derivative of the depth here and
+            // deliberately so: the whole point of supplied normals is that the
+            // gradient of 8-bit depth is never taken.
+            "uniform sampler2D uNormal;\n" +
+            "uniform float uHasNormal;\n" +
+            "uniform float uIntensity;\n" +
             "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
             "uniform vec3 uCamPos;\n" +
-            // Both already mapped by com.amoshydra.basrelief.core.render.Picture,
-            // which is unit tested. This is deliberately the arithmetic and nothing
-            // else: a branch or a mapping decision here would exist twice.
             "uniform float uBrightnessGain;\n" +
             "uniform float uShadowLift;\n" +
             "void main() {\n" +
-            "  vec3 n = normalize(vWorldNormal);\n" +
+            "  vec3 n;\n" +
+            "  if (uHasNormal > 0.5) {\n" +
+            // normal_opengl encodes [-1,1] as [0,1]; the bitmap was flipped like
+            // the colour one so image-top is v=1. This is OpenGL convention (+Y
+            // up), so G is NOT negated -- picking directx instead inverts the
+            // vertical light cue. A device-only check.
+            "    n = texture2D(uNormal, vUv).rgb * 2.0 - 1.0;\n" +
+            // MoGe predicts the surface before the Depth stretch; the inverse
+            // transpose of the z scale is nz/intensity, exactly as the old derived
+            // path folded intensity into its derivative. Without it the shading
+            // changes shape as the Depth slider moves.
+            "    n = normalize(vec3(n.x, n.y, n.z / max(uIntensity, 1e-3)));\n" +
+            "  } else {\n" +
+            "    n = vec3(0.0, 0.0, 1.0);\n" +
+            "  }\n" +
             "  vec3 l = normalize(uLightDir);\n" +
-            "  vec3 v = normalize(uCamPos - vWorldPos);\n" +
             "  float diff = max(dot(n, l), 0.0);\n" +
             "  vec3 color = texture2D(uColor, vUv).rgb;\n" +
             // Applied to the photograph, before the lighting: a lift that went
@@ -226,13 +241,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the mesh's {@code u = gx/GRID}. This reproduces {@code ReliefMesh}'s
      * resample exactly, so the surface height matches the CPU path.
      *
-     * <p>Normals are central differences one grid cell apart, mapped to world
-     * units the same way the CPU's face normals are: the true world z is
-     * {@code h * scale * intensity} while world x is {@code x * scale}, so the
-     * direction is {@code (-dz/dx, -dz/dy, 1)} with {@code intensity} folded in.
-     * The result is the same direction {@code ReliefMesh}'s area-weighted
-     * normals give; the two differ only by central-difference vs area weighting,
-     * which is not visible at GRID=256 on a blurred field.
+     * <p><b>Displacement only.</b> This shader no longer derives a normal from the
+     * depth gradient; shading is a supplied normal map, sampled per fragment, or the
+     * flat plane when there is none. Removing the derivative is the point: the
+     * central-difference normal was a derivative of quantised depth, and blurring
+     * the field existed to hide terraces that derivative exposed.
      */
     private static final String VERT3 =
             "#version 300 es\n" +
@@ -246,7 +259,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "in vec2 aUV;\n" +
             "out vec2 vUv;\n" +
             "out vec3 vWorldPos;\n" +
-            "out vec3 vWorldNormal;\n" +
             "void main() {\n" +
             "  vUv = aUV;\n" +
             "  float n = uGrid + 1.0;\n" +
@@ -262,25 +274,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "  vec3 p = a * uModelScale;\n" +
             "  p.z *= uIntensity;\n" +
             "  vWorldPos = p;\n" +
-            "  float e = 1.0 / n;\n" +
-            "  float hL = textureLod(uDepth, duv - vec2(e, 0.0), 0.0).r / 255.0;\n" +
-            "  float hR = textureLod(uDepth, duv + vec2(e, 0.0), 0.0).r / 255.0;\n" +
-            "  float hT = textureLod(uDepth, duv - vec2(0.0, e), 0.0).r / 255.0;\n" +
-            "  float hB = textureLod(uDepth, duv + vec2(0.0, e), 0.0).r / 255.0;\n" +
-            "  float dzdX = uIntensity * uGrid * (hR - hL) / (2.0 * uAspect);\n" +
-            "  float dzdY = -uIntensity * uGrid * (hB - hT) / 2.0;\n" +
-            "  vWorldNormal = normalize(vec3(-dzdX, -dzdY, 1.0));\n" +
             "  gl_Position = uMVP * vec4(a, 1.0);\n" +
             "}\n";
 
-    /** GLES3 fragment shader: the GLES2 FRAG above, translated. */
+    /**
+     * GLES3 fragment shader: the GLES2 FRAG above, translated.
+     *
+     * <p>It samples the supplied normal map, or flat-lights the plane when there
+     * is none. The two backends share this shading exactly, so a change to the
+     * lighting is a change to both.
+     */
     private static final String FRAG3 =
             "#version 300 es\n" +
             "precision highp float;\n" +
             "in vec2 vUv;\n" +
             "in vec3 vWorldPos;\n" +
-            "in vec3 vWorldNormal;\n" +
             "uniform sampler2D uColor;\n" +
+            "uniform sampler2D uNormal;\n" +
+            "uniform float uHasNormal;\n" +
+            "uniform float uIntensity;\n" +
             "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
             "uniform vec3 uCamPos;\n" +
@@ -288,9 +300,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uShadowLift;\n" +
             "out vec4 fragColor;\n" +
             "void main() {\n" +
-            "  vec3 n = normalize(vWorldNormal);\n" +
+            "  vec3 n;\n" +
+            "  if (uHasNormal > 0.5) {\n" +
+            "    n = texture(uNormal, vUv).rgb * 2.0 - 1.0;\n" +
+            "    n = normalize(vec3(n.x, n.y, n.z / max(uIntensity, 1e-3)));\n" +
+            "  } else {\n" +
+            "    n = vec3(0.0, 0.0, 1.0);\n" +
+            "  }\n" +
             "  vec3 l = normalize(uLightDir);\n" +
-            "  vec3 v = normalize(uCamPos - vWorldPos);\n" +
             "  float diff = max(dot(n, l), 0.0);\n" +
             "  vec3 color = texture(uColor, vUv).rgb;\n" +
             "  color *= uBrightnessGain;\n" +
@@ -320,9 +337,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private final Context context;
 
     private int program;
-    private int aPosition, aUV, aNormal, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
+    private int aPosition, aUV, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
     private int uFade = -1;
     private int uBrightnessGain = -1, uShadowLift = -1;
+    /** The supplied normal map and whether there is one; both backends use these. */
+    private int uNormal = -1, uHasNormal = -1;
     // GLES3-only relief uniforms.
     private int uDepth = -1, uGrid = -1, uAspect = -1;
 
@@ -373,13 +392,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final class Render {
         int textureColor = -1;
         /**
+         * The supplied normal map, sampled by the fragment shader. {@code <= 0}
+         * means there is none and the photo draws flat lit -- deliberately, and
+         * not a failure: a texture name of 0 is the default texture (no image,
+         * pure black), so it is never treated as a normal.
+         *
+         * <p>Unlike {@link #textureDepth} this is <b>not</b> part of
+         * {@link #isDrawable}: a normal is never required to draw.
+         */
+        int textureNormal = -1;
+        /**
          * GLES3 only: the blurred float depth field, sampled by the vertex
          * shader. 0 means the field was not uploaded (a context-less call), which
          * -- like texture name 0 for colour -- is never a success.
          */
         int textureDepth = -1;
         int vertexCount;
-        FloatBuffer posBuffer, uvBuffer, normalBuffer;
+        FloatBuffer posBuffer, uvBuffer;
         /** Image width / height, baked into the mesh's x and the camera's aspect. */
         float aspect = 1f;
         /** The framing this render is drawn with while it is on screen or fading. */
@@ -531,6 +560,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile String loadedImagePath;
     private volatile String loadedDepthPath;
     /**
+     * The supplied normal path that is on screen, or null for flat lit. Part of
+     * the pair identity: a photo whose normal arrives later is not "already
+     * showing", or the new texture is never uploaded. See {@link #showingSamePair}.
+     */
+    private volatile String loadedNormalPath;
+    /**
      * Whether anything has ever been installed into the current GL context.
      *
      * <p>Load-bearing, and it exists because of a coincidence of representation.
@@ -562,12 +597,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Whether the given pair is already on screen.
      *
-     * <p>Null-safe, because "the packaged demo" is (null, null) and calling equals
-     * on either side is a crash on exactly that path.
+     * <p><b>The normal is part of the identity.</b> A photo can gain a normal
+     * after its depth — the "Generate normals" run — and if the normal were not
+     * compared, the renderer would be told it is already showing that pair and the
+     * new texture would never be uploaded: the sheet would say shaded while the
+     * glass stayed flat. Null-safe, because "the packaged demo" is (null, null,
+     * null) and calling equals on either side is a crash on exactly that path.
      */
-    public boolean showingSamePair(String imagePath, String depthPath) {
+    public boolean showingSamePair(String imagePath, String depthPath, String normalPath) {
         if (!hasInstalled) return false; // see hasInstalled
-        return samePath(imagePath, loadedImagePath) && samePath(depthPath, loadedDepthPath);
+        return samePath(imagePath, loadedImagePath)
+                && samePath(depthPath, loadedDepthPath)
+                && samePath(normalPath, loadedNormalPath);
     }
 
     private static boolean samePath(String a, String b) {
@@ -970,26 +1011,32 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Load an image + depth pair (GL thread only).
+     * Load an image + depth + optional normal (GL thread only).
      *
      * <p>A null image path means "nothing of the user's to draw", and the one thing
-     * that means is the packaged demo pair. Both are null together, and only
+     * that means is the packaged demo trio. These are null together, and only
      * together: a null image beside a real depth map would draw the demo's marble
-     * against somebody else's map, so callers that resolve an item resolve both
-     * names from the same item and the demo's own copy failure nulls both.
+     * against somebody else's map, so callers that resolve an item resolve every
+     * name from the same item and the demo's own copy failure nulls them all.
      *
      * <p>The demo is a file in {@code filesDir} like any other photograph since the
      * seed copied it there, so this branch is not how it normally draws — it is what
      * a gallery with nothing selected draws, and what a demo whose copy failed
      * draws until the next load succeeds. See {@code BundledFiles}.
+     *
+     * <p><b>The normal is optional and its absence is not a failure.</b> A photo
+     * with depth and no normal decodes a null normal and draws flat lit; a normal
+     * file that will not decode degrades to the same state. Neither is allowed to
+     * fail the pair, because the pair is the photograph and the normal only decides
+     * how it is lit.
      */
-    private Pending decodePair(String imagePath, String depthPath) {
+    private Pending decodePair(String imagePath, String depthPath, String normalPath) {
         // Already decoded by the other surface in this process? Then uploading it
         // is the only work left, which is what makes the wallpaper's very first
         // frame correct: the system snapshots the surface ~100ms after it appears
         // and a decode takes ~1s, so anything decoded after that point is too late
         // to be in the snapshot no matter how it is scheduled.
-        Object warm = PairCache.get(imagePath, depthPath);
+        Object warm = PairCache.get(imagePath, depthPath, normalPath);
         if (warm instanceof Pending) return (Pending) warm;
 
         byte[] imageBytes = null;
@@ -1054,11 +1101,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             flat = true;
         }
 
+        // The supplied normal: the only thing that decides shaded vs flat lit.
+        // It is deliberately allowed to be absent, and a decode failure is treated
+        // as absent rather than as a failed load -- the photograph is still whole.
+        Bitmap normalBmp = null;
+        if (normalPath != null) {
+            byte[] normalBytes = readFile(normalPath);
+            if (normalBytes != null) {
+                normalBmp = BitmapFactory.decodeByteArray(normalBytes, 0, normalBytes.length);
+            }
+        }
+        if (normalPath == null && depthPath == null && imagePath == null) {
+            // Bundled demo: normal.png rides beside image.png and depth.png. Wired
+            // for the same reason the depth is -- an asset with no reader fails
+            // silently, and this one would leave a fresh install flat lit.
+            normalBmp = decodeRaw(R.raw.normal);
+        }
+
         Pending result = new Pending(colorBmp, grayOut, dims[0], dims[1],
-                customImage, customDepth, embedded, flat, imagePath, depthPath);
+                customImage, customDepth, embedded, flat, normalBmp,
+                imagePath, depthPath, normalPath);
         // Offer it to the other surface. Only the selected pair is worth keeping,
         // and the studio is always the one that decodes first.
-        PairCache.put(imagePath, depthPath, result);
+        PairCache.put(imagePath, depthPath, normalPath, result);
         return result;
     }
 
@@ -1083,15 +1148,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final int w, h;
         final boolean customImage, customDepth, embedded, flat;
         /**
+         * The supplied normal bitmap, or null for flat lit.
+         *
+         * <p>Deliberately nullable and deliberately not a reason to fail: the
+         * photograph is whole without it, and the only thing it changes is whether
+         * the relief is shaded or lit as a plane. See {@link #suppliedNormal()}.
+         */
+        final Bitmap normalBmp;
+        /**
          * The paths this was decoded from, so the renderer can record what is
          * genuinely on screen rather than what was last asked for. See
          * {@link #loadedImagePath}.
          */
-        final String requestedImage, requestedDepth;
+        final String requestedImage, requestedDepth, requestedNormal;
 
         Pending(Bitmap colorBmp, byte[] gray, int w, int h,
                 boolean customImage, boolean customDepth, boolean embedded, boolean flat,
-                String requestedImage, String requestedDepth) {
+                Bitmap normalBmp,
+                String requestedImage, String requestedDepth, String requestedNormal) {
             this.colorBmp = colorBmp;
             this.gray = gray;
             this.w = w;
@@ -1099,9 +1173,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             this.customImage = customImage;
             this.customDepth = customDepth;
             this.embedded = embedded;
+            this.normalBmp = normalBmp;
             this.requestedImage = requestedImage;
             this.requestedDepth = requestedDepth;
+            this.requestedNormal = requestedNormal;
             this.flat = flat;
+        }
+
+        /** Whether a normal texture was decoded and will be uploaded. */
+        boolean suppliedNormal() {
+            return normalBmp != null;
         }
     }
 
@@ -1125,15 +1206,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             pairChangePending = false;
             return false;
         }
-        if (p.customImage && p.customDepth) {
-            writeStatus(p.flat ? "custom image, flat (no depth found)"
-                    : p.embedded ? "custom image + embedded depth"
-                    : "custom image + depth map");
-        } else if (p.customImage) {
-            writeStatus(p.embedded ? "custom image + embedded depth" : "custom image");
-        } else {
-            writeStatus(p.flat ? "bundled demo, FLAT (no depth found)" : "bundled demo + depth");
-        }
+        writeStatus(statusFor(p));
         if (!install(p)) {
             // Nothing was installed, so nothing may be recorded as installed.
             //
@@ -1154,6 +1227,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // was requested.
         loadedImagePath = p.requestedImage;
         loadedDepthPath = p.requestedDepth;
+        // The normal is part of the pair identity, so a photo that gains one is
+        // re-installed and this records it. See showingSamePair.
+        loadedNormalPath = p.suppliedNormal() ? p.requestedNormal : null;
         hasInstalled = true;
         // The wait is over in the same event that swapped the pair, so the live
         // framing (the new item's, applied before the decode landed) starts
@@ -1181,7 +1257,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * and the arrival cross-fades into the new one.
      *
      */
-    public void loadPairAsync(final String imagePath, final String depthPath) {
+    public void loadPairAsync(final String imagePath, final String depthPath,
+                              final String normalPath) {
         // Tag the request so a result can be recognised as out of date.
         //
         // Decodes run off the GL thread and finish whenever they finish, so an
@@ -1204,19 +1281,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // Assigned for every request, not only a different pair: a request that
         // matches the displayed pair must clear an earlier request's freeze, or a
         // superseded decode would leave the display frozen forever.
-        pairChangePending = hasInstalled && !showingSamePair(imagePath, depthPath);
+        pairChangePending = hasInstalled && !showingSamePair(imagePath, depthPath, normalPath);
         final java.util.concurrent.Executor glThread = glDispatch;
         if (glThread == null) {
             // No dispatcher yet: we are almost certainly inside onSurfaceCreated
             // before the host could set one, which cannot happen with the current
             // wiring, so just do it inline rather than dropping the image.
-            applyPending(decodePair(imagePath, depthPath));
+            applyPending(decodePair(imagePath, depthPath, normalPath));
             return;
         }
         Io.run(new java.util.concurrent.Callable<Pending>() {
             @Override
             public Pending call() {
-                return decodePair(imagePath, depthPath);
+                return decodePair(imagePath, depthPath, normalPath);
             }
         }, new Io.Callback<Pending>() {
             @Override
@@ -1259,8 +1336,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * Synchronous load, for tests and any caller that needs the result before
      * continuing. Must be called on the GL thread.
      */
-    public boolean loadPair(String imagePath, String depthPath) {
-        return applyPending(decodePair(imagePath, depthPath));
+    public boolean loadPair(String imagePath, String depthPath, String normalPath) {
+        return applyPending(decodePair(imagePath, depthPath, normalPath));
     }
 
     /**
@@ -1284,6 +1361,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private void writeStatus(String status) {
         context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
                 .edit().putString("status", status).apply();
+    }
+
+    /**
+     * One debug sentence describing what the renderer actually put on screen.
+     *
+     * <p>The status line is the only tell for the failures that are otherwise
+     * invisible in a build log: an asset nothing reads, or a normal that arrived
+     * without being wired. So the shaded and flat-lit states say different things
+     * and "flat lit" names the state rather than sounding like a decode error.
+     * "flat" without a qualifier stays for the no-depth case, where the map
+     * genuinely failed to arrive.
+     */
+    private static String statusFor(Pending p) {
+        String shade = p.suppliedNormal() ? " + normals" : " (flat lit)";
+        if (p.customImage && p.customDepth) {
+            return p.flat ? "custom image, flat (no depth found)"
+                    : p.embedded ? "custom image + embedded depth"
+                    : "custom image + depth map" + shade;
+        }
+        if (p.customImage) {
+            return p.embedded ? "custom image + embedded depth" : "custom image";
+        }
+        return p.flat ? "bundled demo, FLAT (no depth found)"
+                : "bundled demo + depth" + shade;
     }
 
     private byte[] extractDepth(byte[] pngBytes, int[] dims) {
@@ -1332,11 +1433,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         program = createProgram(GLES3 ? VERT3 : VERT, GLES3 ? FRAG3 : FRAG);
         aPosition = GLES20.glGetAttribLocation(program, "aPosition");
         aUV = GLES20.glGetAttribLocation(program, "aUV");
-        aNormal = GLES20.glGetAttribLocation(program, "aNormal");
         uMVP = GLES20.glGetUniformLocation(program, "uMVP");
         uModelScale = GLES20.glGetUniformLocation(program, "uModelScale");
         uIntensity = GLES20.glGetUniformLocation(program, "uIntensity");
         uColor = GLES20.glGetUniformLocation(program, "uColor");
+        uNormal = GLES20.glGetUniformLocation(program, "uNormal");
+        uHasNormal = GLES20.glGetUniformLocation(program, "uHasNormal");
         uLightDir = GLES20.glGetUniformLocation(program, "uLightDir");
         uCamPos = GLES20.glGetUniformLocation(program, "uCamPos");
         uFade = GLES20.glGetUniformLocation(program, "uFade");
@@ -1366,8 +1468,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and the linker is free to hand out the same index to both. If it
         // does, drawing the marker overwrites a mesh pointer, so we re-bind
         // afterwards instead of assuming it cannot happen.
-        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV
-                || markerAPos == aNormal;
+        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV;
         if (markerClobbersMesh) {
             android.util.Log.w("Basrelief", "marker attribute index " + markerAPos
                     + " collides with a mesh attribute; re-binding after each marker draw");
@@ -1420,13 +1521,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private void bindMeshAttribs(Render r) {
         r.posBuffer.position(0);
         r.uvBuffer.position(0);
-        r.normalBuffer.position(0);
         GLES20.glEnableVertexAttribArray(aPosition);
         GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, r.posBuffer);
         GLES20.glEnableVertexAttribArray(aUV);
         GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 0, r.uvBuffer);
-        GLES20.glEnableVertexAttribArray(aNormal);
-        GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, 0, r.normalBuffer);
         boundMesh = r;
     }
 
@@ -1753,8 +1851,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.imageName);
         java.io.File dep = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.depthName);
+        java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
+                active == null ? null : active.normalName);
         load(img == null ? null : img.getAbsolutePath(),
-                dep == null ? null : dep.getAbsolutePath());
+                dep == null ? null : dep.getAbsolutePath(),
+                nrm == null ? null : nrm.getAbsolutePath());
     }
 
     /**
@@ -1770,7 +1871,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the window, which is a far worse bug than a consistent one: it looks like a
      * rendering fault rather than a missing guarantee.
      */
-    private void load(String imgAbs, String depAbs) {
+    private void load(String imgAbs, String depAbs, String nrmAbs) {
         // Off the GL thread: the read, decode and mesh build are seconds of work
         // and must not sit between two frames of a live wallpaper. The dispatcher
         // comes from the host (see setGlDispatch), which both surfaces set before
@@ -1779,9 +1880,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             loadedOnce = true;
             // Inline on purpose: see syncFirstLoad. Blocks this thread for one
             // decode so the surface is never empty when the system snapshots it.
-            applyPending(decodePair(imgAbs, depAbs));
+            applyPending(decodePair(imgAbs, depAbs, nrmAbs));
         } else {
-            loadPairAsync(imgAbs, depAbs);
+            loadPairAsync(imgAbs, depAbs, nrmAbs);
         }
     }
 
@@ -1923,6 +2024,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureColor);
         GLES20.glUniform1i(uColor, 0);
 
+        // The supplied normal map, or the default texture when there is none.
+        // uHasNormal is what makes the fragment shader choose the flat plane, so a
+        // texture name of 0 is never sampled as a normal and never a success. GLES3
+        // already uses unit 1 for the depth field, so the normal takes unit 2 there
+        // and unit 1 on GLES2.
+        int normalUnit = GLES3 ? 2 : 1;
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + normalUnit);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureNormal > 0 ? r.textureNormal : 0);
+        GLES20.glUniform1i(uNormal, normalUnit);
+        GLES20.glUniform1f(uHasNormal, r.textureNormal > 0 ? 1f : 0f);
+
         if (GLES3) {
             // The static grid, bound fresh every draw: two pointer calls into
             // VBOs is cheap, and it makes the marker's possible attribute-index
@@ -2053,10 +2165,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             r.textureColor = -1;
             return false;
         }
+        // The supplied normal, if any. Optional by design: a failed normal upload
+        // degrades to flat lit rather than failing a pair that has depth, and 0 is
+        // never treated as a normal -- it is the default texture, no image, black.
+        if (p.normalBmp != null) {
+            Bitmap normalUpright = flipVertically(p.normalBmp);
+            r.textureNormal = upload(normalUpright);
+            if (r.textureNormal == 0) r.textureNormal = -1;
+        }
         // THE GLES3 PRIZE, measured here per install: the CPU no longer builds
         // the mesh. It builds the small blurred field (the part that must stay in
         // float to keep banding away) and uploads it; the GPU displaces vertices
-        // from it. The GLES2 branch still pays for ReliefMesh.build and the three
+        // from it. The GLES2 branch still pays for ReliefMesh.build and the
         // 12.6 MB buffer copies, which is the comparison this log line is for.
         long cpuStart = System.nanoTime();
         if (GLES3) {
@@ -2068,10 +2188,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     + "ms upload=" + (uploaded - fieldDone) / 1e6f + "ms");
             if (r.textureDepth == 0) {
                 // A field that did not upload is not installed either. Release the
-                // colour texture too, so the pair that failed leaves nothing behind
-                // and the previous pair stays on screen.
-                GLES20.glDeleteTextures(1, new int[] { r.textureColor }, 0);
+                // colour and normal textures too, so the pair that failed leaves
+                // nothing behind and the previous pair stays on screen.
+                releaseTextures(r.textureColor, r.textureNormal);
                 r.textureColor = -1;
+                r.textureNormal = -1;
                 return false;
             }
         } else {
@@ -2079,7 +2200,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             r.vertexCount = surf.vertexCount;
             r.posBuffer = toBuffer(surf.positions);
             r.uvBuffer = toBuffer(surf.uvs);
-            r.normalBuffer = toBuffer(surf.normals);
+            // surf.normals is deliberately not uploaded: shading is the supplied
+            // normal map or the flat plane, and the CPU mesh's derived normals are
+            // no longer read by anything. ReliefMesh still builds them because its
+            // golden test pins the geometry contract; the renderer ignores them.
             android.util.Log.i("Basrelief", "install gles2 mesh+buffers="
                     + (System.nanoTime() - cpuStart) / 1e6f + "ms");
         }
@@ -2096,7 +2220,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
         boolean samePair = hasInstalled
                 && samePath(p.requestedImage, loadedImagePath)
-                && samePath(p.requestedDepth, loadedDepthPath);
+                && samePath(p.requestedDepth, loadedDepthPath)
+                && samePath(p.suppliedNormal() ? p.requestedNormal : null, loadedNormalPath);
         if (displayed == null || samePair) {
             // The first pair into this context has nothing to blend from, and a
             // re-upload of the pair already here has nothing to blend to. Both
@@ -2159,21 +2284,35 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /** Delete a render's GL textures and drop its buffers. GL thread only. */
     private static void releaseRender(Render r) {
         if (r == null) return;
-        // Both textures in one call: they were created together and leaving the
-        // depth field behind would leak one R32F texture per pair change.
-        if (r.textureColor > 0 && r.textureDepth > 0) {
-            GLES20.glDeleteTextures(2, new int[] { r.textureColor, r.textureDepth }, 0);
-        } else if (r.textureColor > 0) {
-            GLES20.glDeleteTextures(1, new int[] { r.textureColor }, 0);
-        } else if (r.textureDepth > 0) {
-            GLES20.glDeleteTextures(1, new int[] { r.textureDepth }, 0);
-        }
+        // All present textures in one call: they were created together and leaving
+        // the depth field or the normal behind would leak one texture per pair
+        // change. The normal is optional, so it is filtered out rather than assumed.
+        releaseTextures(r.textureColor, r.textureDepth, r.textureNormal);
         r.textureColor = -1;
         r.textureDepth = -1;
+        r.textureNormal = -1;
         r.vertexCount = 0;
         r.posBuffer = null;
         r.uvBuffer = null;
-        r.normalBuffer = null;
+    }
+
+    /**
+     * Delete the given GL texture names, skipping the ones that were never created.
+     *
+     * <p>Only positive names are real: 0 is the default texture and -1 is "none", and
+     * passing either to {@code glDeleteTextures} is at best a no-op and at worst a
+     * leak of the wrong object. The normal in particular is optional, so its absence
+     * must not cost a deletion call for a name that never existed.
+     */
+    private static void releaseTextures(int... names) {
+        int count = 0;
+        int[] real = new int[names.length];
+        for (int name : names) {
+            if (name > 0) real[count++] = name;
+        }
+        if (count == 0) return;
+        int[] toDelete = count == names.length ? real : java.util.Arrays.copyOf(real, count);
+        GLES20.glDeleteTextures(count, toDelete, 0);
     }
 
     private static Bitmap flipVertically(Bitmap src) {

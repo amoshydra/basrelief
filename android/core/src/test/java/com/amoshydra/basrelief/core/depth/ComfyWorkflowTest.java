@@ -366,14 +366,16 @@ public class ComfyWorkflowTest {
     }
 
     @Test
-    public void moGeGraphHasFiveNodesAndWiresEachStage() throws Exception {
+    public void moGeGraphHasSevenNodesAndWiresEachStage() throws Exception {
         JSONObject g = moGeWf("moge_3_vitg_fp16.safetensors");
-        assertEquals(5, g.length());
+        assertEquals(7, g.length());
         assertEquals("LoadImage", g.getJSONObject("1").getString("class_type"));
         assertEquals("LoadMoGeModel", g.getJSONObject("2").getString("class_type"));
         assertEquals("MoGeInference", g.getJSONObject("3").getString("class_type"));
         assertEquals("MoGeRender", g.getJSONObject("4").getString("class_type"));
         assertEquals("SaveImage", g.getJSONObject("5").getString("class_type"));
+        assertEquals("MoGeRender", g.getJSONObject("6").getString("class_type"));
+        assertEquals("SaveImage", g.getJSONObject("7").getString("class_type"));
 
         // The three links, each pinned to node AND output index — an off-by-one
         // here is a graph ComfyUI runs from the wrong tensor.
@@ -386,10 +388,14 @@ public class ComfyWorkflowTest {
         assertEquals("1", inferImage.getString(0));
         assertEquals(0, inferImage.getInt(1));
 
-        JSONArray renderGeometry = g.getJSONObject("4").getJSONObject("inputs")
-                .getJSONArray("moge_geometry");
-        assertEquals("3", renderGeometry.getString(0));
-        assertEquals(0, renderGeometry.getInt(1));
+        // BOTH renderers read the one inference, at output 0. This is what makes
+        // the expensive step run once while still emitting two tensors.
+        for (String renderId : new String[]{"4", "6"}) {
+            JSONArray geometry = g.getJSONObject(renderId).getJSONObject("inputs")
+                    .getJSONArray("moge_geometry");
+            assertEquals("3", geometry.getString(0));
+            assertEquals(0, geometry.getInt(1));
+        }
 
         // SaveImage reads MoGeRender (node 4), not MoGeInference or LoadImage.
         JSONArray saveImages = g.getJSONObject("5").getJSONObject("inputs")
@@ -399,16 +405,43 @@ public class ComfyWorkflowTest {
     }
 
     /**
-     * The still path needs displacement. Mask and normal renders are the wrong
-     * tensor for a relief, so the chosen output is pinned rather than inherited.
+     * <b>The highest-risk output of the whole MoGe change:</b> the normal map.
+     *
+     * <p>A second {@code SaveImage} the fetch path does not know about produces a
+     * file nobody reads, and the photo then renders flat with no error anywhere.
+     * So the normal render is pinned to {@code normal_opengl} (not the directx
+     * variant), reading the same inference, and its saver's prefix is the distinct
+     * one the app sorts the returned files by.
      */
     @Test
-    public void moGeStillsRenderDepth() throws Exception {
+    public void moGeAlsoEmitsTheNormalMapWithItsOwnPrefix() throws Exception {
+        JSONObject g = moGeWf("moge_3_vitg_fp16.safetensors");
+
+        JSONObject renderIn = g.getJSONObject("6").getJSONObject("inputs");
+        assertEquals(ComfyWorkflow.MOGE_NORMAL_OUTPUT,
+                renderIn.getString("output"));
+        assertEquals("normal_opengl", renderIn.getString("output"));
+
+        JSONArray images = g.getJSONObject("7").getJSONObject("inputs")
+                .getJSONArray("images");
+        assertEquals("6", images.getString(0));
+        assertEquals(0, images.getInt(1));
+        assertEquals(ComfyWorkflow.NORMAL_FILE_PREFIX + TS,
+                g.getJSONObject("7").getJSONObject("inputs").getString("filename_prefix"));
+        // The two savers must not share a prefix, or the fetch cannot tell them apart.
+        assertFalse(g.getJSONObject("7").getJSONObject("inputs").getString("filename_prefix")
+                .equals(g.getJSONObject("5").getJSONObject("inputs").getString("filename_prefix")));
+    }
+
+    /** The depth render is still forced, even though a normal render now exists. */
+    @Test
+    public void moGeStillsRenderDepthOnTheDepthNode() throws Exception {
         JSONObject in = moGeWf("moge_3_vitg_fp16.safetensors")
                 .getJSONObject("4").getJSONObject("inputs");
         assertEquals("depth", in.getString("output"));
-        assertFalse("mask".equals(in.getString("output")));
-        assertFalse("normal_opengl".equals(in.getString("output")));
+        assertEquals(ComfyWorkflow.DEPTH_FILE_PREFIX + TS,
+                moGeWf("moge_3_vitg_fp16.safetensors")
+                        .getJSONObject("5").getJSONObject("inputs").getString("filename_prefix"));
     }
 
     @Test
@@ -477,13 +510,35 @@ public class ComfyWorkflowTest {
         JSONObject moge = moGeWf("moge_3_vitg_fp16.safetensors");
 
         assertEquals(3, ordinary.length());
-        assertEquals(5, moge.length());
+        assertEquals(7, moge.length());
 
         // SaveImage's source differs: the single node is id 2, MoGe's renderer id 4.
         assertEquals("2", ordinary.getJSONObject("3").getJSONObject("inputs")
                 .getJSONArray("images").getString(0));
         assertEquals("4", moge.getJSONObject("5").getJSONObject("inputs")
                 .getJSONArray("images").getString(0));
+    }
+
+    /**
+     * The public "does this run also emit a normal" question the fetch path asks.
+     * An ordinary node does not; a MoGe checkpoint does.
+     */
+    @Test
+    public void onlyTheMoGeShapeEmitsANormal() throws Exception {
+        assertTrue(ComfyWorkflow.isMoGeModel(moGeServerInfo(),
+                "moge_3_vitg_fp16.safetensors"));
+        assertTrue(ComfyWorkflow.isMoGeModel(moGeServerInfo(), "MoGeInference"));
+        assertFalse(ComfyWorkflow.isMoGeModel(moGeServerInfo(), "DepthAnythingV2Preprocessor"));
+        assertFalse(ComfyWorkflow.isMoGeModel(new JSONObject(objectInfo()), MODEL));
+    }
+
+    /** The picker's MoGe preference is a predicate over the offered names. */
+    @Test
+    public void moGeCheckpointPredicateNamesTheNormalCapableEntries() {
+        assertTrue(ComfyWorkflow.isMoGeCheckpoint("moge_3_vitg_fp16.safetensors"));
+        assertTrue(ComfyWorkflow.isMoGeCheckpoint("MoGeInference"));
+        assertFalse(ComfyWorkflow.isMoGeCheckpoint("DepthAnythingV2Preprocessor"));
+        assertFalse(ComfyWorkflow.isMoGeCheckpoint(null));
     }
 
     @Test

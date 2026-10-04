@@ -182,6 +182,10 @@ final class AppState {
         // pair" rather than "store a name and hope".
         String demoImage = demo == null ? null : demo[0];
         String demoDepth = demo == null ? null : demo[1];
+        // The normal may be null while the pair is present: an install that
+        // predates the asset, or a copy that failed. That is the flat-lit demo,
+        // which is a real state and not a reason to refuse the pair.
+        String demoNormal = demo == null ? null : demo[2];
         // Repairing a row that was stored with no filename.
         //
         // Dirty is set HERE rather than left to the cleaned-vs-library comparison
@@ -192,7 +196,7 @@ final class AppState {
         // device, where the files appeared and the index kept saying the demo had
         // none.
         if (demoImage != null) {
-            Library named = library.withBundledFiles(demoImage, demoDepth);
+            Library named = library.withBundledFiles(demoImage, demoDepth, demoNormal);
             if (!named.toJson().equals(library.toJson())) libraryDirty = true;
             library = named;
         }
@@ -209,7 +213,7 @@ final class AppState {
         //    key, so the load after it sees null here and the demo comes back.
         //    See Library.withBundled for why the caller owns this question.
         if (absent) {
-            cleaned = cleaned.withBundled(demoImage, demoDepth);
+            cleaned = cleaned.withBundled(demoImage, demoDepth, demoNormal);
         }
         if (!cleaned.toJson().equals(library.toJson())) {
             library = cleaned;

@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
+import com.amoshydra.basrelief.core.depth.ModelRanking;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 
@@ -120,6 +121,14 @@ public final class DepthGenDialog {
     private static final String KEY_HOST = "comfy_url";
     private static final String KEY_RES = "comfy_resolution";
     private static final String KEY_MODEL = "comfy_model";
+    /**
+     * The model chooser's history — the last few selections, most recent first,
+     * one model name per line. Separate from {@link #KEY_MODEL}, which is the
+     * single saved choice a run was last sent to: that one is a comparison key
+     * (R-PANEL3), this one is only the display order. The ordering arithmetic and
+     * the stored form are {@link ModelRanking}'s.
+     */
+    private static final String KEY_MODEL_HISTORY = "comfy_model_history";
 
     /**
      * The in-flight run, as a JSON blob, so a process that was killed mid-run
@@ -205,6 +214,8 @@ public final class DepthGenDialog {
 
     /** Set once a run succeeds; read by Diagnostics for the map's filename. */
     private static volatile String lastMapName = "";
+    /** The normal the last successful run also wrote, or empty for a flat run. */
+    private static volatile String lastNormalName = "";
     private static volatile String lastModel = "";
 
     /**
@@ -345,6 +356,14 @@ public final class DepthGenDialog {
 
     private String comfyBase;
     private String savedModel;
+    /**
+     * The last few models the user chose, most recent first. Read once when the
+     * panel is built and written on every selection, so the rows a Test
+     * connection builds put the familiar checkpoints on top. It is deliberately
+     * not the same value as {@link #savedModel}: a model can be tapped without a
+     * run, and that tap is still the signal that decides the order.
+     */
+    private List<String> modelHistory;
     private final List<String> nodes = new ArrayList<String>();
     private final List<String> displayNames = new ArrayList<String>();
     private boolean modelsFetched;
@@ -384,9 +403,10 @@ public final class DepthGenDialog {
     /**
      * One in-flight run, as plain values.
      *
-     * <p>Immutable except {@link #promptId}, which is written by the worker and
-     * read by the resume path. That is the only mutable field and it is the one
-     * that cannot be known at submit time.
+     * <p>Immutable except {@link #promptId} and {@link #normalExpected}, which are
+     * written by the worker and read by the resume path. Those are the two values
+     * that cannot be known when the run is created: the prompt id until the server
+     * answers, and whether the graph emits a normal until the graph is built.
      */
     private static final class Run {
         /**
@@ -404,6 +424,14 @@ public final class DepthGenDialog {
         final String itemId;
         final String imagePath;
         final String clientId;
+        /**
+         * Whether the graph submitted for this run emits a normal beside its
+         * depth. Recorded when the graph is built — from the same decision
+         * {@code buildWorkflow} makes, not a second heuristic — because the
+         * completion path has to know whether a missing normal is a classical run
+         * or a failure. Persisted so a resumed run is judged the same way.
+         */
+        volatile boolean normalExpected;
         volatile String promptId;
         /**
          * When it was queued. Not final: a record read back from prefs carries the
@@ -433,6 +461,7 @@ public final class DepthGenDialog {
                 o.put("itemId", itemId);
                 o.put("image", imagePath);
                 o.put("clientId", clientId);
+                o.put("normalExpected", normalExpected);
                 o.put("startedAt", startedAt);
                 if (promptId != null) o.put("promptId", promptId);
             } catch (Exception ignored) {
@@ -457,6 +486,7 @@ public final class DepthGenDialog {
                 Run r = new Run(app, host, o.optString("model", ""),
                         o.optInt("resolution", DEFAULT_RESOLUTION),
                         itemId, image, clientId);
+                r.normalExpected = o.optBoolean("normalExpected", false);
                 String p = o.optString("promptId", null);
                 r.promptId = (p == null || p.length() == 0) ? null : p;
                 r.startedAt = o.optLong("startedAt", 0L);
@@ -531,6 +561,9 @@ public final class DepthGenDialog {
     public static String diagnostics() {
         if (lastMapName.length() == 0) return "";
         StringBuilder b = new StringBuilder(lastMapName);
+        // A run that also wrote a normal says so: flat vs shaded is the difference
+        // the map line is most likely to be asked about.
+        if (lastNormalName.length() > 0) b.append(" + normal");
         if (lastModel.length() > 0) {
             b.append(" · ").append(ComfyWorkflow.friendlyName(lastModel));
         }
@@ -629,6 +662,7 @@ public final class DepthGenDialog {
                 activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE);
         comfyBase = prefs.getString(KEY_HOST, "");
         savedModel = prefs.getString(KEY_MODEL, null);
+        modelHistory = ModelRanking.decode(prefs.getString(KEY_MODEL_HISTORY, ""));
         resolution = snapResolution(prefs.getInt(KEY_RES, DEFAULT_RESOLUTION));
 
         LinearLayout root = new LinearLayout(activity);
@@ -1038,10 +1072,15 @@ public final class DepthGenDialog {
                         public void run() {
                             modelsFetched = true;
                             modelsUnusable = filteredToEmpty;
+                            // Most-recently-used first, then discovery order. The
+                            // history decides what the "first entry" fallback is,
+                            // which is what replaced the dialog's hard-coded MoGe
+                            // preference — and why it must be re-applied on every
+                            // fetch rather than stored as a fixed list.
                             nodes.clear();
-                            nodes.addAll(sorted);
+                            nodes.addAll(ModelRanking.rank(sorted, modelHistory));
                             displayNames.clear();
-                            for (String n : sorted) {
+                            for (String n : nodes) {
                                 displayNames.add(ComfyWorkflow.friendlyName(n));
                             }
                             buildModelRows();
@@ -1088,6 +1127,13 @@ public final class DepthGenDialog {
      * comparison meaningless. If the saved model is gone the first entry is
      * selected and <em>the change is visible</em> — a swap the user cannot see
      * is a swap they will blame the map for.
+     *
+     * <p>The list arrives already ordered by {@link ModelRanking}: most recently
+     * used first, then discovery order. That replaced a hard-coded "prefer the
+     * first MoGe entry" rule, which selected whichever checkpoint the server
+     * happened to list first. With the history, the first entry is the model the
+     * user last reached for, and a real selection is what promotes it — so this
+     * method is unchanged in spirit and only the ordering moved.
      */
     private void buildModelRows() {
         modelList.removeAllViews();
@@ -1099,15 +1145,15 @@ public final class DepthGenDialog {
             chosenModel = null;
             return;
         }
+        // The saved model, when the server still offers it, else the first entry —
+        // and the first entry is the most recently used one, by construction.
         int chosen = 0;
         boolean savedGone = false;
-        if (savedModel != null) {
-            int idx = nodes.indexOf(savedModel);
-            if (idx >= 0) {
-                chosen = idx;
-            } else {
-                savedGone = true;
-            }
+        int savedIdx = savedModel == null ? -1 : nodes.indexOf(savedModel);
+        if (savedIdx >= 0) {
+            chosen = savedIdx;
+        } else if (savedModel != null) {
+            savedGone = true;
         }
         chosenModel = nodes.get(chosen);
         for (int i = 0; i < nodes.size(); i++) {
@@ -1155,6 +1201,15 @@ public final class DepthGenDialog {
             e.getValue().setVisibility(node.equals(e.getKey()) ? View.VISIBLE : View.GONE);
         }
         chosenModel = node;
+        // The selection itself is the signal, not a finished run: a user who taps
+        // a checkpoint and backs out has still said which one they reach for. The
+        // rows are deliberately not reordered under the finger; this is the order
+        // the next Test connection builds from, so the list does not jump as the
+        // user is reading it.
+        modelHistory = ModelRanking.remember(modelHistory, node);
+        activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE)
+                .edit().putString(KEY_MODEL_HISTORY, ModelRanking.encode(modelHistory))
+                .apply();
     }
 
     private String selectedModel() {
@@ -1336,6 +1391,11 @@ public final class DepthGenDialog {
             String info = api.getObjectInfo();
             String workflow = ComfyWorkflow.buildWorkflow(info, r.model, uploadedName,
                     r.resolution, System.currentTimeMillis());
+            // The graph's own decision, not a second heuristic: whether this run
+            // also emits a normal. Recorded before the run can finish so the fetch
+            // path knows whether a missing normal is an ordinary classical run
+            // (flat lit) or a failure. Persisted with the prompt id below.
+            r.normalExpected = ComfyWorkflow.isMoGeModel(new JSONObject(info), r.model);
             String resp = api.submitPrompt(workflow, r.clientId);
             JSONObject parsed = new JSONObject(resp);
             if (parsed.has("error")) throw new Exception(parsed.toString());
@@ -1390,32 +1450,57 @@ public final class DepthGenDialog {
                         + (statusObj == null ? "?" : statusObj.optString("status_str", "?"))
                         + ")");
             }
-            JSONObject imgObj = null;
+            // Two SaveImage nodes run in one prompt for a MoGe run (depth and
+            // normal), so the outputs are classified by the filename prefix the
+            // builder wrote rather than by taking the first node. A fetch path that
+            // only read the first image would silently drop the normal, and the
+            // photo would render flat with no error anywhere.
+            JSONObject depthImg = null;
+            JSONObject normalImg = null;
             Iterator<String> it = outputs.keys();
-            while (it.hasNext() && imgObj == null) {
-                JSONObject node = outputs.getJSONObject(it.next());
-                if (node.has("images")) {
-                    JSONArray images = node.getJSONArray("images");
-                    if (images.length() > 0) imgObj = images.getJSONObject(0);
+            while (it.hasNext()) {
+                JSONObject node = outputs.optJSONObject(it.next());
+                if (node == null || !node.has("images")) continue;
+                JSONArray images = node.getJSONArray("images");
+                for (int i = 0; i < images.length(); i++) {
+                    JSONObject img = images.optJSONObject(i);
+                    if (img == null) continue;
+                    String filename = img.optString("filename", "");
+                    if (depthImg == null
+                            && filename.startsWith(ComfyWorkflow.DEPTH_FILE_PREFIX)) {
+                        depthImg = img;
+                    } else if (normalImg == null
+                            && filename.startsWith(ComfyWorkflow.NORMAL_FILE_PREFIX)) {
+                        normalImg = img;
+                    }
                 }
             }
-            if (imgObj == null) throw new Exception("no output image in history");
+            if (depthImg == null) throw new Exception("no depth output in history");
+            // A MoGe run was submitted with a second saver for the normal. If it
+            // did not come back, the run did not do what its graph said: fail loudly
+            // rather than apply a depth that renders flat and reads as "worked".
+            // A classical run legitimately has no normal and is flat lit.
+            if (r.normalExpected && normalImg == null) {
+                throw new Exception("the run produced no normal map");
+            }
 
             sayPhase(r.app, R.string.depth_phase_fetching);
-            byte[] depthBytes = api.view(imgObj.getString("filename"),
-                    imgObj.optString("subfolder", ""), imgObj.optString("type", "output"));
+            byte[] depthBytes = api.view(depthImg.getString("filename"),
+                    depthImg.optString("subfolder", ""), depthImg.optString("type", "output"));
             Bitmap depthBmp = BitmapFactory.decodeByteArray(depthBytes, 0, depthBytes.length);
             if (depthBmp == null) throw new Exception("the depth image could not be decoded");
 
             sayPhase(r.app, R.string.depth_phase_saving);
             Bitmap origBmp = BitmapFactory.decodeFile(r.imagePath);
             if (origBmp == null) throw new Exception("the photo could not be decoded");
+            // One stamp for both files, so the pair this run produced is named
+            // together and cannot collide with another run's.
+            long stamp = System.currentTimeMillis();
             // Written to its FINAL name, next to the user's other files, so the
             // name the index will hold is the name on disk. A temp file plus a
             // rename would be the same thing with an extra step and a second
             // failure mode.
-            File packed = new File(r.app.getFilesDir(),
-                    "ai_depth_" + System.currentTimeMillis() + ".png");
+            File packed = new File(r.app.getFilesDir(), "ai_depth_" + stamp + ".png");
             try {
                 DepthPngPacker.pack(origBmp, depthBmp, packed);
             } finally {
@@ -1423,11 +1508,36 @@ public final class DepthGenDialog {
                 depthBmp.recycle();
             }
 
-            // The file exists. From here the run has succeeded and the map is
-            // replaced — there is no path out of this method that reaches the
-            // write in applyMap without a complete map on disk.
+            // The normal, beside the packed depth. Written raw -- MoGe returns a
+            // PNG -- but decoded first so a corrupt file fails here rather than as a
+            // silent flat render later. The name is derived from the same stamp as
+            // the depth's, so the two files a run produced are visibly a pair.
+            String normalName = null;
+            if (normalImg != null) {
+                byte[] normalBytes = api.view(normalImg.getString("filename"),
+                        normalImg.optString("subfolder", ""),
+                        normalImg.optString("type", "output"));
+                Bitmap check = BitmapFactory.decodeByteArray(
+                        normalBytes, 0, normalBytes.length);
+                if (check == null) throw new Exception("the normal image could not be decoded");
+                check.recycle();
+                File normalFile = new File(r.app.getFilesDir(), "ai_normal_" + stamp + ".png");
+                java.io.FileOutputStream out = new java.io.FileOutputStream(normalFile);
+                try {
+                    out.write(normalBytes);
+                } finally {
+                    out.close();
+                }
+                normalName = normalFile.getName();
+            }
+
+            // The files exist. From here the run has succeeded and the depth (and
+            // its normal, if any) is replaced — there is no path out of this method
+            // that reaches the write in applyMap without a complete map on disk. The
+            // two are written in ONE edit, so a photo cannot end up shaded by a
+            // normal that belongs to a different depth.
             reachedSuccess[0] = true;
-            finishApplied(r, packed);
+            finishApplied(r, packed, normalName);
         } catch (final Exception e) {
             stopWs();
             finishFailed(r, describe(e));
@@ -1468,7 +1578,7 @@ public final class DepthGenDialog {
      * hop; a generation runs for tens of seconds on a worker thread and touching
      * a widget from there is a crash waiting to happen.
      */
-    private static void finishApplied(final Run r, final File packed) {
+    private static void finishApplied(final Run r, final File packed, final String normalName) {
         final String name = packed.getName();
         // Read off the worker, before the hop: a prefs read is safe on any thread
         // and a notification that arrives a frame later is a notification that
@@ -1484,13 +1594,16 @@ public final class DepthGenDialog {
                 synchronized (RUN_LOCK) {
                     if (run == r) run = null;
                 }
-                // The file is on disk already, so there is no state in which the
+                // The files are on disk already, so there is no state in which the
                 // run is over and this has not happened. Ordered before
                 // applyMap so nothing can observe APPLIED with a stale map.
                 DepthGenDialog panel = openPanel();
                 if (panel != null) panel.sheet.dismiss();
-                applyMap(r.app, r.itemId, name);
+                // Depth and normal in ONE edit: a half-applied pair would shade the
+                // new geometry with the old normal, which is worse than flat.
+                applyMap(r.app, r.itemId, name, normalName);
                 lastMapName = name;
+                lastNormalName = normalName == null ? "" : normalName;
                 lastModel = r.model;
                 // Back to "not running", so the pill stops carrying a percentage
                 // for a job that has finished (R-BG2: it carries it *while* it
@@ -1572,24 +1685,27 @@ public final class DepthGenDialog {
     }
 
     /**
-     * Replace a photo's depth map.
+     * Replace a photo's depth map and its supplied normal.
      *
-     * <p><b>The one and only write of {@code depthName} in this class.</b> It is
-     * called from exactly one place — the success path — which is what makes
-     * R-D5 true rather than intended: there is no code path from a failure, a
-     * cancel or a timeout to this method.
+     * <p><b>The one and only write of {@code depthName} and {@code normalName} in
+     * this class, and they are written together.</b> It is called from exactly one
+     * place — the success path — which is what makes R-D5 true rather than intended:
+     * there is no code path from a failure, a cancel or a timeout to this method.
      *
-     * <p>Uses {@link LibraryItem#withDepth}, which preserves every other render
-     * value. That is not incidental: {@code withDepth} once reset Motion,
-     * brightness and shadow, because it was written through a constructor that
-     * defaulted the values added after it.
+     * <p>Uses {@link LibraryItem#withDepthAndNormal}, the paired writer, so a MoGe
+     * run installs the depth and the normal it predicted for it in one edit, and a
+     * classical run installs the depth alone (a null normal) — which is the flat-lit
+     * state. That is not incidental: {@code withDepth} once reset Motion, brightness
+     * and shadow, because it was written through a constructor that defaulted the
+     * values added after it, and the paired writer exists for the same reason.
      */
-    private static void applyMap(Context app, String itemId, String depthFileName) {
+    private static void applyMap(Context app, String itemId,
+                                 String depthFileName, String normalFileName) {
         SharedPreferences prefs = app.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         LibraryStore.editItem(prefs, itemId, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {
-                return item.withDepth(depthFileName);
+                return item.withDepthAndNormal(depthFileName, normalFileName);
             }
         });
     }

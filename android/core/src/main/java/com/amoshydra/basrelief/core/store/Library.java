@@ -462,8 +462,19 @@ public final class Library {
      * @param depthName the demo's map, or null with {@code imageName}
      */
     public Library withBundled(String imageName, String depthName) {
+        return withBundled(imageName, depthName, null);
+    }
+
+    /**
+     * As {@link #withBundled(String, String)}, with the shipped normal map.
+     *
+     * @param normalName the copied normal, or null when it could not be copied --
+     *                   in which case the demo renders flat lit and the sheet says
+     *                   so, rather than inventing a normal nothing backs
+     */
+    public Library withBundled(String imageName, String depthName, String normalName) {
         if (!items.isEmpty()) return this;
-        return withItem(LibraryItem.bundled(imageName, depthName));
+        return withItem(LibraryItem.bundled(imageName, depthName, normalName));
     }
 
     /**
@@ -493,10 +504,37 @@ public final class Library {
      *                  not there would let the next cleanup pass drop the demo
      */
     public Library withBundledFiles(String imageName, String depthName) {
+        return withBundledFiles(imageName, depthName, null);
+    }
+
+    /**
+     * As {@link #withBundledFiles(String, String)}, and also give the demo its
+     * shipped normal if it is missing one.
+     *
+     * <p><b>Three files, and the repair decides each from the row's own contents.</b>
+     * A row with no image is the pre-migration or failed-copy state and gets all
+     * three named in one write; a row that already has an image is only missing a
+     * normal the build has just started shipping, and gets that one repaired
+     * without touching a depth map the user may since have regenerated. The repair
+     * never adds a row and never replaces a normal the row already has, so it stays
+     * idempotent on the read path.
+     *
+     * @param normalName the copied normal, or null when the copy did not happen
+     */
+    public Library withBundledFiles(String imageName, String depthName, String normalName) {
         if (imageName == null) return this;
         LibraryItem demo = find(BUNDLED_ID);
-        if (demo == null || demo.imageName != null) return this;
-        return withItem(demo.withFiles(imageName, depthName));
+        if (demo == null) return this;
+        if (demo.imageName == null) {
+            return withItem(demo.withFiles(imageName, depthName, normalName));
+        }
+        // Already file-backed: only a normal the row is missing is new information.
+        // Written through the three-file paired write so the depth it belongs to is
+        // named in the same call.
+        if (demo.normalName == null && normalName != null) {
+            return withItem(demo.withFiles(demo.imageName, demo.depthName, normalName));
+        }
+        return this;
     }
 
     /**
