@@ -621,8 +621,15 @@ public class DepthWallpaperService extends WallpaperService {
                     active == null ? null : active.imageName);
             java.io.File depF = PrefFiles.resolve(getFilesDir(),
                     active == null ? null : active.depthName);
+            // The supplied normal, resolved from the same item. Null is the flat-lit
+            // state, not a failure, and it is part of the pair identity below so a
+            // photo that gains a normal is re-installed rather than reported as
+            // already showing.
+            java.io.File nrmF = PrefFiles.resolve(getFilesDir(),
+                    active == null ? null : active.normalName);
             final String img = imgF == null ? null : imgF.getAbsolutePath();
             final String dep = depF == null ? null : depF.getAbsolutePath();
+            final String nrm = nrmF == null ? null : nrmF.getAbsolutePath();
             // Which screen this engine is, and therefore whose settings to render.
             // Resolved through the one resolution point, so the two engines of a
             // two-engine setup cannot disagree about what a photograph looks like.
@@ -652,7 +659,7 @@ public class DepthWallpaperService extends WallpaperService {
                     + " which=" + resolved.surface()
                     + " item=" + (active == null ? "none" : active.displayName())
                     + " want=" + (img == null ? "packaged" : new java.io.File(img).getName())
-                    + " onScreen=" + renderer.showingSamePair(img, dep)
+                    + " onScreen=" + renderer.showingSamePair(img, dep, nrm)
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             // Publish what the LOCK engine is showing, so a HOME engine starting on the
             // unlock can make its first frame this rather than its own. See lockFramingShowing.
@@ -666,7 +673,7 @@ public class DepthWallpaperService extends WallpaperService {
             // to the home engine at screen-on -- is not. That distinction is the whole
             // difference between gliding from the surface the user was looking at and
             // gliding from a window that never appeared.
-            if (visible && renderer.showingSamePair(img, dep)) {
+            if (visible && renderer.showingSamePair(img, dep, nrm)) {
                 DepthWallpaperService.lastVisibleSurface = resolved.surface();
             }
             // THE LOCK ENGINE IS THE LAST SCREEN EVEN THOUGH IT DOES NOT PAINT.
@@ -763,11 +770,11 @@ public class DepthWallpaperService extends WallpaperService {
                     // photo until the process died. Re-decoding on every Depth
                     // nudge would drop a frame for nothing, so the check earns
                     // its keep.
-                    if (!renderer.showingSamePair(img, dep)) {
+                    if (!renderer.showingSamePair(img, dep, nrm)) {
                         // Async: the read/decode/mesh-build must not happen
                         // between two frames of the wallpaper, or it visibly
                         // freezes for seconds.
-                        renderer.loadPairAsync(img, dep);
+                        renderer.loadPairAsync(img, dep, nrm);
                     }
                 }
             });

@@ -124,6 +124,15 @@ final class PlaylistScreen {
     private ModalSheet sheet;
     /** The playlist being edited, or null for the list. */
     private String openId;
+    /**
+     * True when this screen was opened straight into one playlist's editor from
+     * the gallery's section, rather than as the list-first Playlists screen.
+     *
+     * <p>The gallery's rows ARE the list now, so its pencil opens the editor
+     * directly and the editor's Done closes the screen instead of falling back to
+     * a list that would duplicate the section the user just left.
+     */
+    private boolean standalone;
     /** The editor's name field, held so a commit does not have to find it. */
     private EditText nameField;
     // The screen used to build its own window -- scrim, card, inset listener,
@@ -140,6 +149,71 @@ final class PlaylistScreen {
     /** Open the playlists screen over the studio. */
     static void show(MainActivity activity) {
         new PlaylistScreen(activity).present();
+    }
+
+    /**
+     * Open straight into one playlist's editor, for the gallery's {@code ✎}.
+     *
+     * <p>The list is no longer a destination the gallery needs — the section in
+     * its own scroll replaced it — so this skips it and marks the screen
+     * standalone, which makes Done close rather than return to a list.
+     */
+    static void edit(MainActivity activity, String playlistId) {
+        PlaylistScreen screen = new PlaylistScreen(activity);
+        screen.standalone = true;
+        screen.present();
+        screen.openEditor(playlistId);
+    }
+
+    /**
+     * Make a new, empty playlist and return its id, for the gallery's New row.
+     *
+     * <p>Creation is a playlists-blob write only. It is not selected and not
+     * activated: an empty playlist is inert until photos are put in it, which the
+     * editor the caller opens next is for.
+     */
+    static String create(MainActivity activity) {
+        return PlaylistStore.add(activity.prefs,
+                Playlist.create(Playlist.newId(), null, null));
+    }
+
+    /**
+     * Start or stop one playlist rotating, for the gallery's row toggle.
+     *
+     * <p><b>On steps once; off touches only the playlists blob.</b> Starting is
+     * invisible without a move, so enabling commits the playlists blob and the
+     * index selection together — exactly what the editor's Use does — and the
+     * wallpaper changes in the moment. Stopping writes the playlists blob and
+     * leaves the index alone, so the photo on screen does not move.
+     *
+     * <p>Note the honest duplication: the editor's {@code Use}/{@code Stop} is a
+     * second route to this same flag. It is kept because the editor is not
+     * deletable and a row there that could not act would be the feature's old
+     * "saved but dead" reading; the two go through the same two calls, so they
+     * cannot disagree about what starting means.
+     */
+    static void setActive(MainActivity activity, String id, boolean on) {
+        if (!on) {
+            PlaylistStore.setActive(activity.prefs, id, false);
+            // The playlists blob moved, not the index, so only the photo line can
+            // have changed; the current photo stays put.
+            activity.refreshSliders();
+            return;
+        }
+        Playlists lists = PlaylistStore.load(activity.prefs);
+        Playlists onLists = lists.withActive(id, true);
+        Playlist running = onLists.find(id);
+        if (running == null) return;
+        Surface surface = running.surfaces.isEmpty() ? Surface.HOME : running.surfaces.get(0);
+        Playlists.Result r = Playlists.step(onLists,
+                AppState.load(activity.prefs, activity.getFilesDir()).library,
+                surface, System.currentTimeMillis());
+        activity.prefs.edit()
+                .putString(Library.KEY, r.library.toJson())
+                .putString(Playlists.KEY, r.playlists.toJson())
+                .commit();
+        activity.refreshSliders();
+        activity.applyFiles();
     }
 
     // ------------------------------------------------------------------ widgets
@@ -513,10 +587,21 @@ final class PlaylistScreen {
 
     /** {@code 4 photos · Daily · Home + Lock} — the row's whole answer, on one line. */
     private String summary(Playlist p) {
-        return activity.getString(p.shuffle
+        return summary(activity, p);
+    }
+
+    /**
+     * As {@link #summary(Playlist)}, for the gallery's rows too.
+     *
+     * <p>Static and package-visible so the gallery's playlist section reads the
+     * same sentence the Playlists screen's list row does: a second copy of
+     * "photos · trigger · screens" is a second answer to what a playlist is.
+     */
+    static String summary(MainActivity a, Playlist p) {
+        return a.getString(p.shuffle
                         ? R.string.playlists_row_summary_shuffled
                         : R.string.playlists_row_summary,
-                photos(p.size()), p.trigger.label(), surfaces(p));
+                photos(a, p.size()), p.trigger.label(), surfaces(a, p));
     }
 
     /**
@@ -653,7 +738,12 @@ final class PlaylistScreen {
     }
 
     private String photos(int count) {
-        return activity.getResources().getQuantityString(R.plurals.playlist_photos, count, count);
+        return photos(activity, count);
+    }
+
+    /** The count in the plurals the whole app uses, for the gallery's rows too. */
+    static String photos(MainActivity a, int count) {
+        return a.getResources().getQuantityString(R.plurals.playlist_photos, count, count);
     }
 
     /**
@@ -666,15 +756,20 @@ final class PlaylistScreen {
      * separator claiming a screen the playlist is not on.
      */
     private String surfaces(Playlist p) {
+        return surfaces(activity, p);
+    }
+
+    /** As {@link #surfaces(Playlist)}, for the gallery's rows too. */
+    static String surfaces(MainActivity a, Playlist p) {
         boolean home = p.surfaces.contains(Surface.HOME);
         boolean lock = p.surfaces.contains(Surface.LOCK);
         if (home && lock) {
-            return activity.getString(R.string.playlists_surfaces_both,
-                    str(R.string.surface_home), str(R.string.surface_lock));
+            return a.getString(R.string.playlists_surfaces_both,
+                    a.getString(R.string.surface_home), a.getString(R.string.surface_lock));
         }
-        if (home) return str(R.string.surface_home);
-        if (lock) return str(R.string.surface_lock);
-        return str(R.string.playlists_surfaces_none);
+        if (home) return a.getString(R.string.surface_home);
+        if (lock) return a.getString(R.string.surface_lock);
+        return a.getString(R.string.playlists_surfaces_none);
     }
 
     /** One screen's name, for the "X is rotating on Home" sentence. */
@@ -687,8 +782,12 @@ final class PlaylistScreen {
     private void openEditor(String playlistId) {
         if (playlistId == null || PlaylistStore.load(activity.prefs).find(playlistId) == null) {
             // Deleted by a rotation, or by a delete in the gallery, while this
-            // screen was open. Falling back to the list is the honest answer; an
-            // editor with nothing in it is not.
+            // screen was open. A standalone editor has no list to fall back to, so
+            // it closes; an editor with nothing in it is not.
+            if (standalone) {
+                dismiss();
+                return;
+            }
             showList();
             return;
         }
@@ -766,7 +865,14 @@ final class PlaylistScreen {
             @Override
             public void onClick(View v) {
                 commitName();
-                showList();
+                // Opened from the gallery's pencil, the editor is the whole
+                // screen: Done closes it. As the list-first screen's editor, it
+                // falls back to the list, as before.
+                if (standalone) {
+                    dismiss();
+                } else {
+                    showList();
+                }
             }
         });
         sheet.footerRow(done);
@@ -1393,7 +1499,11 @@ final class PlaylistScreen {
     private void confirmDelete(final String id) {
         Playlist p = PlaylistStore.load(activity.prefs).find(id);
         if (p == null) {
-            showList();
+            if (standalone) {
+                dismiss();
+            } else {
+                showList();
+            }
             return;
         }
         final ModalSheet confirm = new ModalSheet(activity, MODAL_MAX_FRACTION);
@@ -1426,7 +1536,13 @@ final class PlaylistScreen {
                 // question goes, and the same order the gallery's confirm uses.
                 confirm.dismiss();
                 PlaylistStore.remove(activity.prefs, id);
-                showList();
+                // A standalone editor opened from the gallery has no list to fall
+                // back to; the playlist is gone, so it closes.
+                if (standalone) {
+                    dismiss();
+                } else {
+                    showList();
+                }
             }
         });
         confirm.footerRow(cancel, delete);

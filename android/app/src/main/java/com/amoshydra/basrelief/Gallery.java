@@ -2,10 +2,14 @@ package com.amoshydra.basrelief;
 
 import android.os.Build;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.widget.Button;
@@ -129,6 +133,19 @@ final class Gallery {
     /** The depth chip. A dot, because a chip that needs reading is a label. */
     private static final int CHIP_DP = 10;
     /**
+     * The playlist collage: a 2×2 block of {@link PhotoTile} at
+     * {@link #COLLAGE_TILE_DP}, 40dp overall, on the row's leading edge.
+     *
+     * <p>18–19dp rather than the grid's cell because the collage is four decodes
+     * per row and this app has no view recycling: the size is what keeps the
+     * section's cost bounded. 19 + 2 + 19 = 40, so the block has no dead sliver.
+     */
+    private static final int COLLAGE_DP = 40;
+    private static final int COLLAGE_TILE_DP = 19;
+    private static final int COLLAGE_GAP_DP = 2;
+    /** The playlist row's hairline, the mockup's --line. */
+    private static final int HAIRLINE = 0x24FFFFFF;
+    /**
      * `.thumb`/`.cell`'s 11px radius. The photograph tiles get it passed to
      * {@link PhotoTile}; the two glyph tiles here carry it themselves.
      */
@@ -168,16 +185,67 @@ final class Gallery {
     private View grid;
 
     /**
-     * The grid header's count of running playlists, kept so it can be refreshed
-     * in place when the Playlists dialog closes.
+     * The header's rotating-playlist indicator, kept so it can be refreshed in
+     * place when the Playlists editor closes.
      *
-     * <p>Null while the grid is down. It exists as a field because the answer can
-     * change without the grid being rebuilt: the Playlists screen is a dialog,
-     * its writes do not rebuild this view, and rebuilding the grid to update one
-     * line would drop every thumbnail and decode it again — the flash
-     * {@code b426298} removed. See {@link #refreshRotatingLine}.
+     * <p>One indicator naming the one playlist that rotates, sitting immediately
+     * left of the sort. It exists as a field for the same reason the old count
+     * line did: the editor is a dialog in its own window, its writes do not
+     * rebuild this view, and rebuilding the grid to update one label would drop
+     * every thumbnail and decode it again — the flash {@code b426298} removed.
+     * Null while the grid is down.
      */
-    private TextView rotatingLine;
+    private TextView headerIndicator;
+
+    /**
+     * The grid's scroll content: every row the grid draws, in order.
+     *
+     * <p>Held so an archive, a restore, a delete or the disclosure can be laid out
+     * again <i>around the cells that already exist</i> rather than the whole grid
+     * being rebuilt and every thumbnail decoded again. The cells are views keyed
+     * by id in {@link #cellMarks}; this container is where they are arranged. See
+     * {@link #relayoutCells}.
+     *
+     * <p>Null with {@link #grid}.
+     */
+    private LinearLayout gridCells;
+
+    /**
+     * The playlists section: one child of the scroll content, so it can be moved
+     * back into place without rebuilding the collages it holds.
+     *
+     * <p>Its own rows <i>are</i> rebuilt when playlist data changes, because a
+     * collage is up to four decodes and rebuilding it is the honest cost of the
+     * data having changed. What this field buys is that an archive, a restore or
+     * a disclosure toggle — none of which touch a playlist — do not rebuild it.
+     * Null with {@link #grid}.
+     */
+    private LinearLayout playlistsSection;
+
+    /**
+     * Each playlist row's live views, by playlist id, so a rotation toggle can
+     * recolour the two rows it moves between without rebuilding the section.
+     *
+     * <p>Rebuilding the section to show one row going on and another off would
+     * re-decode every collage in it, which is exactly the class of waste
+     * {@code b426298} was about. The map is cleared and refilled with every
+     * section build.
+     */
+    private final Map<String, PlaylistRow> playlistRows =
+            new HashMap<String, PlaylistRow>();
+
+    /**
+     * The playlists+index bytes the section was last built from, so a window
+     * focus that changed nothing does not rebuild it.
+     *
+     * <p>The row menu is a focusable {@link android.widget.PopupWindow}, so
+     * opening and closing one hands focus back to the gallery — and the focus
+     * listener exists for the Playlists editor dialog, which is the other thing
+     * that does. Without this guard, dismissing ANY row menu (Archive, Rename,
+     * Copy) re-decoded every collage in the section, which is exactly the flash
+     * this pass removes. The bytes are the honest test of "did anything change".
+     */
+    private String playlistsSignature;
 
     /**
      * The grid's scroll container, kept so an open row menu can be dismissed
@@ -280,9 +348,14 @@ final class Gallery {
         final LibraryItem item;
         final View cell;
         final PhotoTile tile;
-        final boolean active;
+        /**
+         * Whether this cell is the one on screen. Mutable only because a playlist
+         * rotation can move the selection while the gallery is up, and the ring
+         * is then repainted in place rather than the grid rebuilt.
+         */
+        boolean active;
         /** True when this cell is in the archived section, so its description says so. */
-        final boolean archived;
+        boolean archived;
 
         PickedCell(LibraryItem item, View cell, PhotoTile tile, boolean active,
                    boolean archived) {
@@ -291,6 +364,29 @@ final class Gallery {
             this.tile = tile;
             this.active = active;
             this.archived = archived;
+        }
+    }
+
+    /**
+     * One playlist row's live views, so a toggle can move the accent wash and the
+     * radio mark between two rows without rebuilding the section.
+     *
+     * <p>The subtitle and the description are rewritten together, because they are
+     * the same fact at two distances — the row's coloured state is the glance and
+     * the sentence is the reading — and one without the other is a row that
+     * disagrees with itself.
+     */
+    private static final class PlaylistRow {
+        final View row;
+        final TextView name;
+        final TextView sub;
+        final View dot;
+
+        PlaylistRow(View row, TextView name, TextView sub, View dot) {
+            this.row = row;
+            this.name = name;
+            this.sub = sub;
+            this.dot = dot;
         }
     }
 
@@ -331,14 +427,16 @@ final class Gallery {
     private PhotoPicker photoPicker;
 
     /**
-     * Opens the playlists screen, supplied by whoever builds it.
+     * Opens the playlist editor for one playlist, supplied by whoever builds it.
      *
      * <p>Same reason as {@link PhotoPicker}: a route to a screen this class does
      * not own, so the owner installs it rather than this class reaching into
-     * another one's internals.
+     * another one's internals. The id is passed because the gallery's rows open
+     * straight into the editor; the list screen is no longer a destination the
+     * gallery needs, since the section in its own scroll replaced it.
      */
     interface PlaylistsNavigator {
-        void openPlaylists();
+        void openEditor(String playlistId);
     }
 
     private PlaylistsNavigator playlistsNavigator;
@@ -346,16 +444,16 @@ final class Gallery {
     Gallery(MainActivity activity, FrameLayout root) {
         this.activity = activity;
         this.root = root;
-        // The Playlists screen is a dialog in its own window, so closing it is
-        // the one moment the gallery's ambient count can be stale and no rebuild
-        // will fix it. The root outlives every grid rebuild, and a focus
-        // listener refreshes one line where rebuilding the grid would re-decode
-        // every thumbnail.
+        // The Playlists editor is a dialog in its own window, so closing it is
+        // the one moment the gallery's ambient state can be stale and no rebuild
+        // will fix it. The root outlives every grid rebuild, and a focus listener
+        // refreshes the header indicator and the playlists section where
+        // rebuilding the grid would re-decode every thumbnail and every collage.
         root.getViewTreeObserver().addOnWindowFocusChangeListener(
                 new ViewTreeObserver.OnWindowFocusChangeListener() {
                     @Override
                     public void onWindowFocusChanged(boolean hasFocus) {
-                        if (hasFocus) refreshRotatingLine();
+                        if (hasFocus) refreshGalleryChrome();
                     }
                 });
     }
@@ -634,6 +732,45 @@ final class Gallery {
     }
 
     /**
+     * Drop one photograph's tile from the strip without rebuilding it.
+     *
+     * <p>An archived row leaves the live list, and the strip lists live photos.
+     * Rebuilding the strip to remove one tile decoded every remaining thumbnail;
+     * removing the one view decodes nothing. See {@code b426298}.
+     */
+    private void stripRemove(String id) {
+        if (id == null) return;
+        PhotoTile tile = stripTiles.remove(id);
+        if (tile == null) return;
+        ViewParent parent = tile.getParent();
+        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(tile);
+    }
+
+    /**
+     * Put one photograph's tile back into the strip, in its sorted place.
+     *
+     * <p>A restored row rejoins the live list. The tile is new — it was dropped
+     * when the row was archived — so this decodes exactly one 46dp thumbnail,
+     * which is the honest cost of a row reappearing. Every other tile keeps the
+     * bitmap it already has.
+     *
+     * @param live the index's live order after the write, which is the strip's order
+     */
+    private void stripInsert(LibraryItem item, List<LibraryItem> live, String activeId) {
+        if (stripRow == null || item == null || stripTiles.containsKey(item.id)) return;
+        View tile = stripThumb(item, item.id.equals(activeId));
+        int at = live.size();
+        for (int i = 0; i < live.size(); i++) {
+            if (live.get(i).id.equals(item.id)) {
+                at = i;
+                break;
+            }
+        }
+        if (at > stripRow.getChildCount()) at = stripRow.getChildCount();
+        stripRow.addView(tile, at);
+    }
+
+    /**
      * A tile that is not a photograph: the add tile's glyph, or the grid's label.
      *
      * <p>The add tile is dashed because that is the shape language this app
@@ -732,7 +869,11 @@ final class Gallery {
         root.removeView(grid);
         grid = null;
         gridScroller = null;
-        rotatingLine = null;
+        gridCells = null;
+        playlistsSection = null;
+        playlistRows.clear();
+        playlistsSignature = null;
+        headerIndicator = null;
     }
 
     /**
@@ -747,20 +888,15 @@ final class Gallery {
         // The marks and the selection controls are the views the build below is
         // about to create; anything left from the previous grid addresses views
         // that are no longer on screen, so the maps start empty on every build.
+        // A targeted relayout (see relayoutCells) deliberately does NOT clear
+        // cellMarks: the cells it arranges are these views, and clearing the map
+        // would build new ones and decode every thumbnail again.
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;
+        playlistRows.clear();
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         final Library lib = state.library;
-        // The live rows are what the grid lists. An archived photo is still a row
-        // in the index and still resolves -- that is what keeps the wallpaper when
-        // the active photo is archived -- but it is not in the live grid.
-        final List<LibraryItem> rows = lib.sortedLive();
-        final List<LibraryItem> archived = lib.sortedArchived();
-        // The open state is DERIVED: an archive emptied while the disclosure is
-        // open stops producing rows and the row follows them out.
-        final boolean archiveOpen = showArchived && !archived.isEmpty();
-        showArchived = archiveOpen;
         String activeId = lib.activeId();
 
         final int pad = activity.dp(GRID_PAD_DP);
@@ -783,44 +919,48 @@ final class Gallery {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // ---- header: title, sort, playlists
+        // ---- header: title, the rotating indicator, sort.
+        //
+        // The playlists button is gone: the section lives in the scroll below,
+        // and the one thing the header still needs to say about playlists is
+        // which one is rotating. The sort keeps its intrinsic width and never
+        // moves; the indicator is the only flexible part, so a long name
+        // ellipsises rather than pushing the sort off the edge.
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = text(activity.getString(R.string.gallery_title), 16);
-        title.setLayoutParams(new LinearLayout.LayoutParams(0,
+        header.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout headerRight = new LinearLayout(activity);
+        headerRight.setOrientation(LinearLayout.HORIZONTAL);
+        headerRight.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        headerRight.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(title);
-        header.addView(headerLink(activity.getString(R.string.gallery_sort)
+        headerIndicator = buildHeaderIndicator();
+        headerRight.addView(headerIndicator, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        headerRight.addView(headerLink(activity.getString(R.string.gallery_sort)
                 + " · " + lib.sort().label(), DIM, false, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showSortMenu();
             }
         }));
-        header.addView(headerLink(activity.getString(R.string.gallery_playlists),
-                PhotoTile.ACCENT, true, new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        openPlaylists();
-                    }
-                }));
+        header.addView(headerRight);
         panel.addView(header);
-        // The ambient count of what is running, outside the playlists screens.
-        // Always built, refreshed in place: the grid is not rebuilt when the
-        // Playlists dialog closes, and rebuilding it to change one line would
-        // re-decode every thumbnail. See refreshRotatingLine.
-        rotatingLine = buildRotatingLine();
-        panel.addView(rotatingLine);
-        refreshRotatingLine();
 
         // The count and the hint share one line: they are the same question at two
-        // moments, and two lines would be one too many on a screen this size.
-        // Absent with no photographs: "tap a photo" is a hint about something that
-        // is not there, and the empty state below already answers the question.
-        if (!rows.isEmpty()) {
-            panel.addView(selectionLine());
-        }
+        // moments, and two lines would be one too many on a screen this size. The
+        // line is BUILT even with no photographs -- GONE rather than absent -- so
+        // an archive, a restore or a delete that empties the live grid can hide it
+        // in place instead of the whole panel being rebuilt. See relayoutCells.
+        selectionLineView = selectionLine();
+        selectionLineView.setVisibility(lib.sortedLive().isEmpty()
+                ? View.GONE : View.VISIBLE);
+        panel.addView(selectionLineView);
 
         // ---- the photographs
         //
@@ -852,10 +992,57 @@ final class Gallery {
         gridScroller = scroll;
         LinearLayout cells = new LinearLayout(activity);
         cells.setOrientation(LinearLayout.VERTICAL);
+        // Held so an archive, a restore, a delete or the disclosure can lay the
+        // rows out again around these same cells; see relayoutCells.
+        gridCells = cells;
+        // Photos, then the archive disclosure, then the playlists section -- the
+        // order the design fixed. The playlists section is ALWAYS present, even at
+        // zero: a playlist has no precondition, so hiding it would mean the first
+        // one cannot be created.
+        fillPhotoCells(cells, lib, activeId);
+        playlistsSection = buildPlaylistsSection(lib);
+        cells.addView(playlistsSection, rowSpacing(cells.getChildCount() == 0));
+
+        scroll.addView(cells, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
+        panel.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        refreshHeaderIndicator();
+
+        // No footer. Every action the footer duplicated -- Copy settings, Paste,
+        // Add to playlist -- and Archive / Restore are all in the row's context
+        // menu, and Done was the same exit BACK takes. A row of redundant
+        // controls drawing over the render was four things to keep in step.
+        return panel;
+    }
+
+    /**
+     * The photograph rows, in the fixed order, reusing the cells that already
+     * exist.
+     *
+     * <p>Separated from {@link #buildGrid} because the archive, the delete and
+     * the disclosure all change which rows the grid draws and none of them changes
+     * a cell's picture. Building a cell calls {@link PhotoTile#show}, which
+     * decodes a thumbnail; rebuilding the grid to move one row therefore re-decoded
+     * every photograph in it. This method arranges the existing views instead, and
+     * only builds a cell that has never been built. See {@code b426298}, where the
+     * strip got the same fix.
+     *
+     * <p>The open state is DERIVED: an archive emptied while the disclosure is
+     * open stops producing rows and the row follows them out.
+     */
+    private void fillPhotoCells(LinearLayout cells, Library lib, String activeId) {
+        final List<LibraryItem> rows = lib.sortedLive();
+        final List<LibraryItem> archived = lib.sortedArchived();
+        final boolean archiveOpen = showArchived && !archived.isEmpty();
+        showArchived = archiveOpen;
+
         // .cells{gap:8px} is a row gap as much as a column one. The rows used to
         // stack with no gap at all: the horizontal 8dp read as the grid's only
         // gutter, and a row of photographs touched the row below it.
-        boolean first = true;
+        boolean first = cells.getChildCount() == 0;
         if (rows.isEmpty()) {
             // The ONE empty state. It does not know why the grid is empty --
             // archived, deleted, or never added are the same answer to "what can
@@ -872,7 +1059,7 @@ final class Gallery {
             cells.addView(addCellRow(), rowSpacing(first));
             first = false;
             for (int start = 0; start < rows.size(); start += GRID_COLUMNS) {
-                cells.addView(cellRow(rows, start, activeId, first), rowSpacing(first));
+                cells.addView(cellRowReuse(rows, start, activeId, false), rowSpacing(first));
                 first = false;
             }
         }
@@ -887,23 +1074,46 @@ final class Gallery {
             first = false;
             if (archiveOpen) {
                 for (int start = 0; start < archived.size(); start += GRID_COLUMNS) {
-                    cells.addView(cellRow(archived, start, activeId, first, true),
+                    cells.addView(cellRowReuse(archived, start, activeId, true),
                             rowSpacing(first));
                     first = false;
                 }
             }
         }
-        scroll.addView(cells, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT));
-        panel.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+    }
 
-        // No footer. Every action the footer duplicated -- Copy settings, Paste,
-        // Add to playlist -- and Archive / Restore are all in the row's context
-        // menu, and Done was the same exit BACK takes. A row of redundant
-        // controls drawing over the render was four things to keep in step.
-        return panel;
+    /**
+     * Lay the grid's rows out again around the cells that already exist.
+     *
+     * <p><b>This is the whole fix for the flash.</b> Archiving a photo, restoring
+     * one, deleting one and opening or closing the disclosure all used to call
+     * {@link #rebuildGrid} → {@link #buildGrid} → {@link PhotoTile#show} for every
+     * cell, so one action re-decoded every thumbnail in the grid. The cells are
+     * keyed by id in {@link #cellMarks}; this re-parents them into the rows the
+     * current index wants and adds no decode. The playlists section is moved along
+     * with them, because none of those actions changes a playlist.
+     *
+     * <p>A cell is detached from the row it was in before the rows are thrown
+     * away: a view still parented to its old row cannot be adopted by a new one.
+     */
+    private void relayoutCells() {
+        if (gridCells == null) return;
+        for (PickedCell mark : cellMarks.values()) {
+            ViewParent parent = mark.cell.getParent();
+            if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(mark.cell);
+        }
+        gridCells.removeAllViews();
+        Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
+        fillPhotoCells(gridCells, lib, lib.activeId());
+        if (playlistsSection != null) {
+            ViewParent parent = playlistsSection.getParent();
+            if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(playlistsSection);
+            gridCells.addView(playlistsSection, rowSpacing(gridCells.getChildCount() == 0));
+        }
+        if (selectionLineView != null) {
+            selectionLineView.setVisibility(lib.sortedLive().isEmpty()
+                    ? View.GONE : View.VISIBLE);
+        }
     }
 
     /**
@@ -943,8 +1153,12 @@ final class Gallery {
         row.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // The disclosure changes which rows the grid draws and nothing
+                // about any photograph, so the cells are re-parented rather than
+                // rebuilt: rebuilding re-decoded every thumbnail and flashed the
+                // whole grid.
                 showArchived = !open;
-                rebuildGrid();
+                relayoutCells();
             }
         });
         return row;
@@ -969,68 +1183,156 @@ final class Gallery {
     }
 
     /**
-     * The grid header's count of running playlists — the ambient proof, outside
-     * the playlists screens, that the feature is doing something.
+     * The header's rotating-playlist indicator: the glyph and the name, one
+     * flexible target that ellipsises rather than displacing the sort.
      *
-     * <p>It is built always and shown only when the count is not zero, because
-     * the alternative — adding and removing it as the answer changes — moves the
-     * selection line and the grid below it under the user's thumb.
+     * <p>Built always and shown only while something rotates, because the
+     * alternative — adding and removing it as the answer changes — moves the
+     * selection line and the grid below it under the user's thumb. The whole
+     * {@code ▶ name} group is the target (not just the glyph), with a 48dp
+     * minimum height so the hit area is generous whatever the name's length.
      */
-    private TextView buildRotatingLine() {
-        TextView status = text("", 12);
-        status.setTextColor(PhotoTile.ACCENT);
-        status.setTypeface(null, android.graphics.Typeface.BOLD);
-        status.setPadding(0, activity.dp(2), 0, activity.dp(4));
-        // A route to the screen that owns it, so the count is a way in rather
-        // than a fact with nowhere to go.
-        status.setOnClickListener(new View.OnClickListener() {
+    private TextView buildHeaderIndicator() {
+        TextView ind = text("", 13);
+        ind.setTextColor(PhotoTile.ACCENT);
+        ind.setTypeface(null, Typeface.BOLD);
+        ind.setSingleLine(true);
+        ind.setEllipsize(TextUtils.TruncateAt.END);
+        ind.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        ind.setMinHeight(activity.dp(48));
+        ind.setPadding(activity.dp(4), 0, activity.dp(4), 0);
+        ind.setVisibility(View.GONE);
+        ind.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                openPlaylists();
+                // Scrolls to the active row and opens NOTHING. The editor has a
+                // route already -- the row's own pencil -- and a header tap that
+                // opened a modal would be a second, surprising one.
+                scrollToActivePlaylist();
             }
         });
-        return status;
+        return ind;
     }
 
     /**
-     * Re-read the running count and show or hide the header line.
+     * Show or hide the header indicator, and name the playlist it names.
      *
-     * <p>Read through {@link PlaylistStatus#rotatingCount}, the one resolution
-     * every playlist surface uses, so the gallery cannot claim a rotation the
-     * Playlists screen does not show. A no-op while the grid is down: there is
-     * nothing to refresh, and the next build computes the line from scratch.
+     * <p>Read through {@link Playlists#rotating}, the same gate every playlist
+     * surface uses, so the gallery cannot claim a rotation that rotates nowhere
+     * (a playlist whose stored screens could not be read). A no-op while the grid
+     * is down: there is nothing to refresh, and the next build computes it from
+     * scratch.
      *
-     * <p>Called on window focus because the Playlists screen is a dialog in its
-     * own window — dismissing it returns focus here, and no other callback
-     * covers that moment without rebuilding the grid.
+     * <p>Called on window focus because the Playlists editor is a dialog in its
+     * own window — dismissing it returns focus here, and no other callback covers
+     * that moment without rebuilding the grid.
      */
-    private void refreshRotatingLine() {
-        if (rotatingLine == null) return;
+    private void refreshHeaderIndicator() {
+        // headerIndicator is null exactly when the grid is down (cleared with it),
+        // so it is the sufficient guard. Not `grid`: buildGrid calls this before
+        // assigning the field, and gating on `grid` would leave the indicator
+        // hidden on the first build.
+        if (headerIndicator == null) return;
         Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
-        Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
-        long now = System.currentTimeMillis();
-        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
-        if (!status.isRotating()) {
-            rotatingLine.setVisibility(View.GONE);
+        Playlist rotating = activePlaylist(lists);
+        if (rotating == null) {
+            headerIndicator.setVisibility(View.GONE);
             return;
         }
-        if (status.position > 0) {
-            // The armed playlist owns the photo on screen: the count answers
-            // "is anything rotating" and the position is not needed here.
-            int rotating = PlaylistStatus.rotatingCount(lists);
-            rotatingLine.setText(activity.getResources().getQuantityString(
-                    R.plurals.gallery_rotating_playlists, rotating, rotating));
-        } else {
-            // Armed, and the photo on screen is not one of its own. A manual tap
-            // is legal -- the index owns the pointer and a playlist has no cursor
-            // to disagree with it -- but the playlist will take the screen back
-            // at its next trigger. The count alone cannot say that, so the line
-            // names the playlist and when it moves.
-            rotatingLine.setText(activity.getString(R.string.gallery_playlist_armed,
-                    status.playlist.displayName(),
-                    PlaylistScreen.nextChangeLabel(activity, status.playlist, status, now)));
+        String name = rotating.displayName();
+        headerIndicator.setText(activity.getString(R.string.gallery_rotating_indicator,
+                activity.getString(R.string.gallery_rotating_glyph) + "  " + name));
+        headerIndicator.setContentDescription(
+                activity.getString(R.string.gallery_rotating_indicator_talk, name));
+        headerIndicator.setVisibility(View.VISIBLE);
+    }
+
+    /** The one playlist that rotates on any screen, or null. */
+    private static Playlist activePlaylist(Playlists lists) {
+        if (lists == null) return null;
+        Playlist p = lists.rotating(Surface.HOME);
+        return p != null ? p : lists.rotating(Surface.LOCK);
+    }
+
+    /**
+     * Bring the active playlist row into view and mark it briefly.
+     *
+     * <p>The row, not merely the section: the point of the header tap is to show
+     * which playlist is the one rotating, so the scroll stops with that row on
+     * screen. The flash is a foreground outline rather than a background change,
+     * so it does not disturb the row's own wash.
+     */
+    private void scrollToActivePlaylist() {
+        if (gridScroller == null) return;
+        Playlist rotating = activePlaylist(Playlists.parse(
+                activity.prefs.getString(Playlists.KEY, null)));
+        if (rotating == null) return;
+        PlaylistRow r = playlistRows.get(rotating.id);
+        if (r == null) return;
+        int y = offsetInCells(r.row);
+        ((ScrollView) gridScroller).smoothScrollTo(0, Math.max(0, y - activity.dp(24)));
+        flashRow(r.row);
+    }
+
+    /** A view's top in the scroll's own coordinates, walking up to {@link #gridCells}. */
+    private int offsetInCells(View v) {
+        int y = 0;
+        View cur = v;
+        while (cur != null && cur != gridCells) {
+            y += cur.getTop();
+            ViewParent p = cur.getParent();
+            cur = p instanceof View ? (View) p : null;
         }
-        rotatingLine.setVisibility(View.VISIBLE);
+        return y;
+    }
+
+    private void flashRow(View row) {
+        GradientDrawable outline = new GradientDrawable();
+        outline.setCornerRadius(activity.dp(11));
+        outline.setStroke(activity.dp(2), PhotoTile.ACCENT);
+        row.setForeground(outline);
+        row.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                row.setForeground(null);
+            }
+        }, 900);
+    }
+
+    /**
+     * The one moment the gallery's playlist state can be stale with no rebuild:
+     * a dialog window (the Playlists editor) has just closed over it.
+     *
+     * <p>Only the header indicator and the playlists section are touched. The grid
+     * and the strip are the same index read twice and neither can have changed —
+     * editing a playlist does not write the index — so rebuilding the whole grid
+     * to reflect a rename would re-decode every photograph for nothing.
+     */
+    private void refreshGalleryChrome() {
+        if (grid == null) return;
+        refreshHeaderIndicator();
+        if (playlistsSection == null) return;
+        // Only a real change rebuilds the section. See playlistsSignature: a row
+        // menu handing focus back must not decode every collage.
+        if (playlistsSignature != null && playlistsSignature.equals(playlistsSignature())) {
+            return;
+        }
+        fillPlaylistsSection(playlistsSection,
+                AppState.load(activity.prefs, activity.getFilesDir()).library);
+    }
+
+    /**
+     * The blob the playlists section depends on.
+     *
+     * <p>The blob decides the rows and every value in them. The index resolves a
+     * collage's tiles, but membership is the blob's, and a photograph's file going
+     * missing is the one case this misses — and that path already rebuilds the
+     * section through {@link #refreshPlaylistsSection} wherever it can happen
+     * (delete). Comparing raw bytes is exact and costs one preference read,
+     * against a rebuild that costs one decode per collage tile.
+     */
+    private String playlistsSignature() {
+        return activity.prefs.getString(Playlists.KEY, "");
     }
 
     /**
@@ -1062,20 +1364,34 @@ final class Gallery {
      * Every column used to carry the 8dp, which indented the whole grid by one
      * gap and made it ragged against the text above it.
      *
-     * <p>The add tile is NOT here any more: it leads the grid in its own row, so
-     * this is photographs only. See {@link #addCellRow}.
+     * <p><b>A cell is reused when one exists for its id.</b> This is what makes a
+     * relayout free: the view already holds the decoded bitmap, so re-parenting it
+     * decodes nothing. A cell is only built -- and only decoded -- the first time
+     * its id appears. The layout params are re-applied on reuse because a cell can
+     * move columns, and the gutter belongs to the column.
+     *
+     * <p>The add tile is NOT here: it leads the grid in its own row, so this is
+     * photographs only. See {@link #addCellRow}.
      *
      * @param archivedDraw true for an archived section's muted cells
      */
-    private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId,
-                                 boolean firstInFlow, boolean archivedDraw) {
+    private LinearLayout cellRowReuse(List<LibraryItem> rows, int start, String activeId,
+                                      boolean archivedDraw) {
         LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < GRID_COLUMNS; i++) {
             int at = start + i;
             if (at < rows.size()) {
                 LibraryItem item = rows.get(at);
-                line.addView(cell(item, item.id.equals(activeId), i == 0, archivedDraw));
+                PickedCell mark = cellMarks.get(item.id);
+                View c;
+                if (mark == null) {
+                    c = cell(item, item.id.equals(activeId), i == 0, archivedDraw);
+                } else {
+                    c = mark.cell;
+                    c.setLayoutParams(cellLayoutParams(i == 0));
+                }
+                line.addView(c);
             } else {
                 // A spacer, and deliberately zero-height: it exists only to hold a
                 // column open so the last row keeps the first row's column widths,
@@ -1091,10 +1407,12 @@ final class Gallery {
         return line;
     }
 
-    /** A row of live photographs. See {@link #cellRow}. */
-    private LinearLayout cellRow(List<LibraryItem> rows, int start, String activeId,
-                                 boolean firstInFlow) {
-        return cellRow(rows, start, activeId, firstInFlow, false);
+    /** The column width and the gutter, applied on both a build and a reuse. */
+    private LinearLayout.LayoutParams cellLayoutParams(boolean firstInRow) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cellPx,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        if (!firstInRow) lp.leftMargin = activity.dp(GRID_GAP_DP);
+        return lp;
     }
 
     /**
@@ -1176,23 +1494,6 @@ final class Gallery {
     }
 
     /**
-     * One cell: the picture, the active ring, the picked ring, wash and badge,
-     * the depth chip, and the menu.
-     *
-     * <p><b>Tap uses the photograph; a hold starts picking; a tap while picking
-     * toggles.</b> While picking, a tap deliberately cannot change the
-     * wallpaper: two answers on one gesture is how a user trying to unpick a
-     * photograph ends up replacing the wallpaper instead. The marks make the
-     * mode visible — a white ring for what is on screen, a thicker accent ring
-     * plus wash and checkmark for what is picked — so "which mode am I in" is
-     * answered by the grid rather than remembered.
-     */
-    private View cell(final LibraryItem item, final boolean isActive,
-                      boolean firstInRow) {
-        return cell(item, isActive, firstInRow, false);
-    }
-
-    /**
      * One cell, live or archived.
      *
      * <p>An archived cell is the same cell muted: the same tile, the same depth chip and
@@ -1200,6 +1501,12 @@ final class Gallery {
      * an archived photo is not put on the wallpaper from here, and selecting it would be a
      * route the disclosure exists to gate -- but it can still be PICKED, because the
      * mixed-pick Restore verb acts on a selection.
+     *
+     * <p><b>A cell can be reused, so the mark's archived flag is read at tap
+     * time.</b> Archiving and restoring re-parent the same view instead of
+     * rebuilding it (see {@link #relayoutCells}), and a listener that captured the
+     * build-time boolean would leave a restored photo refusing a tap because it
+     * was archived when it was built.
      *
      * @param archivedDraw true when this cell is drawn in the archived section
      */
@@ -1210,11 +1517,8 @@ final class Gallery {
         cell.setOrientation(LinearLayout.VERTICAL);
         // Fixed, not weighted: cellPx is the column width the buildGrid arithmetic
         // promised, and a weighted cell would take the gutter back out of the
-        // column it belongs to. The first column carries no gutter; see cellRow.
-        LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(cellPx,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        if (!firstInRow) cellLp.leftMargin = activity.dp(GRID_GAP_DP);
-        cell.setLayoutParams(cellLp);
+        // column it belongs to. The first column carries no gutter; see cellRowReuse.
+        cell.setLayoutParams(cellLayoutParams(firstInRow));
 
         // The tile is the picture. It owns the rounded fill, the bitmap, the
         // clip and every ring and pick mark; the grid adds only its own two
@@ -1251,6 +1555,10 @@ final class Gallery {
         // depth chip and the two selection marks already say which photograph
         // this is.
 
+        // Kept before the listeners, which read the mutable flag rather than the
+        // parameter; see the class note on reuse.
+        final PickedCell mark = new PickedCell(item, cell, tile, isActive, archivedDraw);
+
         cell.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1262,7 +1570,7 @@ final class Gallery {
                 // hidden, and putting it on the wallpaper is a route the
                 // disclosure exists to gate. Restore it first, then tap it. The
                 // menu still opens, because Restore lives there.
-                if (archivedDraw) return;
+                if (mark.archived) return;
                 select(item.id);
             }
         });
@@ -1279,7 +1587,7 @@ final class Gallery {
                 return true;
             }
         });
-        cellMarks.put(item.id, new PickedCell(item, cell, tile, isActive, archivedDraw));
+        cellMarks.put(item.id, mark);
         cell.setContentDescription(stateDescription(item, isActive, isPicked, archivedDraw));
         return cell;
     }
@@ -1325,6 +1633,20 @@ final class Gallery {
         mark.tile.setPicked(on);
         mark.cell.setContentDescription(
                 stateDescription(mark.item, mark.active, on, mark.archived));
+    }
+
+    /**
+     * End the pick mode in place, redrawing the marks it was showing.
+     *
+     * <p>A paste or an add-to-playlist ends the gesture, so the badges have to go
+     * with it. The grid used to be rebuilt to clear them, which re-decoded every
+     * thumbnail for a state the cells already hold — the flash {@code b426298}
+     * removed from the strip and this file removes from the grid.
+     */
+    private void clearPicks() {
+        for (String id : new ArrayList<String>(picked)) drawPicked(id, false);
+        picked.clear();
+        refreshSelectionUi();
     }
 
     /**
@@ -1385,17 +1707,15 @@ final class Gallery {
     private String stateDescription(LibraryItem item, boolean isActive, boolean isPicked,
                                     boolean archived) {
         String name = item.displayName();
-        String state;
         if (isActive && isPicked) {
-            state = activity.getString(R.string.gallery_talk_active_selected, name);
-        } else if (isActive) {
-            state = activity.getString(R.string.gallery_talk_active, name);
-        } else if (isPicked) {
-            state = activity.getString(R.string.gallery_talk_selected, name);
-        } else {
-            state = activity.getString(R.string.gallery_thumb_use, name);
+            return activity.getString(R.string.gallery_talk_active_selected, name);
         }
-        return archived ? activity.getString(R.string.gallery_talk_archived, state) : state;
+        if (isActive) return activity.getString(R.string.gallery_talk_active, name);
+        if (isPicked) return activity.getString(R.string.gallery_talk_selected, name);
+        // An archived cell's bare state is "archived", not "Use …": the action
+        // wording would promise a tap that does nothing on a hidden row.
+        if (archived) return activity.getString(R.string.gallery_talk_archived, name);
+        return activity.getString(R.string.gallery_thumb_use, name);
     }
 
     /** Top-LEFT, clear of the row menu, which is top-right. */
@@ -1789,13 +2109,14 @@ final class Gallery {
         photoPicker.pickPhoto();
     }
 
-    private void openPlaylists() {
+    /** The playlist's editor, through the route the host installed. */
+    private void openEditor(String playlistId) {
         if (playlistsNavigator == null) {
             Toast.makeText(activity, R.string.toast_playlists_unavailable,
                     Toast.LENGTH_LONG).show();
             return;
         }
-        playlistsNavigator.openPlaylists();
+        playlistsNavigator.openEditor(playlistId);
     }
 
     /**
@@ -1925,8 +2246,10 @@ final class Gallery {
             activity.refreshSliders();
             activity.applyFiles();
         }
-        picked.clear();
-        rebuildGrid();
+        // Patched, not rebuilt: a paste changes render values, none of which the
+        // grid draws, so the only grid state that moved is the pick set. Rebuilding
+        // would re-decode every thumbnail for a settings change.
+        clearPicks();
         Toast.makeText(activity, activity.getString(R.string.toast_settings_pasted, done),
                 Toast.LENGTH_SHORT).show();
     }
@@ -2083,21 +2406,111 @@ final class Gallery {
         // an OOM much later, on someone else's device.
         PairCache.clear();
         for (LibraryItem item : targets) deleteFiles(item);
-        picked.clear();
+        // Patched, not rebuilt. The deleted ids' cells and strip tiles are dropped
+        // and the rows are laid out again around the cells that remain, so the
+        // surviving photographs are not decoded again — building the grid to remove
+        // one row re-decoded every other thumbnail in it.
+        for (LibraryItem item : targets) {
+            cellMarks.remove(item.id);
+            stripRemove(item.id);
+        }
+        clearPicks();
         if (deletesActive) {
             activity.refreshSliders();
             activity.applyFiles();
         }
-        // The grid stays up: watching the row disappear is the feedback.
-        reindex();
+        // The grid stays up: watching the row disappear is the feedback. Delete is
+        // the other half of archive — it removes the id from every playlist — so
+        // the section is rebuilt in the same breath.
+        relayoutCells();
+        refreshPlaylistsSection();
+        refreshHeaderIndicator();
         Toast.makeText(activity, deletesActive
                         ? R.string.gallery_deleted_active : R.string.gallery_deleted,
                 Toast.LENGTH_SHORT).show();
     }
 
+    /**
+     * Archive or restore a set of photos. One blob, unlike delete's two.
+     *
+     * <p><b>Archive never touches the selection, the playlists or the files.</b>
+     * That is the design's central contrast with delete:
+     *
+     * <ul>
+     *   <li><b>The selection</b> is left alone, so archiving the active photo
+     *       keeps the wallpaper. The row is hidden, not destroyed, and the engine
+     *       keeps resolving the same id and drawing the same relief. This is why
+     *       there is no {@code applyFiles} call here: the render is unchanged.
+     *   <li><b>The playlists</b> are left alone, so a playlist keeps an archived
+     *       member and skips it ({@code Playlists.livingIds}); restoring brings
+     *       back the place the user arranged. Delete is the other half — it
+     *       removes the id everywhere — and the two must not be collapsed.
+     *   <li><b>The files</b> stay in {@code filesDir}, so restore is the same bit
+     *       off and nothing has to be re-imported.
+     * </ul>
+     *
+     * <p>Only the index is written, and only the strip and grid need rebuilding:
+     * an archived row leaves the live grid, and a restored one rejoins it in its
+     * sorted place. The wallpaper does not move either way, so it is not
+     * refreshed.
+     */
+    private void performArchive(List<LibraryItem> targets, boolean archive) {
+        if (targets.isEmpty()) return;
+        java.util.Set<String> ids = new java.util.LinkedHashSet<String>();
+        for (LibraryItem item : targets) ids.add(item.id);
+        LibraryStore.setArchived(activity.prefs, ids, archive);
+        // End the pick mode the row menu may have been acting on, redrawing the
+        // badges in place; the grid is not rebuilt for it.
+        clearPicks();
+        Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
+        String activeId = lib.activeId();
+        List<LibraryItem> live = lib.sortedLive();
+        for (LibraryItem item : targets) {
+            PickedCell mark = cellMarks.get(item.id);
+            if (mark != null) {
+                // The same cell, muted or unmuted in place. Its listener reads this
+                // flag rather than the build-time one; see cell().
+                mark.archived = archive;
+                mark.tile.setMuted(archive);
+                mark.cell.setContentDescription(stateDescription(
+                        mark.item, mark.active, false, archive));
+            }
+            // The strip lists live photos only, so an archived row leaves it and a
+            // restored one rejoins at its sorted place — one tile, not a rebuild.
+            if (archive) {
+                stripRemove(item.id);
+            } else {
+                stripInsert(item, live, activeId);
+            }
+        }
+        // Re-parent the cells into the section this new state wants: a restored
+        // row rejoins the live grid in its sorted place, an archived one appears
+        // under the disclosure. No thumbnail is decoded by any of it.
+        relayoutCells();
+        if (targets.size() == 1) {
+            Toast.makeText(activity, archive
+                            ? R.string.gallery_archived : R.string.gallery_restored,
+                    Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(activity, activity.getResources().getQuantityString(
+                            archive ? R.plurals.gallery_archived_many
+                                    : R.plurals.gallery_restored_many,
+                            targets.size(), targets.size()),
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** The verb for a row's own state: Archive on a live row, Restore on an archived one. */
+    private boolean rowIsArchived(LibraryItem item) {
+        LibraryItem fresh = AppState.load(activity.prefs, activity.getFilesDir())
+                .library.find(item.id);
+        return fresh != null && fresh.isArchived();
+    }
+
     private void deleteFiles(LibraryItem item) {
         final String image = item.imageName;
         final String depth = item.depthName;
+        final String normal = item.normalName;
         final File dir = activity.getFilesDir();
         Io.run(new java.util.concurrent.Callable<Void>() {
             @Override
@@ -2108,6 +2521,12 @@ final class Gallery {
                 }
                 if (depth != null) {
                     File f = PrefFiles.resolve(dir, depth);
+                    if (f != null) f.delete();
+                }
+                // The supplied normal is a third file of the row; deleting the
+                // photo without it would leave an orphan nothing can ever reach.
+                if (normal != null) {
+                    File f = PrefFiles.resolve(dir, normal);
                     if (f != null) f.delete();
                 }
                 return null;
@@ -2154,15 +2573,24 @@ final class Gallery {
                         copyFrom(item);
                     }
                 }));
-        items.add(new ContextMenu.Item(many
-                        ? activity.getString(R.string.gallery_paste_onto_selected)
-                        : activity.getString(R.string.gallery_paste_onto_this),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        pasteOnto(targetsFor(item));
-                    }
-                }));
+        // Paste acts on the selection, always. With the footer gone this is the
+        // only place the requirement is discoverable, so it is stated on a
+        // disabled row rather than left to a label. The old "Paste onto this" is
+        // retired: to paste onto one photo, hold it first.
+        if (many) {
+            items.add(new ContextMenu.Item(
+                    activity.getString(R.string.gallery_paste_onto_selected),
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            pasteOnto(targetsFor(null));
+                        }
+                    }));
+        } else {
+            items.add(ContextMenu.Item.needsSelection(
+                    activity.getString(R.string.gallery_paste_onto_selected),
+                    activity.getString(R.string.gallery_paste_needs_selection)));
+        }
         items.add(new ContextMenu.Item(
                 activity.getString(R.string.gallery_add_to_playlist),
                 new Runnable() {
@@ -2179,6 +2607,44 @@ final class Gallery {
                         rename(item);
                     }
                 }));
+        // Archive / Restore. On a multi-pick the verbs are scoped to the pick and
+        // a mixed pick offers BOTH, because archiving and restoring are opposite
+        // directions and one verb cannot mean both. On a single row it is the
+        // row's own state that chooses the verb.
+        final List<LibraryItem> archiveTargets = many ? targetsFor(null)
+                : java.util.Collections.singletonList(item);
+        int live = 0;
+        int hidden = 0;
+        for (LibraryItem t : archiveTargets) {
+            if (rowIsArchived(t)) hidden++;
+            else live++;
+        }
+        if (live > 0) {
+            final boolean bulk = many;
+            final List<LibraryItem> toArchive = archiveTargets;
+            items.add(new ContextMenu.Item(bulk
+                            ? activity.getString(R.string.gallery_archive_selected, live)
+                            : activity.getString(R.string.gallery_archive),
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            performArchive(toArchive, true);
+                        }
+                    }));
+        }
+        if (hidden > 0) {
+            final boolean bulk = many;
+            final List<LibraryItem> toRestore = archiveTargets;
+            items.add(new ContextMenu.Item(bulk
+                            ? activity.getString(R.string.gallery_restore_selected, hidden)
+                            : activity.getString(R.string.gallery_restore),
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            performArchive(toRestore, false);
+                        }
+                    }));
+        }
         items.add(ContextMenu.Item.destructive(many
                         ? activity.getString(R.string.gallery_delete_selected)
                         : activity.getString(R.string.gallery_delete_one),
@@ -2245,6 +2711,397 @@ final class Gallery {
     }
 
     // ----------------------------------------------------------------- playlists
+
+    /**
+     * The playlists section: a caption, the {@code New playlist} row, and one row
+     * per playlist.
+     *
+     * <p><b>Always present, even at zero.</b> That is the one rule the archive
+     * does not lend it: a photo can be un-archived later, but a playlist has no
+     * precondition, so hiding the section when there are none would mean the first
+     * one could never be created. At zero it is the caption and the New row and
+     * nothing else — no sentence explaining the row to the user looking at it.
+     *
+     * <p><b>Reached through the grid, not a header button.</b> The section is
+     * content in the same scroll as the photos, so the header no longer carries a
+     * Playlists entry; it carries only the indicator naming what rotates.
+     */
+    private LinearLayout buildPlaylistsSection(Library lib) {
+        LinearLayout section = new LinearLayout(activity);
+        section.setOrientation(LinearLayout.VERTICAL);
+        fillPlaylistsSection(section, lib);
+        return section;
+    }
+
+    /** Rebuild the section's rows because playlist data changed. See its holder. */
+    private void refreshPlaylistsSection() {
+        if (playlistsSection == null) return;
+        fillPlaylistsSection(playlistsSection,
+                AppState.load(activity.prefs, activity.getFilesDir()).library);
+    }
+
+    /**
+     * Fill the section for the playlists on disk.
+     *
+     * <p>The rows are rebuilt here rather than patched, because a rename, a
+     * trigger change or a membership change can move several of them and the
+     * editor is the only thing that causes it. A rotation TOGGLE does not come
+     * here: it repaints the two rows it moves between, so the collages are not
+     * decoded again. See {@link #togglePlaylist}.
+     */
+    private void fillPlaylistsSection(LinearLayout section, Library lib) {
+        section.removeAllViews();
+        playlistRows.clear();
+        Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
+        long now = System.currentTimeMillis();
+        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
+
+        TextView caption = text(activity.getString(R.string.gallery_playlists_caption), 11);
+        caption.setAllCaps(true);
+        caption.setLetterSpacing(0.09f);
+        caption.setTextColor(0x57FFFFFF); // --dimmer
+        caption.setTypeface(medium());
+        caption.setPadding(0, activity.dp(14), 0, activity.dp(6));
+        section.addView(caption);
+
+        section.addView(newPlaylistRow());
+        for (Playlist p : lists.playlists()) {
+            section.addView(playlistRow(p, lib, status, now));
+        }
+        playlistsSignature = playlistsSignature();
+    }
+
+    /**
+     * The first list item: a fixed leading affordance, not a playlist, so it is
+     * not part of any ordering. Creating and opening the editor is one tap,
+     * because a New row that only announced itself would be a row that does
+     * nothing.
+     */
+    private View newPlaylistRow() {
+        TextView row = text(activity.getString(R.string.add_photo_glyph) + "  "
+                + activity.getString(R.string.gallery_playlist_new_row), 13.5f);
+        row.setTextColor(PhotoTile.ACCENT);
+        row.setTypeface(medium());
+        row.setGravity(Gravity.CENTER);
+        row.setPadding(activity.dp(12), activity.dp(12),
+                activity.dp(12), activity.dp(12));
+        row.setBackground(new DashBorder(activity.dp(1), activity.dp(4),
+                0x8A7FD1C1, activity.dp(11)));
+        row.setContentDescription(activity.getString(R.string.gallery_playlist_new));
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (playlistsNavigator == null) {
+                    Toast.makeText(activity, R.string.toast_playlists_unavailable,
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                String id = PlaylistScreen.create(activity);
+                if (id != null) openEditor(id);
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = activity.dp(GRID_GAP_DP);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    /**
+     * One playlist row: {@code [collage] name · trigger · screens [✎] [radio]}.
+     *
+     * <p>The label leads and the controls trail, which is
+     * {@link ModalSheet#switchRow}'s convention: the right edge is where a hand
+     * reaches for a control, and a leading control reads as a second label.
+     *
+     * <p><b>The row is the toggle; the radio is a mark, not a target.</b> The
+     * pencil is its own live 38dp target so configure and activate never share a
+     * hit area. And it is a toggle wearing a radio's clothes: tapping the active
+     * row clears the flag, and zero selected is legal — a radio that can be turned
+     * off. Enabling stands the others down (the model enforces one) and steps once
+     * so the wallpaper changes in the moment.
+     */
+    private View playlistRow(final Playlist p, Library lib, PlaylistStatus status, long now) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(activity.dp(10), activity.dp(10), activity.dp(10), activity.dp(10));
+
+        row.addView(collage(p, lib), collageParams());
+
+        LinearLayout text = new LinearLayout(activity);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView name = text(p.displayName(), 14);
+        name.setTypeface(null, Typeface.BOLD);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        TextView sub = text("", 12);
+        sub.setSingleLine(true);
+        sub.setEllipsize(TextUtils.TruncateAt.END);
+        text.addView(name);
+        text.addView(sub);
+        row.addView(text, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // The pencil: a separate live target. Added before the radio so the
+        // control trail reads label -> edit -> state, per the accepted row shape.
+        TextView edit = new TextView(activity);
+        edit.setText(activity.getString(R.string.gallery_playlist_edit_glyph));
+        edit.setTextSize(15);
+        edit.setTextColor(0xCCFFFFFF);
+        edit.setGravity(Gravity.CENTER);
+        edit.setBackground(plain(0x14FFFFFF, activity.dp(9)));
+        edit.setContentDescription(activity.getString(
+                R.string.gallery_playlist_edit, p.displayName()));
+        edit.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openEditor(p.id);
+            }
+        });
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(
+                activity.dp(38), activity.dp(38));
+        editLp.leftMargin = activity.dp(10);
+        edit.setLayoutParams(editLp);
+        row.addView(edit);
+
+        FrameLayout radio = new FrameLayout(activity);
+        View ring = new View(activity);
+        GradientDrawable ringBg = new GradientDrawable();
+        ringBg.setShape(GradientDrawable.OVAL);
+        ringBg.setStroke(activity.dp(2), 0x59FFFFFF);
+        ring.setBackground(ringBg);
+        radio.addView(ring, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        View dot = new View(activity);
+        GradientDrawable dotBg = new GradientDrawable();
+        dotBg.setShape(GradientDrawable.OVAL);
+        dotBg.setColor(PhotoTile.ACCENT);
+        dot.setBackground(dotBg);
+        radio.addView(dot, new FrameLayout.LayoutParams(
+                activity.dp(12), activity.dp(12), Gravity.CENTER));
+        // The row describes itself; the mark is a picture of the choice.
+        radio.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams radioLp = new LinearLayout.LayoutParams(
+                activity.dp(22), activity.dp(22));
+        radioLp.leftMargin = activity.dp(12);
+        row.addView(radio, radioLp);
+
+        final PlaylistRow holder = new PlaylistRow(row, name, sub, dot);
+        playlistRows.put(p.id, holder);
+        refreshPlaylistRowVisual(holder, p, status, now);
+
+        row.setClickable(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // By id, not the captured Playlist: the row can be toggled more
+                // than once between section builds, and a stale active flag would
+                // make the second tap repeat the first instead of reversing it.
+                togglePlaylist(p.id);
+            }
+        });
+        return row;
+    }
+
+    /** The row's fill and border: the accent wash while it rotates, a hairline otherwise. */
+    private GradientDrawable playlistRowBackground(boolean rotating) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(activity.dp(11));
+        if (rotating) {
+            // Stroke first, then colour: setStroke clears the fill, so a colour
+            // set before it would be thrown away (see AGENTS.md).
+            bg.setStroke(activity.dp(2), PhotoTile.ACCENT);
+            bg.setColor(0x337FD1C1);
+        } else {
+            bg.setStroke(activity.dp(1), HAIRLINE);
+            bg.setColor(Color.TRANSPARENT);
+        }
+        return bg;
+    }
+
+    /**
+     * Repaint one playlist row's state without rebuilding the section.
+     *
+     * <p>Called for every row on a toggle — at most two of them change — and it is
+     * the reason the collages are not decoded again. The subtitle, the wash, the
+     * radio and the spoken state are one fact at four distances and are written
+     * together so the row cannot disagree with itself.
+     */
+    private void refreshPlaylistRowVisual(PlaylistRow holder, Playlist p,
+                                          PlaylistStatus status, long now) {
+        boolean rotating = status.playlist == p;
+        holder.name.setText(p.displayName());
+        if (rotating) {
+            holder.sub.setText(activity.getString(R.string.playlists_row_rotating,
+                    PlaylistScreen.surfaces(activity, p),
+                    PlaylistScreen.nextChangeLabel(activity, p, status, now)));
+            holder.sub.setTextColor(0xBDD6D6D6);
+        } else {
+            holder.sub.setText(PlaylistScreen.summary(activity, p));
+            holder.sub.setTextColor(DIM);
+        }
+        holder.row.setBackground(playlistRowBackground(rotating));
+        holder.dot.setVisibility(rotating ? View.VISIBLE : View.GONE);
+        holder.row.setContentDescription(activity.getString(R.string.playlists_talk,
+                p.displayName(), holder.sub.getText(),
+                activity.getString(rotating
+                        ? R.string.playlists_state_rotating
+                        : R.string.playlists_state_idle)));
+    }
+
+    /**
+     * Start or stop this playlist rotating.
+     *
+     * <p>Turning it on stands the others down and steps once, so the photo on
+     * screen changes in the moment. Turning it off touches only
+     * {@link Playlists#KEY} — never the index — so the photo on screen stays put;
+     * that is what makes "stop" different from "pick another photo". Both go
+     * through {@link PlaylistScreen#setActive}, which owns the two-blob commit.
+     *
+     * <p>The grid's active ring and the strip's follow the step, because the
+     * selection moved exactly as if the user had tapped a photo.
+     */
+    private void togglePlaylist(final String playlistId) {
+        Playlists current = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
+        Playlist p = current.find(playlistId);
+        if (p == null) {
+            // Deleted while the section was up. Rebuild it so the row leaves.
+            refreshPlaylistsSection();
+            return;
+        }
+        boolean turningOn = !p.active;
+        String before = AppState.load(activity.prefs, activity.getFilesDir())
+                .library.activeId();
+        PlaylistScreen.setActive(activity, playlistId, turningOn);
+        Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
+        String after = lib.activeId();
+        Playlists lists = Playlists.parse(activity.prefs.getString(Playlists.KEY, null));
+        long now = System.currentTimeMillis();
+        PlaylistStatus status = PlaylistStatus.of(lists, lib, now);
+        for (Map.Entry<String, PlaylistRow> e : playlistRows.entrySet()) {
+            Playlist rowPlaylist = lists.find(e.getKey());
+            if (rowPlaylist != null) {
+                refreshPlaylistRowVisual(e.getValue(), rowPlaylist, status, now);
+            }
+        }
+        refreshHeaderIndicator();
+        if (!TextUtils.equals(before, after)) {
+            setGridRing(before, false);
+            setGridRing(after, true);
+            drawStripRing(before, false);
+            drawStripRing(after, true);
+        }
+    }
+
+    /** Repaint one grid cell's active ring in place, because rotation moved it. */
+    private void setGridRing(String id, boolean on) {
+        if (id == null) return;
+        PickedCell mark = cellMarks.get(id);
+        if (mark == null) return;
+        mark.active = on;
+        mark.tile.setActive(on);
+        mark.cell.setContentDescription(
+                stateDescription(mark.item, on, picked.contains(id), mark.archived));
+    }
+
+    /**
+     * The row's leading mark: a playlist's artwork in a 2×2 block of the app's
+     * own tile.
+     *
+     * <p>Four tiles at {@link #COLLAGE_TILE_DP}, or one {@link #COLLAGE_DP} tile
+     * when there is one photo or none — a lone photo in a 2×2 would be three dead
+     * squares. More than four shows the first three and a {@code +N} cell, where
+     * {@code N} is what is <i>not</i> shown; that is the only reading that does
+     * not overstate. Every tile decodes through {@link PhotoTile#show}, off the UI
+     * thread, so a photo already decoded elsewhere is cheap and a never-seen one is
+     * decoded once at this size.
+     *
+     * <p>Missing members are skipped: a hole cannot be drawn, and claiming it can
+     * would put a blank square where a photograph should be.
+     */
+    private View collage(Playlist p, Library lib) {
+        List<LibraryItem> items = new ArrayList<LibraryItem>();
+        for (String id : p.itemIds) {
+            LibraryItem item = lib.find(id);
+            if (item != null) items.add(item);
+        }
+        FrameLayout holder = new FrameLayout(activity);
+        holder.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        holder.setContentDescription(activity.getString(
+                R.string.gallery_playlist_collage_talk, items.size()));
+
+        if (items.size() <= 1) {
+            PhotoTile tile = new PhotoTile(activity, activity.dp(COLLAGE_DP),
+                    activity.dp(3));
+            if (!items.isEmpty()) tile.show(items.get(0));
+            holder.addView(tile, new FrameLayout.LayoutParams(
+                    activity.dp(COLLAGE_DP), activity.dp(COLLAGE_DP)));
+            return holder;
+        }
+
+        int shown = items.size() > 4 ? 3 : items.size();
+        LinearLayout grid = new LinearLayout(activity);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        for (int r = 0; r < 2; r++) {
+            LinearLayout line = new LinearLayout(activity);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            for (int c = 0; c < 2; c++) {
+                int at = r * 2 + c;
+                View cell;
+                if (at < shown) {
+                    PhotoTile tile = new PhotoTile(activity,
+                            activity.dp(COLLAGE_TILE_DP), activity.dp(3));
+                    tile.show(items.get(at));
+                    cell = tile;
+                } else if (at == 3 && items.size() > 4) {
+                    cell = moreCell(items.size() - 3);
+                } else {
+                    cell = new View(activity);
+                    cell.setBackground(plain(0xFF181D23, activity.dp(3)));
+                }
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        activity.dp(COLLAGE_TILE_DP), activity.dp(COLLAGE_TILE_DP));
+                if (c > 0) lp.leftMargin = activity.dp(COLLAGE_GAP_DP);
+                line.addView(cell, lp);
+            }
+            if (r > 0) {
+                LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                lineLp.topMargin = activity.dp(COLLAGE_GAP_DP);
+                line.setLayoutParams(lineLp);
+            }
+            grid.addView(line);
+        }
+        holder.addView(grid, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
+        return holder;
+    }
+
+    /** The collage's overflow cell: how many photos are not drawn. */
+    private View moreCell(int count) {
+        TextView more = text(activity.getString(R.string.gallery_playlist_more, count), 10);
+        more.setTextColor(0x8CFFFFFF); // --dim
+        more.setGravity(Gravity.CENTER);
+        more.setBackground(plain(0xFF0B0F12, activity.dp(3)));
+        return more;
+    }
+
+    private LinearLayout.LayoutParams collageParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                activity.dp(COLLAGE_DP), activity.dp(COLLAGE_DP));
+        lp.rightMargin = activity.dp(12);
+        return lp;
+    }
+
+    /** The app's 600-weight, which Android names {@code sans-serif-medium}. */
+    private Typeface medium() {
+        return Typeface.create("sans-serif-medium", Typeface.NORMAL);
+    }
 
     /**
      * Add the picks to a playlist, or make one and add them to it.
@@ -2365,8 +3222,12 @@ final class Gallery {
 
     private void savePlaylists(Playlists lists, Playlist written, int count) {
         activity.prefs.edit().putString(Playlists.KEY, lists.toJson()).commit();
-        picked.clear();
-        rebuildGrid();
+        // Patched, not rebuilt: adding photos to a playlist or making one changes
+        // the section and nothing the grid draws. Rebuilding the grid for it
+        // re-decoded every thumbnail, which is the flash this change removes.
+        clearPicks();
+        refreshPlaylistsSection();
+        refreshHeaderIndicator();
         Toast.makeText(activity, activity.getString(R.string.gallery_playlist_added,
                 count, written.displayName()), Toast.LENGTH_SHORT).show();
     }
