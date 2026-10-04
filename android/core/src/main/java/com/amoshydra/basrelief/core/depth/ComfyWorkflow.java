@@ -18,32 +18,86 @@ import java.util.List;
  * {@code org.json}, which the platform provides at runtime and which is a
  * {@code testImplementation} dependency here.
  *
- * <p>The node wiring is the part worth pinning. The graph is three nodes joined
- * by literal {@code ["<node id>", <output index>]} references, and an off-by-one
- * there produces a graph ComfyUI accepts but renders from the wrong tensor —
- * which surfaces as a blank or unblended depth map rather than an error.
+ * <p>The node wiring is the part worth pinning. The graph is joined by literal
+ * {@code ["<node id>", <output index>]} references, and an off-by-one there
+ * produces a graph ComfyUI accepts but renders from the wrong tensor — which
+ * surfaces as a blank or unblended depth map rather than an error.
+ *
+ * <p><b>Two graph shapes.</b> A classical depth node (Depth-Anything V1/V2, the
+ * preprocessors) is one node that takes an image and emits an image, so the
+ * graph is {@code LoadImage → <node> → SaveImage}. MoGe is a pipeline rather
+ * than a node — a loader, an inference step and a renderer — so it gets its own
+ * builder and its own five-node graph. {@link #buildWorkflow} picks between them
+ * and the two shapes are kept structurally distinct on purpose; collapsing them
+ * would put the pipeline's wires on the single-node path.
  */
 public final class ComfyWorkflow {
 
     private ComfyWorkflow() {
     }
 
-    /** Node id of the {@code LoadImage} node; the depth node reads its output. */
+    // --------------------------------------------------------------- node ids
+    //
+    // Two shapes, so two disjoint sets of ids. They may share the string "1"
+    // for LoadImage because every graph rewrites its own ids; the constants are
+    // named for the shape they belong to so a future edit cannot wire one
+    // shape's id into the other's graph.
+
+    /** Node id of the {@code LoadImage} node; every shape starts from it. */
     private static final String LOAD_ID = "1";
-    /** Node id of the depth-anything node; {@code SaveImage} reads its output. */
+    /** Node id of the single depth node; {@code SaveImage} reads its output. */
     private static final String DEPTH_ID = "2";
+    /** Node id of the single-node shape's {@code SaveImage}. */
     private static final String SAVE_ID = "3";
-    private static final int FIRST_OUTPUT = 0;
+
+    /** Node id of the MoGe loader. */
+    private static final String MOGE_LOAD_ID = "2";
+    /** Node id of {@code MoGeInference}; {@code MoGeRender} reads its output. */
+    private static final String MOGE_INFER_ID = "3";
+    /** Node id of {@code MoGeRender}; {@code SaveImage} reads its output. */
+    private static final String MOGE_RENDER_ID = "4";
+    /** Node id of the MoGe shape's {@code SaveImage}. */
+    private static final String MOGE_SAVE_ID = "5";
+
+    /** The three classes that make up the MoGe pipeline, in order. */
+    static final String MOGE_LOADER = "LoadMoGeModel";
+    static final String MOGE_INFERENCE = "MoGeInference";
+    static final String MOGE_RENDER = "MoGeRender";
 
     /**
-     * Assemble the three-node depth workflow.
+     * The {@code MoGeRender.output} the still path asks for.
+     *
+     * <p>This is the one MoGe input the builder deliberately overrides rather
+     * than taking from {@code /object_info}: the still relief needs
+     * <em>displacement</em>, and of the five renders only {@code depth} is one.
+     * {@code mask} is a silhouette, {@code normal_opengl}/{@code normal_directx}
+     * are normal maps and {@code depth_colored} is a colourised depth. The
+     * server's own default happens to be {@code depth}, but the app's need is
+     * fixed, so it is stated here and tested rather than left to a default that
+     * could change under us.
+     */
+    static final String MOGE_STILL_OUTPUT = "depth";
+
+    private static final int FIRST_OUTPUT = 0;
+
+    /** The SaveImage prefix. One builder writes it, for both shapes. */
+    private static final String SAVE_PREFIX = "depthmap_";
+
+    /**
+     * Assemble the ComfyUI graph for the chosen depth model.
+     *
+     * <p>Dispatches to the single-node shape or the MoGe pipeline shape. The
+     * model argument is whichever identifier {@link #usableDepthModels} offered:
+     * an ordinary node class name, or one of the MoGe checkpoint filenames.
      *
      * @param objectInfo   the whole {@code /object_info} body, used to discover
      *                     the model's required inputs and their defaults
-     * @param model        ComfyUI class name of the depth node, e.g.
-     *                     {@code DepthAnythingV2ModelLoader}
+     * @param model        the chosen model: a ComfyUI class name, one of the
+     *                     {@code LoadMoGeModel.model_name} filenames, or
+     *                     {@code MoGeInference} for MoGe's own default checkpoint
      * @param uploadedName the name ComfyUI gave the uploaded image
-     * @param resolution   value for the node's {@code resolution} input
+     * @param resolution   value for the node's {@code resolution} input; ignored
+     *                     by MoGe, whose size is native to the model
      * @param timestampMs  stamped into {@code filename_prefix}; passed in rather
      *                     than read from the clock so the only moving part in
      *                     the output is pinnable. Note this does NOT make the
@@ -57,65 +111,215 @@ public final class ComfyWorkflow {
     public static String buildWorkflow(String objectInfo, String model, String uploadedName,
                                        int resolution, long timestampMs) throws JSONException {
         JSONObject info = new JSONObject(objectInfo);
+        if (isMoGeModel(info, model)) {
+            return buildMoGeWorkflow(info, model, uploadedName, timestampMs);
+        }
+
         JSONObject nodeInfo = info.getJSONObject(model);
 
-        // /object_info nests inputs under "input": { "required": {...}, ... }
-        JSONObject input = nodeInfo.optJSONObject("input");
-        JSONObject required = input != null ? input.optJSONObject("required") : null;
-        if (required == null) required = nodeInfo.optJSONObject("required"); // fallback
-        if (required == null) required = new JSONObject();
-
-        JSONObject load = new JSONObject();
-        load.put("class_type", "LoadImage");
-        load.put("inputs", new JSONObject().put("image", uploadedName));
+        JSONObject load = loadImageNode(uploadedName);
 
         JSONObject depth = new JSONObject();
         depth.put("class_type", model);
-        JSONObject depthIn = new JSONObject();
+        // Everything the node requires, discovered from /object_info — except
+        // `image`, which is wired from LoadImage below.
+        JSONObject depthIn = discoveredInputs(nodeInfo, "image");
+        // The app's resolution slider only overrides a node that declares one,
+        // because an input a node does not have would be rejected by the server.
+        if (depthIn.has("resolution")) depthIn.put("resolution", Integer.valueOf(resolution));
         // Wired from LoadImage, not from the uploaded filename: the file has
         // already been uploaded, and this is how ComfyUI refers to it in-graph.
-        depthIn.put("image", new JSONArray().put(LOAD_ID).put(FIRST_OUTPUT));
-
-        Iterator<String> it = required.keys();
-        while (it.hasNext()) {
-            String inName = it.next();
-            if (inName.equals("image")) continue; // already wired above
-            JSONArray spec = required.getJSONArray(inName);
-            // A combo's type slot is the option array itself, not a type name.
-            // Calling getString(0) on it throws, so a required combo used to
-            // make buildWorkflow fail before the prompt was ever sent.
-            Object typeObj = spec.opt(0);
-            String type = typeObj instanceof String ? (String) typeObj : "";
-            Object def = spec.length() > 1 ? spec.opt(1) : null;
-            Object value;
-            if (inName.equals("resolution")) {
-                value = Integer.valueOf(resolution);
-            } else if (def instanceof JSONObject) {
-                // options dict — use the node's own default when present
-                JSONObject opts = (JSONObject) def;
-                value = opts.has("default") ? opts.get("default") : fallbackFor(typeObj);
-            } else if (def == null) {
-                value = fallbackFor(typeObj); // never drop a required input
-            } else {
-                value = def;
-            }
-            depthIn.put(inName, value);
-        }
+        depthIn.put("image", link(LOAD_ID));
         depth.put("inputs", depthIn);
 
-        JSONObject save = new JSONObject();
-        save.put("class_type", "SaveImage");
-        JSONObject saveIn = new JSONObject();
         // Save the DEPTH node's image output (not LoadImage's).
-        saveIn.put("images", new JSONArray().put(DEPTH_ID).put(FIRST_OUTPUT));
-        saveIn.put("filename_prefix", "depthmap_" + timestampMs);
-        save.put("inputs", saveIn);
+        JSONObject save = saveImageNode(DEPTH_ID, FIRST_OUTPUT, timestampMs);
 
         JSONObject wf = new JSONObject();
         wf.put(LOAD_ID, load);
         wf.put(DEPTH_ID, depth);
         wf.put(SAVE_ID, save);
         return wf.toString();
+    }
+
+    /**
+     * Assemble the four-node MoGe pipeline:
+     *
+     * <pre>
+     * LoadImage
+     *   → LoadMoGeModel(model_name)
+     *   → MoGeInference(moge_model, image, resolution_level, …)
+     *   → MoGeRender(moge_geometry, output=depth)
+     *   → SaveImage
+     * </pre>
+     *
+     * <p>Every scalar input is discovered from {@code /object_info}, so a
+     * default the server changes or a step the server adds is honoured. Three
+     * inputs cannot come from {@code /object_info} and are wired here by name:
+     * {@code LoadMoGeModel}'s {@code moge_model} output feeds
+     * {@code MoGeInference.moge_model}, {@code LoadImage}'s image feeds
+     * {@code MoGeInference.image}, and {@code MoGeInference}'s geometry feeds
+     * {@code MoGeRender.moge_geometry}. Their values are links, not scalars —
+     * the schema can only name their types. {@code MoGeRender.output} is also
+     * forced, for the reason on {@link #MOGE_STILL_OUTPUT}.
+     *
+     * @param info         the parsed {@code /object_info} body
+     * @param model        the checkpoint filename, or {@code MoGeInference} to
+     *                     keep the server's discovered default
+     */
+    static String buildMoGeWorkflow(JSONObject info, String model, String uploadedName,
+                                    long timestampMs) throws JSONException {
+        JSONObject loaderInfo = info.getJSONObject(MOGE_LOADER);
+        JSONObject inferInfo = info.getJSONObject(MOGE_INFERENCE);
+        JSONObject renderInfo = info.getJSONObject(MOGE_RENDER);
+
+        JSONObject load = loadImageNode(uploadedName);
+
+        JSONObject loader = new JSONObject();
+        loader.put("class_type", MOGE_LOADER);
+        JSONObject loaderIn = discoveredInputs(loaderInfo);
+        // The chosen checkpoint wins over the loader's discovered default. The
+        // picker offers one entry per `model_name` option, so this is where that
+        // choice lands; `MoGeInference` asks for the discovered default instead.
+        if (!MOGE_INFERENCE.equals(model)) loaderIn.put("model_name", model);
+        loader.put("inputs", loaderIn);
+
+        JSONObject infer = new JSONObject();
+        infer.put("class_type", MOGE_INFERENCE);
+        JSONObject inferIn = discoveredInputs(inferInfo, "moge_model", "image");
+        inferIn.put("moge_model", link(MOGE_LOAD_ID));
+        inferIn.put("image", link(LOAD_ID));
+        infer.put("inputs", inferIn);
+
+        JSONObject render = new JSONObject();
+        render.put("class_type", MOGE_RENDER);
+        JSONObject renderIn = discoveredInputs(renderInfo, "moge_geometry");
+        renderIn.put("moge_geometry", link(MOGE_INFER_ID));
+        renderIn.put("output", MOGE_STILL_OUTPUT);
+        render.put("inputs", renderIn);
+
+        JSONObject save = saveImageNode(MOGE_RENDER_ID, FIRST_OUTPUT, timestampMs);
+
+        JSONObject wf = new JSONObject();
+        wf.put(LOAD_ID, load);
+        wf.put(MOGE_LOAD_ID, loader);
+        wf.put(MOGE_INFER_ID, infer);
+        wf.put(MOGE_RENDER_ID, render);
+        wf.put(MOGE_SAVE_ID, save);
+        return wf.toString();
+    }
+
+    // --------------------------------------------------------------- graph pieces
+
+    private static JSONObject loadImageNode(String uploadedName) throws JSONException {
+        JSONObject load = new JSONObject();
+        load.put("class_type", "LoadImage");
+        load.put("inputs", new JSONObject().put("image", uploadedName));
+        return load;
+    }
+
+    /**
+     * The one {@code SaveImage} for both shapes. Sharing it keeps the node id
+     * reference, the output index and the filename prefix in one place, so the
+     * MoGe path cannot quietly name a different file than the classical one.
+     */
+    private static JSONObject saveImageNode(String sourceId, int outputIndex, long timestampMs)
+            throws JSONException {
+        JSONObject save = new JSONObject();
+        save.put("class_type", "SaveImage");
+        JSONObject saveIn = new JSONObject();
+        saveIn.put("images", new JSONArray().put(sourceId).put(outputIndex));
+        saveIn.put("filename_prefix", SAVE_PREFIX + timestampMs);
+        save.put("inputs", saveIn);
+        return save;
+    }
+
+    private static JSONArray link(String nodeId) {
+        return link(nodeId, FIRST_OUTPUT);
+    }
+
+    private static JSONArray link(String nodeId, int outputIndex) {
+        return new JSONArray().put(nodeId).put(outputIndex);
+    }
+
+    // --------------------------------------------------------------- input discovery
+
+    /**
+     * A node's required inputs, or an empty object when it declares none.
+     *
+     * <p>Some ComfyUI builds put them under {@code input.required} and some
+     * under a bare {@code required}; both are accepted, as in the builder.
+     */
+    private static JSONObject requiredInputs(JSONObject nodeInfo) {
+        if (nodeInfo == null) return new JSONObject();
+        JSONObject input = nodeInfo.optJSONObject("input");
+        JSONObject required = input != null ? input.optJSONObject("required") : null;
+        if (required == null) required = nodeInfo.optJSONObject("required"); // fallback
+        return required != null ? required : new JSONObject();
+    }
+
+    private static JSONArray requiredSpec(JSONObject nodeInfo, String name) {
+        return requiredInputs(nodeInfo).optJSONArray(name);
+    }
+
+    /**
+     * The scalar values a node's required inputs need, from {@code /object_info}.
+     *
+     * <p>Inputs named in {@code wired} are skipped: they are links to another
+     * node, and the caller supplies the link. Every other required input gets
+     * the node's own default, or a value derived from its declaration — never a
+     * drop, because ComfyUI rejects a prompt missing a required input.
+     *
+     * <p>Two combo spellings reach here. The older one holds the option array
+     * itself in the type slot — {@code [["small","large"], {"default":"large"}]}
+     * — and the newer one names the type and nests the options in the options
+     * dict — {@code ["COMBO", {"options":["small","large"]}]}. Both take the
+     * explicit default when there is one; with no default the older form falls
+     * back to its first option and the newer form now does the same, which is
+     * what {@code LoadMoGeModel.model_name} needs.
+     */
+    private static JSONObject discoveredInputs(JSONObject nodeInfo, String... wired)
+            throws JSONException {
+        JSONObject required = requiredInputs(nodeInfo);
+        JSONObject out = new JSONObject();
+        Iterator<String> it = required.keys();
+        while (it.hasNext()) {
+            String inName = it.next();
+            if (isWired(inName, wired)) continue;
+            JSONArray spec = required.optJSONArray(inName);
+            if (spec == null || spec.length() == 0) continue;
+            // A combo's type slot may be the option array itself, not a type
+            // name. Calling getString(0) on it throws, so a required combo used
+            // to make the builder fail before the prompt was ever sent.
+            Object typeObj = spec.opt(0);
+            String type = typeObj instanceof String ? (String) typeObj : "";
+            Object def = spec.length() > 1 ? spec.opt(1) : null;
+            Object value;
+            if (def instanceof JSONObject) {
+                JSONObject opts = (JSONObject) def;
+                if (opts.has("default")) {
+                    value = opts.get("default");
+                } else if (opts.optJSONArray("options") != null
+                        && opts.optJSONArray("options").length() > 0) {
+                    value = opts.optJSONArray("options").opt(0);
+                } else {
+                    value = fallbackFor(typeObj);
+                }
+            } else if (def == null) {
+                value = fallbackFor(typeObj); // never drop a required input
+            } else {
+                value = def;
+            }
+            out.put(inName, value);
+        }
+        return out;
+    }
+
+    private static boolean isWired(String name, String[] wired) {
+        for (String w : wired) {
+            if (w.equals(name)) return true;
+        }
+        return false;
     }
 
     /** A safe value for a required input the caller gave no default for. */
@@ -141,18 +345,26 @@ public final class ComfyWorkflow {
         return defaultForType(typeObj instanceof String ? (String) typeObj : "");
     }
 
+    // --------------------------------------------------------------- model filter
+
     /**
-     * The server's nodes that can serve as the single image-to-depth step this
-     * app builds, sorted by class name.
+     * The server's nodes and MoGe checkpoints that this app can build a graph
+     * from, sorted by name.
      *
      * <p>This is the chooser's whole candidate list: the name heuristic that
-     * finds nodes worth looking at, and {@link #canBuildWorkflow} that removes the
-     * ones the builder cannot drive. It lives here, not in the dialog, because it
-     * is a pure function of the server's JSON and belongs under test.
+     * finds nodes worth looking at, {@link #canBuildWorkflow} that removes the
+     * ones the builder cannot drive, and the MoGe pipeline's checkpoints. It
+     * lives here, not in the dialog, because it is a pure function of the
+     * server's JSON and belongs under test.
+     *
+     * <p>MoGe is not a single node, so it is not found by the node loop. Its
+     * entries are one per {@code LoadMoGeModel.model_name} option — discovered
+     * from {@code /object_info}, never a hard-coded list — and each is a value
+     * {@link #buildWorkflow} expands into the pipeline.
      *
      * @param objectInfo the whole {@code /object_info} body
-     * @return class names that match the depth heuristic and can be wired from a
-     *         single uploaded image
+     * @return identifiers the builder can turn into a graph: ordinary depth node
+     *         class names, and MoGe checkpoint filenames
      */
     public static List<String> usableDepthModels(JSONObject objectInfo) {
         List<String> usable = new ArrayList<String>();
@@ -163,6 +375,7 @@ public final class ComfyWorkflow {
             JSONObject node = objectInfo.optJSONObject(name);
             if (node != null && canBuildWorkflow(node)) usable.add(name);
         }
+        usable.addAll(moGeCheckpoints(objectInfo));
         Collections.sort(usable);
         return usable;
     }
@@ -185,27 +398,79 @@ public final class ComfyWorkflow {
     /** The name heuristic the panel has always used to find depth nodes. */
     static boolean looksLikeDepthModel(String name) {
         String lower = name.toLowerCase();
-        return lower.contains("depth") || lower.contains("midas") || lower.contains("zoe");
+        return lower.contains("depth") || lower.contains("midas") || lower.contains("zoe")
+                || lower.contains("moge");
+    }
+
+    /**
+     * The MoGe checkpoints the server offers, in the order {@code /object_info}
+     * lists them.
+     *
+     * <p>Only returned when the whole three-node pipeline is present: a server
+     * with {@code MoGeInference} but no loader or renderer could not run the
+     * graph the builder emits, and offering it would turn a model choice into a
+     * failed run. Empty otherwise, which is what leaves a server without MoGe
+     * exactly as it was before.
+     */
+    static List<String> moGeCheckpoints(JSONObject objectInfo) {
+        List<String> out = new ArrayList<String>();
+        if (!hasMoGePipeline(objectInfo)) return out;
+        JSONArray spec = requiredSpec(objectInfo.optJSONObject(MOGE_LOADER), "model_name");
+        if (spec == null) return out;
+        JSONArray options = spec.optJSONArray(0);
+        if (options == null) {
+            Object def = spec.opt(1);
+            if (def instanceof JSONObject) options = ((JSONObject) def).optJSONArray("options");
+        }
+        if (options == null) return out;
+        for (int i = 0; i < options.length(); i++) {
+            Object option = options.opt(i);
+            if (option instanceof String) out.add((String) option);
+        }
+        return out;
+    }
+
+    /** Whether a model argument names the MoGe pipeline rather than an ordinary node. */
+    private static boolean isMoGeModel(JSONObject info, String model) {
+        if (model == null || !hasMoGePipeline(info)) return false;
+        // MoGeInference on its own asks for the discovered default checkpoint.
+        if (MOGE_INFERENCE.equals(model)) return true;
+        // A real top-level node is an ordinary single-node model, whatever it
+        // is called, so it must not be stolen by checkpoint matching.
+        if (info.has(model)) return false;
+        return moGeCheckpoints(info).contains(model);
+    }
+
+    private static boolean hasMoGePipeline(JSONObject info) {
+        return info.optJSONObject(MOGE_LOADER) != null
+                && info.optJSONObject(MOGE_INFERENCE) != null
+                && info.optJSONObject(MOGE_RENDER) != null;
     }
 
     /**
      * Whether {@link #buildWorkflow} can drive this node from an uploaded image.
      *
-     * <p>The rule mirrors the builder exactly, and that is the point: a node the
-     * chooser keeps must be one the builder can actually submit. The builder
-     * supplies a value for the required input named {@code image} by wiring it to
-     * {@code LoadImage}, and for every other required input it sends the node's
-     * own default or a type-appropriate plain value. It cannot produce a link, so
-     * a required input of a custom handle type — {@code MODEL}, {@code DAMODEL},
-     * {@code LATENT}, {@code MASK}, a second {@code IMAGE} — would be sent as an
-     * empty string and refused by the server. A required combo is a plain value
-     * the builder can pick, so it counts as satisfiable. The node must also emit
-     * an image as output 0, because {@code SaveImage} always reads that output.
+     * <p>The rule mirrors the single-node builder exactly, and that is the point:
+     * a node the chooser keeps must be one the builder can actually submit. The
+     * builder supplies a value for the required input named {@code image} by
+     * wiring it to {@code LoadImage}, and for every other required input it sends
+     * the node's own default or a type-appropriate plain value. It cannot produce
+     * a link, so a required input of a custom handle type — {@code MODEL},
+     * {@code DAMODEL}, {@code LATENT}, {@code MASK}, a second {@code IMAGE} —
+     * would be sent as an empty string and refused by the server. A required
+     * combo is a plain value the builder can pick, so it counts as satisfiable.
+     * The node must also emit an image as output 0, because {@code SaveImage}
+     * always reads that output.
+     *
+     * <p>MoGe's own nodes deliberately fail this: each is one stage of a
+     * pipeline, not a single image-to-image step, so it is {@link #moGeCheckpoints}
+     * rather than this predicate that offers MoGe to the chooser.
      *
      * @param nodeInfo one node's entry from {@code /object_info}
      * @return true when a single image plus that node's defaults is a valid graph
      */
     public static boolean canBuildWorkflow(JSONObject nodeInfo) {
+        if (nodeInfo == null) return false;
         JSONObject input = nodeInfo.optJSONObject("input");
         JSONObject required = input != null ? input.optJSONObject("required") : null;
         if (required == null) required = nodeInfo.optJSONObject("required"); // fallback
@@ -252,6 +517,7 @@ public final class ComfyWorkflow {
         String lower = name.toLowerCase();
         if (lower.contains("midas")) return "MiDaS";
         if (lower.contains("zoe")) return "ZoeDepth";
+        if (lower.contains("moge")) return friendlyMoGe(name);
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
@@ -269,6 +535,49 @@ public final class ComfyWorkflow {
                 b.append(' ');
             }
             b.append(c);
+        }
+        return b.toString();
+    }
+
+    /**
+     * Human names for the MoGe classes and the checkpoint filenames.
+     *
+     * <p>The picker's MoGe entries are filenames, because
+     * {@code LoadMoGeModel.model_name} is what picks the model, so this has to
+     * read both filenames and class names. A filename is split on its separators
+     * so {@code moge_3_vitg_fp16.safetensors} reads as a model rather than as a
+     * file.
+     */
+    static String friendlyMoGe(String name) {
+        if (name.contains(MOGE_LOADER)) return "Load MoGe Model";
+        if (name.contains(MOGE_RENDER)) return "MoGe Render";
+        if (name.contains("MoGePanoramaInference")) return "MoGe Panorama Inference";
+        if (name.contains(MOGE_INFERENCE)) return "MoGe Inference";
+        if (name.contains("MoGePointMapToMesh")) return "MoGe Point Map to Mesh";
+        if (name.contains("MoGeGeometryToFOV")) return "MoGe Geometry to FOV";
+        return moGeFileLabel(name);
+    }
+
+    private static String moGeFileLabel(String name) {
+        String base = name;
+        int dot = base.indexOf('.');
+        if (dot >= 0) base = base.substring(0, dot);
+        String[] parts = base.split("[_\\-]+");
+        StringBuilder b = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            if (b.length() > 0) b.append(' ');
+            if (part.equalsIgnoreCase("moge")) {
+                b.append("MoGe");
+                continue;
+            }
+            String p = part.toLowerCase();
+            if (p.length() == 4 && p.startsWith("vit")) {
+                // vitg/vitl/vitb/vits -> ViT-G/ViT-L/ViT-B/ViT-S
+                b.append("ViT-").append(Character.toUpperCase(p.charAt(3)));
+            } else {
+                b.append(p);
+            }
         }
         return b.toString();
     }

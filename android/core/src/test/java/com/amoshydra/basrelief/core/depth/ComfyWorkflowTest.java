@@ -318,4 +318,182 @@ public class ComfyWorkflowTest {
         assertTrue(ComfyWorkflow.hasDepthNode(realServerInfo()));
         assertFalse(ComfyWorkflow.hasDepthNode(new JSONObject("{\"KSampler\": {}}")));
     }
+
+    // --------------------------------------------------------------- MoGe pipeline
+
+    /**
+     * The MoGe schemas copied from the live server's {@code /object_info}. The
+     * combo spelling matters: {@code LoadMoGeModel.model_name} has options but
+     * no explicit default, which is the newer {@code ["COMBO", {"options":…}]}
+     * form and the case the builder has to fall back on. A sibling ordinary
+     * depth node is present so the two shapes are exercised on one server.
+     */
+    private static JSONObject moGeServerInfo() throws JSONException {
+        return new JSONObject("{"
+                + "\"LoadMoGeModel\": {"
+                + "  \"input\": {\"required\": {"
+                + "    \"model_name\": [\"COMBO\", {\"multiselect\": false, \"options\": ["
+                + "       \"moge_2_vitl_normal_fp16.safetensors\","
+                + "       \"moge_3_vitg_fp16.safetensors\"]}]}},"
+                + "  \"output\": [\"MOGE_MODEL\"]},"
+                + "\"MoGeInference\": {"
+                + "  \"input\": {\"required\": {"
+                + "    \"moge_model\": [\"MOGE_MODEL\", {}],"
+                + "    \"image\": [\"IMAGE\", {}],"
+                + "    \"resolution_level\": [\"INT\", {\"default\": 9, \"min\": 0, \"max\": 9}],"
+                + "    \"fov_x_degrees\": [\"FLOAT\", {\"default\": 0.0}],"
+                + "    \"batch_size\": [\"INT\", {\"default\": 4}],"
+                + "    \"force_projection\": [\"BOOLEAN\", {\"default\": true}],"
+                + "    \"apply_mask\": [\"BOOLEAN\", {\"default\": true}],"
+                + "    \"refine_steps\": [\"INT\", {\"default\": 3}]}},"
+                + "  \"output\": [\"MOGE_GEOMETRY\"]},"
+                + "\"MoGeRender\": {"
+                + "  \"input\": {\"required\": {"
+                + "    \"moge_geometry\": [\"MOGE_GEOMETRY\", {}],"
+                + "    \"output\": [\"COMBO\", {\"default\": \"depth\", \"options\": ["
+                + "       \"depth\", \"depth_colored\", \"normal_opengl\","
+                + "       \"normal_directx\", \"mask\"]}]}},"
+                + "  \"output\": [\"IMAGE\"]},"
+                + "\"DepthAnythingV2Preprocessor\": {"
+                + "  \"input\": {\"required\": {\"image\": [\"IMAGE\"]}},"
+                + "  \"output\": [\"IMAGE\"]}"
+                + "}");
+    }
+
+    private static JSONObject moGeWf(String checkpoint) throws JSONException {
+        return new JSONObject(ComfyWorkflow.buildWorkflow(
+                moGeServerInfo().toString(), checkpoint, "up.png", 1024, TS));
+    }
+
+    @Test
+    public void moGeGraphHasFiveNodesAndWiresEachStage() throws Exception {
+        JSONObject g = moGeWf("moge_3_vitg_fp16.safetensors");
+        assertEquals(5, g.length());
+        assertEquals("LoadImage", g.getJSONObject("1").getString("class_type"));
+        assertEquals("LoadMoGeModel", g.getJSONObject("2").getString("class_type"));
+        assertEquals("MoGeInference", g.getJSONObject("3").getString("class_type"));
+        assertEquals("MoGeRender", g.getJSONObject("4").getString("class_type"));
+        assertEquals("SaveImage", g.getJSONObject("5").getString("class_type"));
+
+        // The three links, each pinned to node AND output index — an off-by-one
+        // here is a graph ComfyUI runs from the wrong tensor.
+        JSONArray inferModel = g.getJSONObject("3").getJSONObject("inputs")
+                .getJSONArray("moge_model");
+        assertEquals("2", inferModel.getString(0));
+        assertEquals(0, inferModel.getInt(1));
+
+        JSONArray inferImage = g.getJSONObject("3").getJSONObject("inputs").getJSONArray("image");
+        assertEquals("1", inferImage.getString(0));
+        assertEquals(0, inferImage.getInt(1));
+
+        JSONArray renderGeometry = g.getJSONObject("4").getJSONObject("inputs")
+                .getJSONArray("moge_geometry");
+        assertEquals("3", renderGeometry.getString(0));
+        assertEquals(0, renderGeometry.getInt(1));
+
+        // SaveImage reads MoGeRender (node 4), not MoGeInference or LoadImage.
+        JSONArray saveImages = g.getJSONObject("5").getJSONObject("inputs")
+                .getJSONArray("images");
+        assertEquals("4", saveImages.getString(0));
+        assertEquals(0, saveImages.getInt(1));
+    }
+
+    /**
+     * The still path needs displacement. Mask and normal renders are the wrong
+     * tensor for a relief, so the chosen output is pinned rather than inherited.
+     */
+    @Test
+    public void moGeStillsRenderDepth() throws Exception {
+        JSONObject in = moGeWf("moge_3_vitg_fp16.safetensors")
+                .getJSONObject("4").getJSONObject("inputs");
+        assertEquals("depth", in.getString("output"));
+        assertFalse("mask".equals(in.getString("output")));
+        assertFalse("normal_opengl".equals(in.getString("output")));
+    }
+
+    @Test
+    public void moGeCheckpointArgumentBecomesTheLoaderModelName() throws Exception {
+        assertEquals("moge_3_vitg_fp16.safetensors",
+                moGeWf("moge_3_vitg_fp16.safetensors").getJSONObject("2")
+                        .getJSONObject("inputs").getString("model_name"));
+        assertEquals("moge_2_vitl_normal_fp16.safetensors",
+                moGeWf("moge_2_vitl_normal_fp16.safetensors").getJSONObject("2")
+                        .getJSONObject("inputs").getString("model_name"));
+    }
+
+    /** A combo with options and no explicit default takes its first option. */
+    @Test
+    public void moGeLoaderWithoutAChosenCheckpointUsesTheFirstOption() throws Exception {
+        assertEquals("moge_2_vitl_normal_fp16.safetensors",
+                moGeWf("MoGeInference").getJSONObject("2").getJSONObject("inputs")
+                        .getString("model_name"));
+    }
+
+    @Test
+    public void moGeInferenceScalarsComeFromTheNodeSpec() throws Exception {
+        JSONObject in = moGeWf("moge_3_vitg_fp16.safetensors")
+                .getJSONObject("3").getJSONObject("inputs");
+        assertEquals(9, in.getInt("resolution_level"));
+        assertEquals(0.0, in.getDouble("fov_x_degrees"), 0.0);
+        assertEquals(4, in.getInt("batch_size"));
+        assertTrue(in.getBoolean("force_projection"));
+        assertTrue(in.getBoolean("apply_mask"));
+        assertEquals(3, in.getInt("refine_steps"));
+    }
+
+    @Test
+    public void moGeModelListOffersEveryCheckpointNotThePipelineNodes() throws Exception {
+        List<String> models = ComfyWorkflow.usableDepthModels(moGeServerInfo());
+        assertTrue(models.contains("moge_2_vitl_normal_fp16.safetensors"));
+        assertTrue(models.contains("moge_3_vitg_fp16.safetensors"));
+        // The ordinary single-node model on the same server is untouched.
+        assertTrue(models.contains("DepthAnythingV2Preprocessor"));
+        // A pipeline stage is not a single image-to-image model.
+        assertFalse(models.contains("MoGeInference"));
+        assertFalse(models.contains("LoadMoGeModel"));
+        assertFalse(models.contains("MoGeRender"));
+    }
+
+    @Test
+    public void moGeIsNotOfferedWithoutTheWholePipeline() throws Exception {
+        JSONObject partial = new JSONObject(
+                "{\"MoGeInference\": {\"input\": {\"required\": {"
+                        + "\"image\": [\"IMAGE\"]}}, \"output\": [\"MOGE_GEOMETRY\"]}}");
+        assertTrue(ComfyWorkflow.usableDepthModels(partial).isEmpty());
+        // ...but the server still names a depth-like node, so the panel can say
+        // it found nodes it cannot drive rather than "no depth models".
+        assertTrue(ComfyWorkflow.hasDepthNode(partial));
+    }
+
+    /**
+     * The two shapes must stay different graphs. If a future edit collapsed
+     * MoGe into the single-node path, SaveImage would read a node id that does
+     * not exist (or the wrong tensor) with nothing else to catch it.
+     */
+    @Test
+    public void theMoGeShapeIsNotTheSingleNodeShape() throws Exception {
+        JSONObject ordinary = new JSONObject(
+                ComfyWorkflow.buildWorkflow(objectInfo(), MODEL, "up.png", 1024, TS));
+        JSONObject moge = moGeWf("moge_3_vitg_fp16.safetensors");
+
+        assertEquals(3, ordinary.length());
+        assertEquals(5, moge.length());
+
+        // SaveImage's source differs: the single node is id 2, MoGe's renderer id 4.
+        assertEquals("2", ordinary.getJSONObject("3").getJSONObject("inputs")
+                .getJSONArray("images").getString(0));
+        assertEquals("4", moge.getJSONObject("5").getJSONObject("inputs")
+                .getJSONArray("images").getString(0));
+    }
+
+    @Test
+    public void friendlyNameHandlesMoGeClassesAndCheckpoints() {
+        assertEquals("MoGe Inference", ComfyWorkflow.friendlyName("MoGeInference"));
+        assertEquals("MoGe Render", ComfyWorkflow.friendlyName("MoGeRender"));
+        assertEquals("Load MoGe Model", ComfyWorkflow.friendlyName("LoadMoGeModel"));
+        assertEquals("MoGe 3 ViT-G fp16",
+                ComfyWorkflow.friendlyName("moge_3_vitg_fp16.safetensors"));
+        assertEquals("MoGe 2 ViT-L normal fp16",
+                ComfyWorkflow.friendlyName("moge_2_vitl_normal_fp16.safetensors"));
+    }
 }
