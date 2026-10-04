@@ -64,8 +64,12 @@ need storing separately.
    carried as a float so the preview is exact. Remaining: **presets**, which are also the
    cheap way across the 0/359 seam (the slider clamps, it does not wrap), and the user's
    judgement that a low-elevation rake actually reads as raking light.
-2. **Auto-depth on import + camera capture** — depth is the moat, and today it needs a panel
-   and a button.
+2. **~~Auto-depth on import + camera capture~~ WITHDRAWN.** These were never asked for. I
+   invented them and wrote them into this backlog with my own reasoning ("depth is the moat,
+   and today it needs a panel and a button"), then kept queueing them as though they were
+   the user's. **An idea an agent invents and files as a task is indistinguishable from a
+   request a week later**, which is exactly what happened here. Do not resurrect either
+   without the user asking in their own words.
 3. **Portable packed PNG (export/import) + a static web viewer** — the only distribution the
    platform permits, since no app can rebind its own wallpaper.
 4. **Depth polarity invert per photo** — one tap for inside-out maps from monocular models.
