@@ -13,6 +13,20 @@ All three files there are referenced by `src/main.js` (`image.png`, `depth.png`,
 and `photo-with-depth.png`, which carries its depth in a `dePH` chunk) — replace
 all three or the web port breaks.
 
+## Design prototypes
+
+`.design/prototype/` is gitignored and is a **visual reference, not the source of
+truth for structure**. It has drifted from the app, and the filmstrip is the
+known case: in the app the strip is **sheet content** — `Gallery.installStrip(panel, 1)`
+adds it directly to the sheet panel at index 1 (under the grip, above the fix
+line and the scroll), and it **fades with the sheet**. `final.html` instead drew
+it absolutely positioned over the render (`bottom:calc(--sheetH + 14px)`), i.e.
+outside the sheet. That mockup shape was copied faithfully by three separate
+agents and shipped the user a strip floating outside the sheet — several times.
+The code was right; the prototype was wrong. **Read the code (and fix the
+prototype in the same change) before trusting the prototype for anything
+structural.** Every prototype page now carries a drift banner saying so.
+
 ## Build and test
 
 Android is built with Gradle **inside a Podman container**. The host needs only
