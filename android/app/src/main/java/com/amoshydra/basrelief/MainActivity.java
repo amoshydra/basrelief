@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.DepthSource;
+import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.NormalSource;
@@ -2955,31 +2956,99 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ gestures
 
     /**
-     * Persist the renderer's framing, unless a surface glide is mid-flight.
+     * Whether the renderer's framing values are the user's, rather than a glide's.
      *
-     * <p>A glide tweens all nine values over {@code glide_ms}, so for that window
-     * the renderer's orbit and pan are an interpolation between two surfaces, not
-     * either surface's framing. Persisting them would write the blend onto the
-     * surface being edited — a cross-surface write with no gesture that means it,
-     * and one that repeated switching drags both surfaces to their average. The
-     * values are settled by the next touch, so skipping here costs nothing and the
-     * glide's own destination is what a later save records.
+     * <p><b>One guard for both things a gesture end does</b> — pushing the four framing
+     * rows and writing the index — because they must agree. A glide tweens all nine
+     * values over {@code glide_ms}, so for that window the renderer's orbit and pan are
+     * an interpolation between two surfaces, not either surface's framing. Recording
+     * them would write the blend onto the surface being edited — a cross-surface write
+     * with no gesture that means it, and one that repeated switching drags both
+     * surfaces to their average — and <i>displaying</i> them would be the same lie in
+     * the one place the user reads a number. The values are settled by the next touch,
+     * so skipping here costs nothing and the glide's own destination is what a later
+     * gesture records.
      *
-     * <p>This is the guard the two save sites below share. It is not the whole fix:
-     * a gesture made <i>during</i> a glide is still overwritten by the tween, which
-     * needs a glide cancel in {@code ReliefRenderer} and is reported rather than
-     * faked here. It does stop the tween from being stored as though it were the
-     * user's framing.
+     * <p>It is not the whole fix: a gesture made <i>during</i> a glide is still
+     * overwritten by the tween, which needs a glide cancel in {@code ReliefRenderer}
+     * and is reported rather than faked here.
+     *
+     * <p>This used to be the body of {@code savePanIfSettled}, which guarded a save
+     * and only a save. There were two save methods with slightly different contents and
+     * one guard between them, which is a rule about a whole gesture living in a method
+     * named after one field of it.
      */
-    private void savePanIfSettled() {
-        if (renderer.isGliding()) return;
-        renderer.savePanToPrefs();
+    private boolean framingSettled() {
+        return !renderer.isGliding();
     }
 
-    /** @see #savePanIfSettled — the tap-to-orbit variant, which saves origin too. */
-    private void saveViewIfSettled() {
-        if (renderer.isGliding()) return;
-        renderer.saveViewToPrefs();
+    /**
+     * Whether this gesture has actually moved the picture.
+     *
+     * <p>Set by the branches that write the renderer's framing, and read once when the
+     * gesture ends. The alternative — writing on every release — cost 145 ms of frozen
+     * UI thread for a tap that never panned, a scroll that touched nothing, and every
+     * release of a one-finger drag that only steered the tilt fallback. A release that
+     * changed nothing is not an edit, which is the rule {@link BasreliefSlider#release}
+     * already follows for every slider on this sheet.
+     *
+     * <p>Set from a value <i>comparison</i> rather than from "this branch ran", because
+     * the branch runs for events that move nothing: a pinch at its zoom stop or a pan at
+     * the surface's own bound leaves the renderer exactly where it was, and persisting
+     * that would be a write for no change.
+     *
+     * <p>Volatile because it is written on two threads. The two-finger branch sets it on
+     * the UI thread beside the value it compared; the tap's branch sets it on the GL
+     * thread, because that is where {@link ReliefRenderer#screenToOrbit} writes the
+     * orbit it compared. The rule for UI-thread fields in this class is volatile-only,
+     * and this is the one that needed it.
+     */
+    private volatile boolean framingMoved;
+
+    /**
+     * Finish a framing gesture: push the renderer's live values into the four rows,
+     * then persist them — once, and only if something moved.
+     *
+     * <p><b>Order matters and it is the whole reason this is one method.</b> The rows
+     * are pushed from the <i>renderer</i>, not from storage, and storage is written
+     * afterwards — so the rows cannot be showing a value the store has not caught up
+     * with. The store write is a synchronous {@code commit()} of the whole index,
+     * measured at 145–430 ms on a Pixel 7 Pro, so anything that reads it must not be on
+     * the way to a frame. Reading the store here instead is the trap this comment exists
+     * for: a gesture's write lands 388 ms after the value it wrote, so a sheet that
+     * re-read storage at gesture end showed the value from <i>before</i> the gesture —
+     * and then the next nudge on that row committed the stale number.
+     *
+     * <p>One write per gesture, and one derivation per value. The two-finger branch used
+     * to write the index once per {@code ACTION_MOVE} for zoom and again on both
+     * {@code ACTION_POINTER_UP} and {@code ACTION_UP} for pan, and the tap wrote origin
+     * and pan from the GL thread; so a photograph was recorded by three paths that
+     * could each be reached without the others, and one of them held the GL thread still
+     * while it did it.
+     */
+    private void endFramingGesture() {
+        if (!framingMoved) return;
+        framingMoved = false;
+        if (!framingSettled()) return;
+        FramingRows.pushFromRenderer(this);
+        renderer.saveFramingToPrefs();
+    }
+
+    /**
+     * Move the four framing rows to follow a gesture in progress.
+     *
+     * <p>The same reason Zoom already does this during a pinch, and the same cost:
+     * {@link BasreliefSlider#setValue} paints and returns, and touches no storage at
+     * all. A drag that never ends therefore writes nothing, which is the property the
+     * whole sheet is built on.
+     *
+     * <p>Guarded on {@link #framingMoved} because a pinch at its zoom bound would
+     * otherwise repaint four rows with the numbers they already hold, and on
+     * {@link #framingSettled} for the reason that gives.
+     */
+    private void pushFramingRows() {
+        if (!framingMoved || !framingSettled()) return;
+        FramingRows.pushFromRenderer(this);
     }
 
     private boolean handleTouch(MotionEvent e) {
@@ -3033,9 +3102,12 @@ public class MainActivity extends Activity {
                     // pinch zoom (relative to two-finger start, no drift)
                     if (startDist > 0f) {
                         float newZoom = pinchStartZoom * (pointerDistance() / startDist);
+                        float zoomBefore = renderer.getZoom();
                         renderer.setZoom(newZoom);
-                        int pct = Math.round(renderer.getZoom() * 100f);
-                        final int z = pct;
+                        // Compared, not assumed: setZoom clamps to [0.25, 2], so a
+                        // pinch at either stop leaves the renderer exactly where it was
+                        // and this is not a change worth persisting.
+                        if (zoomBefore != renderer.getZoom()) framingMoved = true;
                         // Zoom belongs to the photo, so a pinch frames this one
                         // and leaves every other photo at its own zoom -- and to the
                         // surface being edited, like every other adjustment. This was
@@ -3043,23 +3115,37 @@ public class MainActivity extends Activity {
                         // silently changed Home instead: the numbers moved, Lock did
                         // not, and the two surfaces converged on whichever was last
                         // pinched.
-                        String zoomId = AppState.load(this, prefs, getFilesDir()).activeId();
-                        if (zoomId != null) {
-                            LibraryStore.editItem(prefs, zoomId, new LibraryStore.Editor() {
-                                @Override
-                                public LibraryItem edit(LibraryItem item) {
-                                    return item.withZoom(editSurface, z);
-                                }
-                            });
-                        }
-                        setZoomSlider(pct);
+                        //
+                        // PUSHED, NOT STORED. This branch used to write the whole
+                        // gallery index on every ACTION_MOVE -- measured at 113 ms of
+                        // read plus 33-305 ms of synchronous commit, per event, on the
+                        // UI thread -- and the Zoom row commits on release through its
+                        // own OnChanged anyway, so the per-move write was paying that
+                        // cost twice and writing the value the row is already showing.
+                        // Preview while dragging, commit on release is the rule every
+                        // slider in this app follows; see BasreliefSlider's own note.
+                        // The pinch's zoom is committed by endFramingGesture, in the
+                        // same single write as its pan and origin.
+                        setZoomSlider(FramingRowValue.zoomPercent(renderer.getZoom()));
                     }
                     // pan by midpoint delta
                     float mx = pointerMidX();
                     float my = pointerMidY();
+                    float panBeforeX = renderer.getPanX();
+                    float panBeforeY = renderer.getPanY();
                     renderer.panBy(mx - lastMidX, my - lastMidY);
                     lastMidX = mx;
                     lastMidY = my;
+                    // Same comparison, same reason: panBy clamps to the surface's own
+                    // bound, so the last few pixels of travel move nothing.
+                    if (panBeforeX != renderer.getPanX()
+                            || panBeforeY != renderer.getPanY()) {
+                        framingMoved = true;
+                    }
+                    // Live, and cheap: four setValue calls that paint and return. This
+                    // is what the gesture path owes the sheet -- the rows following the
+                    // finger -- and it is the same thing setZoomSlider does above.
+                    pushFramingRows();
                     glView.requestRender();
                 } else if (pointers.size() == 1 && !tilt.isSupported()) {
                     // single-finger drag = manual tilt fallback (no sensor)
@@ -3078,7 +3164,11 @@ public class MainActivity extends Activity {
                     lastMidX = pointerMidX();
                     lastMidY = pointerMidY();
                 }
-                savePanIfSettled(); // persist pan state (volatile reads, UI-thread safe)
+                // No write here. This used to persist the pan, and the ACTION_UP that
+                // follows it persisted the pan again: one two-finger pinch cost two
+                // synchronous commits of the whole index to record one number. The
+                // gesture has not ended while a finger is still down, and ACTION_UP is
+                // where it ends.
                 return true;
 
             case MotionEvent.ACTION_UP:
@@ -3086,35 +3176,70 @@ public class MainActivity extends Activity {
                     float moved = (float) Math.hypot(e.getX() - downX, e.getY() - downY);
                     long held = SystemClock.uptimeMillis() - downTime;
                     if (moved < slopPx && held < 300) {
-                        final float fx = e.getX();
-                        final float fy = e.getY();
-                        final int fw = glView.getWidth();
-                        final int fh = glView.getHeight();
-                        // unproject on the GL thread so it uses the same view
-                        // matrices as the renderer (no UI/GL race), then persist
-                        glView.queueEvent(new Runnable() {
-                            @Override
-                            public void run() {
-                                renderer.screenToOrbit(fx, fy, fw, fh);
-                                saveViewIfSettled();
-                            }
-                        });
-                        glView.requestRender();
+                        tapToOrbit(e.getX(), e.getY(),
+                                glView.getWidth(), glView.getHeight());
                     }
                 }
                 pointers.remove(id);
                 tapCandidate = false;
-                savePanIfSettled(); // persist pan state
+                endFramingGesture();
                 return true;
 
             case MotionEvent.ACTION_CANCEL:
                 pointers.clear();
                 tapCandidate = false;
                 startDist = -1f;
-                savePanIfSettled();
+                endFramingGesture();
                 return true;
         }
         return true;
+    }
+
+    /**
+     * A tap moves the camera's orbit centre to the point that was touched.
+     *
+     * <p><b>The unprojection needs the GL thread and the write does not, and that
+     * split is the whole of this method's shape.</b>
+     * {@link ReliefRenderer#screenToOrbit} reads the view and projection matrices the
+     * last drawn frame built, so it is queued with {@code glView.queueEvent} exactly as
+     * before -- calling it from the UI thread would race a resize, and it used to be
+     * queued inside a larger block that also wrote the prefs.
+     *
+     * <p>The save and the sheet push then hop back to the UI thread, which is where the
+     * threading table puts prefs writes. Measured on a Pixel 7 Pro: {@code
+     * screenToOrbit} costs 51-169 us and {@code LibraryStore.editItem} costs
+     * <b>153-213 ms</b> of synchronous {@code commit()}. Doing both inside the queued
+     * runnable therefore held the GL thread for a sixth of a second after every tap --
+     * the frame the tap asked for could not be drawn until the disk write finished,
+     * which is why *"orbit via tapping lag so much"*.
+     *
+     * <p>{@link #endFramingGesture} runs on the far side of that hop, so the rows are
+     * pushed from the renderer and the store is written once, in that order. It is
+     * posted rather than called for the same reason: {@code framingMoved} is written on
+     * this thread and the guard that reads it belongs with the write it guards.
+     */
+    private void tapToOrbit(float fx, float fy, int fw, int fh) {
+        glView.queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                if (!renderer.screenToOrbit(fx, fy, fw, fh)) {
+                    // The tap missed the quad -- off the picture, or a camera with no
+                    // plane to hit. screenToOrbit returning false IS the answer:
+                    // nothing moved, so nothing is marked and nothing is written. This
+                    // is also why framingMoved is set here and not on ACTION_UP: a tap
+                    // that moved nothing must not cost a write.
+                    return;
+                }
+                framingMoved = true;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        endFramingGesture();
+                    }
+                });
+            }
+        });
+        glView.requestRender();
     }
 
     private float pointerDistance() {

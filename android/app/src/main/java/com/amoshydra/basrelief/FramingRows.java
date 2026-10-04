@@ -4,6 +4,7 @@ import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
 
@@ -243,7 +244,7 @@ final class FramingRows {
         slider.setOnPreview(new BasreliefSlider.OnPreview() {
             @Override
             public void onPreview(int v) {
-                final float value = fraction ? v / 1000f : v;
+                final float value = fraction ? FramingRowValue.originFraction(v) : v;
                 // One queued event for the cancel and the write together. Queued
                 // because cancelGlide is GL-thread state (the GLSurfaceView's own
                 // touch handler queues it the same way), and one event rather than
@@ -281,16 +282,79 @@ final class FramingRows {
         if (item == null) return 0;
         SurfaceSettings f = item.settings(activity.editSurface);
         boolean isX = key.endsWith("X");
-        if (fraction) return (int) Math.round((isX ? f.originX : f.originY) * 1000f);
+        if (fraction) return FramingRowValue.originThousandths(isX ? f.originX : f.originY);
         // Shown clamped to the same bound the renderer uses, not as stored: a pan
         // written on a larger surface is inside the blob but outside what this
         // screen can render, so printing the raw number here would describe a
-        // position the picture is not at.
-        int limit = panLimit(activity);
-        long v = Math.round(isX ? f.panX : f.panY);
-        if (v > limit) v = limit;
-        if (v < -limit) v = -limit;
-        return (int) v;
+        // position the picture is not at. Both halves of that are
+        // FramingRowValue.showablePan's, so the stored read and the renderer's live
+        // value below cannot clamp differently.
+        return FramingRowValue.showablePan(isX ? f.panX : f.panY, panLimit(activity));
+    }
+
+    /**
+     * The renderer's live value for one axis, as this row's integer.
+     *
+     * <p>Same function {@link #read} uses, over a different source. That is the whole
+     * point: the two differ only in where the float comes from, so a row cannot end up
+     * displaying a number derived one way while the gesture commits another.
+     */
+    private static int fromRenderer(MainActivity activity, String key, boolean fraction) {
+        boolean isX = key.endsWith("X");
+        if (fraction) {
+            return FramingRowValue.originThousandths(
+                    isX ? activity.renderer.getOrbitX() : activity.renderer.getOrbitY());
+        }
+        return FramingRowValue.showablePan(
+                isX ? activity.renderer.getPanX() : activity.renderer.getPanY(),
+                panLimit(activity));
+    }
+
+    /**
+     * Put the renderer's live framing into all four rows, silently.
+     *
+     * <p><b>The renderer is the authority here, and storage is not — measured, not
+     * argued.</b> A tap or a two-finger drag writes the store 150–430 ms later and on
+     * another thread ({@code LibraryStore.editItem} is a synchronous {@code commit()}),
+     * so a sheet that re-read storage after a gesture reads the value from <i>before</i>
+     * it. On a Pixel 7 Pro the tap's store landed 388 ms after the orbit did, and the
+     * row showed the pre-tap origin for as long as the sheet stayed open. The
+     * renderer's volatiles are the only one of the three candidates that is current at
+     * the moment the row has to display something: they are what the next frame draws
+     * ({@code captureFraming}), and they are written by the gesture itself.
+     *
+     * <p><b>Which is why this is a push and not a re-read.</b> {@link #refresh} is the
+     * other direction — stored values onto the rows — and it is right there: after a
+     * gallery selection or a surface switch the stored value IS the truth, and the
+     * renderer has not caught up yet. Two callers, two sources, one derivation each,
+     * and the rule for which is which is the writer's: the renderer owns what is on
+     * screen, the index owns what is kept.
+     *
+     * <p>Silent by construction, like every other population of a row:
+     * {@link BasreliefSlider#setValue} has no listener to fire, so this cannot re-enter
+     * {@link #apply} and write the value it is only trying to display.
+     */
+    static void pushFromRenderer(MainActivity activity) {
+        push(activity, "originX", true);
+        push(activity, "originY", true);
+        push(activity, "panX", false);
+        push(activity, "panY", false);
+    }
+
+    /**
+     * One row, from the renderer, only if it would actually change.
+     *
+     * <p>The skip is the same one {@link BasreliefSlider#preview} makes, for the same
+     * reason: this runs per step of travel, and re-formatting a number that did not
+     * move is work with nothing to show for it. It also means a gesture that changes
+     * one axis does not churn the other three rows' drawables.
+     */
+    private static void push(MainActivity activity, String key, boolean fraction) {
+        BasreliefSlider slider = activity.sliders.get(key);
+        if (slider == null) return;
+        int v = fromRenderer(activity, key, fraction);
+        if (v == slider.value()) return;
+        slider.setValue(v);
     }
 
     /**
@@ -306,7 +370,7 @@ final class FramingRows {
     private static void apply(final MainActivity activity, final String key,
                               final boolean fraction, final int value) {
         final boolean isX = key.endsWith("X");
-        final float v = fraction ? value / 1000f : value;
+        final float v = fraction ? FramingRowValue.originFraction(value) : value;
         final String id = activity.state().activeId();
         if (id == null) return; // nothing is selected, so there is nothing to write
         LibraryStore.editItem(activity.prefs, id, new LibraryStore.Editor() {

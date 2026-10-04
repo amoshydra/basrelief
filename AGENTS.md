@@ -405,6 +405,54 @@ already cost real time.
   `refreshSliders` reads the settings once and uses that one value for both the
   slider and the sensor, because two reads are two chances to disagree — which is
   how a slider ends up showing 0 while the sensor is still told to run.
+- **A gesture owns the renderer's values for its span; the index is told once, at
+  the end.** Measured on a Pixel 7 Pro, sdk 37, and the reason is arithmetic rather
+  than taste: `AppState.load` costs **113 ms** and `LibraryStore.editItem` a
+  **synchronous `commit()`** of the whole index for **33–430 ms** depending on what
+  the write queue is doing. Three rules, all of them about *which* thread and
+  *when*.
+  - **A gesture writes the index once, on release.** Pan must not persist per
+    `ACTION_MOVE`, and zoom's per-move persistence was a duplicate of what the Zoom
+    row's own `OnChanged` already commits. The sheet's established rule — preview
+    while dragging, commit on release — is not a nicety here; it is the difference
+    between a drag at 60 Hz and one at 2 Hz. `ReliefRenderer.saveFramingToPrefs` is
+    the single write, and it takes origin, pan **and** zoom in one read-modify-write:
+    three write paths for one set of render values is three chances for two of them
+    to be wrong.
+  - **The prefs write belongs on the UI thread; only the maths needs the GL one.**
+    `ReliefRenderer.screenToOrbit` reads the matrices the last drawn frame built, so
+    it stays inside `queueEvent`. The save that followed it used to run there too,
+    which held the GL thread for **153–213 ms** after every tap — the frame the tap
+    asked for could not be drawn until the disk write finished. `MainActivity.tapToOrbit`
+    is the shape: queue the unprojection, `runOnUiThread` the write.
+  - **A release that changed nothing writes nothing.** `framingMoved` is set from a
+    value *comparison* against the renderer, not from "this branch ran": `setZoom` and
+    `panBy` both clamp, so a pinch at its zoom stop and a pan at the surface bound run
+    the write path every frame and move nothing. The rule `BasreliefSlider.release`
+    already follows for every slider on the sheet.
+- **A live render value belongs to the renderer and a stored one to the index, and
+  each control has to be told which it is reading.** Three candidates exist for a
+  framing axis after a gesture — the renderer's volatiles, `LibraryItem.settings`,
+  and the int a `FramingRows` slider displays — and only one of them is *current*:
+  the index write lands **388 ms** after the gesture that produced it and on another
+  thread, so anything that re-reads storage at gesture end reads the value from
+  *before* the gesture, and the next nudge on that row then commits the stale number.
+  **So the four framing rows are pushed from the renderer, never re-read**
+  (`FramingRows.pushFromRenderer`), and `FramingRows.refresh` — stored values onto
+  the rows — stays for the other direction, where the stored value genuinely is the
+  truth: a gallery selection or a surface switch, before the renderer has reloaded.
+  The same distinction is why the Zoom row is pushed during a pinch
+  (`setZoomSlider`) while the Depth, Motion, Brightness, Shadow and light rows are
+  not: **only the values a gesture can change between a write and the display need
+  this**, and adding a push where nothing is stale is how a second source of truth
+  gets created.
+- **Pan and orbit move a matrix. Neither may re-tessellate.** `ReliefMesh.build` and
+  `ReliefMesh.blurredField` are reached from exactly one place, `ReliefRenderer.upload`,
+  which is a *pair* change. A gesture moves `ReliefRenderer`'s `orbitX`/`orbitY` and
+  `panX`/`panY`, and `onDrawFrame`'s `captureFraming` copies them into the `Framing`
+  the draw uses — no geometry work. If a framing control ever appears to trigger a
+  rebuild, the cheap write has become a `reloadFromPrefs` (which is also an
+  `AppState.load`, and also 113 ms) and that is the bug to look for.
 
 - **A `Dialog` cannot have a backdrop blur. Stop trying, and stop tuning the fill instead.**
   Measured on a Pixel 7 Pro with a modal open: `dumpsys SurfaceFlinger` prints **zero**
@@ -473,7 +521,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 438 tests across twenty-three classes:
+it**. 448 tests across twenty-four classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -508,6 +556,22 @@ has run.**
   destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
   **eleven** fields is compared, and the field count is asserted, because a twelfth added
   without teaching `sameAs` about it would make a real frame silently a no-op.
+- `FramingRowValueTest` — the three numbers a framing row *prints*, and above all
+  that Origin and Pan cannot be converted by one rule. It is the display half of the
+  rule `ConfigTest` and `PerItemSettingsTest` pin on the stored half: **pan is in
+  pixels and must not be clamped to Origin's fraction range.** That is easy to state
+  and easy to break by making the two keys share a helper, because a shared helper has
+  to pick a clamp and the only clamps in play are each other's — so both wrong answers
+  are put on record with numbers that cannot survive either: an 86.5-pixel pan read
+  with Origin's rule is 86500 thousandths and the row's own range throws it to the far
+  stop, while the same 8.65% camera swing read with pan's rule is **0 pixels** and
+  nothing complains, because pan has no range clamp to notice. The quieter of the two
+  failures is why it is worth a test. Its second theme is the **round trip in both
+  directions** — `originThousandths` is pinned against the device's own tap value
+  (`-0.15712592` is `-157`), and `originFraction` must give back the integer it came
+  from for every thousandth in the reachable range — because "the control displays
+  exactly what the gesture will write" holds only while both sides call the same
+  function, and two derivations of one value agree until the day one is edited.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom".
 - `PrefFilesTest` — the restore case, which silently costs users their image.

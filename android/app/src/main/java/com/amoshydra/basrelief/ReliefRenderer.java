@@ -25,6 +25,7 @@ import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.render.Picture;
+import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
@@ -967,15 +968,37 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Persist the framing onto the item being shown.
+     * Persist the live framing onto the item being shown: origin, pan and zoom in
+     * ONE read-modify-write of the index.
      *
-     * <p>On the item, not on the config, so panning a portrait does not reframe
-     * the next photo. The id is read at save time rather than captured at gesture
-     * start, so a drag that outlives a selection change is written to whatever is
-     * on screen when the finger lifts -- which is what the user was looking at.
+     * <p><b>One method, because there was a time when there were two and a third
+     * thing.</b> {@code saveViewToPrefs} wrote orbit and pan and {@code
+     * savePanToPrefs} wrote pan, and the two-finger MOVE branch wrote zoom a third
+     * time <i>per event</i> — three write paths for one set of render values, each
+     * with its own idea of what a gesture ends. One write, once per gesture, with the
+     * values the renderer is holding now.
+     *
+     * <p><b>Why the values are read here and not passed in.</b> They are the live
+     * volatiles, and this is a snapshot of what the next frame will draw. A caller
+     * that captured them at gesture start and passed them here would persist a value
+     * the picture has already moved past — and the item is resolved at save time too,
+     * which is the older of the two deliberate choices.
+     *
+     * <p><b>Safe from the UI thread, and it belongs there.</b> Nothing here touches
+     * GL: the four values are volatiles, and the write is the threading table's UI
+     * row. The tap's <i>orbit maths</i> does need the GL matrices and stays queued
+     * through {@code glView.queueEvent}; the save that follows it does not, and
+     * running it there cost the studio 153–213 ms of frozen rendering per tap because
+     * {@link LibraryStore#editItem} is a synchronous {@code commit()} of the whole
+     * index.
+     *
+     * <p>The id is resolved here rather than captured by the caller, so a gesture
+     * that outlives a selection change is written to whatever is on screen when the
+     * finger lifts, which is what the user was looking at.
      */
-    public void saveViewToPrefs() {
+    public void saveFramingToPrefs() {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
+        final int pct = FramingRowValue.zoomPercent(zoom);
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         final String id = AppState.load(context, p, context.getFilesDir()).activeId();
         if (id == null) return; // nothing is selected, so there is nothing to write
@@ -983,21 +1006,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             @Override
             public LibraryItem edit(LibraryItem item) {
                 Surface on = editSurface;
-                return item.withOrigin(on, ox, oy).withPan(on, px, py);
-            }
-        });
-    }
-
-    /** @see #saveViewToPrefs */
-    public void savePanToPrefs() {
-        final float px = panX, py = panY;
-        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        final String id = AppState.load(context, p, context.getFilesDir()).activeId();
-        if (id == null) return;
-        LibraryStore.editItem(p, id, new LibraryStore.Editor() {
-            @Override
-            public LibraryItem edit(LibraryItem item) {
-                return item.withPan(editSurface, px, py);
+                return item.withOrigin(on, ox, oy)
+                        .withPan(on, px, py)
+                        .withZoom(on, pct);
             }
         });
     }
