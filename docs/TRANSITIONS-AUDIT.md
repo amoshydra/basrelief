@@ -326,3 +326,43 @@ The device is on `9dc59dc`; the audit's code does not exist there. A pass needs:
 
 Never `screencap` for the motion (AGENTS.md: it forces the redraw under test);
 ask for a device screenshot for anything visual.
+
+---
+
+## Status update (2026-10-04, later the same session)
+
+**Fixed:**
+
+- **Ranked #1 and #2** — committed as `80c7b78`. `apply()` now asks `isGlidingToward`,
+  so a resolve is a no-op when the frame is on screen **or already on its way there**;
+  it previously asked only `snapshot().sameAs(f)`, which is **false mid-glide**, so it
+  protected a frame that had ARRIVED and not one in flight — the case it exists for.
+  The wallpaper's duplicate guard is deleted. And `sameAs` no longer compares `bundled`,
+  which `ofValues` hard-codes to `false`: the guard was **structurally absent for the
+  bundled demo**, the one row every install starts with.
+
+**Still open, and deliberately NOT touched:**
+
+- **Ranked #3 — `holdLockFrameForUnlock`'s early-return can never fire.** Line 575:
+
+  ```java
+  if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;
+  ```
+
+  `keyguardWasUp()` is `isKeyguardLocked()`, measured this session as **`true` on every
+  sample of every cycle, including after two full unlocks** — so the third term is
+  effectively a constant `true`, the whole conjunction is `false`, and **the early-return
+  never runs.** The pre-hold therefore fires on every path, not only "when the screen is
+  dark or the keyguard took over", which is what its comment claims.
+
+  **Why it is left alone:** the pre-hold is **load-bearing** — measured, disabling it makes
+  a surviving HOME engine hold HOME across a lock cycle and the unlock glide disappears.
+  So this is a latent bug *inside a working path*, and a condition containing a
+  never-varying term is exactly the shape that has cost this session the most. Fixing it
+  means choosing between dropping `!keyguardWasUp()` entirely and replacing it with
+  `!isDeviceLockedNow()`, and **that needs a lock/unlock cycle to verify** — which the
+  phone was busy with when this was found.
+
+- **Ranked #4 — `lockFramingShowing`** documents a clear that does not exist and publishes
+  a resolved *target* rather than what was rendered, so a re-bind without process death
+  could inherit a stale origin.
