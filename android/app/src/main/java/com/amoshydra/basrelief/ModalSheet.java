@@ -351,6 +351,26 @@ final class ModalSheet {
     private int bottomInset;
 
     /**
+     * The keyboard's height, 0 when it is down.
+     *
+     * <p><b>Normally 0, and that is the point.</b> The window sets
+     * {@code SOFT_INPUT_ADJUST_RESIZE}, so the IME shrinks the window rather than
+     * overlapping it and the system reports no inset to subtract. That is also why
+     * the sheet already moves up for the keyboard without anything here: the window
+     * is shorter, the card is {@code Gravity.BOTTOM}, so its foot is the window's
+     * foot, which is the keyboard's top.
+     *
+     * <p>It is read anyway for the one frame where that is not yet true. Before the
+     * first traversal {@link #screenHeightPx()} has no measured height and falls back
+     * to the display's, which is the <b>whole screen including the area the keyboard
+     * is about to cover</b>. A tall sheet laid out against that number on its very
+     * first frame runs under the status bar and then snaps down when the resize
+     * lands — the same class of first-frame flash the comment on {@code applyHeight}
+     * was written to prevent, one level up.
+     */
+    private int imeInset;
+
+    /**
      * The scrim's own colour, held so the fade can drive its alpha without
      * reconstructing the colour: the drag tracks one progress value and the scrim
      * brightens (becomes less opaque) as the card comes down, which is the
@@ -548,6 +568,16 @@ final class ModalSheet {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 bottomInset = insetBottom(insets);
+                int ime = insetIme(insets);
+                if (ime != imeInset) {
+                    imeInset = ime;
+                    // The keyboard is DYNAMIC CONTENT and the height now follows it,
+                    // so this is not a special case: the card is re-capped because
+                    // the content's own height changed. Without it a tall sheet with
+                    // the keyboard up would keep the height it had when the keyboard
+                    // was down, which is taller than the space it has.
+                    v.requestLayout();
+                }
                 card.setPadding(padLeft, padTop, padRight, padBottom + bottomInset);
                 // The scroll's height is derived from the card, and the padding just
                 // changed it, so re-cap. The inset is the gesture bar on one device
@@ -940,7 +970,11 @@ final class ModalSheet {
     private int screenHeightPx() {
         int measured = root.getHeight();
         if (measured > 0) return measured;
-        return root.getResources().getDisplayMetrics().heightPixels;
+        // The fallback is the display's height, which INCLUDES the area the keyboard
+        // is about to occupy. Subtracting the inset is what keeps the first frame
+        // inside the space the sheet will actually have; without it a tall sheet is
+        // laid out against the full screen and then snaps when the resize lands.
+        return root.getResources().getDisplayMetrics().heightPixels - imeInset;
     }
 
     /**
@@ -1242,6 +1276,33 @@ final class ModalSheet {
     static int insetBottom(WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             return insets.getInsets(WindowInsets.Type.systemBars()).bottom;
+        }
+        return insets.getSystemWindowInsetBottom();
+    }
+
+    /**
+     * The keyboard's height in pixels, or 0 when it is down.
+     *
+     * <p>{@code Type.ime()} is API 30+. Below that there is no such type, and the
+     * deprecated system-window bottom inset is the only source — but note what it
+     * reports <b>depends on the soft input mode</b>: this window sets
+     * {@code ADJUST_RESIZE}, so the IME shrinks the window instead of overlapping
+     * it and the value comes back 0. Both branches are live at minSdk 26 and neither
+     * is a guess, which is the same standard {@link #insetBottom} is held to.
+     *
+     * <p>Kept separate from {@link #insetBottom} rather than folded into it because
+     * they are different facts with different jobs: the bar inset is <i>padded into
+     * the card</i> so content clears the gesture bar, while the IME inset is
+     * <i>subtracted from a height</i> so the first frame fits the space left over.
+     * One field for both would make the gesture bar and the keyboard the same
+     * number, and they are not — on most devices the bar is present and the keyboard
+     * is not, so summing them would double-count the bar.
+     */
+    static int insetIme(WindowInsets insets) {
+        if (insets == null) return 0;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.graphics.Insets i = insets.getInsets(WindowInsets.Type.ime());
+            return i.bottom;
         }
         return insets.getSystemWindowInsetBottom();
     }
