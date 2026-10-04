@@ -61,7 +61,8 @@ public class DepthWallpaperService extends WallpaperService {
         // was a real question four times and the only way to tell was comparing byte sizes
         // and file timestamps. BuildConfig.GIT_COMMIT is the commit the APK was built from.
         android.util.Log.i("Basrelief", "Basrelief service starting, build "
-                + BuildConfig.GIT_COMMIT);
+                + BuildConfig.GIT_COMMIT
+                + " renderer=" + (BuildConfig.RENDERER_GLES3 ? "gles3" : "gles2"));
         // The unlock-edge listener lived here and was REMOVED because it cannot be
         // registered: addKeyguardLockedStateListener requires
         // android.permission.SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE, which is not in the
@@ -817,7 +818,9 @@ public class DepthWallpaperService extends WallpaperService {
                 renderer.inheritFirstFrameFrom(null, 250f);
             }
             glView = new WallpaperGLSurfaceView(DepthWallpaperService.this);
-            glView.setEGLContextClientVersion(2);
+            // 3 for the shipping GPU-displacement renderer (vertex texture fetch),
+            // 2 for the legacy CPU-mesh fallback; see BuildConfig.RENDERER_GLES3.
+            glView.setEGLContextClientVersion(BuildConfig.RENDERER_GLES3 ? 3 : 2);
             ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
             glView.setPreserveEGLContextOnPause(true);
             // The renderer needs a way back onto the GL thread; only the host

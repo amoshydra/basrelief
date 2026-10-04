@@ -639,7 +639,11 @@ public class MainActivity extends Activity {
 
         // --- fullscreen preview ---
         glView = new GLSurfaceView(this);
-        glView.setEGLContextClientVersion(2);
+        // 3 for the shipping GPU-displacement renderer (vertex texture fetch),
+        // 2 for the legacy CPU-mesh fallback. One build-time switch decides both
+        // this and the renderer's own program/mesh strategy -- see
+        // BuildConfig.RENDERER_GLES3.
+        glView.setEGLContextClientVersion(BuildConfig.RENDERER_GLES3 ? 3 : 2);
         ReliefRenderer.enableMSAA(glView); // 4x MSAA: smooths polygon edges
         renderer = new ReliefRenderer(getApplicationContext());
         renderer.setShowOrbitMarker(true); // crosshair in the studio

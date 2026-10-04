@@ -70,6 +70,7 @@ gradle_task() {
         ${GRADLE_CACHE_MOUNT:-} \
         ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
         -e BASRELIEF_GIT_COMMIT="$commit" \
+        ${BASRELIEF_RENDERER:+-e BASRELIEF_RENDERER="$BASRELIEF_RENDERER"} \
         -w /workspace \
         "$IMAGE_NAME" \
         bash -c "./gradlew $1 --no-daemon"

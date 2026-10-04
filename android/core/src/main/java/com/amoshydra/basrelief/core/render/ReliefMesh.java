@@ -60,7 +60,7 @@ public final class ReliefMesh {
         // Resample to grid resolution FIRST, then blur at that resolution. The
         // mesh only ever reads the field at these n*n points, so doing the work
         // at source resolution was ~99% wasted.
-        float[] smooth = blur(resample(depth, dw, dh, n, grid), n, n);
+        float[] smooth = blurredField(depth, dw, dh, grid);
         float[] posV = new float[n * n * 3];
         float[] uvV = new float[n * n * 2];
         float[] nrmV = new float[n * n * 3];
@@ -126,6 +126,29 @@ public final class ReliefMesh {
         float[] zOut = new float[n * n];
         for (int i = 0; i < n * n; i++) zOut[i] = posV[i * 3 + 2];
         return new ReliefMesh(zOut, positions, uvs, normals, verts);
+    }
+
+    /**
+     * The blurred {@code (grid+1)^2} float height field, in {@code 0..255}, that
+     * the GPU displacement path uploads as a texture.
+     *
+     * <p>This is the one half of {@link #build} that must stay on the CPU: the
+     * float blur is what removes 8-bit depth banding, and it is deliberately not
+     * re-quantised. The other half -- displacing vertices, averaging normals and
+     * emitting 393k duplicated vertices into three 12.6 MB buffers -- moves to
+     * the vertex shader, which samples this field, so nothing here pays for a
+     * triangulation it no longer draws.
+     *
+     * <p>{@code build} calls this too, so the two paths cannot disagree about the
+     * field they start from.
+     *
+     * @param depth row-major 8-bit gray, depth[0] = top-left
+     * @param dw,   dh depth map size
+     * @param grid  subdivisions per side
+     */
+    public static float[] blurredField(byte[] depth, int dw, int dh, int grid) {
+        int n = grid + 1;
+        return blur(resample(depth, dw, dh, n, grid), n, n);
     }
 
     private static void addFace(float[] nrm, float[] pos, int a, int b, int c) {

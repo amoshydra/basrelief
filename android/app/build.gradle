@@ -35,6 +35,21 @@ def gitCommit() {
     }
 }
 
+// WHICH GL BACKEND THIS APK DRAWS WITH. GLES3 is the shipping path: it is the
+// only one whose minimum vertex texture unit count is non-zero, so only it can
+// sample the depth field in the vertex shader and displace the relief on the
+// GPU. The GLES2 path is kept only for A/B comparison and as a fallback, and it
+// reads the same switch so the two cannot be selected independently.
+//
+// From the ENVIRONMENT, same as the commit: `BASRELIEF_RENDERER=gles2` builds
+// the legacy path and anything else (or nothing) builds GLES3. podman-build.sh
+// forwards it into the container.
+def rendererGles3() {
+    def fromEnv = System.getenv('BASRELIEF_RENDERER')
+    if (fromEnv != null && fromEnv.trim().equalsIgnoreCase('gles2')) return false
+    return true
+}
+
 android {
     namespace 'com.amoshydra.basrelief'
     compileSdk 36
@@ -58,6 +73,9 @@ android {
         // with no .git, or with git absent from the container, must produce "unknown"
         // rather than break.
         buildConfigField "String", "GIT_COMMIT", "\"${gitCommit()}\""
+        // true = GLES3 + GPU displacement (the shipping renderer); false = the
+        // legacy GLES2 + CPU mesh path, for comparison. See rendererGles3().
+        buildConfigField "boolean", "RENDERER_GLES3", "${rendererGles3()}"
     }
 
     signingConfigs {

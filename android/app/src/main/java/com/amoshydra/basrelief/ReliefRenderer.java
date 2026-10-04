@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.opengl.GLES20;
+import android.opengl.GLES30;
 import android.opengl.GLSurfaceView;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
@@ -17,6 +18,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.util.Arrays;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
@@ -34,16 +36,41 @@ import javax.microedition.khronos.egl.EGLDisplay;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * GLES2 renderer for a real displaced relief surface (continuous, no tearing):
- * the photo is mapped onto a CPU-built triangle mesh with per-vertex normals
- * so a directional light shades it — genuine geometry cues (silhouette,
- * parallax, shading) instead of a flat-card texture trick.
+ * Renderer for a real displaced relief surface (continuous, no tearing): the
+ * photo is mapped onto a triangle mesh with per-vertex normals so a directional
+ * light shades it -- genuine geometry cues (silhouette, parallax, shading)
+ * instead of a flat-card texture trick.
+ *
+ * <p><b>Two backends, one class, chosen at build time.</b> The shipping path is
+ * GLES3: the mesh is a static grid and the vertex shader samples a
+ * {@code (GRID+1)^2} float depth field to displace Z and derive normals, so the
+ * CPU never builds or uploads the ~393k-vertex mesh. This is the whole reason
+ * for GLES3 -- its minimum vertex texture unit count is non-zero, GLES2's is
+ * zero, so GLES2's vertex shader could never sample depth at all. The legacy
+ * GLES2 + CPU-built mesh path is retained for A/B comparison and as a fallback,
+ * and is selected by {@link BuildConfig#RENDERER_GLES3}, which also sets the EGL
+ * context version in both hosts. The two share everything except the programs
+ * and the per-load mesh strategy (see {@link #install} and {@link #drawRender});
+ * framing, glides, cross-fades, decode and prefs are one implementation so they
+ * cannot drift. Once the comparison is done the false branch is a deletion.
+ *
+ * <p><b>GLES3 is a capability, not a power mode.</b> The GPU does the same work
+ * or less; there is deliberately no claim of a battery win here. The battery
+ * story is unchanged and lives in {@code TiltController}: the draw rate is
+ * bounded by the gyro and the expensive sensor sleeps after 10s of stillness.
  *
  * Settings (SharedPreferences "depthwall") are read at startup; live
  * changes arrive through setDepth / setZoom / setMotion / loadPair,
  * always invoked on the GL thread.
  */
 public final class ReliefRenderer implements GLSurfaceView.Renderer {
+
+    /**
+     * Which backend this build draws with. A compile-time constant from the same
+     * switch the hosts use to set the EGL context version, so the renderer and
+     * the context cannot be chosen independently.
+     */
+    private static final boolean GLES3 = BuildConfig.RENDERER_GLES3;
 
 
     // FOV / camera distance / crop margin / tilt range live in CameraModel —
@@ -182,12 +209,136 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "  gl_FragColor = uColor;\n" +
             "}\n";
 
+    // ---------------------------------------------------------------- GLES3
+    // Same lighting and picture maths as the strings above, deliberately: the
+    // fragment shader is the GLES2 one translated to `in`/`out`/`texture`, so a
+    // change to one must be made to the other. The vertex shader is the real
+    // difference -- it DISPLACES each vertex from a float depth field instead of
+    // receiving a CPU-built mesh.
+
+    /**
+     * GLES3 relief vertex shader: the GPU half of {@code ReliefMesh.build}.
+     *
+     * <p>The depth texture is the blurred {@code (GRID+1)^2} float field -- in
+     * {@code 0..255}, NOT re-quantised to 8-bit, because that would put the
+     * banding back. A vertex at grid {@code (gx, gy)} reads texel
+     * {@code (gx, gy)}, so the sample is taken at texel centres rather than at
+     * the mesh's {@code u = gx/GRID}. This reproduces {@code ReliefMesh}'s
+     * resample exactly, so the surface height matches the CPU path.
+     *
+     * <p>Normals are central differences one grid cell apart, mapped to world
+     * units the same way the CPU's face normals are: the true world z is
+     * {@code h * scale * intensity} while world x is {@code x * scale}, so the
+     * direction is {@code (-dz/dx, -dz/dy, 1)} with {@code intensity} folded in.
+     * The result is the same direction {@code ReliefMesh}'s area-weighted
+     * normals give; the two differ only by central-difference vs area weighting,
+     * which is not visible at GRID=256 on a blurred field.
+     */
+    private static final String VERT3 =
+            "#version 300 es\n" +
+            "uniform mat4 uMVP;\n" +
+            "uniform float uModelScale;\n" +
+            "uniform float uIntensity;\n" +
+            "uniform sampler2D uDepth;\n" +
+            "uniform float uGrid;\n" +
+            "uniform float uAspect;\n" +
+            "in vec2 aPosition;\n" +   // (u-0.5, v-0.5); x is scaled by uAspect here
+            "in vec2 aUV;\n" +
+            "out vec2 vUv;\n" +
+            "out vec3 vWorldPos;\n" +
+            "out vec3 vWorldNormal;\n" +
+            "void main() {\n" +
+            "  vUv = aUV;\n" +
+            "  float n = uGrid + 1.0;\n" +
+            "  float gx = aUV.x * uGrid;\n" +
+            "  float gy = (1.0 - aUV.y) * uGrid;\n" +
+            "  vec2 duv = vec2(gx + 0.5, gy + 0.5) / n;\n" +
+            "  float h = textureLod(uDepth, duv, 0.0).r / 255.0 - 0.5;\n" +
+            // a is the plane-space position the camera's MVP already scales --
+            // uMVP carries S(scale, scale, scale*zScale), exactly as the GLES2
+            // path's uMVP does. x carries the image aspect here so one static
+            // grid fits every photo.
+            "  vec3 a = vec3(aPosition.x * uAspect, aPosition.y, h);\n" +
+            "  vec3 p = a * uModelScale;\n" +
+            "  p.z *= uIntensity;\n" +
+            "  vWorldPos = p;\n" +
+            "  float e = 1.0 / n;\n" +
+            "  float hL = textureLod(uDepth, duv - vec2(e, 0.0), 0.0).r / 255.0;\n" +
+            "  float hR = textureLod(uDepth, duv + vec2(e, 0.0), 0.0).r / 255.0;\n" +
+            "  float hT = textureLod(uDepth, duv - vec2(0.0, e), 0.0).r / 255.0;\n" +
+            "  float hB = textureLod(uDepth, duv + vec2(0.0, e), 0.0).r / 255.0;\n" +
+            "  float dzdX = uIntensity * uGrid * (hR - hL) / (2.0 * uAspect);\n" +
+            "  float dzdY = -uIntensity * uGrid * (hB - hT) / 2.0;\n" +
+            "  vWorldNormal = normalize(vec3(-dzdX, -dzdY, 1.0));\n" +
+            "  gl_Position = uMVP * vec4(a, 1.0);\n" +
+            "}\n";
+
+    /** GLES3 fragment shader: the GLES2 FRAG above, translated. */
+    private static final String FRAG3 =
+            "#version 300 es\n" +
+            "precision highp float;\n" +
+            "in vec2 vUv;\n" +
+            "in vec3 vWorldPos;\n" +
+            "in vec3 vWorldNormal;\n" +
+            "uniform sampler2D uColor;\n" +
+            "uniform float uFade;\n" +
+            "uniform vec3 uLightDir;\n" +
+            "uniform vec3 uCamPos;\n" +
+            "uniform float uBrightnessGain;\n" +
+            "uniform float uShadowLift;\n" +
+            "out vec4 fragColor;\n" +
+            "void main() {\n" +
+            "  vec3 n = normalize(vWorldNormal);\n" +
+            "  vec3 l = normalize(uLightDir);\n" +
+            "  vec3 v = normalize(uCamPos - vWorldPos);\n" +
+            "  float diff = max(dot(n, l), 0.0);\n" +
+            "  vec3 color = texture(uColor, vUv).rgb;\n" +
+            "  color *= uBrightnessGain;\n" +
+            "  color += uShadowLift * (1.0 - color);\n" +
+            "  color *= 1.0 + 0.25 * diff;\n" +
+            "  fragColor = vec4(color, uFade);\n" +
+            "}\n";
+
+    private static final String MARKER_VERT3 =
+            "#version 300 es\n" +
+            "uniform mat4 uMVP;\n" +
+            "in vec2 aPos;\n" +
+            "void main() {\n" +
+            "  gl_PointSize = 7.0;\n" +
+            "  gl_Position = uMVP * vec4(aPos, 0.0, 1.0);\n" +
+            "}\n";
+
+    private static final String MARKER_FRAG3 =
+            "#version 300 es\n" +
+            "precision mediump float;\n" +
+            "uniform vec4 uColor;\n" +
+            "out vec4 fragColor;\n" +
+            "void main() {\n" +
+            "  fragColor = uColor;\n" +
+            "}\n";
+
     private final Context context;
 
     private int program;
     private int aPosition, aUV, aNormal, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
     private int uFade = -1;
     private int uBrightnessGain = -1, uShadowLift = -1;
+    // GLES3-only relief uniforms.
+    private int uDepth = -1, uGrid = -1, uAspect = -1;
+
+    /**
+     * The static relief grid for the GLES3 path: a {@code (GRID+1)^2} vertex
+     * interleaved {@code (x, y, u, v)} buffer and its index buffer, built once
+     * per EGL context and never per load. This is what replaces the CPU's
+     * ~393k-vertex non-indexed mesh: the geometry is identical for every photo
+     * (only the field texture changes), so it is uploaded once.
+     *
+     * <p>VBO names belong to an EGL context, so like everything else here they
+     * are dropped and rebuilt in {@link #onSurfaceCreated} -- a stale name drawn
+     * into a new context is a black or corrupt surface.
+     */
+    private int gridVbo = 0, gridIbo = 0;
+    private int gridIndexCount = 0;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -221,6 +372,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private static final class Render {
         int textureColor = -1;
+        /**
+         * GLES3 only: the blurred float depth field, sampled by the vertex
+         * shader. 0 means the field was not uploaded (a context-less call), which
+         * -- like texture name 0 for colour -- is never a success.
+         */
+        int textureDepth = -1;
         int vertexCount;
         FloatBuffer posBuffer, uvBuffer, normalBuffer;
         /** Image width / height, baked into the mesh's x and the camera's aspect. */
@@ -231,7 +388,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         float lightX, lightY, lightZ;
 
         boolean isDrawable() {
-            return textureColor > 0 && vertexCount > 0;
+            if (textureColor <= 0) return false;
+            // GLES3 draws the static grid, so the per-render evidence that the
+            // field arrived is the depth texture, not a vertex count. The grid
+            // itself is built in onSurfaceCreated, before any install can run in
+            // that context, so a live depth texture implies a live grid.
+            return GLES3 ? textureDepth > 0 : vertexCount > 0;
         }
     }
 
@@ -1158,7 +1320,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         GLES20.glClearColor(0f, 0f, 0f, 1f); // pitch black
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
-        program = createProgram(VERT, FRAG);
+        if (GLES3) {
+            // The one measured fact that makes the GPU path possible: GLES2's
+            // minimum for this is 0, so a vertex shader could never sample depth.
+            int[] units = new int[1];
+            GLES30.glGetIntegerv(GLES30.GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, units, 0);
+            android.util.Log.i("Basrelief", "renderer=gles3 GL_VERSION="
+                    + GLES30.glGetString(GLES30.GL_VERSION)
+                    + " vertexTextureUnits=" + units[0]);
+        }
+        program = createProgram(GLES3 ? VERT3 : VERT, GLES3 ? FRAG3 : FRAG);
         aPosition = GLES20.glGetAttribLocation(program, "aPosition");
         aUV = GLES20.glGetAttribLocation(program, "aUV");
         aNormal = GLES20.glGetAttribLocation(program, "aNormal");
@@ -1171,12 +1342,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uFade = GLES20.glGetUniformLocation(program, "uFade");
         uBrightnessGain = GLES20.glGetUniformLocation(program, "uBrightnessGain");
         uShadowLift = GLES20.glGetUniformLocation(program, "uShadowLift");
+        uDepth = GLES20.glGetUniformLocation(program, "uDepth");
+        uGrid = GLES20.glGetUniformLocation(program, "uGrid");
+        uAspect = GLES20.glGetUniformLocation(program, "uAspect");
 
-        markerProgram = createProgram(MARKER_VERT, MARKER_FRAG);
+        markerProgram = createProgram(GLES3 ? MARKER_VERT3 : MARKER_VERT,
+                GLES3 ? MARKER_FRAG3 : MARKER_FRAG);
         markerAPos = GLES20.glGetAttribLocation(markerProgram, "aPos");
         markerUMVP = GLES20.glGetUniformLocation(markerProgram, "uMVP");
         markerUColor = GLES20.glGetUniformLocation(markerProgram, "uColor");
         ringBuffer = buildRing(RING_SEGMENTS);
+
+        // The GLES3 grid. Per-context, like every other GL name: the names below
+        // are meaningless in this new context until they are rebuilt here.
+        gridVbo = 0;
+        gridIbo = 0;
+        gridIndexCount = 0;
+        if (GLES3) buildGrid();
 
         // The mesh attribute pointers are bound once per install, not per frame
         // (see bindMeshAttribs). That is only safe if the marker's attribute
@@ -1741,12 +1923,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureColor);
         GLES20.glUniform1i(uColor, 0);
 
-        // Attribute pointers are only re-specified when the draw switches
-        // renders; see boundMesh. In the steady state that is once per load --
-        // the measured optimisation -- and during a fade it is once per draw,
-        // bounded by CROSS_FADE_MS.
-        if (boundMesh != r) bindMeshAttribs(r);
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, r.vertexCount);
+        if (GLES3) {
+            // The static grid, bound fresh every draw: two pointer calls into
+            // VBOs is cheap, and it makes the marker's possible attribute-index
+            // collision harmless rather than something to remember.
+            GLES20.glUniform1f(uGrid, GRID);
+            GLES20.glUniform1f(uAspect, r.aspect);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureDepth);
+            GLES20.glUniform1i(uDepth, 1);
+            GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
+            GLES20.glEnableVertexAttribArray(aPosition);
+            GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
+            GLES20.glEnableVertexAttribArray(aUV);
+            GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 16, 8);
+            GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, gridIbo);
+            GLES20.glDrawElements(GLES30.GL_TRIANGLES, gridIndexCount,
+                    GLES30.GL_UNSIGNED_INT, 0);
+            // Leave buffer 0 bound for the marker's client-side ring buffer; a
+            // bound VBO would make glVertexAttribPointer read the ring as an
+            // offset into the grid.
+            GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+            GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
+        } else {
+            // Attribute pointers are only re-specified when the draw switches
+            // renders; see boundMesh. In the steady state that is once per load --
+            // the measured optimisation -- and during a fade it is once per draw,
+            // bounded by CROSS_FADE_MS.
+            if (boundMesh != r) bindMeshAttribs(r);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, r.vertexCount);
+        }
         return f;
     }
 
@@ -1847,11 +2053,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             r.textureColor = -1;
             return false;
         }
-        ReliefMesh surf = ReliefMesh.build(p.gray, p.w, p.h, GRID, r.aspect);
-        r.vertexCount = surf.vertexCount;
-        r.posBuffer = toBuffer(surf.positions);
-        r.uvBuffer = toBuffer(surf.uvs);
-        r.normalBuffer = toBuffer(surf.normals);
+        // THE GLES3 PRIZE, measured here per install: the CPU no longer builds
+        // the mesh. It builds the small blurred field (the part that must stay in
+        // float to keep banding away) and uploads it; the GPU displaces vertices
+        // from it. The GLES2 branch still pays for ReliefMesh.build and the three
+        // 12.6 MB buffer copies, which is the comparison this log line is for.
+        long cpuStart = System.nanoTime();
+        if (GLES3) {
+            float[] field = ReliefMesh.blurredField(p.gray, p.w, p.h, GRID);
+            long fieldDone = System.nanoTime();
+            r.textureDepth = uploadField(field, GRID + 1);
+            long uploaded = System.nanoTime();
+            android.util.Log.i("Basrelief", "install gles3 field=" + (fieldDone - cpuStart) / 1e6f
+                    + "ms upload=" + (uploaded - fieldDone) / 1e6f + "ms");
+            if (r.textureDepth == 0) {
+                // A field that did not upload is not installed either. Release the
+                // colour texture too, so the pair that failed leaves nothing behind
+                // and the previous pair stays on screen.
+                GLES20.glDeleteTextures(1, new int[] { r.textureColor }, 0);
+                r.textureColor = -1;
+                return false;
+            }
+        } else {
+            ReliefMesh surf = ReliefMesh.build(p.gray, p.w, p.h, GRID, r.aspect);
+            r.vertexCount = surf.vertexCount;
+            r.posBuffer = toBuffer(surf.positions);
+            r.uvBuffer = toBuffer(surf.uvs);
+            r.normalBuffer = toBuffer(surf.normals);
+            android.util.Log.i("Basrelief", "install gles2 mesh+buffers="
+                    + (System.nanoTime() - cpuStart) / 1e6f + "ms");
+        }
         // The framing this pair belongs to. While a pair change was pending the
         // live fields stopped being drawn, so this is the value both hosts
         // applied for the incoming item -- mesh, texture and framing meet in
@@ -1925,13 +2156,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         boundMesh = null;
     }
 
-    /** Delete a render's GL texture and drop its buffers. GL thread only. */
+    /** Delete a render's GL textures and drop its buffers. GL thread only. */
     private static void releaseRender(Render r) {
         if (r == null) return;
-        if (r.textureColor > 0) {
+        // Both textures in one call: they were created together and leaving the
+        // depth field behind would leak one R32F texture per pair change.
+        if (r.textureColor > 0 && r.textureDepth > 0) {
+            GLES20.glDeleteTextures(2, new int[] { r.textureColor, r.textureDepth }, 0);
+        } else if (r.textureColor > 0) {
             GLES20.glDeleteTextures(1, new int[] { r.textureColor }, 0);
+        } else if (r.textureDepth > 0) {
+            GLES20.glDeleteTextures(1, new int[] { r.textureDepth }, 0);
         }
         r.textureColor = -1;
+        r.textureDepth = -1;
         r.vertexCount = 0;
         r.posBuffer = null;
         r.uvBuffer = null;
@@ -2003,6 +2241,106 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         FloatBuffer fb = bb.asFloatBuffer();
         fb.put(data);
         return fb;
+    }
+
+    private static IntBuffer toIntBuffer(int[] data) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(data.length * 4).order(ByteOrder.nativeOrder());
+        IntBuffer ib = bb.asIntBuffer();
+        ib.put(data);
+        ib.position(0);
+        return ib;
+    }
+
+    /**
+     * Upload the blurred depth field as a GLES3 {@code R32F} texture.
+     *
+     * <p>{@code R32F} keeps the float precision the blur was computed in; a
+     * {@code UNSIGNED_BYTE} or re-quantised upload would recreate the terraces
+     * and the banding would return (see {@code ReliefMesh.DEPTH_BLUR_FRACTION}).
+     * {@code NEAREST} is both required (R32F is not filterable in unextended
+     * GLES3) and correct: every vertex samples the exact texel it displaces.
+     *
+     * @return the texture name, or 0 if the upload happened with no usable
+     *         context -- and 0 is never a success.
+     */
+    private static int uploadField(float[] field, int n) {
+        int[] tex = new int[1];
+        GLES30.glGenTextures(1, tex, 0);
+        if (tex[0] == 0) return 0;
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0]);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER,
+                GLES30.GL_NEAREST);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER,
+                GLES30.GL_NEAREST);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S,
+                GLES30.GL_CLAMP_TO_EDGE);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T,
+                GLES30.GL_CLAMP_TO_EDGE);
+        // toBuffer leaves position at the end; glTexImage2D reads from the
+        // current position, so rewind it or the upload is empty.
+        FloatBuffer fb = toBuffer(field);
+        fb.position(0);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R32F, n, n, 0,
+                GLES30.GL_RED, GLES30.GL_FLOAT, fb);
+        return tex[0];
+    }
+
+    /**
+     * Build the static GLES3 relief grid: interleaved {@code (x, y, u, v)} for a
+     * {@code (GRID+1)^2} vertex grid and the triangle list that connects it.
+     *
+     * <p>Positions are aspect-free ({@code x = u - 0.5}, {@code y = v - 0.5}) so
+     * ONE grid serves every photo; the vertex shader scales x by the image aspect
+     * it is drawing. Orientation matches {@link ReliefMesh}: top row is
+     * {@code v = 1}, and each cell emits {@code tl,bl,tr} then {@code tr,bl,br}.
+     *
+     * <p>Uploaded as VBOs, not client arrays: the index list alone is 1.5 MB and
+     * a client-side copy would be re-sent every frame for geometry that never
+     * changes. The whole point of the GLES3 path is to stop paying per-frame
+     * costs for the mesh.
+     */
+    private void buildGrid() {
+        int n = GRID + 1;
+        float[] verts = new float[n * n * 4];
+        for (int gy = 0; gy < n; gy++) {
+            for (int gx = 0; gx < n; gx++) {
+                int i = (gy * n + gx) * 4;
+                float u = (float) gx / GRID;
+                float v = 1f - (float) gy / GRID;
+                verts[i] = u - 0.5f;
+                verts[i + 1] = v - 0.5f;
+                verts[i + 2] = u;
+                verts[i + 3] = v;
+            }
+        }
+        int[] idx = new int[GRID * GRID * 6];
+        int k = 0;
+        for (int gy = 0; gy < GRID; gy++) {
+            for (int gx = 0; gx < GRID; gx++) {
+                int tl = gy * n + gx, tr = tl + 1, bl = (gy + 1) * n + gx, br = bl + 1;
+                idx[k++] = tl; idx[k++] = bl; idx[k++] = tr;
+                idx[k++] = tr; idx[k++] = bl; idx[k++] = br;
+            }
+        }
+        int[] vbo = new int[1];
+        GLES30.glGenBuffers(1, vbo, 0);
+        gridVbo = vbo[0];
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
+        // toBuffer leaves position at the end (its callers normally rewind);
+        // glBufferData reads from the current position, so rewind it first.
+        FloatBuffer vb = toBuffer(verts);
+        vb.position(0);
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, verts.length * 4, vb,
+                GLES30.GL_STATIC_DRAW);
+        int[] ibo = new int[1];
+        GLES30.glGenBuffers(1, ibo, 0);
+        gridIbo = ibo[0];
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, gridIbo);
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.length * 4, toIntBuffer(idx),
+                GLES30.GL_STATIC_DRAW);
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
+        gridIndexCount = idx.length;
     }
 
     private static FloatBuffer buildRing(int segments) {
