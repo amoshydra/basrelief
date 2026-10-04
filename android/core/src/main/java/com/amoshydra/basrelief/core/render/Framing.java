@@ -59,6 +59,58 @@ public final class Framing {
     /** True when the marble bust is showing, or when nothing is selected. */
     public final boolean bundled;
 
+    // ------------------------------------------------------------ the medium
+
+    /**
+     * A photograph: one image, one depth map, one normal map, uploaded once.
+     */
+    public static final float SOURCE_STILL = 0f;
+
+    /**
+     * A clip: colour, depth and shading all arrive per frame, decoded off the GL
+     * thread and paired by a shared clock.
+     *
+     * <p>A <b>number</b> rather than a flag, and that is not a compromise. Every
+     * value {@link #ofValues} can carry has to be one it can carry, because
+     * {@code ofValues} is how a renderer hands back what it is currently drawing as
+     * a glide's origin — and a field the snapshot cannot reproduce would be exactly
+     * the {@link #bundled} trap one level worse: {@code bundled} is merely not
+     * compared, whereas a medium that could not be reproduced would make the
+     * no-op-paint guard miss a genuinely different picture, which drops a real frame.
+     *
+     * <p>Discrete, and <b>not interpolated by a glide</b>, like {@link #bundled}: a
+     * glide crosses a surface boundary, and the medium on the other side of it is
+     * whatever the other surface's row names.
+     */
+    public static final float SOURCE_VIDEO = 1f;
+
+    /**
+     * Whether this picture is drawn from a still or from a decoded clip.
+     *
+     * <p><b>Compared by {@link #sameAs}, unlike {@link #bundled}.</b> That
+     * asymmetry is the whole reason to read the two together. {@code bundled} says
+     * <i>which row</i> a framing came from and two framings of the same numbers are
+     * the same picture whatever produced them; the medium says <i>what the pixels
+     * are</i>, so a still and a clip at identical depth, zoom and light are two
+     * different pictures and a resolve that conflated them would leave the previous
+     * one on screen while the state said otherwise.
+     */
+    public final float sourceKind;
+
+    /**
+     * Whether this row will be drawn from a clip, as far as the index knows.
+     *
+     * <p><b>Deliberately not "can play".</b> Whether the clips decode is a file and
+     * codec question the renderer settles as it loads them; putting it here would
+     * make a render value a function of an I/O result, and every framing value in
+     * this class is a function of stored state. {@link
+     * com.amoshydra.basrelief.core.store.VideoSource} owns the other half and the
+     * window around it.
+     */
+    public boolean isVideo() {
+        return sourceKind != SOURCE_STILL;
+    }
+
     /**
      * Whether two framings would render the same picture.
      *
@@ -71,11 +123,11 @@ public final class Framing {
      * of its own destination landed 1.2 seconds later, mid-flight — the frame the user
      * reported as a snap.
      *
-     * <p><b>Every field, and that is the point.</b> This class has eleven of them and no
-     * {@code equals} for the same reason {@code SurfaceSettings.with} takes eleven
-     * arguments: adding a value without teaching the comparison about it would make the
-     * renderer treat a real change as a no-op and silently drop the frame. The test
-     * reflects over the fields so a twelfth cannot be forgotten.
+     * <p><b>Every field, and that is the point.</b> This class has twelve of them and
+     * no {@code equals} for the same reason {@code SurfaceSettings.with} takes
+     * eleven arguments: adding a value without teaching the comparison about it would
+     * make the renderer treat a real change as a no-op and silently drop the frame. The
+     * test reflects over the fields so a thirteenth cannot be forgotten.
      */
     public boolean sameAs(Framing other) {
         if (other == null) return false;
@@ -90,7 +142,8 @@ public final class Framing {
                 && near(brightnessGain, other.brightnessGain)
                 && near(shadowLift, other.shadowLift)
                 && near(lightAzimuth, other.lightAzimuth)
-                && near(lightElevation, other.lightElevation);
+                && near(lightElevation, other.lightElevation)
+                && near(sourceKind, other.sourceKind);
         // `bundled` is deliberately NOT compared, and the reason is structural rather
         // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
         // it to false, so a sameAs that required it could NEVER no-op for the bundled
@@ -104,6 +157,11 @@ public final class Framing {
         // diagnostic and the studio's reload all read it there -- and nothing anywhere
         // reads it to decide WHETHER TO DRAW, which is the only thing this comparison is
         // for.
+        //
+        // `sourceKind` IS compared, and the contrast is the lesson: it is a float rather
+        // than a boolean precisely so a snapshot can reproduce it, so there is no
+        // structural reason to exclude it -- and it must not be excluded, because a clip
+        // and a still at the same numbers are not the same picture.
     }
 
     /**
@@ -145,6 +203,13 @@ public final class Framing {
         // Null only when there is no item at all -- not when there is a bundled one,
         // which resolves like anything else from here.
         SurfaceSettings s = item == null ? null : item.settings(surface);
+
+        // Asked of the row, never of the renderer and never of the caller. A caller
+        // that could name the medium would be a second source for a value the index
+        // already owns, which is how the two surfaces came to disagree about the
+        // bundled item in the first place.
+        this.sourceKind = (item != null && item.video != null)
+                ? SOURCE_VIDEO : SOURCE_STILL;
 
         // Everything comes from the item for one surface, INCLUDING THE BUNDLED
         // DEMO. Nothing arrives from two places: a value that comes from two
@@ -234,19 +299,44 @@ public final class Framing {
      * <p>The light arrives as angles, matching the fields; the renderer derives the
      * vector with {@link LightDirection#of} at the point of use. Passing a vector
      * here would put the wrap on the caller.
+     *
+     * <p><b>And so does the medium</b>, for the same reason: a snapshot of what is
+     * on screen that cannot name whether it is a clip is a snapshot of a different
+     * picture from the one being drawn, and {@link #sameAs} — which is what decides
+     * whether a resolve paints — would then say "changed" on every resolve.
      */
     public static Framing ofValues(float depth, float zoom, float motion,
                                    float orbitX, float orbitY, float panX, float panY,
                                    float brightnessGain, float shadowLift,
-                                   float lightAzimuth, float lightElevation) {
+                                   float lightAzimuth, float lightElevation,
+                                   float sourceKind) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
-                brightnessGain, shadowLift, lightAzimuth, lightElevation);
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind);
+    }
+
+    /**
+     * @deprecated The form that <b>cannot say whether the picture is a clip</b>, so it
+     * always says still. A renderer that hands back what it is currently drawing
+     * must use the twelve-argument form above, because a snapshot taken through this
+     * one loses the medium and then compares unequal to the frame on screen — an
+     * instant repaint, which is the snap {@link #sameAs} exists to prevent.
+     *
+     * <p>Kept only because it has a caller that has not moved yet. It is correct for
+     * every photograph, and {@code :core} cannot fix the caller from here.
+     */
+    @Deprecated
+    public static Framing ofValues(float depth, float zoom, float motion,
+                                   float orbitX, float orbitY, float panX, float panY,
+                                   float brightnessGain, float shadowLift,
+                                   float lightAzimuth, float lightElevation) {
+        return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, SOURCE_STILL);
     }
 
     private Framing(float depth, float zoom, float motion,
                     float orbitX, float orbitY, float panX, float panY,
                     float brightnessGain, float shadowLift,
-                    float lightAzimuth, float lightElevation) {
+                    float lightAzimuth, float lightElevation, float sourceKind) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -258,6 +348,7 @@ public final class Framing {
         this.shadowLift = shadowLift;
         this.lightAzimuth = lightAzimuth;
         this.lightElevation = lightElevation;
+        this.sourceKind = sourceKind;
         this.bundled = false;
     }
 }

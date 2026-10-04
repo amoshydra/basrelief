@@ -9,6 +9,7 @@ import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
+import com.amoshydra.basrelief.core.store.VideoTracks;
 
 import org.junit.Test;
 
@@ -91,8 +92,10 @@ public class FramingTest {
      */
     @Test
     public void sameAsComparesEveryValueAndCountsThemAll() throws Exception {
-        Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f);
-        Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f);
+        Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
+                Framing.SOURCE_STILL);
+        Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
+                Framing.SOURCE_STILL);
         assertTrue("equal values must compare equal", a.sameAs(b));
         assertTrue(a.sameAs(a));
         assertFalse("a different item must not", a.sameAs(null));
@@ -102,32 +105,43 @@ public class FramingTest {
         // reflection over the field COUNT so a field added later is covered without
         // editing this test, and the count is asserted because a new field would
         // otherwise be silently uncompared and a real frame would be dropped.
+        //
+        // STATIC FIELDS ARE EXCLUDED, and that filter is not tidiness. SOURCE_STILL
+        // and SOURCE_VIDEO are public static final floats, so a reflection that
+        // counted every float found fourteen, asserted nothing useful, and would have
+        // let the count be "updated" to match whatever the code happened to declare --
+        // which is a guard that can no longer fail. An instance field is the only
+        // thing sameAs has to compare.
         java.lang.reflect.Field[] fields = Framing.class.getFields();
         java.util.List<String> numeric = new java.util.ArrayList<String>();
         for (java.lang.reflect.Field f : fields) {
-            if (f.getType() == float.class) numeric.add(f.getName());
+            if (f.getType() == float.class
+                    && !java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+                numeric.add(f.getName());
+            }
         }
         assertEquals("sameAs must compare every float field, and there are this many",
-                11, numeric.size());
+                12, numeric.size());
 
         // One call per field: the same vector with exactly one component moved.
         float[][] varied = {
-                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // depth
-                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // zoom
-                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // motion
-                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f},   // orbitX
-                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f},   // orbitY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f},   // panX
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f},   // panY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f},   // brightness
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f},   // shadow
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f},   // azimuth
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f},   // elevation
+                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // depth
+                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // zoom
+                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // motion
+                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // orbitX
+                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // orbitY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f},   // panX
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f},   // panY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f},   // brightness
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f},   // shadow
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f},   // azimuth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f},   // elevation
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f},   // sourceKind
         };
         assertEquals("one varied vector per float field", numeric.size(), varied.length);
         for (float[] v : varied) {
             Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
-                    v[7], v[8], v[9], v[10]);
+                    v[7], v[8], v[9], v[10], v[11]);
             assertFalse("a moving value must make sameAs false", a.sameAs(moved));
         }
     }
@@ -145,24 +159,25 @@ public class FramingTest {
     public void aRoundingWhiskerIsNotADifferenceButARealStepIs() {
         // panY 0, from the log: the residue was against a target of exactly 0.
         Framing target = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
-                0f, 0f, 209f, 46f);
+                0f, 0f, 209f, 46f, Framing.SOURCE_STILL);
         // What a glide actually lands on.
         Framing landed = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0.00486f,
-                0f, 0f, 209.00562f, 46.000908f);
+                0f, 0f, 209.00562f, 46.000908f, Framing.SOURCE_STILL);
         assertTrue("a whisker from the glide must read as the same picture",
                 target.sameAs(landed));
 
         // The real transition from the same log: lock framing to home framing.
         assertFalse("azimuth 209 -> 239 and the rest is a real change",
                 target.sameAs(Framing.ofValues(29f, 2.0f, 33f, 0.1f, 0.2f, 14f, 26f,
-                        0f, 0f, 239f, 50.862324f)));
+                        0f, 0f, 239f, 50.862324f, Framing.SOURCE_STILL)));
 
         // EVERY residue measured on the device must read as the same picture. These are
         // the real numbers from three logs, not invented ones: the first attempt at this
         // tolerance was set below two of them, which is how a settle at 0.00024 still
         // painted instantly.
         float[] residues = {0.007f, 0.00486f, 0.00024f};
-        float[] base = {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f, 0f, 0f, 209f, 46f};
+        float[] base = {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f, 0f, 0f, 209f, 46f,
+                Framing.SOURCE_STILL};
         for (float residue : residues) {
             float[] withResidue = base.clone();
             withResidue[9] = 209f + residue;   // azimuth
@@ -171,14 +186,14 @@ public class FramingTest {
                     target.sameAs(Framing.ofValues(withResidue[0], withResidue[1],
                             withResidue[2], withResidue[3], withResidue[4], withResidue[5],
                             withResidue[6], withResidue[7], withResidue[8], withResidue[9],
-                            withResidue[10])));
+                            withResidue[10], withResidue[11])));
         }
 
         // And the OTHER side of the margin: the smallest real step in those logs must NOT
         // read as the same, or a genuine change would stop painting.
         assertFalse("depth 0.9 -> 0.29 is a real change",
                 target.sameAs(Framing.ofValues(29f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
-                        0f, 0f, 209f, 46f)));
+                        0f, 0f, 209f, 46f, Framing.SOURCE_STILL)));
     }
 
     /**
@@ -203,7 +218,7 @@ public class FramingTest {
         Framing asNumbers = Framing.ofValues(fromRow.depth, fromRow.zoom, fromRow.motion,
                 fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
                 fromRow.brightnessGain, fromRow.shadowLift,
-                fromRow.lightAzimuth, fromRow.lightElevation);
+                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind);
         assertFalse("a snapshot never carries the flag", asNumbers.bundled);
         assertTrue("so the demo must still compare equal to its own numbers",
                 fromRow.sameAs(asNumbers));
@@ -211,7 +226,100 @@ public class FramingTest {
         assertFalse(fromRow.sameAs(Framing.ofValues(fromRow.depth - 1f, fromRow.zoom,
                 fromRow.motion, fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
                 fromRow.brightnessGain, fromRow.shadowLift,
-                fromRow.lightAzimuth, fromRow.lightElevation)));
+                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind)));
+    }
+
+    /**
+     * <b>A clip and a still are different pictures at identical numbers</b>, so
+     * {@code sameAs} must say so.
+     *
+     * <p>This is the one new field, and it is the exact opposite of
+     * {@link #bundled}. {@code bundled} says which ROW produced a framing and is
+     * therefore uncompared; the medium says what the PIXELS are, so a still and a
+     * clip at the same depth, zoom and light are two pictures and a resolve that
+     * conflated them would declare a frame it was about to show as already on
+     * screen — which drops it, silently, on the user's home screen.
+     *
+     * <p>Stated over identical numbers on purpose. It is easy to write a test that
+     * passes because the zoom also changed; this one cannot.
+     */
+    @Test
+    public void aClipAndAStillOfIdenticalNumbersAreDifferentPictures() {
+        LibraryItem still = photo("a", 90, 100, 0f, 0f, 0f, 0f);
+        LibraryItem clip = still.withVideo(VideoTracks.of("item-a.mp4", "item-a-depth.mp4"));
+
+        Framing fromStill = home(still);
+        Framing fromClip = home(clip);
+
+        // Every other number is identical, which is the whole point.
+        assertEquals(fromStill.depth, fromClip.depth, 0f);
+        assertEquals(fromStill.zoom, fromClip.zoom, 0f);
+        assertEquals(fromStill.lightAzimuth, fromClip.lightAzimuth, 0f);
+        assertEquals(fromStill.bundled, fromClip.bundled);
+
+        assertFalse("THE failure: a clip must never read as the still already showing",
+                fromStill.sameAs(fromClip));
+        assertFalse(fromClip.sameAs(fromStill));
+
+        assertFalse("and it is a number, not a flag: the renderer reads one",
+                fromStill.isVideo());
+        assertTrue(fromClip.isVideo());
+        assertEquals(Framing.SOURCE_STILL, fromStill.sourceKind, 0f);
+        assertEquals(Framing.SOURCE_VIDEO, fromClip.sourceKind, 0f);
+    }
+
+    /**
+     * Nothing selected, and the bundled demo, are both stills — the medium follows
+     * the row and never a fallback.
+     *
+     * <p>There is no clip behind the packaged demo pair, so there is nothing for the
+     * medium to be anything but {@link Framing#SOURCE_STILL}. Asserted because the
+     * null branch of the constructor is the one that returns early, and a field
+     * assigned after that return would be a compile error rather than a silent wrong
+     * answer — but a field assigned to {@code SOURCE_VIDEO} there would not be.
+     */
+    @Test
+    public void noSelectionAndTheDemoAreBothStills() {
+        assertEquals(Framing.SOURCE_STILL, Framing.of(null, Surface.HOME).sourceKind, 0f);
+        assertEquals(Framing.SOURCE_STILL, home(demo()).sourceKind, 0f);
+        assertFalse(Framing.of(null, Surface.HOME).isVideo());
+    }
+
+    /**
+     * A snapshot has to be able to say it is a clip, or the no-op-paint guard misses
+     * every frame of one.
+     *
+     * <p>The counterpart of the {@link #bundled} lesson. {@code bundled} is hard-coded
+     * false by {@code ofValues} and therefore cannot be compared; the medium is a
+     * float precisely so a snapshot CAN carry it. This asserts the twelve-argument
+     * form round-trips, and pins the loss in the eleven-argument one rather than
+     * leaving it to be discovered on a device — where the symptom is an instant
+     * repaint the user's rule calls a snap.
+     */
+    @Test
+    @SuppressWarnings("deprecation")
+    public void aSnapshotCanCarryTheMediumAndTheLossyFormCannot() {
+        Framing clip = home(photo("a", 90, 100, 0f, 0f, 0f, 0f)
+                .withVideo(VideoTracks.of("item-a.mp4", "item-a-depth.mp4")));
+        Framing snapshot = Framing.ofValues(clip.depth, clip.zoom, clip.motion,
+                clip.orbitX, clip.orbitY, clip.panX, clip.panY,
+                clip.brightnessGain, clip.shadowLift,
+                clip.lightAzimuth, clip.lightElevation, clip.sourceKind);
+        assertTrue("what is showing must compare equal to itself",
+                clip.sameAs(snapshot));
+        assertTrue("including the medium", snapshot.isVideo());
+
+        // The old eleven-argument form cannot say. It always says still, so it
+        // compares UNEQUAL to a clip -- which fails towards an extra repaint rather
+        // than a dropped frame, and is why ReliefRenderer.snapshot() has to move to
+        // the twelve-argument form before any clip can be imported.
+        Framing lossy = Framing.ofValues(clip.depth, clip.zoom, clip.motion,
+                clip.orbitX, clip.orbitY, clip.panX, clip.panY,
+                clip.brightnessGain, clip.shadowLift,
+                clip.lightAzimuth, clip.lightElevation);
+        assertFalse(lossy.isVideo());
+        assertFalse("known loss, pinned so it cannot be forgotten",
+                clip.sameAs(lossy));
     }
 
     @Test
@@ -576,7 +684,7 @@ public class FramingTest {
         Framing f =
                 Framing.ofValues(
                         0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f,
-                        330f, 12f);
+                        330f, 12f, Framing.SOURCE_VIDEO);
         assertEquals(0.9f, f.depth, 0f);
         assertEquals(1.2f, f.zoom, 0f);
         assertEquals(0.3f, f.motion, 0f);
@@ -588,6 +696,8 @@ public class FramingTest {
         assertEquals(0.5f, f.shadowLift, 0f);
         assertEquals(330f, f.lightAzimuth, 0f);
         assertEquals(12f, f.lightElevation, 0f);
+        assertEquals("and the medium, which is the field a snapshot cannot lose",
+                Framing.SOURCE_VIDEO, f.sourceKind, 0f);
         assertFalse("a snapshot is numbers, not the bundled file case",
                 f.bundled);
     }

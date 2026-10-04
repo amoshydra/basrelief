@@ -12,6 +12,13 @@ import java.util.function.Supplier;
  * needed to render that photo the way its owner left it, and just enough
  * metadata to list it and find it again.
  *
+ * <p><b>A clip is this same row with {@link #video} set</b>, and that is deliberate
+ * rather than a shortcut: a {@code LibraryItem} is a photograph, a clip is a
+ * photograph plus three streams, and every render-value rule here is written about
+ * photographs. Adding three loose name fields would also have made the medium
+ * reachable only through a second container, and the index has to be the <b>one</b>
+ * place that says what the selected row is. See {@link #video}.
+ *
  * <p><b>Identity is {@link #id}, never the filename.</b> The id is an opaque token
  * minted once when the item is added and never reused. Everything that points at
  * an item — the library's {@code activeId} and {@link Config#activeItemId} — points
@@ -72,6 +79,35 @@ public final class LibraryItem {
      * path.
      */
     public final String normalName;
+
+    /**
+     * The clip's three tracks, or null when this row is an ordinary photograph.
+     *
+     * <p><b>One nullable reference to a separate value, not three more fields.</b>
+     * {@link VideoTracks} holds the colour, depth and normal clips and holds the
+     * invariant that makes them a unit — colour without depth renders flat with no
+     * relief and no error — which three loose {@code String}s could not, because any
+     * of the three could be null and every writer would have to remember.
+     *
+     * <p><b>The poster frame stays {@link #imageName}.</b> §3 step 8 of
+     * {@code docs/VIDEO-PLAN.md} makes the poster "the still shown in the gallery,
+     * and the fallback if the video cannot decode", so keeping it on the photograph
+     * is what lets a clip degrade to a photograph on the spot
+     * ({@link VideoSource.Kind#POSTER}) rather than becoming a row with no image,
+     * which {@link #fromJson} would drop and which would take the user's photo with
+     * it.
+     *
+     * <p><b>A row is still an ordinary photograph for every other rule in this
+     * class.</b> Its six render values are per-surface settings and know nothing
+     * about the medium; {@link #hasDepth()} still asks about the <i>still</i> files,
+     * because the question "where does this row's depth come from" has exactly one
+     * answer and {@link DepthSource} is where it lives. A row that names clips
+     * therefore needs no special case anywhere in the index, in {@link Library}, or
+     * in {@link com.amoshydra.basrelief.core.render.Framing} — which is what keeps
+     * <b>the index the single owner of the selection</b>, since nothing has to be
+     * resolved through a second container to tell the two apart.
+     */
+    public final VideoTracks video;
 
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
@@ -198,13 +234,31 @@ public final class LibraryItem {
     private LibraryItem(String id, String imageName, String depthName,
                         String normalName, String label, long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                SurfaceSettings.defaults(), null, false, normalName);
+                SurfaceSettings.defaults(), null, false, normalName, null);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName) {
+        this(id, imageName, depthName, label, addedAt, lastUsedAt,
+                home, lockSettings, archived, normalName, null);
+    }
+
+    /**
+     * The one constructor every write path funnels into.
+     *
+     * <p>It takes all eleven stored fields, so a caller that has to change one of
+     * them has to name the other ten — and that is the {@link #copy} discipline
+     * made mechanical. The {@link VideoTracks} reference rides here for the same
+     * reason it is not a loose field: every mutator below names it, so a writer
+     * written before clips existed cannot silently drop a user's video the way
+     * {@code withDepth} silently reset Motion, brightness and shadow.
+     */
+    private LibraryItem(String id, String imageName, String depthName, String label,
+                        long addedAt, long lastUsedAt,
+                        SurfaceSettings home, SurfaceSettings lockSettings,
+                        boolean archived, String normalName, VideoTracks video) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -229,6 +283,11 @@ public final class LibraryItem {
         // (see hasSuppliedNormals) and dropping it here would lose a value a repair
         // could still pair with a depth later.
         this.normalName = normaliseName(normalName);
+        // Carried as given, never rebuilt: VideoTracks has already reduced all
+        // three of its names to basenames and has already refused a half-written
+        // clip, so re-normalising here would be a second place that could disagree
+        // about what a clip is.
+        this.video = video;
         this.label = (label == null || label.isEmpty()) ? null : label;
         // A negative stamp from a corrupt blob would sort ahead of everything
         // and could never be reached again. Unknown is 0, which sorts last in
@@ -439,6 +498,30 @@ public final class LibraryItem {
         return requireValidId(id, "item-" + id + "-normal.png");
     }
 
+    /**
+     * The colour clip's filename. See {@link #imageFileName} for why it derives
+     * from the id, and {@code docs/VIDEO-PLAN.md} §2 for the format.
+     *
+     * <p><b>.mp4 beside .png, not instead of it.</b> §3 step 8: the poster frame is
+     * a still of its own, and it is what the gallery shows and what renders if the
+     * clip cannot decode. So the two media types live side by side under one id
+     * rather than competing for one name, which also means no extension collision
+     * can make a clip overwrite a poster.
+     */
+    public static String videoFileName(String id) {
+        return requireValidId(id, "item-" + id + ".mp4");
+    }
+
+    /** The depth clip's filename. See {@link #videoFileName}. */
+    public static String videoDepthFileName(String id) {
+        return requireValidId(id, "item-" + id + "-depth.mp4");
+    }
+
+    /** The normal clip's filename. See {@link #videoFileName}. */
+    public static String videoNormalFileName(String id) {
+        return requireValidId(id, "item-" + id + "-normal.mp4");
+    }
+
     private static String requireValidId(String id, String candidate) {
         // The id is checked rather than trusted, because the candidate is then
         // only sanitised, not rejected: a traversal id would collapse to a name
@@ -470,6 +553,25 @@ public final class LibraryItem {
      */
     public boolean hasSuppliedNormals() {
         return normalName != null && depthName != null;
+    }
+
+    /**
+     * Whether this row names a clip. One question, one answer, on the row itself.
+     *
+     * <p><b>Deliberately on the item and not in a second container.</b> The index
+     * owns the selection and only the index, so the gallery, the studio and the
+     * wallpaper have to be able to ask this <i>of the row they already hold</i>.
+     * A separate list of clips would mean the selection could name a photograph
+     * while a second structure said it was a video — and the disagreement is
+     * invisible until the wallpaper shows the wrong medium on the user's home
+     * screen.
+     *
+     * <p>What this does <b>not</b> say: whether the clips are here. That is a file
+     * read, and {@link VideoSource} owns the answer because it owns the window
+     * around it.
+     */
+    public boolean isVideo() {
+        return video != null;
     }
 
     /**
@@ -514,7 +616,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived, normalName);
+                archived, normalName, video);
     }
 
     /**
@@ -619,7 +721,7 @@ public final class LibraryItem {
      * {@link #withDepth}.
      */
     public LibraryItem withDepthAndNormal(String depth, String normal) {
-        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt);
+        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video);
     }
 
     /**
@@ -648,18 +750,71 @@ public final class LibraryItem {
      * separate two-argument form exists because most callers have no normal, and
      * naming only what you have is the point: this is the three-file paired write,
      * and the two-argument form is that write with an absent normal.
+     *
+     * <p><b>The clip rides along untouched.</b> That is the decision, not an
+     * omission: the poster frame and the clip are one asset, and a writer that
+     * swapped the poster while leaving the clips would leave the row describing two
+     * different pictures — the fallback would then show a still that is not any
+     * frame of the clip beside it. Replacing both is
+     * {@link #withFilesAndVideo}, so "one write names everything the row points at"
+     * holds for a clip as well as for a still.
      */
     public LibraryItem withFiles(String image, String depth, String normal) {
-        return copy(id, image, depth, normal, label, addedAt, lastUsedAt);
+        return withFilesAndVideo(image, depth, normal, video);
+    }
+
+    /**
+     * This row's still files <b>and</b> its clips replaced in one write.
+     *
+     * <p>The paired write an import of a video needs, and the reason it is not two
+     * calls. A half-applied pair is the failure this project keeps paying for, and
+     * a clip makes the pair bigger rather than smaller: an import that wrote the
+     * poster first and died before the clips left a row the user would see as a
+     * photograph, with no error anywhere.
+     */
+    public LibraryItem withFilesAndVideo(String image, String depth, String normal,
+                                         VideoTracks clips) {
+        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips);
+    }
+
+    /**
+     * Attach clips to this row, or replace the ones it has. <b>The only writer of
+     * {@link #video}</b>, for the reason {@link #withDepthAndNormal} is the only
+     * writer of {@link #normalName}: one writer that names a whole pair is what
+     * makes a pair impossible to half-apply from two derivations that disagree.
+     *
+     * <p><b>Null is refused rather than accepted.</b> Removing a clip is a
+     * <i>delete</i>, and a delete has to remove three files; {@code :core} cannot
+     * touch the filesystem, so a model that could drop the reference while the files
+     * stayed would orphan them with nothing left that will ever read them. The
+     * gesture belongs to the app shell, which owns the delete and can drop the row
+     * or the files with it.
+     *
+     * @throws IllegalArgumentException if {@code clips} is null
+     */
+    public LibraryItem withVideo(VideoTracks clips) {
+        if (clips == null) {
+            throw new IllegalArgumentException("removing a clip is a delete, not an edit");
+        }
+        // The reserved id is the one row a clip is refused on, and for the same kind
+        // of reason it is the one row allowed a null image name: its files come from
+        // res/raw, which ships three PNGs and nothing else, so a clip on that row
+        // names files that cannot exist. There is no import path that could put one
+        // there, so the refusal is not costing anything -- it is the difference
+        // between a model that can describe the demo as a clip and one that cannot.
+        if (isBundled()) {
+            throw new IllegalArgumentException("the bundled demo is a still trio");
+        }
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips);
     }
 
     public LibraryItem withLabel(String newLabel) {
-        return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt);
+        return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt, video);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return copy(id, imageName, depthName, normalName, label, addedAt, when);
+        return copy(id, imageName, depthName, normalName, label, addedAt, when, video);
     }
 
     /**
@@ -674,7 +829,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on, normalName);
+                home, lock, on, normalName, video);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -692,9 +847,10 @@ public final class LibraryItem {
      * them.
      */
     private LibraryItem copy(String id, String imageName, String depthName, String normalName,
-                             String label, long addedAt, long lastUsedAt) {
+                             String label, long addedAt, long lastUsedAt,
+                             VideoTracks video) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived, normalName);
+                home, lock, archived, normalName, video);
     }
 
     // ---------------------------------------------------------- serialise
@@ -722,6 +878,11 @@ public final class LibraryItem {
             // no version bump. An old build reading a new blob ignores the unknown
             // key; a new build reading an old blob reads null and renders flat.
             if (normalName != null) o.put("normal", normalName);
+            // One key, one write, and absent for every photograph in the gallery --
+            // so a library of stills is byte-identical to one this build never
+            // touched, which is why clips needed no version bump either. The same
+            // argument the normal and the archived flag already make.
+            if (video != null) o.put("video", new JSONObject(video.toJson()));
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -834,7 +995,21 @@ public final class LibraryItem {
                     // Read through str(), so JSON null and the literal "null" both
                     // become null and heal on the next write. Absent is null, which
                     // is the correct degradation: flat lit, never a derived normal.
-                    str(o, "normal"));
+                    str(o, "normal"),
+                    // A clip is parsed, never guessed. An absent key is a photograph,
+                    // and so is a half-written clip object -- VideoTracks refuses one
+                    // -- so a truncated or hand-edited blob degrades to the poster
+                    // frame rather than to a row that claims a depth track which is
+                    // not there.
+                    //
+                    // Ignored on the reserved id, matching withVideo's refusal: the
+                    // demo's files come from res/raw and are three PNGs, so a clip on
+                    // that row is a claim about files that cannot exist. The id is
+                    // therefore the authority for the medium as well as for the
+                    // missing image name, which is one id-gated fact rather than two.
+                    Library.BUNDLED_ID.equals(id)
+                            ? null
+                            : VideoTracks.fromJson(o.optJSONObject("video")));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -844,6 +1019,7 @@ public final class LibraryItem {
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + (normalName != null ? " +normal" : "")
+                + (video != null ? " " + video : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt
                 + (archived ? " ARCHIVED" : "")
                 + " home=" + home + (lock == null ? "" : " lock=" + lock) + "}";

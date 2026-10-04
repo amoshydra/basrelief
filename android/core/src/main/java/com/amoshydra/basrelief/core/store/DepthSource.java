@@ -35,15 +35,25 @@ package com.amoshydra.basrelief.core.store;
  * <p>Pure, two or three plain inputs, no Android. That is the whole point of it
  * being here: it is a decision about booleans, and a decision about booleans is
  * exactly what this project can unit test and what it kept getting wrong.
+ *
+ * <p><b>A clip's depth is a track, and that is a fourth answer rather than a
+ * special case inside the three.</b> {@link VideoSource} answers whether a row will
+ * be drawn as a clip at all, and this class is resolved from that answer rather than
+ * branching on it, so there is one truth table and the clip path cannot develop
+ * answers of its own. See {@link Kind#TRACK}.
  */
 public final class DepthSource {
 
     /**
-     * The three states of a photograph, plus the window before it is known.
+     * The four states a row's depth can be in, plus the window before it is known.
      *
      * <p>{@link #UNKNOWN} is listed first so that reading it as an ordinal gives
      * the <i>least</i> claim, which is the safe direction for a value whose absence
      * should never become a statement.
+     *
+     * <p>{@link #TRACK} is the fourth, and it exists because a clip's depth is not
+     * in any file this class could name before. See {@link VideoSource} for what
+     * decides it.
      */
     public enum Kind {
         /** Not known yet: the image has not been read. Claims nothing. */
@@ -63,7 +73,27 @@ public final class DepthSource {
          * is the user's decision, not an omission: a row of controls that could not
          * act is the failure this project keeps shipping by accident.
          */
-        EMBEDDED
+        EMBEDDED,
+
+        /**
+         * The depth is a <b>track inside a clip</b>, decoded per frame.
+         *
+         * <p>A fourth answer rather than {@link #EMBEDDED}, and the difference is
+         * which file the map is in: an embedded map is a chunk of the image being
+         * drawn, while a track is a second video that has to stay frame-locked to
+         * the first (§4 of {@code docs/VIDEO-PLAN.md}). Reporting one as the other
+         * would be the same kind of lie this class exists to remove, and it would be
+         * a lie about the two things a caller most needs to get right — where the
+         * bytes come from, and what it may offer to do about them.
+         *
+         * <p>It has depth, and it offers <b>neither</b> action, for the same reason
+         * {@link #EMBEDDED} does: regenerating is §3's offline pass over a whole
+         * clip, not a write of one map file, and "replace" would have to replace the
+         * colour and the normals with it or the row would describe two different
+         * clips. A control that could only half-apply is the {@code withDepth} trap
+         * wearing a UI.
+         */
+        TRACK
     }
 
     /** One resolved answer: the kind, and the four things a caller needs from it. */
@@ -92,7 +122,7 @@ public final class DepthSource {
          * nothing" is what put "No depth" on a photo that had a map.
          */
         public boolean hasDepth() {
-            return kind == Kind.FILE || kind == Kind.EMBEDDED;
+            return kind == Kind.FILE || kind == Kind.EMBEDDED || kind == Kind.TRACK;
         }
 
         /**
@@ -110,9 +140,10 @@ public final class DepthSource {
          * Whether to offer <b>Regenerate</b>.
          *
          * <p>False for {@link Kind#EMBEDDED} — the user's decision, generating is
-         * out of scope for that case — and false while unknown, because offering a
-         * control before knowing the state is how a control ends up able to do
-         * nothing.
+         * out of scope for that case — false for {@link Kind#TRACK}, where
+         * generating means §3's offline pass over every frame and is not a write of
+         * one file — and false while unknown, because offering a control before
+         * knowing the state is how a control ends up able to do nothing.
          */
         public boolean canRegenerate() {
             return kind == Kind.NONE || kind == Kind.FILE;
@@ -120,7 +151,9 @@ public final class DepthSource {
 
         /**
          * Whether to offer <b>Replace</b>. There is nothing to replace for an
-         * embedded map, because there is no separate depth file.
+         * embedded map, because there is no separate depth file, and nothing safe to
+         * replace for a track, because the depth clip is locked to a colour clip
+         * frame for frame (§3 step 7: same frame count, same rate, same GOP).
          */
         public boolean canReplace() {
             return kind == Kind.NONE || kind == Kind.FILE;
@@ -138,12 +171,13 @@ public final class DepthSource {
     private static final Answer NONE = new Answer(Kind.NONE);
     private static final Answer FILE = new Answer(Kind.FILE);
     private static final Answer EMBEDDED = new Answer(Kind.EMBEDDED);
+    private static final Answer TRACK = new Answer(Kind.TRACK);
 
     private DepthSource() {
     }
 
     /**
-     * Resolve the two facts into one answer.
+     * Resolve the two facts into one answer, for a photograph.
      *
      * <p><b>A file wins.</b> {@code hasDepthFile} alone decides {@link Kind#FILE},
      * whatever {@code embedded} says, because that is the order the renderer reads
@@ -159,31 +193,79 @@ public final class DepthSource {
     }
 
     /**
-     * The answer for one library item.
+     * The whole truth table: a row's medium, and the two facts of its stills.
+     *
+     * <p><b>The medium is asked first, and it can answer
+     * {@link Kind#UNKNOWN} on its own.</b> A row that names clips has not yet been
+     * decoded, so it is going to render as one of two genuinely different pictures
+     * — a playing clip, or its poster frame — and neither may be claimed before the
+     * decoder has said which. That is the same window {@link Kind#UNKNOWN} already
+     * exists for on a PNG's chunk, with the same rule attached: say nothing.
+     *
+     * <p><b>A clip that fell back answers as the photograph it now is.</b> Not as
+     * {@link Kind#TRACK}, because nothing is reading a track, and not as
+     * {@link Kind#NONE}, because the poster may have a map of its own — so the still
+     * rules apply unchanged, and a user whose clips were lost by a restore gets the
+     * ordinary photograph answers rather than a claim about a track.
+     *
+     * @param video        the row's medium, or null for "the caller has not
+     *                     resolved it", which is {@link Kind#UNKNOWN} rather than a
+     *                     guess
+     * @param hasDepthFile whether the row names a separate still depth file.
+     *                     Ignored for a playing clip, whose depth is a track
+     * @param embedded     whether the poster's PNG carries a depth chunk, or null
+     *                     while it has not been read. Only asked for a row that will
+     *                     render as a photograph
+     */
+    public static Answer resolve(VideoSource.Answer video, Boolean hasDepthFile,
+                                 Boolean embedded) {
+        if (video == null) return UNKNOWN;        // not resolved: claim nothing
+        if (video.isUnread()) return UNKNOWN;    // the clip has not been read
+        if (video.playsClip()) return TRACK;
+        if (Boolean.TRUE.equals(hasDepthFile)) return FILE;
+        if (embedded == null) return UNKNOWN;
+        return resolve(false, embedded.booleanValue());
+    }
+
+    /**
+     * The answer for one library item, with the row's medium already resolved.
      *
      * <p>The form the app uses, because it puts "a null {@code depthName} means the
      * file is the question, not the answer" in one place instead of in every
-     * caller.
+     * caller, and it asks the medium first because for a clip the map is not in a
+     * file at all.
      *
      * <p><b>A null item is {@link Kind#FILE}.</b> Nothing selected means the
      * renderer is drawing the packaged demo pair, which does have a map, so the
      * honest answer is "has depth" and the line stays silent — which is what it has
      * always done there.
      *
-     * <p><b>An item with a depth file is answered without reading anything.</b>
-     * That is the property that keeps the unknown window as small as it can be: only
-     * a photo with <i>no</i> separate file can ever be {@link Kind#UNKNOWN}, so the
-     * window is never open for a photograph whose answer the index already knows.
-     *
      * @param item     the selected item, or null for none
      * @param embedded TRUE or FALSE once the image has been read, or <b>null</b>
-     *                 while it has not been — which is the only way to get
-     *                 {@link Kind#UNKNOWN} back
+     *                 while it has not been
+     * @param video    {@link VideoSource#forItem} for the same item, or null if it
+     *                 has not been resolved — which claims nothing rather than
+     *                 guessing, for the reason {@link Kind#UNKNOWN} exists
+     */
+    public static Answer forItem(LibraryItem item, Boolean embedded,
+                                 VideoSource.Answer video) {
+        if (item == null) return FILE;                 // the packaged pair
+        return resolve(video, Boolean.valueOf(item.depthName != null), embedded);
+    }
+
+    /**
+     * The still-only form: the row's medium is taken from the index and the clips
+     * are treated as unread.
+     *
+     * <p>Kept because it is what every photograph wants, and because a caller that
+     * holds no clip state should not have to invent one. It is <b>honest about a
+     * video row rather than convenient</b>: a row naming clips returns
+     * {@link Kind#UNKNOWN}, because this form cannot know whether the clip will
+     * play, and answering {@link Kind#FILE} or {@link Kind#TRACK} would describe a
+     * render it has not established. That is the same rule the whole class is built
+     * on — a window claims nothing — applied to a second window.
      */
     public static Answer forItem(LibraryItem item, Boolean embedded) {
-        if (item == null) return FILE;                 // the packaged pair
-        if (item.depthName != null) return FILE;       // known from the index alone
-        if (embedded == null) return UNKNOWN;
-        return resolve(false, embedded.booleanValue());
+        return forItem(item, embedded, VideoSource.forItem(item, null));
     }
 }
