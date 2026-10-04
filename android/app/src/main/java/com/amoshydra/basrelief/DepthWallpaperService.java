@@ -744,22 +744,15 @@ public class DepthWallpaperService extends WallpaperService {
                     // the glide eases from where the eye is.
                     if (transition) {
                         renderer.glide(null, framing, spanMs);
-                    } else if (renderer.isGlidingToward(framing)) {
-                        // DO NOT CANCEL A GLIDE THAT IS ALREADY HEADING HERE.
-                        //
-                        // A transition resolves more than once -- becoming visible, an
-                        // insets dispatch, a pref write -- and every resolve after the
-                        // first arrives with no transition armed (it is consumed once),
-                        // so it took the apply branch and painted the destination over a
-                        // glide that was still running. Measured: the glide armed at
-                        // 13:35:38.568 with from=lock to=home, and a plain apply of the
-                        // SAME destination landed at 13:35:39.778 -- 1.2s later, mid
-                        // flight. That is the frame the user sees as "it show 1x, then
-                        // immediately snap to 2x, then glide from 2x to 1x".
-                        //
-                        // The rule, in the user's words: nothing may be painted instantly; a frame can only be reached by gliding towards it A resolve that wants what the glide is already
-                        // heading to has nothing to say, so it says nothing.
                     } else {
+                        // No local guard here any more: apply() refuses a RESOLVE whose
+                        // framing is on screen OR already gliding towards, so this is a
+                        // no-op in exactly the cases that used to need the check spelled
+                        // out. It was duplicated here -- the wallpaper tested
+                        // isGlidingToward and every OTHER caller, the studio's applyFiles
+                        // among them, did not, which is how one call site stayed correct
+                        // and the others snapped. The rule lives in the renderer now; see
+                        // apply(Framing, Apply).
                         renderer.apply(framing);
                     }
                     // Only reload when what is ON SCREEN differs from what should

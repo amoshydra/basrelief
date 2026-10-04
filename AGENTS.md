@@ -445,7 +445,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 380 tests across twenty-one classes:
+it**. 381 tests across twenty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -459,6 +459,17 @@ has run.**
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
   the v convention and dropping a face normal each fail it.
+- `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
+  findings that made the instant-paint guard absent where it was needed most.
+  **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes
+  it `false`**, so a resolve of the marble bust could never no-op: the guard was
+  structurally missing on the one row every install starts with. `bundled` says WHICH ROW a
+  framing came from, not what the picture is. And the guard itself asked only
+  `snapshot().sameAs(f)`, which is **false mid-glide** — the volatile values match neither
+  endpoint — so it protected a frame that had ARRIVED and not one in flight, which is the
+  case it exists for. It now asks `isGlidingToward`, so a resolve is a no-op when the frame
+  is on screen **or on its way there**. The wallpaper had compensated by calling that
+  itself; every other caller, `MainActivity.applyFiles` among them, snapped.
 - `Mat4ScaleTest` — the `scaleM` semantics, captured from the real Android API.
 - `FramingTest`'s `sameAs` — whether two framings render the same picture, which is how
   the wallpaper decides whether a repeat resolve of one transition has anything to say. The

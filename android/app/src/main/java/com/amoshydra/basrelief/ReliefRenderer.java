@@ -1459,9 +1459,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the paint by accident. The default is the SAFE one: {@link Apply#RESOLVE}.
      */
     void apply(Framing f, Apply why) {
-        if (why == Apply.RESOLVE && snapshot().sameAs(f)) {
-            // Same picture, already showing: nothing to paint, and an in-flight glide
-            // toward it is exactly what a resolve must not cancel.
+        if (why == Apply.RESOLVE && isGlidingToward(f)) {
+            // Same picture, either already showing OR already on its way here.
+            //
+            // The first version of this guard asked only `snapshot().sameAs(f)`, and that
+            // is FALSE mid-glide -- the volatile values are between the endpoints, so they
+            // match neither the origin nor the destination. So the guard protected a
+            // frame that had ARRIVED and not one in flight, which is the case it exists
+            // for: a resolve landing during a glide cancelled it and painted the
+            // destination instantly. The wallpaper compensated by calling
+            // isGlidingToward itself; every other caller -- the studio's applyFiles among
+            // them -- did not, and snapped.
+            //
+            // Checking BOTH is the whole rule: a resolve has nothing to say if the
+            // picture it asks for is on screen or on its way there.
             return;
         }
         depth = f.depth;

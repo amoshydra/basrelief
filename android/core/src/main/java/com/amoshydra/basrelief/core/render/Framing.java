@@ -90,8 +90,20 @@ public final class Framing {
                 && near(brightnessGain, other.brightnessGain)
                 && near(shadowLift, other.shadowLift)
                 && near(lightAzimuth, other.lightAzimuth)
-                && near(lightElevation, other.lightElevation)
-                && bundled == other.bundled;
+                && near(lightElevation, other.lightElevation);
+        // `bundled` is deliberately NOT compared, and the reason is structural rather
+        // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
+        // it to false, so a sameAs that required it could NEVER no-op for the bundled
+        // demo. The demo is the row every install starts with, so the guard this method
+        // exists for was absent on the first photo anyone sees, and every resolve of the
+        // marble bust painted instantly, mid-glide included.
+        //
+        // It is also the wrong question. `bundled` says WHICH ROW a framing came from; two
+        // framings of the same numbers are the same picture whatever row produced them.
+        // The field keeps its meaning as a label on Framing.of -- the renderer, the
+        // diagnostic and the studio's reload all read it there -- and nothing anywhere
+        // reads it to decide WHETHER TO DRAW, which is the only thing this comparison is
+        // for.
     }
 
     /**

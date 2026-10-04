@@ -181,6 +181,39 @@ public class FramingTest {
                         0f, 0f, 209f, 46f)));
     }
 
+    /**
+     * <b>The bundled demo is the one row the guard must not miss.</b>
+     *
+     * <p>{@code sameAs} compared {@code bundled} while {@code ofValues} -- which builds
+     * every snapshot -- hard-codes it {@code false}. So a resolve of the marble bust could
+     * NEVER no-op: the guard that stops an instant paint of a frame already showing was
+     * structurally absent on the row every install starts with, and every resolve of it
+     * painted instantly, mid-glide included.
+     *
+     * <p>{@code bundled} says WHICH ROW a framing came from, not what the picture is. Two
+     * framings of the same numbers are the same picture whatever produced them.
+     */
+    @Test
+    public void theBundledDemoIsNotADifferentPictureFromItsOwnNumbers() {
+        LibraryItem demo = LibraryItem.bundled("item-bundled.png", "item-bundled-depth.png");
+        Framing fromRow = Framing.of(demo, Surface.HOME);
+        assertTrue("the row is the demo", fromRow.bundled);
+        // A snapshot is built from numbers and can never carry the flag -- which is the
+        // whole trap. Same values, so it must read as the same picture.
+        Framing asNumbers = Framing.ofValues(fromRow.depth, fromRow.zoom, fromRow.motion,
+                fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
+                fromRow.brightnessGain, fromRow.shadowLift,
+                fromRow.lightAzimuth, fromRow.lightElevation);
+        assertFalse("a snapshot never carries the flag", asNumbers.bundled);
+        assertTrue("so the demo must still compare equal to its own numbers",
+                fromRow.sameAs(asNumbers));
+        // And a real difference in the demo's numbers is still a difference.
+        assertFalse(fromRow.sameAs(Framing.ofValues(fromRow.depth - 1f, fromRow.zoom,
+                fromRow.motion, fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
+                fromRow.brightnessGain, fromRow.shadowLift,
+                fromRow.lightAzimuth, fromRow.lightElevation)));
+    }
+
     @Test
     public void eachPhotoResolvesItsOwnFraming() {
         Framing first = home(photo("a", 90, 100, 0f, 0f, 0f, 0f));
