@@ -569,6 +569,22 @@ final class ModalSheet {
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 bottomInset = insetBottom(insets);
                 int ime = insetIme(insets);
+                // DIAGNOSTIC: the keyboard path is the one thing here that is not
+                // verifiable from a log, so it is instrumented until it is understood.
+                // What this answers, and cannot be answered by reading the code:
+                //   - does ADJUST_RESIZE actually shrink this window? (compare rootH
+                //     with the display height)
+                //   - does the platform report an IME inset to subtract, or has the
+                //     resize already consumed it so ime is 0?
+                //   - does the rename dialog differ from the depth dialog?
+                android.util.Log.i("Basrelief", "insets ime=" + ime
+                        + " bars=" + bottomInset
+                        + " rootH=" + root.getHeight()
+                        + " displayH=" + root.getResources().getDisplayMetrics().heightPixels
+                        + " softInput=" + (dialog == null ? "?"
+                                : String.valueOf(dialog.getWindow() == null ? "?"
+                                        : dialog.getWindow().getAttributes().softInputMode))
+                        + " sdk=" + android.os.Build.VERSION.SDK_INT);
                 if (ime != imeInset) {
                     imeInset = ime;
                     // The keyboard is DYNAMIC CONTENT and the height now follows it,
@@ -579,6 +595,19 @@ final class ModalSheet {
                     v.requestLayout();
                 }
                 card.setPadding(padLeft, padTop, padRight, padBottom + bottomInset);
+                // LIFT THE CARD OFF THE KEYBOARD. MEASURED: the window does not
+                // resize for the IME on this platform (root.getHeight() stays 3120
+                // with a 966px keyboard up), so Gravity.BOTTOM resolves against the
+                // SCREEN's foot and the card's foot is under the keyboard. Padding the
+                // root is what moves it: the card is bottom-aligned inside the padded
+                // box, so its foot lands exactly on the keyboard's top.
+                //
+                // The height alone would not have been enough -- a bottom-aligned card
+                // that is merely SHORTER still has its foot at the screen bottom. Both
+                // halves are needed, and they are the same number, so they cannot
+                // disagree: screenHeightPx subtracts it from the ceiling, this lifts
+                // the card by it.
+                scrimView.setPadding(0, 0, 0, ime);
                 // The scroll's height is derived from the card, and the padding just
                 // changed it, so re-cap. The inset is the gesture bar on one device
                 // and zero on another, which is why both heights take it.
@@ -930,6 +959,11 @@ final class ModalSheet {
      */
     private void applyHeight() {
         int screen = screenHeightPx();
+        android.util.Log.i("Basrelief", "applyHeight screen=" + screen
+                + " rootH=" + (root == null ? -1 : root.getHeight())
+                + " displayH=" + root.getResources().getDisplayMetrics().heightPixels
+                + " ime=" + imeInset + " bars=" + bottomInset
+                + " keyboardUp=" + isKeyboardUp());
         if (screen <= 0) return;
         // The inset is inside the card's padding, so it is not height the card may
         // use: subtract it from the ceiling and the card still fits the fraction. The
@@ -969,11 +1003,13 @@ final class ModalSheet {
      */
     private int screenHeightPx() {
         int measured = root.getHeight();
-        if (measured > 0) return measured;
-        // The fallback is the display's height, which INCLUDES the area the keyboard
-        // is about to occupy. Subtracting the inset is what keeps the first frame
-        // inside the space the sheet will actually have; without it a tall sheet is
-        // laid out against the full screen and then snaps when the resize lands.
+        // MEASURED on a Pixel 7 Pro, sdk 37: with the keyboard up the insets report
+        // ime=966 while root.getHeight() is STILL the full 3120. SOFT_INPUT_ADJUST_RESIZE
+        // is set (softInput=16) and is simply not honoured -- at targetSdk 36 on
+        // Android 15+ the window is edge-to-edge and does not resize for the IME. So
+        // the keyboard must be subtracted from the height here, on BOTH paths, and the
+        // card lifted by the same amount; see the padding in the insets listener.
+        if (measured > 0) return measured - imeInset;
         return root.getResources().getDisplayMetrics().heightPixels - imeInset;
     }
 
@@ -1298,6 +1334,36 @@ final class ModalSheet {
      * number, and they are not — on most devices the bar is present and the keyboard
      * is not, so summing them would double-count the bar.
      */
+    /**
+     * Whether a soft keyboard is on screen, from the window's own view of it.
+     *
+     * <p>DIAGNOSTIC, and the reason this exists rather than a plain
+     * {@code imeInset > 0} test: the insets listener fired ONCE when the rename
+     * dialog opened and did not fire again when the keyboard came up, so the inset
+     * route cannot be trusted to report the keyboard at all on this platform. This
+     * asks a different question of a different source — the window's insets
+     * *object*, whose visibility flags say whether anything is covering the screen —
+     * so that "was the keyboard up when this height was computed" is answerable even
+     * when the dispatch never arrives.
+     */
+    private boolean isKeyboardUp() {
+        try {
+            android.view.View decor = dialog == null || dialog.getWindow() == null
+                    ? null : dialog.getWindow().getDecorView();
+            if (decor == null) return false;
+            WindowInsets wi = decor.getRootWindowInsets();
+            if (wi == null) return false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return wi.isVisible(WindowInsets.Type.ime());
+            }
+            return decor.getHeight() > 0
+                    && wi.getSystemWindowInsetBottom() > decor.getHeight() / 4;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** The keyboard's inset, or 0. See {@link #insetIme}. */
     static int insetIme(WindowInsets insets) {
         if (insets == null) return 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
