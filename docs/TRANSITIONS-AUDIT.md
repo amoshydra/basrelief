@@ -120,19 +120,20 @@ would need to pin.
 
 ### C. `lockFramingShowing` documents a clear that does not exist, and publishes a target rather than a frame — **BUG (stale-hand-off risk)**
 
-- `DepthWallpaperService.java:33-46` — the field's doc: *"Cleared when a LOCK
+- `DepthWallpaperService.java:46` — the field's doc: *"Cleared when a LOCK
   engine stops being the foreground surface, so a stale value cannot be
   inherited by a home engine that starts for some other reason."*
-- `DepthWallpaperService.java:661-663` — its **only** write:
+- `DepthWallpaperService.java:733-735` — its **only** write:
   `if (resolved.surface() == LOCK) lockFramingShowing = framing;` — and it sits
-  *before* the `isForegroundSurface` gate at line 719, so it records the
-  resolved target even for a lock engine that then declines to draw.
-- There is no clear anywhere in the file (verified by grep: one write, zero
-  clears; `onVisibilityChanged`'s hide branch and `onDestroy` do not touch it).
-- `DepthWallpaperService.java:824-831` consumes it, and
-  `ReliefRenderer.java:1544-1550` (`reloadFromPrefs`) passes it as the **glide
-  origin**: `glide(inherit, mine, ...)`, and `glide` paints a non-null origin
-  first (`ReliefRenderer.java:1296`).
+  *before* the `isForegroundSurface` gate, so it records the resolved target
+  even for a lock engine that then declines to draw.
+- There is no clear anywhere in the file (**re-verified 2026-10-05** by grep:
+  four references, **one write, zero clears**; `onVisibilityChanged`'s hide
+  branch and `onDestroy` do not touch it).
+- `DepthWallpaperService.java:891-892` consumes it —
+  `renderer.inheritFirstFrameFrom(lockFramingShowing, 250f)` — which passes it
+  as the **glide origin**: `glide(inherit, mine, ...)`, and `glide` paints a
+  non-null origin first.
 
 Two distinct problems:
 
@@ -155,41 +156,59 @@ Two distinct problems:
 which is why the doc's claim survives casual use. A device pass needs a re-bind
 without process death, which is hard to stage by hand.
 
-### D. `keyguardWasUp()` is used as a changeable signal in one place and documented as a constant in another — **BUG / needs a device pass**
+### D. `keyguardWasUp()` answered a capability question and was read as state — **RESOLVED, `adf834c`, and one of the two claims was wrong**
 
-- `DepthWallpaperService.java:424-441` (`isDeviceLockedNow`'s doc): *"
-  `isKeyguardLocked()` read true on every sample of every cycle including after
-  two full unlocks. Eight attempts used it as a transition signal and it never
-  once changed, so every rule built on it was decided by a constant."*
-- `DepthWallpaperService.java:443-453` — `keyguardWasUp()` is exactly
-  `km.isKeyguardLocked()`.
-- `DepthWallpaperService.java:571-586` (`holdLockFrameForUnlock`) — line 575
-  reads `if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;`
-  and the doc at 563-565 says *"Verified: when a studio covers the wallpaper
-  the hide logs `interactive=true`, this returns."*
+**Status: fixed and measured. Both the finding's premise and one of its two
+contradictory claims turned out to be wrong, so this is recorded as a
+correction rather than a fix.**
 
-These cannot both be true. If `isKeyguardLocked()` reads true on every sample,
-then `!keyguardWasUp()` is always false, the early return is dead, and the HOME
-engine pre-holds the LOCK framing on **every** hide — including an app covering
-the wallpaper. The doc at 556-565 says an app cover must *not* pre-hold, and
-gives a measurement; the measurement requires the early return to fire.
+- `DepthWallpaperService.java` — `isDeviceLockedNow()`'s doc still says:
+  *"`isKeyguardLocked()` read true on every sample of every cycle including
+  after two full unlocks. Eight attempts used it as a transition signal and it
+  never once changed, so every rule built on it was decided by a constant."*
+- `keyguardWasUp()` was exactly `km.isKeyguardLocked()`.
+- `holdLockFrameForUnlock` read
+  `if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;`
+  and its doc claimed *"Verified: when a studio covers the wallpaper the hide
+  logs `interactive=true`, this returns."*
 
-Why this is the named `isKeyguardLocked` bug class: a value that changes over
-time is being read from a source that (per the class's own note) does not
-change, and used to gate a transition. If it is constant, then on return from
-an app the sequence is: hidden → `apply(lock)` (off-screen), `glView.onPause()`;
-visible → `lastVisibleSurface` is HOME, so `isSurfaceTransition` returns false
-and the queued `apply(homeFraming)` finds `snapshot()` == LOCK → **instant paint
-on the reveal** (whenever the two surfaces' settings differ). The pre-hold is
-load-bearing precisely because settings *can* differ; the same mechanism
-becomes the bug when it fires for the wrong hide.
+**The audit was right that the two could not both be true, and wrong about
+which was false.** Measured on the same device (Pixel 7 Pro, sdk 37, both
+surfaces bound separately) with a log added at the top of the method:
 
-It is also possible the `isDeviceLockedNow` note is the stale one (it describes
-a failed experiment, and the "Verified" line was added later). **Not
-measured** — establishing it needs one hide with the studio over the wallpaper
-and a per-surface override in place, with the pre-hold's `apply` logged. The
-current build has no trace for `apply`, so this needs a temporary probe (not in
-this audit).
+```
+studio covering an unlocked wallpaper   interactive=true  locked=false  keyguard=false  -> hold=false
+the screen darkening while HOME hides  interactive=false locked=false  keyguard=false  -> hold=true
+LOCK engine, after POWER               interactive=false locked=true   keyguard=true   -> (HOME gate)
+```
+
+`isKeyguardLocked()` **moves**: false while awake and unlocked, true while
+locked. So the third term was not a constant `false`, the early return was
+**not** dead, and the old guard would have behaved identically to the new one in
+this cycle. **`adf834c` is therefore a robustness fix, not a demonstrated bug
+fix**, and the claim this finding rested on does not reproduce.
+
+**The fix is still strictly better in both worlds.** The term answered a
+*capability* question — its own javadoc said "whether the keyguard exists at
+all" — while the guard used it as *state*. On a device where that reading **is**
+constant, the old guard ran the pre-hold on every hide including an app cover,
+which is the one case the rule exists to prevent. Either way the decision now
+rests only on `isInteractive()` and `isDeviceLocked()`, both of which are
+documented to move.
+
+**And the cited proof did not exist.** `grep interactive=` matched only the
+comment — there was no such log in the tree, so "this returns" was checkable
+against nothing. There is now a `pre-hold enter …` / `pre-hold hold=…` pair
+logged **before** the gates, because a log that only appears on the decision
+path cannot distinguish "the guard said no" from "the method never ran" — which
+is what happened on the first attempt, producing zero lines and no way to tell
+which it was.
+
+**The lesson worth keeping, and it is about the audit rather than the code: a
+document that records a measurement nobody can reproduce is worse than one that
+records none.** This finding sent two sessions looking at a term that was
+provably live. The other half of it — "needs a device pass" — was the correct
+instinct, and one lock/unlock cycle settled it in under a minute.
 
 ### E. `Apply.GESTURE` is declared but never used; gestures bypass `apply` entirely — **correct, but the invariant overstates the code**
 
@@ -277,21 +296,23 @@ think the `GESTURE` path is live. Worth a sentence, not a change.
    because it is the exact bug class this audit exists for, the fix is one
    predicate in one place, and it is reachable from ordinary studio gestures.
    Not measured.
-2. **D — the `keyguardWasUp()` contradiction.** High because if the
-   `isDeviceLockedNow` note is right, the pre-hold fires on every app cover and
-   produces an instant paint on the return — a user-visible snap on the
-   wallpaper, which is the product's whole surface. Ranked below A only
-   because it is unresolved (one of its own two comments is wrong) and needs a
-   probe to decide which.
-3. **B — `snapshot().bundled` is always false.** Medium: latent on its own, but
-   it removes the guard's protection precisely for the bundled demo, so it
-   widens A's blast radius. Cheapest correct fix is to stop comparing `bundled`
-   in the no-op (it describes a file, not a framing) or to carry it in the
-   snapshot; either way `FramingTest` must pin it.
-4. **C — `lockFramingShowing`'s absent clear, and target-as-origin.** Medium-low:
-   the common paths are safe (reboot, genuine unlock), and the failure needs a
-   re-bind without process death. The doc is wrong today and should be
-   corrected or the clear implemented.
+2. **D — the `keyguardWasUp()` contradiction. — RESOLVED as `adf834c`, and the
+   finding's premise was wrong.** Measured on the same device:
+   `isKeyguardLocked()` reads **false while awake and unlocked, true while
+   locked** — it moves, so the early return was never dead and the old guard
+   behaved as the new one does. Shipped anyway as a robustness fix, because the
+   term answered a capability question and was read as state, and because the
+   log it cited for proof **did not exist in the tree**. Details in finding D.
+3. **B — `snapshot().bundled` is always false. — FIXED as `80c7b78`**, together
+   with #1. `sameAs` no longer compares `bundled`.
+4. **C — `lockFramingShowing`'s absent clear, and target-as-origin.** **Now the
+   highest unresolved item.** Medium when first ranked — the common paths are
+   safe (reboot, genuine unlock) and the failure needs a re-bind without
+   process death. Two things have changed since: the doc is still wrong today
+   (the clear it promises is not implemented, re-verified by grep), and the only
+   thing preventing a stale inherit is now the *caller's* `!isDeviceLockedNow()`
+   rather than the field being fresh. The doc was corrected above; the clear is
+   not implemented.
 5. **F — the wallpaper states `RESOLVE` for a pair change.** Low: no behaviour
    bug, but the stated reason is the contract the enum was built to make
    explicit.
@@ -341,28 +362,43 @@ ask for a device screenshot for anything visual.
   which `ofValues` hard-codes to `false`: the guard was **structurally absent for the
   bundled demo**, the one row every install starts with.
 
-**Still open, and deliberately NOT touched:**
+**Also resolved since (2026-10-05):**
 
-- **Ranked #3 — `holdLockFrameForUnlock`'s early-return can never fire.** Line 575:
+- **Ranked #2 (was #3) — `holdLockFrameForUnlock`'s early-return. — FIXED as `adf834c`.**
+  The guard read
 
   ```java
   if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;
   ```
 
-  `keyguardWasUp()` is `isKeyguardLocked()`, measured this session as **`true` on every
-  sample of every cycle, including after two full unlocks** — so the third term is
-  effectively a constant `true`, the whole conjunction is `false`, and **the early-return
-  never runs.** The pre-hold therefore fires on every path, not only "when the screen is
-  dark or the keyguard took over", which is what its comment claims.
+  and this section's claim — that `keyguardWasUp()` (`isKeyguardLocked()`) read **`true`
+  on every sample of every cycle**, making the third term constant and the early-return
+  dead — **does not reproduce.** Measured on the same device it reads **`false` while
+  awake and unlocked and `true` while locked**. So the early return was live, and the old
+  guard behaved as the new one does. It was fixed anyway as a **robustness** change: the
+  term answered a *capability* question ("does a keyguard exist") and was read as *state*
+  ("has the keyguard taken over"), so the decision now rests only on `isInteractive()`
+  and `isDeviceLocked()`. On a device where that reading **is** constant the old guard
+  ran the pre-hold on every hide including an app cover, which is the one case the rule
+  exists to prevent.
 
-  **Why it is left alone:** the pre-hold is **load-bearing** — measured, disabling it makes
-  a surviving HOME engine hold HOME across a lock cycle and the unlock glide disappears.
-  So this is a latent bug *inside a working path*, and a condition containing a
-  never-varying term is exactly the shape that has cost this session the most. Fixing it
-  means choosing between dropping `!keyguardWasUp()` entirely and replacing it with
-  `!isDeviceLockedNow()`, and **that needs a lock/unlock cycle to verify** — which the
-  phone was busy with when this was found.
+  The load-bearing concern that justified leaving it alone was respected: the pre-hold
+  still fires when the screen darkens, which is the case that keeps the unlock glide
+  alive. Measured both branches on a Pixel 7 Pro, sdk 37, both surfaces bound
+  separately — `hold=false` for a studio covering an unlocked wallpaper, `hold=true` for
+  the screen darkening.
 
-- **Ranked #4 — `lockFramingShowing`** documents a clear that does not exist and publishes
+  **What this section got right and what it got wrong:** right that the two comments
+  could not both be true, and right that it needed a device pass. Wrong about which was
+  false, and wrong to record an unreproducible measurement as settled — which sent a
+  later session looking at a term that was provably live. **The proof it cited did not
+  exist**: *"the hide logs `interactive=true`"* matched only the comment. There is now a
+  real `pre-hold enter …` / `pre-hold hold=…` pair, logged before the gates so that
+  "the guard said no" is distinguishable from "the method never ran".
+
+**Still open:**
+
+- **`lockFramingShowing`** documents a clear that does not exist and publishes
   a resolved *target* rather than what was rendered, so a re-bind without process death
-  could inherit a stale origin.
+  could inherit a stale origin. Re-verified by grep on 2026-10-05: one write, **zero
+  clears**. The doc is now corrected above; the clear is not implemented.
