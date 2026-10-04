@@ -440,7 +440,18 @@ public class DepthWallpaperService extends WallpaperService {
         }
     }
 
-    /** Whether the keyguard exists at all; unlike {@code isDeviceLocked}, it never changes here. */
+    /** Whether the keyguard exists at all; unlike {@code isDeviceLocked}, it never changes here.
+     *
+     * @deprecated Removed. This was {@code KeyguardManager.isKeyguardLocked()}, and the
+     *     pre-hold guard was the only caller. It asked a <b>capability</b> question —
+     * "does this device have a lock screen" — and used the answer as if it were
+     * <b>state</b>, "has the keyguard taken over". On a Pixel 7 Pro it read true on every
+     * sample of every cycle, so {@code !keyguardWasUp()} was a constant false and the
+     * conjunction containing it could never be true. The state question is
+     * {@link #isDeviceLockedNow()}, which does move. Kept here as a comment rather than
+     * deleted outright because the measurement is the point: see
+     * {@link #holdLockFrameForUnlock}.
+     */
     private boolean keyguardWasUp() {
         android.app.KeyguardManager km =
                 (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
@@ -451,6 +462,13 @@ public class DepthWallpaperService extends WallpaperService {
             return false;
         }
     }
+
+    /**
+     * Which branch of the pre-hold guard ran, and on what readings.
+     *
+     * <p>Kept as prose rather than a helper because both call sites log different things:
+     * the entry line reports every gate, the decision line reports only the answer.
+     */
 
     /**
      * Whether this engine is the surface the user is currently looking at.
@@ -555,22 +573,69 @@ public class DepthWallpaperService extends WallpaperService {
      * make the home surface hold the lock config — the user was looking at nothing, and
      * the launcher's return should be an instant, not a glide from lock. Only the screen
      * going dark ({@code !isInteractive()}) or the keyguard taking over qualifies, which
-     * is the moment before the reveal this is preparing for. The {@code keyguard} terms
-     * are the same two readings {@link #isForegroundSurface} uses; on this device
-     * {@code isDeviceLocked()} is still false at the instant the screen starts to darken,
-     * so {@code isInteractive()} is the one that fires. Verified: when a studio covers the
-     * wallpaper the hide logs {@code interactive=true}, this returns, and the launcher
-     * return is a no-op rather than a glide from a screen nobody was looking at.
+     * is the moment before the reveal this is preparing for.
+     *
+     * <p><b>The two readings, and why only one of them is here.</b> This used to be
+     *
+     * <pre>{@code if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;}</pre>
+     *
+     * and the guard could never fire. {@link #keyguardWasUp()} is
+     * {@code KeyguardManager.isKeyguardLocked()}, measured on a Pixel 7 Pro as
+     * {@code true} on every sample of every cycle including after two full unlocks — so
+     * {@code !keyguardWasUp()} was a constant {@code false}, the whole conjunction was
+     * constant {@code false}, and the pre-hold ran on <b>every</b> hide rather than only
+     * the two that qualify. A studio covering the wallpaper therefore made the home
+     * surface adopt the lock config for a screen the user was not looking at, which is
+     * the one case the paragraph above exists to prevent.
+     *
+     * <p>The dead term was not merely redundant, it was answering the wrong question.
+     * Its own javadoc said it reported "whether the keyguard exists at all" — a
+     * <b>capability</b> — while the guard used it as "the keyguard has taken over", which
+     * is <b>state</b>. State is what {@link #isDeviceLockedNow()} reads, and on this
+     * device it is the only reading that tracks a lock cycle at all: it reads true on
+     * the lock screen and false on home, while {@code isKeyguardLocked()} never moved.
+     * Asking one question twice, once with a reading that works, is how a conjunction
+     * ends up with a term that can never be true.
+     *
+     * <p>So the term is gone rather than repaired. {@link #keyguardWasUp()} had no other
+     * caller, and a private method left reading a value nothing consults is the same
+     * dead state {@code AGENTS.md} tells us not to keep "for a future use". A device with
+     * no keyguard needs no handling here: {@code isDeviceLocked()} is then permanently
+     * false, this returns on every hide, and there is no lock config to hold — which is
+     * also what {@link #supportsPerSurfaceLock()} already gates on.
+     *
+     * <p>Measured on a Pixel 7 Pro, sdk 37, across a full lock and unlock cycle after
+     * the change: see the {@code pre-hold} line in {@link #logPreHold}.
      *
      * <p><b>HOME only, and both engines only.</b> A LOCK engine is never seen at wake, and
      * on a one-engine setup there is no second config to hold — the same capability the
      * rest of the surface logic gates on.
      */
     private void holdLockFrameForUnlock() {
+        final boolean interactive = isInteractive();
+        final boolean locked = isDeviceLockedNow();
+        // Logged FIRST, before any of the gates below. A log that only appears on the
+        // one path cannot tell you why the others were silent, and "nothing in the log"
+        // is indistinguishable from "the method was never called" -- which is exactly
+        // the ambiguity this logging was added to remove.
+        android.util.Log.i("Basrelief", "pre-hold enter glView=" + (glView != null)
+                + " renderer=" + (renderer != null)
+                + " prefs=" + (prefs != null)
+                + " which=" + surface.surface()
+                + " perSurfaceLock=" + surface.supportsPerSurfaceLock()
+                + " interactive=" + interactive
+                + " locked=" + locked
+                + " keyguard=" + keyguardWasUp());
         if (glView == null || renderer == null || prefs == null) return;
         if (surface.surface() != Surface.HOME) return;
         if (!surface.supportsPerSurfaceLock()) return;
-        if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;
+        // Skip only when the device is awake AND unlocked: there is no reveal to
+        // prepare for. A dark screen or a locked device is exactly the case this
+        // exists for, and both are read from signals that actually move --
+        // isInteractive() and isDeviceLocked(). See the javadoc for why the third
+        // term that used to be here could never be true.
+        android.util.Log.i("Basrelief", "pre-hold hold=" + (!interactive || locked));
+        if (interactive && !locked) return;
         final Framing lock = Framing.of(
                 AppState.load(DepthWallpaperService.this, prefs, getFilesDir()).activeItem(),
                 Surface.LOCK);

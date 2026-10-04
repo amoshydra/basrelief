@@ -322,8 +322,10 @@ already cost real time.
   last-visible while the keyguard is up.
 - **The lock frame is held on the HOME engine while the screen is dark, and that is
   not the instant paint the rule forbids.** `holdLockFrameForUnlock` applies the LOCK
-  framing to the HOME engine on hide, but only when `!isInteractive()` or the keyguard
-  took over. `GLSurfaceView` queues the event and refuses to draw while paused
+  framing to the HOME engine on hide, but only when `!isInteractive()` or the device is
+  locked — `if (interactive && !locked) return;`, and **neither of those two readings
+  is allowed to be a constant.** `GLSurfaceView` queues the event and refuses to draw
+  while paused
   (`readyToDraw()` requires `!mPaused`), so no frame is presented: the next drawn frame
   -- the one the keyguard reveals -- is already LOCK, and the unlock's
   `glide(null, HOME)` origin-apply is a no-op. It is **load-bearing and not superseded
@@ -331,6 +333,35 @@ already cost real time.
   hold HOME across a lock cycle, so the unlock resolves `snap.zoom=1.42 dest.zoom=1.42`
   and the glide is gone. Inheritance covers a *freshly created* engine; the pre-hold
   covers a *surviving* one.
+  **The guard this sits behind had a term that could not be true, and the log line
+  that was supposed to prove it did not exist.** It read
+  `if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;`, where
+  `keyguardWasUp()` is `KeyguardManager.isKeyguardLocked()` — and whose own javadoc
+  says it reports "whether the keyguard exists at all", a **capability**, while the
+  guard used it as "the keyguard has taken over", which is **state**. One question
+  asked twice, once with a reading that tracks the cycle. The term is gone and the
+  decision is now the two readings that both demonstrably move.
+  **What it cost to find: the two claims about that term disagreed.** One recorded
+  `isKeyguardLocked()` as `true` on every sample of every cycle, making the third
+  term a constant `false`; measured here on the same device it reads **`false` while
+  awake and unlocked and `true` while locked** — it moves. So the old guard would
+  have behaved identically in this cycle, and **this is a robustness fix rather than
+  a demonstrated bug fix**: the correctness of the pre-hold was resting on a signal
+  whose relationship to lock state is undocumented and has now been measured two
+  ways. It is still strictly better in both worlds — on a device where that reading
+  *is* constant, the old guard ran the pre-hold on every hide, including a studio
+  covering the wallpaper, which is the one case the rule exists to prevent.
+  **And the proof that was cited did not exist:** the javadoc said "when a studio
+  covers the wallpaper the hide logs `interactive=true`, this returns" — that string
+  matched only the comment. There is now a `pre-hold enter …` / `pre-hold hold=…`
+  pair, logged **before** the gates, because a log that only appears on the decision
+  path cannot distinguish "the guard said no" from "the method never ran" — which is
+  exactly what happened on the first attempt, producing zero lines and no way to tell
+  which it was. Measured on a Pixel 7 Pro, sdk 37, both surfaces bound separately:
+  studio covering an unlocked wallpaper logs `hold=false`, the screen darkening logs
+  `hold=true`. **The glide itself is not loggable** — `origin=snapshot`, `applyNoop`
+  and `applyPaint` are trace strings from instrumentation that is not in the tree, so
+  whether the unlock glide still runs is the user's eye, not a log line.
 - **Never hand-derive vendored matrix semantics and verify them against a
   reference you wrote yourself.** `Mat4.scaleM` shipped computing `S·m` instead of
   `m·S` because my hand-written AOSP reference was "corrected" to match my own
