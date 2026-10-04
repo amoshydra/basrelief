@@ -425,9 +425,14 @@ public class DepthWallpaperService extends WallpaperService {
      * Whether the device is locked right now, false when the platform will not answer.
      *
      * <p>The reading that TRACKS the screen being looked at: measured true on the lock
-     * screen and false on home, while {@code isKeyguardLocked()} read true on every sample
-     * of every cycle. Used both to gate whether a HOME engine may inherit the lock frame
-     * on a cold start and to decide, with the screen state, when the lock frame is held.
+     * screen and false on home. It was long documented here as the only reading that
+     * moves, on the grounds that {@code isKeyguardLocked()} "read true on every sample
+     * of every cycle" — **that claim does not reproduce.** Measured on the same device
+     * (Pixel 7 Pro, sdk 37, both surfaces bound separately) it reads **false while awake
+     * and unlocked and true while locked**, so it moves too. This method is kept
+     * because it is the reading the code gates on and because {@code ACTION_USER_PRESENT}
+     * delivers nothing on this device, so there is no event to be driven from — not
+     * because the other reading is unusable.
      */
     private boolean isDeviceLockedNow() {
         android.app.KeyguardManager km =
@@ -878,9 +883,19 @@ public class DepthWallpaperService extends WallpaperService {
             // Guarded by two facts, both measured on the device rather than assumed:
             // the lock engine must have published something (a reboot has nothing to
             // inherit), and the device must not be locked right now (a screen-on into the
-            // keyguard is not home's arrival). isDeviceLocked is the reading that tracks
-            // the actual state -- isKeyguardLocked read true on every sample of every
-            // cycle, including after two full unlocks.
+            // keyguard is not home's arrival).
+            //
+            // MEASURED 2026-10-05, and it changes what this branch is worth: across a
+            // full lock/unlock cycle on a Pixel 7 Pro, sdk 37, the HOME engine was
+            // created **twice and both times while the device was locked**, so this
+            // guard refused and **inheritFirstFrameFrom inherited nothing**. The
+            // platform creates the home engine early, while still locked, so the
+            // inheritance it exists for does not run in that configuration -- the
+            // unlock is carried by holdLockFrameForUnlock instead, which covers a
+            // *surviving* home engine. Whether this branch is reachable elsewhere (a
+            // single "both" engine, or an OEM that does not pre-create the home
+            // engine) is **unmeasured**: do not assume it is dead everywhere, and do
+            // not assume it is live.
             if (surface.surface() == Surface.HOME
                     && surface.supportsPerSurfaceLock()
                     && !isDeviceLockedNow()
