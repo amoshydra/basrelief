@@ -31,6 +31,7 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import com.amoshydra.basrelief.core.gesture.SheetIntent;
+import com.amoshydra.basrelief.core.render.SheetHeight;
 
 /**
  * The mockup's {@code .scrim + .modal}, built once.
@@ -1911,7 +1912,28 @@ final class ModalSheet {
             // that has collapsed to nothing measures its content even smaller.
             if (naturalHeight <= 0) return;
             if (currentHeight < 0) currentHeight = openHeight;
-            int target = ModalSheet.viewportAtRest(naturalHeight, openHeight, maxHeight,
+            // THE RESTING HEIGHT IS A FUNCTION OF THE CONTENT.
+            //
+            // openHeight is the first-open seed and stays one -- it is what
+            // resetToOpen restores and what the before-show() call sets -- but every
+            // clamp from here on is content-derived, which is the whole change:
+            //
+            //   short content  -> opens at its own height, not a third of the screen
+            //   tall content   -> opens at the ceiling and scrolls
+            //   content grows  -> the sheet grows, with no trigger to register
+            //   content shrinks-> the sheet shrinks
+            //
+            // All four are one expression, SheetHeight.resting == min(content,
+            // ceiling), and it is safe to evaluate here because naturalHeight came
+            // from a child measured with an UNSPECIFIED height spec: the viewport
+            // cannot influence what "the content's height" means, which is the loop
+            // the bounded version fell into. See the comment above.
+            //
+            // Nothing here reads a scroll position. viewportAtRest's signature has no
+            // room for one, and that is deliberate -- see the class javadoc.
+            final int resting = SheetHeight.resting(naturalHeight, maxHeight,
+                    dp(getContext(), SheetHeight.MIN_CONTENT_DP));
+            int target = ModalSheet.viewportAtRest(naturalHeight, resting, maxHeight,
                     currentHeight);
             currentHeight = target;
             if (target != naturalHeight) {
