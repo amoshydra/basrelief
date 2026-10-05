@@ -136,7 +136,7 @@ final class VideoImport {
         }
 
         // ---- 3. fetch both clips, told apart by their prefixes
-        JSONObject depthOut = null, normalOut = null;
+        JSONObject depthOut = null, normalOut = null, colourOut = null;
         java.util.Iterator<String> nodes = outputs.keys();
         while (nodes.hasNext()) {
             JSONObject node = outputs.optJSONObject(nodes.next());
@@ -156,17 +156,32 @@ final class VideoImport {
                 } else if (normalOut == null
                         && name.startsWith(ComfyWorkflow.NORMAL_CLIP_PREFIX)) {
                     normalOut = f;
+                } else if (colourOut == null
+                        && name.startsWith(ComfyWorkflow.COLOUR_CLIP_PREFIX)) {
+                    // The COLOUR the combiner writes back -- the same frames the depth
+                    // was made from, not the original upload. Taking the original
+                    // instead is the comeback of the exact bug the third combine
+                    // exists to remove: a colour track longer than the depth track,
+                    // two loop clocks, and a seam where one rewinds and the other
+                    // does not.
+                    colourOut = f;
                 }
             }
         }
-        if (depthOut == null) {
+        if (depthOut == null || colourOut == null) {
             listener.failed("The run produced no depth clip.");
             return;
         }
 
         listener.phase("Fetching");
-        File depthClip, normalClip = null;
+        File depthClip, normalClip = null, colourClip;
         try {
+            // The aligned colour REPLACEs the upload: one decode, three outputs.
+            // Keeping the original over it would keep the longer file in the way.
+            colourClip = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
+            write(api.view(colourOut.getString("filename"),
+                    colourOut.optString("subfolder", ""),
+                    colourOut.optString("type", "output")), colourClip);
             depthClip = new File(app.getFilesDir(), LibraryItem.videoDepthFileName(id));
             write(api.view(depthOut.getString("filename"),
                     depthOut.optString("subfolder", ""),

@@ -108,20 +108,35 @@ final class ClipBlitter {
     private FloatBuffer quadPos, quadUv;
     private int fbo = -1;
 
-    /** One OES source and its 2D destination. */
+    /**
+     * One OES source and its 2D destination.
+     *
+     * <p><b>The SurfaceTexture is built on the OES texture's name, never on the 2D
+     * one's.</b> That is the fault the whole clip was hiding behind: an external image
+     * cannot be written into a {@code GL_TEXTURE_2D}, so {@code updateTexImage} throws
+     * {@code "Error during updateTexImage"} and the producer and the sampler sit on
+     * different textures. It stayed invisible for as long as a guard skipped the call
+     * that reports it -- which is the worst way for this class of bug to hide, because
+     * removing the guard appears to fix the freeze and reveals the actual fault
+     * underneath.
+     *
+     * <p>The two names are therefore created together, OES first, then the
+     * SurfaceTexture over it, then the 2D target the blit writes into.
+     */
     static final class Channel {
         final SurfaceTexture st;
         final int tex2d;
         final int fbo;
         final int w, h;
-        int oesName;
+        final int oesName;
 
-        Channel(int tex2d, int fbo, int w, int h) {
+        Channel(int oesName, int tex2d, int fbo, int w, int h) {
+            this.oesName = oesName;
             this.tex2d = tex2d;
             this.fbo = fbo;
             this.w = w;
             this.h = h;
-            this.st = new SurfaceTexture(tex2d);
+            this.st = new SurfaceTexture(oesName);
         }
 
         /** The {@link android.view.Surface} a decoder can be configured with. */
@@ -208,6 +223,17 @@ final class ClipBlitter {
      */
     void blit(Channel src, int program, float rangeScale, float rangeOffset,
               float texelW, float texelH) {
+        // Save the viewport and put it back, because this pass runs at the clip's own
+        // size and the relief draw does not set a viewport per frame.
+        //
+        // THE SPIKE set an explicit viewport before every single pass, so nothing
+        // ever inherited anything. This blit set (0, 0, w, h) for its own target and
+        // restored only the FRAMEBUFFER, leaving the relief draw clamped into a
+        // 720x1366 window at the origin -- the picture rendered correctly but squeezed
+        // into the bottom-left quarter of the screen, which is exactly how it was
+        // reported. One leak, visible on every frame with a clip on it.
+        int[] vp = new int[4];
+        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0);
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, src.fbo);
         GLES30.glViewport(0, 0, src.w, src.h);
         GLES20.glUseProgram(program);
@@ -222,6 +248,7 @@ final class ClipBlitter {
                 rangeScale, rangeOffset);
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uTexel"), texelW, texelH);
 
+
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ZERO);
@@ -229,9 +256,17 @@ final class ClipBlitter {
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        // The viewport is part of this pass's borrow, not global state: restore it.
+        GLES20.glViewport(vp[0], vp[1], vp[2], vp[3]);
     }
 
     private void drawQuad() {
+        // BUFFER 0 or the client-side pointers below are offsets into whatever VBO
+        // the relief draw left bound, and the quad collapses to a point. The relief
+        // path draws AFTER this one and binds gridVbo every frame, so the leaked
+        // state is the normal state of the frame we are called from.
+        GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+        GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
         GLES20.glEnableVertexAttribArray(aPos);
         GLES20.glEnableVertexAttribArray(aUV);
         GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, quadPos);
@@ -250,12 +285,44 @@ final class ClipBlitter {
      *         is correct. Blocking for it would be a stall on a stale frame.
      */
     boolean update(Channel c) {
+        // "Is there a NEW frame", by timestamp delta rather than by the call's return
+        // value -- same answer, and it does not depend on a signature that has moved
+        // between SDK levels.
+        //
+        // The timestamp is what LATCHING sets, so comparing it either side of the call
+        // is exactly "did that latch something". The distinction matters: a decoder can
+        // produce more frames than we draw, and re-blitting the same content costs a
+        // full-screen pass for an identical result.
+        long before = c.st.getTimestamp();
         c.st.updateTexImage();
-        return true;
+        return c.st.getTimestamp() != before;
+    }
+
+    /**
+     * An external-OES texture for a producer to write into.
+     *
+     * <p>Must exist and must be the name the {@link SurfaceTexture} is constructed
+     * with. It is the SOURCE; the 2D texture beside it is only where the blit puts
+     * the result for the relief shader to sample.
+     */
+    private static int makeOes() {
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, t[0]);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        return t[0];
     }
 
     /** Allocate an ordinary RGBA8 2D target and its framebuffer. */
     static Channel makeRgba(int w, int h) {
+        int oes = makeOes();
         int[] t = new int[1];
         GLES20.glGenTextures(1, t, 0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
@@ -276,7 +343,7 @@ final class ClipBlitter {
                     + Integer.toHexString(status) + " " + w + "x" + h);
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
-        return new Channel(t[0], f[0], w, h);
+        return new Channel(oes, t[0], f[0], w, h);
     }
 
     /**
@@ -288,6 +355,7 @@ final class ClipBlitter {
      * recreates them exactly. So the field is float end to end.
      */
     static Channel makeField(int n) {
+        int oes = makeOes();
         int[] t = new int[1];
         GLES20.glGenTextures(1, t, 0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
@@ -307,23 +375,21 @@ final class ClipBlitter {
             android.util.Log.e(TAG, "field fbo incomplete 0x" + Integer.toHexString(status));
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
-        return new Channel(t[0], f[0], n, n);
+        return new Channel(oes, t[0], f[0], n, n);
     }
 
-    /** Bind an OES texture name to a channel's SurfaceTexture. GL thread. */
+    /**
+     * Listen for a frame arriving. GL thread.
+     *
+     * <p><b>Nothing is consumed here.</b> The draw path calls
+     * {@code updateTexImage} itself, so there is no queue to fall behind and no wakeup
+     * to miss; latching from the listener would mean the newest frame waited on a
+     * request that may never come.
+     *
+     * <p>It used to ALSO create the OES texture here, which is the bug: a name created
+     * here was never the name any SurfaceTexture was constructed with.
+     */
     void bindOes(Channel c) {
-        int[] t = new int[1];
-        GLES20.glGenTextures(1, t, 0);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, t[0]);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        c.oesName = t[0];
         c.st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
             @Override
             public void onFrameAvailable(SurfaceTexture s) {

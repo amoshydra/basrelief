@@ -92,6 +92,13 @@ final class ClipPlayer {
      * normal track and one with it are different here: the two blobs differ, so a clip
      * whose normal arrives is a different clip and is genuinely restarted.
      */
+    /** "colour/depth/normal" produced counts, for the once-a-second line. */
+    String producedCounts() {
+        return (color == null ? "-" : String.valueOf(color.produced()))
+                + "/" + (depth == null ? "-" : String.valueOf(depth.produced()))
+                + "/" + (normal == null ? "-" : String.valueOf(normal.produced()));
+    }
+
     String playingJsonForLog() {
         return playingJson;
     }
@@ -220,15 +227,34 @@ final class ClipPlayer {
      */
     void tick() {
         if (!running || blit == null) return;
-        if (blit.colour.st != null && blit.colour.st.getTimestamp() == 0 && !framesArrived) {
-            // Nothing decoded yet. Returning is correct: the first frames arrive tens
-            // of ms after start(), and blocking here would stall the GL thread on a
-            // decoder that is about to deliver anyway.
-            return;
-        }
-        blit.update(blit.colour);
+        // Latch first, and let updateTexImage's OWN return value be the "is there
+        // anything new" test.
+        //
+        // There used to be a guard here that returned early while
+        // `st.getTimestamp() == 0 && !framesArrived`, on the reasoning that nothing had
+        // been decoded yet. It was self-defeating: getTimestamp() only becomes
+        // non-zero once updateTexImage() has latched a frame, and framesArrived is only
+        // set at the END of this method -- so the first tick returned early and every
+        // tick after it did too, for ever. updateTexImage was never called, the OES
+        // texture was never latched, the blit sampled an empty texture, and the screen
+        // was black.
+        //
+        // It failed silently and looked like three separate bugs: a "frozen frame"
+        // (the poster showing through), a blank screen (the blit painting black over
+        // the relief), and a still image when leaving a clip. It even made a
+        // constant-colour probe shader measure zero, because the probe never ran.
+        //
+        // updateTexImage returning false means "no new frame, the previous one is
+        // still current" -- which is exactly the cheap test the guard was reaching for,
+        // and it can only be consulted after asking.
+        boolean fresh = blit.update(blit.colour);
         blit.update(blit.depth);
         if (blit.normal != null) blit.update(blit.normal);
+        if (!fresh) {
+            // Nothing new this frame. Returning is right and cheap: re-blitting the
+            // same content would cost a full-screen pass for an identical result.
+            return;
+        }
 
         // The container's OWN colour range, per track, read from the decoder rather
         // than assumed -- because the depth and the normal do not have to agree.

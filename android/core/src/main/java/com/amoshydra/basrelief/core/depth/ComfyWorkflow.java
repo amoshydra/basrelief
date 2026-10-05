@@ -96,6 +96,19 @@ public final class ComfyWorkflow {
     /** {@code MoGeRender(output=normal_opengl)}, then its own combiner. */
     private static final String V_MOGE_NORMAL_RENDER_ID = "15";
     private static final String V_NORMAL_COMBINE_ID = "16";
+    /**
+     * The COLOUR combiner, reading the loader directly.
+     *
+     * <p>A third combiner, because the three clips that play together must be the
+     * same frames at the same rate for the same length -- and a colour track taken
+     * from the ORIGINAL upload has a different frame count from a depth track capped
+     * by the loader, so the two loop on different clocks and drift at every seam
+     * while the relief stays behind. Writing the colour back out of the same loader's
+     * batch makes all three from one decode: one frame count, one rate, one length.
+     * It costs a re-encode of frames the decoder already holds, which is nothing next
+     * to the inference.
+     */
+    private static final String V_COLOUR_COMBINE_ID = "17";
 
     static final String VIDEO_LOADER = "VHS_LoadVideo";
     static final String VIDEO_COMBINE = "VHS_VideoCombine";
@@ -158,6 +171,15 @@ public final class ComfyWorkflow {
     public static final String DEPTH_CLIP_PREFIX = DEPTH_FILE_PREFIX;
     /** The prefix of the normal clip. See {@link #DEPTH_CLIP_PREFIX}. */
     public static final String NORMAL_CLIP_PREFIX = NORMAL_FILE_PREFIX;
+    /**
+     * The prefix of the colour clip.
+     *
+     * <p>Distinct from the upload's own name, so a colour clip cannot be confused
+     * with the file that went in -- which matters because a fetch that picked the
+     * wrong one would loop the ORIGINAL while the depth loops the batch, and that is
+     * exactly the divergence the third combiner exists to remove.
+     */
+    public static final String COLOUR_CLIP_PREFIX = "colourclip_";
 
     /**
      * Assemble the ComfyUI graph for the chosen depth model.
@@ -391,6 +413,10 @@ public final class ComfyWorkflow {
                 FIRST_OUTPUT, DEPTH_CLIP_PREFIX, timestampMs, fps);
         JSONObject normalCombine = videoCombineNode(combineInfo, V_MOGE_NORMAL_RENDER_ID,
                 FIRST_OUTPUT, NORMAL_CLIP_PREFIX, timestampMs, fps);
+        // The colour, straight off the loader. Three clips, one decode: this is what
+        // makes the loop a loop, rather than three clocks that agree until the seam.
+        JSONObject colourCombine = videoCombineNode(combineInfo, VLOAD_ID,
+                FIRST_OUTPUT, COLOUR_CLIP_PREFIX, timestampMs, fps);
 
         JSONObject wf = new JSONObject();
         wf.put(VLOAD_ID, vload);
@@ -400,6 +426,7 @@ public final class ComfyWorkflow {
         wf.put(V_DEPTH_COMBINE_ID, depthCombine);
         wf.put(V_MOGE_NORMAL_RENDER_ID, normalRender);
         wf.put(V_NORMAL_COMBINE_ID, normalCombine);
+        wf.put(V_COLOUR_COMBINE_ID, colourCombine);
         return wf.toString();
     }
 

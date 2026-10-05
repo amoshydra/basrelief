@@ -636,6 +636,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private long lastClipStatNanos;
 
     /**
+     * Whether a clip is drawing, so the host can keep frames coming.
+     *
+     * <p>The frame-pacing invariant says the surface is WHEN_DIRTY and only the gyro
+     * asks for a frame, and a still phone produces none -- which is true for the relief
+     * and false for a clip: a clip's CONTENT changes with no input at all, so something
+     * other than the sensor has to drive the draw. The host that owns the
+     * GLSurfaceView is the only thing that can requestRender, so it has to know.
+     * Written from the GL thread by the tick; read by the hosts' pumps.
+     */
+    public volatile boolean drawingClip;
+
+    /**
      * Play this clip on top of whatever pair is installed. GL thread (queue it).
      *
      * @return false if the clips are not on disk, which is a POSTER state rather than
@@ -713,6 +725,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         pendingTracks = null;
         pendingFilesDir = null;
         clipRequested = false;
+        drawingClip = false;
         if (clip != null) {
             clip.stop();
             clip = null;
@@ -2236,6 +2249,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // draw that ran ahead of them would show the previous frame's depth against
         // this frame's colour -- a relief that does not match its picture.
         if (clip != null && clip.isRunning()) {
+            drawingClip = true;
             clip.tick();
             // One line a second, because "is it actually playing" cannot be answered
             // by anything else. The log proves the decoders STARTED; only a climbing
@@ -2246,7 +2260,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             if (lastClipStatNanos == 0) lastClipStatNanos = nowClip;
             if (nowClip - lastClipStatNanos >= 1_000_000_000L) {
                 lastClipStatNanos = nowClip;
-                android.util.Log.i("Basrelief", "clip " + clip.stats());
+                // `usingClip` is the whole question. A clip that DECODES and is never
+                // BOUND is indistinguishable from a frozen one -- both show one correct
+                // frame -- so the line says which texture the last draw actually used,
+                // and whether that was the clip's or the still's.
+                int cc = clipColour(displayed);
+                android.util.Log.i("Basrelief", "clip " + clip.stats()
+                        + " produced=" + clip.producedCounts()
+                        + " texColour=" + cc
+                        + " clipTex=" + clip.colourTex()
+                        + " stillTex=" + (displayed == null ? -1 : displayed.textureColor)
+                        + " usingClip=" + (cc != 0 && cc == clip.colourTex()) );
             }
         }
 

@@ -1849,6 +1849,36 @@ public class MainActivity extends Activity {
         glidePump.postDelayed(glideTick, 16);
     }
 
+    /**
+     * Keep frames coming while a CLIP is drawing.
+     *
+     * <p>The same situation as a glide, one level out, and it is the reason the
+     * video played only while something was being touched. This surface is
+     * RENDERMODE_WHEN_DIRTY and only the gyro asks for frames; a still phone
+     * produces none, and a clip is the one thing whose content changes with no input
+     * at all. So the pump is not an expedient -- it IS the frame pacing while a clip
+     * is on screen, the same role the sensor plays for the relief. The renderer says
+     * via {@code drawingClip}; this class owns the GLSurfaceView, so it owns the
+     * requesting.
+     *
+     * <p>Self-chaining on the same handler as {@link #glideTick}, and stopping by
+     * itself when no clip is drawing: one pump shape, one pattern, and no timer left
+     * spinning after the clip stops.
+     */
+    private final Runnable clipTick = new Runnable() {
+        @Override
+        public void run() {
+            if (renderer == null || !renderer.drawingClip) return;
+            glView.requestRender();
+            glidePump.postDelayed(this, 16);
+        }
+    };
+
+    private void startClipPump() {
+        glidePump.removeCallbacks(clipTick);
+        glidePump.post(clipTick);
+    }
+
     private float glideSpanMs() {
         try {
             return Math.max(1f, prefs.getInt(TiltController.KEY_GLIDE_MS,
@@ -5596,6 +5626,7 @@ public class MainActivity extends Activity {
         // Null for a photograph, explicit because a request never made is
         // indistinguishable from a request for no clip.
         renderer.requestClip(active == null ? null : active.video, getFilesDir());
+        startClipPump();
         if (!renderer.showingSamePair(img, dep, nrm)) {
             renderer.loadPairAsync(img, dep, nrm);
         }

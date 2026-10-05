@@ -531,8 +531,13 @@ public class ComfyWorkflowTest {
         // VideoCombine, and nothing is added or removed. A count is only a
         // discriminator when the shapes genuinely differ in size -- and asserting one
         // that happens to hold for the wrong reason is a guard that cannot fail.
-        assertEquals("both shapes are seven nodes, so size proves nothing",
-                moge.length(), video.length());
+        // EIGHT now, not seven: the third combiner is the colour clip's writer, and
+        // it is the node that makes the three clips one decode. (The node-count note
+        // below survives this edit: the point was never that the shapes match in
+        // size, it is that size cannot DISTINGUISH them -- and one more node still
+        // cannot.)
+        assertEquals("both shapes have the MoGe middle in common; size still proves nothing",
+                moge.length() + 1, video.length());
 
         // What does distinguish them is the CLASSES, so that is what is pinned.
         assertFalse("the video graph must not load a still",
@@ -541,8 +546,14 @@ public class ComfyWorkflowTest {
                 video.toString().contains("SaveImage"));
         assertTrue("it must load the video",
                 video.toString().contains(ComfyWorkflow.VIDEO_LOADER));
-        assertTrue("and combine two of them -- one per MoGe output",
-                countOf(video.toString(), ComfyWorkflow.VIDEO_COMBINE) == 2);
+        // THREE combines now, not two: depth, normal, and the COLOUR that used to be
+        // the original upload. A colour track taken from the source has a different
+        // frame count from the depth's capped batch, so the two loop on different
+        // clocks and drift at every seam -- while the relief stays behind. Writing the
+        // colour back out of the same loader's batch makes all three one decode: one
+        // frame count, one rate, one duration, one loop.
+        assertTrue("three combines -- depth, normal, and the colour straight off the loader",
+                countOf(video.toString(), ComfyWorkflow.VIDEO_COMBINE) == 3);
         // And the shared middle is still the MoGe pipeline, not a second copy of it.
         assertTrue(video.toString().contains(ComfyWorkflow.MOGE_INFERENCE));
         assertEquals("one inference for the whole batch",

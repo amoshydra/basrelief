@@ -190,6 +190,34 @@ public class DepthWallpaperService extends WallpaperService {
         }
 
         private WallpaperGLSurfaceView glView;
+
+        /**
+         * Keep frames coming while a clip draws, inside THIS engine.
+         *
+         * <p>An engine-short-lived handler, because the pump belongs to the surface it
+         * drives: a pump on the service would keep requesting through an engine that
+         * may be gone. It stops by itself the moment no clip is drawing, so a stopped
+         * clip leaves no timer running and a destroyed engine leaves none either
+         * (handler callbacks hold no reference that outlives their check).
+         *
+         * <p>The same reasoning as the studio's pump: the surface is WHEN_DIRTY and
+         * only the gyro asks for frames, and a motionless phone raises none -- so
+         * without this a clip plays only while the phone is being tilted.
+         */
+        private final android.os.Handler clipHandler = new android.os.Handler();
+        private final Runnable clipTick = new Runnable() {
+            @Override
+            public void run() {
+                if (renderer == null || !renderer.drawingClip) return;
+                if (glView != null) glView.requestRender();
+                clipHandler.postDelayed(this, 16);
+            }
+        };
+
+        private void startClipPump() {
+            clipHandler.removeCallbacks(clipTick);
+            clipHandler.post(clipTick);
+        }
         private ReliefRenderer renderer;
         private TiltController tilt;
         private SensorPolicy sensorPolicy;
@@ -856,11 +884,15 @@ public class DepthWallpaperService extends WallpaperService {
                     // which is every row without tracks, and it is explicit for the
                     // reason requestClip documents.
                     renderer.requestClip(active.video, getFilesDir());
+                    // The same pump the studio runs, because the wallpaper surface is
+                    // WHEN_DIRTY too and a motionless phone raises no sensor events.
+                    // Without it a clip plays only while you tilt the phone.
+                    startClipPump();
                 }
             });
         }
 
-        @Override
+    @Override
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
             // Before anything can ask which surfaces are live, including an
