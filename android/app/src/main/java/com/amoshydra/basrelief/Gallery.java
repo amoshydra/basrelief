@@ -190,6 +190,8 @@ final class Gallery {
     private static final int TILE_RADIUS_DP = 11;
     /** The row menu's drawn plate: the mockup's 19dp mark, in the tile's corner. */
     private static final int MENU_PLATE_DP = 19;
+    /** The clip mark's plate, the row menu's size: two corner marks, one size. */
+    private static final int CLIP_MARK_DP = 19;
     /**
      * The row menu's touch target.
      *
@@ -1662,6 +1664,10 @@ final class Gallery {
                 LinearLayout.LayoutParams.MATCH_PARENT, cellPx));
         final View chip = depthChip(item);
         tile.addView(chip, chipParams());
+        // Only for a clip row. The depth chip answers "has relief"; this answers
+        // "is it a video", and the two are independent -- a clip with no depth map
+        // yet still plays.
+        if (item.video != null) tile.addView(clipMark(), clipParams());
         tile.addView(menuButton(item), menuParams());
         // The embedded-depth answer comes out of the same read that decodes the
         // thumbnail; see PhotoTile.show. Re-derived rather than OR-ed in: the chip
@@ -1846,6 +1852,37 @@ final class Gallery {
         // wording would promise a tap that does nothing on a hidden row.
         if (archived) return activity.getString(R.string.gallery_talk_archived, name);
         return activity.getString(R.string.gallery_thumb_use, name);
+    }
+
+    /**
+     * Bottom-RIGHT, for the clip mark: the two top corners are taken (the depth
+     * chip top-left, the row menu top-right), and "which mark is this" is a question
+     * a gallery must not ask.
+     */
+    private FrameLayout.LayoutParams clipParams() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                activity.dp(CLIP_MARK_DP), activity.dp(CLIP_MARK_DP),
+                Gravity.BOTTOM | Gravity.END);
+        lp.setMargins(0, 0, activity.dp(6), activity.dp(6));
+        return lp;
+    }
+
+    /**
+     * The clip mark: a play glyph on a plate.
+     *
+     * <p><b>A photograph and a clip are both ordinary rows</b> -- that is the whole
+     * design, and it means the tile cannot show the difference by itself: a clip's
+     * poster frame is a still of the video, so the grid looks identical either way.
+     * The mark is the one place that difference is stated. The plate is there for
+     * the same reason the row menu has one: a dark glyph on a dark photograph is a
+     * mark that is present and unreadable.
+     */
+    private View clipMark() {
+        TextView glyph = text(activity.getString(R.string.gallery_clip_glyph), 10);
+        glyph.setGravity(Gravity.CENTER);
+        glyph.setBackground(plain(0x99000000, activity.dp(10)));
+        glyph.setContentDescription(activity.getString(R.string.gallery_is_clip));
+        return glyph;
     }
 
     /** Top-LEFT, clear of the row menu, which is top-right. */

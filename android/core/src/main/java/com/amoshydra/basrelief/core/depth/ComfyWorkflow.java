@@ -367,7 +367,8 @@ public final class ComfyWorkflow {
      */
     public static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
                                      long timestampMs, float fps, int frameCap,
-                                     int width, int height) throws JSONException {
+                                     int skipFirstFrames, int width, int height)
+            throws JSONException {
         JSONObject vloadInfo = info.getJSONObject(VIDEO_LOADER);
         JSONObject combineInfo = info.getJSONObject(VIDEO_COMBINE);
         JSONObject loaderInfo = info.getJSONObject(MOGE_LOADER);
@@ -384,7 +385,16 @@ public final class ComfyWorkflow {
         // default, because the OUTPUT clips are written at this rate too and the two
         // have to be the same number or the depth slides against the colour.
         vloadIn.put("force_rate", (double) fps);
+        // THE TRIM, expressed as the loader's own window: skip_first_frames and
+        // frame_load_cap are the range the user chose in the trim sheet, and because
+        // the colour clip is written from the same batch (the third combiner), all
+        // three clips come back trimmed to it and aligned -- the device never
+        // re-encodes anything, and there is no second trimming path to disagree with
+        // this one. 0 frames = the whole clip, which is the sheet's "Use the whole
+        // clip" and also what a regenerate passes, since the stored colour clip is
+        // already trimmed.
         if (frameCap > 0) vloadIn.put("frame_load_cap", frameCap);
+        if (skipFirstFrames > 0) vloadIn.put("skip_first_frames", skipFirstFrames);
         if (width > 0) vloadIn.put("custom_width", width);
         if (height > 0) vloadIn.put("custom_height", height);
         vload.put("inputs", vloadIn);

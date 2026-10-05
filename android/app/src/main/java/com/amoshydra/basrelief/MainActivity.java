@@ -5494,6 +5494,46 @@ public class MainActivity extends Activity {
             return;
         }
         final ComfyApi api = new ComfyApi(host.trim());
+        // STAGE FIRST, THEN ASK. The trim sheet needs the file -- a filmstrip is
+        // decoded from it -- and asking before the copy would put a spinner in front
+        // of a question. The copy is also the cheapest thing here, so it costs a beat.
+        Io.run(this, new Callable<File>() {
+            @Override
+            public File call() throws Exception {
+                return VideoImport.stage(MainActivity.this, uri);
+            }
+        }, new Io.Callback<File>() {
+            @Override
+            public void onDone(File staged, Exception error) {
+                if (staged == null || !staged.exists()) {
+                    Toast.makeText(MainActivity.this, R.string.video_import_failed,
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                float fps = VideoImport.frameRateOf(staged);
+                int frames = VideoImport.frameCountOf(staged, fps);
+                VideoTrimSheet.show(MainActivity.this, staged, label, fps, frames,
+                        new VideoTrimSheet.Chosen() {
+                            @Override
+                            public void range(int startFrame, int frameCount, boolean whole) {
+                                runImport(api, staged, label, startFrame, frameCount);
+                            }
+
+                            @Override
+                            public void cancelled() {
+                                // Nothing to undo: staging is one file, overwritten by
+                                // the next import. A cancel that cleaned up would be a
+                                // second code path for a file nobody reads.
+                            }
+                        });
+            }
+        });
+    }
+
+    /** The import itself, once the range is known. */
+    private void runImport(final ComfyApi api, final File staged, final String label,
+                           final int startFrame, final int frames) {
+        final Uri uri = Uri.fromFile(staged);
         Io.run(this, new Callable<LibraryItem>() {
             @Override
             public LibraryItem call() throws Exception {
@@ -5503,6 +5543,7 @@ public class MainActivity extends Activity {
                 // phases are for the USER, so they go to the UI thread from here and
                 // the worker simply blocks on the import.
                 VideoImport.run(MainActivity.this, prefs, uri, label, api,
+                        startFrame, frames,
                         new VideoImport.Listener() {
                             @Override
                             public void phase(final String message) {

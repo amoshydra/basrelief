@@ -427,7 +427,7 @@ public class ComfyWorkflowTest {
     private static JSONObject videoWf() throws JSONException {
         return new JSONObject(ComfyWorkflow.buildVideoWorkflow(
                 videoServerInfo(), "moge_3_vitg_fp16.safetensors",
-                "/tmp/up.mp4", TS, 24f, 48, 0, 0));
+                "/tmp/up.mp4", TS, 24f, 48, 0, 0, 0));
     }
 
     /**

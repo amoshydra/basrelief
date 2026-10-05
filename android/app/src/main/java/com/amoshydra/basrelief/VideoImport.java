@@ -123,7 +123,9 @@ final class VideoImport {
                 "ai_depth_" + stamp + ".png",       // depth still -- the still path's convention
                 "ai_normal_" + stamp + ".png",      // normal still
         };
-        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, listener,
+        // A regenerate passes 0, 0: the stored colour clip is ALREADY the trimmed
+        // range, so regenerating its depth means running the whole of it.
+        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, 0, 0, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -158,7 +160,9 @@ final class VideoImport {
     private static LibraryItem generate(final Context app, final SharedPreferences prefs,
                                         final ComfyApi api, final String rowId,
                                         final File colourSource,
-                                        final String[] names, final Listener listener,
+                                        final String[] names,
+                                        final int startFrame, final int frames,
+                                        final Listener listener,
                                         final Finisher finisher) {
         // The ROW's id, passed in. generate() used to mint its own, so a row could end
         // up holding files named after a DIFFERENT id -- harmless until something
@@ -184,7 +188,8 @@ final class VideoImport {
             String info = api.getObjectInfo();
             String graph = ComfyWorkflow.buildVideoWorkflow(
                     new JSONObject(info), "MoGeInference", uploadedName,
-                    System.currentTimeMillis(), fps, FRAME_CAP, 0, 0);
+                    System.currentTimeMillis(), fps,
+                    frames > 0 ? frames : FRAME_CAP, startFrame, 0, 0);
             JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-" + id));
             String promptId = submitted.getString("prompt_id");
             outputs = pollOutputs(app, api, promptId);
@@ -276,6 +281,20 @@ final class VideoImport {
      */
     static void run(final Context app, final SharedPreferences prefs, final Uri uri,
                     final String label, final ComfyApi api, final Listener listener) {
+        run(app, prefs, uri, label, api, 0, 0, listener);
+    }
+
+    /**
+     * @param startFrame the trim's first frame, in the OUTPUT rate; 0 from the start
+     * @param frames     how many frames to take; 0 = the whole clip. These are the
+     *                   trim sheet's range, and they travel to the server as the
+     *                   loader's skip/limit -- see {@link ComfyWorkflow}. No frame
+     *                   arithmetic happens on the device, so there is exactly one
+     *                   place the trim can be wrong.
+     */
+    static void run(final Context app, final SharedPreferences prefs, final Uri uri,
+                    final String label, final ComfyApi api,
+                    final int startFrame, final int frames, final Listener listener) {
         final String id = LibraryItem.newId();
         listener.phase(app.getString(R.string.video_phase_copying));
         final File colourSource = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
@@ -299,7 +318,8 @@ final class VideoImport {
                 LibraryItem.depthFileName(id),
                 LibraryItem.normalFileName(id),
         };
-        LibraryItem item = generate(app, prefs, api, id, colourSource, names, listener,
+        LibraryItem item = generate(app, prefs, api, id, colourSource, names,
+                startFrame, frames, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -415,7 +435,47 @@ final class VideoImport {
      * read rather than assumed -- but a container with no declared rate is not a
      * reason to refuse a clip.
      */
-    private static float frameRateOf(File clip) {
+    /**
+     * Copy the shared video into the app's storage so the trim sheet can read it.
+     *
+     * <p>A STAGING name, not the item's: the row does not exist yet -- the range is
+     * what the sheet is about to ask for -- and naming the file after an id that has
+     * not been minted would be a name the import then has to work around.
+     */
+    static File stage(Context app, Uri uri) throws Exception {
+        File staged = new File(app.getFilesDir(), "stage-import.mp4");
+        copyTo(app, uri, staged);
+        return staged;
+    }
+
+    /** The clip's frame count at the given rate, or 0 when the duration is unknown. */
+    static int frameCountOf(File clip, float fps) {
+        long us = durationUsOf(clip);
+        if (us <= 0 || fps <= 0) return 0;
+        return Math.round(us / 1_000_000f * fps);
+    }
+
+    private static long durationUsOf(File f) {
+        android.media.MediaExtractor ex = null;
+        try {
+            ex = new android.media.MediaExtractor();
+            ex.setDataSource(f.getPath());
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat fmt = ex.getTrackFormat(i);
+                String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")
+                        && fmt.containsKey("durationUs")) {
+                    return fmt.getLong("durationUs");
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (ex != null) { try { ex.release(); } catch (Throwable ignored) { } }
+        }
+        return 0L;
+    }
+
+    static float frameRateOf(File clip) {
         android.media.MediaExtractor ex = null;
         try {
             ex = new android.media.MediaExtractor();
