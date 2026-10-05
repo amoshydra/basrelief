@@ -53,6 +53,30 @@ public final class ComfyApi {
         return readString(c);
     }
 
+    /**
+     * POST /free — drop cached models and free cached memory on the server.
+     *
+     * <p>Measured, and the reason it exists: a video batch is ~4 GiB of image plus
+     * MoGe's own working set for the whole clip, and the server's cached models from
+     * whatever ran before leave no room — a 1380x2156 x 120-frame job died with
+     * "Allocation on device 0 would exceed allowed memory" while a 1080x2530 job of
+     * the same length succeeded, 9% fewer pixels inside the same ceiling. Freeing the
+     * cache before a video job buys margin for a job that is already near the edge.
+     *
+     * <p>Best-effort: a server that does not offer the route, or refuses it, must not
+     * stop an import. The job may still fit.
+     */
+    public void freeMemory() throws IOException {
+        HttpURLConnection c = open("/free", "POST");
+        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "application/json");
+        OutputStream os = c.getOutputStream();
+        os.write("{\"unload_models\":true,\"free_memory\":true}".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+        os.close();
+        readString(c);
+    }
+
     /** POST /prompt — body {prompt, client_id}; returns JSON with prompt_id. */
     public String submitPrompt(String promptJson, String clientId) throws IOException {
         HttpURLConnection c = open("/prompt", "POST");

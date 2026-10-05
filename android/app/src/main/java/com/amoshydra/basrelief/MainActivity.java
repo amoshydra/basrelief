@@ -5515,8 +5515,9 @@ public class MainActivity extends Activity {
                 VideoTrimSheet.show(MainActivity.this, staged, label, fps, frames,
                         new VideoTrimSheet.Chosen() {
                             @Override
-                            public void range(int startFrame, int frameCount, boolean whole) {
-                                runImport(api, staged, label, startFrame, frameCount);
+                            public void range(int startFrame, int frameCount, boolean whole,
+                                              int outHeight) {
+                                runImport(api, staged, label, startFrame, frameCount, outHeight);
                             }
 
                             @Override
@@ -5532,7 +5533,7 @@ public class MainActivity extends Activity {
 
     /** The import itself, once the range is known. */
     private void runImport(final ComfyApi api, final File staged, final String label,
-                           final int startFrame, final int frames) {
+                           final int startFrame, final int frames, final int outHeight) {
         final Uri uri = Uri.fromFile(staged);
         Io.run(this, new Callable<LibraryItem>() {
             @Override
@@ -5543,7 +5544,7 @@ public class MainActivity extends Activity {
                 // phases are for the USER, so they go to the UI thread from here and
                 // the worker simply blocks on the import.
                 VideoImport.run(MainActivity.this, prefs, uri, label, api,
-                        startFrame, frames,
+                        startFrame, frames, outHeight,
                         new VideoImport.Listener() {
                             @Override
                             public void phase(final String message) {

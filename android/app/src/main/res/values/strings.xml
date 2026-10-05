@@ -239,6 +239,10 @@
          picker and no resolution knob — a living photo has one axis to choose,
          the range, and everything else is the pipeline's business. -->
     <string name="trim_title">Trim the clip</string>
+    <string name="trim_resolution">Resolution</string>
+    <string name="trim_res_original">Original</string>
+    <string name="trim_res_1080">1080p</string>
+    <string name="trim_res_720">720p</string>
     <string name="trim_living_photo">Living photo</string>
     <string name="trim_whole_clip">Use the whole clip</string>
     <string name="trim_fit">Fit</string>

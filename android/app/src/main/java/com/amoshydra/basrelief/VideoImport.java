@@ -125,7 +125,7 @@ final class VideoImport {
         };
         // A regenerate passes 0, 0: the stored colour clip is ALREADY the trimmed
         // range, so regenerating its depth means running the whole of it.
-        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, 0, 0, listener,
+        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, 0, 0, 0, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -162,6 +162,7 @@ final class VideoImport {
                                         final File colourSource,
                                         final String[] names,
                                         final int startFrame, final int frames,
+                                        final int outHeight,
                                         final Listener listener,
                                         final Finisher finisher) {
         // The ROW's id, passed in. generate() used to mint its own, so a row could end
@@ -184,14 +185,32 @@ final class VideoImport {
 
         listener.phase(app.getString(R.string.video_phase_generating));
         JSONObject outputs;
+        // Declared OUTSIDE the try: the incomplete-outputs branch below needs it to
+        // ask the server WHY, and a local inside the try is out of scope there.
+        String promptId = null;
         try {
             String info = api.getObjectInfo();
             String graph = ComfyWorkflow.buildVideoWorkflow(
                     new JSONObject(info), "MoGeInference", uploadedName,
                     System.currentTimeMillis(), fps,
-                    frames > 0 ? frames : FRAME_CAP, startFrame, 0, 0);
+                    // custom_height, and the reason it is here rather than a client-side
+                    // resize: VHS_LoadVideo scales the batch as it loads, so a 720p
+                    // choice shrinks the IMAGE BATCH, MoGe's working set and all three
+                    // output clips at once. A 1380x2156 x 120-frame batch is ~4 GiB of
+                    // image plus the inference's own memory and dies on a 24 GiB card;
+                    // the same clip at 720p height is under half a gigabyte. Width stays
+                    // 0, which VHS reads as "keep the aspect".
+                    frames > 0 ? frames : FRAME_CAP, startFrame, 0, outHeight);
+            // Free the server's cached models first. A video batch is close to the
+            // card's ceiling by itself, so whatever ran before it decides whether it
+            // fits -- best effort, because a server without the route must not stop
+            // an import.
+            try {
+                api.freeMemory();
+            } catch (Exception ignored) {
+            }
             JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-" + id));
-            String promptId = submitted.getString("prompt_id");
+            promptId = submitted.getString("prompt_id");
             outputs = pollOutputs(app, api, promptId);
         } catch (Exception e) {
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
@@ -222,7 +241,15 @@ final class VideoImport {
             }
         }
         if (depthOut == null || colourOut == null) {
-            listener.failed(app.getString(R.string.video_import_failed));
+            // The outputs came back but not all of them, and the reason is on the
+            // SERVER -- the history entry carries the exception, and a bare "could not
+            // be imported" is what the user got for a CUDA out-of-memory, which says
+            // nothing about what to do next. The history is read again here because
+            // this is the one path that knows the outputs are incomplete, and the
+            // server's own words are worth more than any guess of ours.
+            String why = serverReason(api, promptId);
+            listener.failed(app.getString(R.string.video_import_failed)
+                    + (why == null ? " (the run produced no depth clip)" : ": " + why));
             return null;
         }
 
@@ -281,7 +308,7 @@ final class VideoImport {
      */
     static void run(final Context app, final SharedPreferences prefs, final Uri uri,
                     final String label, final ComfyApi api, final Listener listener) {
-        run(app, prefs, uri, label, api, 0, 0, listener);
+        run(app, prefs, uri, label, api, 0, 0, 0, listener);
     }
 
     /**
@@ -294,7 +321,8 @@ final class VideoImport {
      */
     static void run(final Context app, final SharedPreferences prefs, final Uri uri,
                     final String label, final ComfyApi api,
-                    final int startFrame, final int frames, final Listener listener) {
+                    final int startFrame, final int frames, final int outHeight,
+                    final Listener listener) {
         final String id = LibraryItem.newId();
         listener.phase(app.getString(R.string.video_phase_copying));
         final File colourSource = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
@@ -319,7 +347,7 @@ final class VideoImport {
                 LibraryItem.normalFileName(id),
         };
         LibraryItem item = generate(app, prefs, api, id, colourSource, names,
-                startFrame, frames, listener,
+                startFrame, frames, outHeight, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -331,6 +359,39 @@ final class VideoImport {
                     }
                 });
         if (item != null) listener.done(item);
+    }
+
+    /**
+     * The server's own reason for a run that produced incomplete outputs, or null.
+     *
+     * <p>Reads the history entry again and returns the first {@code execution_error}
+     * message's text, first line only — a CUDA OOM's message runs to several lines and
+     * the first one is the sentence that matters. Never throws: a reason is a bonus,
+     * not something that may replace the failure it explains.
+     */
+    private static String serverReason(ComfyApi api, String promptId) {
+        if (promptId == null) return null;
+        try {
+            JSONObject history = new JSONObject(api.getHistory(promptId));
+            if (!history.has(promptId)) return null;
+            JSONObject status = history.getJSONObject(promptId).optJSONObject("status");
+            if (status == null) return null;
+            JSONArray msgs = status.optJSONArray("messages");
+            if (msgs == null) return null;
+            for (int i = 0; i < msgs.length(); i++) {
+                JSONArray pair = msgs.optJSONArray(i);
+                if (pair == null || pair.length() < 2) continue;
+                if (!"execution_error".equals(pair.optString(0))) continue;
+                JSONObject body = pair.optJSONObject(1);
+                if (body == null) continue;
+                String m = body.optString("exception_message", null);
+                if (m == null) continue;
+                int nl = m.indexOf('\n');
+                return nl > 0 ? m.substring(0, nl) : m;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /** Wait for the run, then hand back its outputs. Blocking; the Io thread only. */

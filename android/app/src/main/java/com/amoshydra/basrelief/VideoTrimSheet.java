@@ -70,9 +70,19 @@ final class VideoTrimSheet {
     /** The loop the deepest zoom is sized against; the mockup's 2s binding loop. */
     private static final float LOOP_SECONDS = 2f;
 
-    /** Called with the chosen range, in frames, or with whole=true for all of it. */
+    /**
+     * Called with the chosen range, in frames, or with whole=true for all of it.
+     *
+     * @param outHeight the height to scale the clip to, or 0 for the source's own.
+     *                  It travels to the SERVER, which scales the batch as it loads:
+     *                  a smaller batch is less GPU memory, a shorter job and smaller
+     *                  files, and it is the one control that makes a high-resolution
+     *                  source importable at all -- a 1380x2156 x 120-frame batch died
+     *                  with "Allocation on device 0 would exceed allowed memory" while
+     *                  the same clip at 720p height is under half a gigabyte.
+     */
     interface Chosen {
-        void range(int startFrame, int frames, boolean whole);
+        void range(int startFrame, int frames, boolean whole, int outHeight);
         void cancelled();
     }
 
@@ -80,6 +90,20 @@ final class VideoTrimSheet {
     }
 
     /** The sheet's own dp: the activity's helper is on MainActivity, not Activity. */
+    /** One resolution chip: a plate when selected, an outline when not. */
+    private static void paintChip(TextView chip, boolean selected) {
+        android.graphics.drawable.GradientDrawable plate =
+                new android.graphics.drawable.GradientDrawable();
+        plate.setCornerRadius(chip.getResources().getDisplayMetrics().density * 7);
+        // setColor AFTER the stroke: a GradientDrawable clears its fill when the
+        // stroke is set, which is the trap that made a plate invisible once already.
+        plate.setStroke(Math.round(chip.getResources().getDisplayMetrics().density),
+                selected ? 0x00000000 : 0x33FFFFFF);
+        plate.setColor(selected ? 0x2EFFFFFF : 0x00000000);
+        chip.setBackground(plate);
+        chip.setTextColor(selected ? 0xFFEDEFF3 : 0x8AFFFFFF);
+    }
+
     private static int dp(Context c, int n) {
         return Math.round(n * c.getResources().getDisplayMetrics().density);
     }
@@ -124,6 +148,45 @@ final class VideoTrimSheet {
         times.addView(stepper(activity, R.string.trim_end, endText, bar, false));
         body.addView(times);
 
+        // THE RESOLUTION. It exists because a source can be too big to generate at
+        // all: the depth inference holds the whole batch, and a 1380x2156 clip of 120
+        // frames asks for ~4 GiB of image on top of its own working set. Scaling at
+        // the LOADER fixes batch, job length and file size together, and it costs the
+        // user one tap -- where the alternative was telling them their video cannot
+        // be imported.
+        final int[] outHeight = {0};
+        LinearLayout resRow = new LinearLayout(activity);
+        resRow.setOrientation(LinearLayout.HORIZONTAL);
+        TextView resLabel = new TextView(activity);
+        resLabel.setText(activity.getString(R.string.trim_resolution));
+        resLabel.setTextSize(11);
+        resLabel.setTextColor(0x8AFFFFFF);
+        resLabel.setPadding(0, 0, dp(activity, 10), 0);
+        resRow.addView(resLabel);
+        final TextView[] chips = new TextView[3];
+        final int[] heights = {0, 1080, 720};
+        for (int i = 0; i < heights.length; i++) {
+            final int idx = i;
+            TextView chip = new TextView(activity);
+            chip.setText(activity.getString(i == 0 ? R.string.trim_res_original
+                    : i == 1 ? R.string.trim_res_1080 : R.string.trim_res_720));
+            chip.setTextSize(11);
+            chip.setPadding(dp(activity, 10), dp(activity, 5), dp(activity, 10), dp(activity, 5));
+            chip.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    outHeight[0] = heights[idx];
+                    for (int j = 0; j < chips.length; j++) {
+                        paintChip(chips[j], j == idx);
+                    }
+                }
+            });
+            chips[i] = chip;
+            resRow.addView(chip);
+        }
+        paintChip(chips[0], true);
+        body.addView(resRow);
+
         final TextView estimate = new TextView(activity);
         estimate.setTextSize(12);
         estimate.setTextColor(0xB0FFFFFF);
@@ -167,14 +230,14 @@ final class VideoTrimSheet {
                 int s = bar.startFrame();
                 int f = bar.endFrame() - s;
                 sheet.dismiss();
-                onChosen.range(s, f, false);
+                onChosen.range(s, f, false, outHeight[0]);
             }
         });
         whole.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 sheet.dismiss();
-                onChosen.range(0, 0, true);
+                onChosen.range(0, 0, true, outHeight[0]);
             }
         });
 
