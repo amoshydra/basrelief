@@ -5573,6 +5573,14 @@ public class MainActivity extends Activity {
         // Async for the same reason as the wallpaper: a synchronous load stalls
         // the GL thread for the length of a full decode plus mesh build.
         renderer.loadPairAsync(img, dep, nrm);
+        // The medium, handed over on EVERY applyFiles and not only when the pair
+        // changed. The still pair has a cheap "is this on screen" test and a clip
+        // does not, so conditioning this on a pair change would leave a clip playing
+        // over a photograph that had just been selected -- the studio showing the
+        // wrong medium. Null for a photograph, which is every row without tracks,
+        // and explicit because a request never made is indistinguishable from a
+        // request for no clip.
+        renderer.requestClip(active == null ? null : active.video, getFilesDir());
         glView.requestRender();
         refreshStatus();
     }
