@@ -618,6 +618,129 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile boolean clipRequested;
 
     /**
+     * The clip currently playing, or null. GL thread only.
+     *
+     * <p><b>Separate from {@link #hasInstalled} because a clip keeps producing
+     * frames after it has arrived.</b> The still path is "install once, draw many";
+     * this is "install once, then replace the three textures every frame". So the
+     * pair is still installed -- there is still a photograph underneath, which is
+     * what the first frames before the first decode are drawn from -- and the clip
+     * overlays it rather than replacing it.
+     *
+     * <p><b>The tick is here and not in the decoder</b> for the same reason the
+     * renderer's other GL work is: {@code updateTexImage} and the blit are GL calls,
+     * and a decoder thread making them would be a context violation that happens to
+     * work until it does not.
+     */
+    private ClipPlayer clip;
+
+    /**
+     * Play this clip on top of whatever pair is installed. GL thread (queue it).
+     *
+     * @return false if the clips are not on disk, which is a POSTER state rather than
+     *         a failure: the still pair stays on screen and the sheet says why.
+     */
+    boolean startClip(com.amoshydra.basrelief.core.store.VideoTracks tracks, java.io.File filesDir) {
+        stopClip();
+        if (tracks == null || filesDir == null) return false;
+        // GLES3 only, and said out loud rather than half-attempted: the GLES2 path
+        // tessellates on the CPU into a vertex array, which a per-frame depth field
+        // cannot feed. Pretending otherwise would draw a still and call it a clip.
+        if (!GLES3) {
+            android.util.Log.w("Basrelief", "clip needs GLES3; drawing its poster instead");
+            return false;
+        }
+        clip = new ClipPlayer();
+        if (!clip.start(tracks, filesDir, GRID)) {
+            android.util.Log.w("Basrelief", "clip not playable: " + clip.error());
+            clip = null;
+            return false;
+        }
+        return true;
+    }
+
+    private com.amoshydra.basrelief.core.store.VideoTracks pendingTracks;
+    private java.io.File pendingFilesDir;
+
+    /**
+     * Ask for this clip to play on top of the pair. Any thread.
+     *
+     * <p><b>Armed, not started</b>, for the same reason {@code loadSeq} exists: a
+     * request that has not been satisfied must not name a fact about the screen. The
+     * tracks sit here until the pair lands and {@link #applyPending} swaps it in, in
+     * the same GL event as everything else -- so a request for a clip whose files are
+     * missing leaves the poster frame on screen rather than a claimed-to-be-playing
+     * clip with nothing behind it.
+     *
+     * <p>{@code null} means "a photograph, not a clip", and it is what a host passes
+     * for every row that has no tracks. That is the common case and it has to be
+     * explicit: a request never made would leave the previous clip playing over the
+     * newly selected photograph, which is the wallpaper showing the wrong medium.
+     */
+    public void requestClip(com.amoshydra.basrelief.core.store.VideoTracks tracks,
+                            java.io.File filesDir) {
+        this.pendingTracks = tracks;
+        this.pendingFilesDir = filesDir;
+        this.clipRequested = tracks != null;
+    }
+
+    /**
+     * Stop and release the clip, if any. GL thread; safe when there is none.
+     *
+     * <p>Also drops the armed request, because a clip that was cancelled mid-decode
+     * must not start later: the sequence that mattered was the decode's, and by the
+     * time it lands the user is somewhere else.
+     */
+    void stopClip() {
+        pendingTracks = null;
+        pendingFilesDir = null;
+        clipRequested = false;
+        if (clip != null) {
+            clip.stop();
+            clip = null;
+        }
+    }
+
+    /**
+     * The colour texture to draw: the clip's while one plays, this render's own
+     * otherwise.
+     *
+     * <p>Takes the render rather than closing over one, and that is the whole reason
+     * it is a method. A pair change freezes the drawn framing onto a *different*
+     * {@link Render} -- see {@code pairChangePending} -- so "the still texture" is a
+     * property of the render being drawn, not a field. Closing over one would have
+     * drawn the incoming photo with the outgoing photo's pixels for the length of a
+     * decode, which is the reported "depth arrives before the image" all over again.
+     */
+    private int clipColour(Render r) {
+        if (clip != null && clip.isRunning() && clip.colourTex() > 0) return clip.colourTex();
+        return r.textureColor;
+    }
+
+    /** The normal texture, or the render's own -- see {@link #clipColour}. */
+    private int clipNormal(Render r) {
+        if (clip != null && clip.isRunning() && clip.normalTex() > 0) return clip.normalTex();
+        return r.textureNormal;
+    }
+
+    /**
+     * The depth field the VERTEX shader samples.
+     *
+     * <p>Falls back to the render's own field, which is the texture
+     * {@link ReliefMesh} uploaded on the pair change. A clip replaces it every frame
+     * and never rebuilds geometry -- displacement is per vertex per frame in the
+     * shader, so a new depth frame is a new texture bind and nothing else. That is
+     * what keeps the "pan and orbit may not re-tessellate" invariant true: a new
+     * frame is not a gesture.
+     */
+    private int clipDepthField(Render r) {
+        if (clip != null && clip.isRunning() && clip.depthFieldTex() > 0) {
+            return clip.depthFieldTex();
+        }
+        return r.textureDepth;
+    }
+
+    /**
      * Monotonic tag for the most recently issued load.
      *
      * <p>Written wherever a request is issued -- the wallpaper requests on the
@@ -1317,6 +1440,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // photograph compare unequal to itself and repaint on every resolve.
         sourceKind = p.isClip() ? Framing.SOURCE_VIDEO : Framing.SOURCE_STILL;
         hasInstalled = true;
+        // The clip starts HERE, beside the medium it names and in the same event as
+        // the pair swap -- so there is no window in which the screen reports a clip
+        // and shows a photograph, or the reverse. A request that cannot be satisfied
+        // leaves sourceKind as it is written and keeps the poster on screen, which is
+        // the honest degradation rather than a claim.
+        if (sourceKind == Framing.SOURCE_VIDEO) {
+            if (pendingTracks != null && pendingFilesDir != null) {
+                startClip(pendingTracks, pendingFilesDir);
+            }
+        } else if (clip != null) {
+            // A photograph was selected while a clip was playing. Stopping it is not
+            // tidiness: leaving it running would keep three decoders and three
+            // textures alive behind a picture that is not using them.
+            stopClip();
+        }
         // The wait is over in the same event that swapped the pair, so the live
         // framing (the new item's, applied before the decode landed) starts
         // reaching the screen only now -- with the mesh it belongs to.
@@ -1600,6 +1738,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         boundMesh = null;
         hasInstalled = false;
         loadedOnce = false;
+
+        // A new context means new GL names, so every cached one is gone -- including
+        // the clip's three targets and its three SurfaceTextures. Same rule as
+        // hasInstalled, one level out: keeping them would make reloadFromPrefs see a
+        // pair it thinks is installed, into a context holding no texture at all, and
+        // the clip would hand frames to deleted names. The wallpaper loses its
+        // context routinely, because the system tears the engine down and rebuilds it.
+        stopClip();
 
         reloadFromPrefs();
     }
@@ -2056,6 +2202,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // NOTE: there is deliberately NO frame-rate gate here. See the note on
         // FPS_NORMAL below before adding one back.
 
+        // The clip's frames first, before anything reads a texture: updateTexImage and
+        // the blit are what make this frame's colour, depth and normals exist, and a
+        // draw that ran ahead of them would show the previous frame's depth against
+        // this frame's colour -- a relief that does not match its picture.
+        if (clip != null && clip.isRunning()) clip.tick();
+
         recomputeScale();
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
         lastFrameNanos = now;
@@ -2157,8 +2309,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uShadowLift, fr.shadowLift);
         GLES20.glUniform1f(uFade, alpha);
 
+        // The clip's textures when one is playing, the still's otherwise. Three
+        // substitutions and nothing else about the draw changes -- the shaders, the
+        // grid and the camera are already per-frame, which is why a clip needs no
+        // re-tessellation at all.
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureColor);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipColour(r));
         GLES20.glUniform1i(uColor, 0);
 
         // The supplied normal map, or the default texture when there is none.
@@ -2168,9 +2324,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and unit 1 on GLES2.
         int normalUnit = GLES3 ? 2 : 1;
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + normalUnit);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureNormal > 0 ? r.textureNormal : 0);
+        int normalTex = clipNormal(r);
+        // A clip's normal track is OPTIONAL, exactly as a still's normal map is, and
+        // uHasNormal is what makes the fragment shader choose the flat plane. A name
+        // of 0 is never sampled as a normal and never a success.
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, normalTex > 0 ? normalTex : 0);
         GLES20.glUniform1i(uNormal, normalUnit);
-        GLES20.glUniform1f(uHasNormal, r.textureNormal > 0 ? 1f : 0f);
+        GLES20.glUniform1f(uHasNormal, normalTex > 0 ? 1f : 0f);
 
         if (GLES3) {
             // The static grid, bound fresh every draw: two pointer calls into
@@ -2179,7 +2339,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glUniform1f(uGrid, GRID);
             GLES20.glUniform1f(uAspect, r.aspect);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureDepth);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
             GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
             GLES20.glEnableVertexAttribArray(aPosition);

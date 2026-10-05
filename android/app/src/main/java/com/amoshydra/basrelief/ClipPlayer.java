@@ -1,0 +1,311 @@
+package com.amoshydra.basrelief;
+
+import android.graphics.SurfaceTexture;
+import android.opengl.GLES20;
+
+import com.amoshydra.basrelief.core.render.ReliefMesh;
+import com.amoshydra.basrelief.core.store.VideoTracks;
+
+import java.io.File;
+
+/**
+ * A clip playing: three decoders, three surfaces, one shared clock.
+ *
+ * <p><b>Everything about the sync lives here, and none of it lives in the
+ * decoders.</b> The decoders gate themselves on absolute time; what makes them
+ * <i>agree</i> is that they are handed one clock object and the same lead. Two
+ * decoders with two clocks is not a sync mechanism at all, it is two pictures.
+ *
+ * <p><b>The lead is equal for all three and it is a policy, not a tuning
+ * constant.</b> The renderer latches the newest frame at or before
+ * {@code clock + lead}, so two different leads are two different frame indices by
+ * construction. Measured with 400 ms against 120 ms: a steady 280 ms of skew that
+ * read as a sync bug and was nothing of the kind.
+ *
+ * <p><b>Teardown stops the decoders before the surfaces are released</b>, in that
+ * order. A decoder released the other way round hands a frame to a
+ * {@link SurfaceTexture} whose GL name has already been deleted, which is a black
+ * surface and no exception anywhere.
+ */
+final class ClipPlayer {
+
+    private static final String TAG = "Basrelief";
+
+    /**
+     * How far ahead of the clock a frame may be released. Equal for every decoder.
+     *
+     * <p>Measured at 120 ms with all streams gated identically: {@code skew=40000us}
+     * — one frame interval — and {@code loops=4/4} after four cycles.
+     */
+    private static final long LEAD_US = 120_000L;
+
+    private ClipDecoder color, depth, normal;
+    private ClipBlitter blit;
+
+    private long clockStartNanos;
+    private int videoW, videoH;
+    private boolean fullRange = true;
+    private boolean running;
+    private volatile boolean framesArrived;
+    private String error;
+
+    /** The colour texture the fragment shader samples. 0 until started. */
+    int colourTex() {
+        return blit == null || blit.colour == null ? 0 : blit.colour.tex2d;
+    }
+
+    /** The float depth field the VERTEX shader samples. 0 until started. */
+    int depthFieldTex() {
+        return blit == null || blit.depth == null ? 0 : blit.depth.tex2d;
+    }
+
+    /** The normal texture, or 0 for a flat-lit clip. */
+    int normalTex() {
+        return blit == null || blit.normal == null ? 0 : blit.normal.tex2d;
+    }
+
+    boolean hasNormal() {
+        return normal != null;
+    }
+
+    boolean isRunning() {
+        return running;
+    }
+
+    String error() {
+        return error;
+    }
+
+    int videoWidth() {
+        return videoW;
+    }
+
+    int videoHeight() {
+        return videoH;
+    }
+
+    /** One line for the log: per-track state, the skew and the loop counts. */
+    String stats() {
+        if (color == null) return "not started";
+        return "colour[" + color.state() + " loops=" + color.loops() + "]"
+                + " depth[" + depth.state() + " loops=" + depth.loops() + "]"
+                + " skew=" + (Math.abs(color.lastAbsPts() - depth.lastAbsPts()) / 1000L) + "ms"
+                + " range=" + color.rangeName();
+    }
+
+    /**
+     * Start playing one clip. GL thread.
+     *
+     * @param grid the relief grid, so the depth field is exactly the texture the
+     *             vertex shader samples — {@code GRID + 1}, because the vertex at
+     *             grid {@code (gx, gy)} reads texel {@code (gx, gy)}.
+     * @return false if the clips could not be opened, which is a <b>poster</b> state
+     *         rather than a failure: the photograph is still there.
+     */
+    boolean start(VideoTracks tracks, File filesDir, int grid) {
+        stop();
+        // Through VideoTracks' OWN resolvers, not a second call to PrefFiles. Those
+        // are the pair invariant's other half -- playable() asks the same question one
+        // layer out -- and resolving here as well would be a second derivation of
+        // which file a stored name means.
+        File cf = tracks.colorFile(filesDir);
+        File df = tracks.depthFile(filesDir);
+        File nf = tracks.hasNormalTrack() ? tracks.normalFile(filesDir) : null;
+        if (cf == null || df == null || !cf.exists() || !df.exists()) {
+            error = "clip files missing";
+            return false;
+        }
+
+        // The blit radius is the production CPU constant, converted to field texels.
+        // One blur of one radius: two would give two surfaces that differ for no
+        // visible reason.
+        blit = new ClipBlitter(Math.max(1,
+                Math.round(grid * ReliefMesh.DEPTH_BLUR_FRACTION)));
+        blit.create();
+
+        long clipUs = durationUs(cf);
+        clockStartNanos = System.nanoTime();
+
+        color = new ClipDecoder(cf.getPath(), "colour", clipUs);
+        depth = new ClipDecoder(df.getPath(), "depth", clipUs);
+        // The normal track is OPTIONAL and its absence is not a failure: the clip is
+        // whole without it, and the only thing it changes is whether the relief is
+        // shaded or lit as a plane. Same rule as a still's missing normal map.
+        if (nf != null && nf.exists()) normal = new ClipDecoder(nf.getPath(), "normal", clipUs);
+
+        // The surfaces have to exist before the codecs are configured, so the blitter's
+        // targets are allocated first and bound to their SurfaceTextures after.
+        // Sizes come from the container, not from the field: colour and normal are
+        // shown at their own size and only depth is resampled to the grid.
+        probeSize(cf);
+        blit.colour = ClipBlitter.makeRgba(Math.max(1, videoW), Math.max(1, videoH));
+        blit.depth = ClipBlitter.makeField(grid + 1);
+        if (normal != null) {
+            int nw = videoW, nh = videoH;
+            probeSize(nf);
+            blit.normal = ClipBlitter.makeRgba(Math.max(1, nw), Math.max(1, nh));
+            probeSize(cf); // restore: probeSize is a shared reader
+        }
+        blit.bindOes(blit.colour);
+        blit.bindOes(blit.depth);
+        if (blit.normal != null) blit.bindOes(blit.normal);
+
+        color.setSurface(blit.colour.surface());
+        depth.setSurface(blit.depth.surface());
+        if (blit.normal != null) normal.setSurface(blit.normal.surface());
+
+        // ONE clock, and the SAME lead for all three. See the class note.
+        ClipDecoder.Clock clock = new ClipDecoder.Clock() {
+            @Override
+            public long nowUs() {
+                return (System.nanoTime() - clockStartNanos) / 1000L;
+            }
+        };
+        color.setClock(clock);
+        color.setLeadUs(LEAD_US);
+        depth.setClock(clock);
+        depth.setLeadUs(LEAD_US);
+        if (normal != null) {
+            normal.setClock(clock);
+            normal.setLeadUs(LEAD_US);
+        }
+
+        color.start();
+        depth.start();
+        if (normal != null) normal.start();
+        running = true;
+        fullRange = color.fullRange();
+        android.util.Log.i(TAG, "clip started " + videoW + "x" + videoH
+                + " grid=" + grid + " normal=" + (normal != null) + " leadUs=" + LEAD_US);
+        return true;
+    }
+
+    /**
+     * Pull the newest decoded frame of each track and blit it into its target.
+     * GL thread, once per drawn frame.
+     *
+     * <p><b>Updates before blits</b>, because a SurfaceTexture's transform matrix is
+     * only valid once the frame has been handed over. Reading it earlier draws a
+     * frame rotated by a stale matrix, which looks exactly like a texture orientation
+     * bug and is not one.
+     */
+    void tick() {
+        if (!running || blit == null) return;
+        if (blit.colour.st != null && blit.colour.st.getTimestamp() == 0 && !framesArrived) {
+            // Nothing decoded yet. Returning is correct: the first frames arrive tens
+            // of ms after start(), and blocking here would stall the GL thread on a
+            // decoder that is about to deliver anyway.
+            return;
+        }
+        blit.update(blit.colour);
+        blit.update(blit.depth);
+        if (blit.normal != null) blit.update(blit.normal);
+
+        // Colour: a straight copy. The sampler does the YUV to RGB here, which is
+        // where it is free.
+        blit.blit(blit.colour, blit.program(ClipBlitter.COPY), 1f, 0, 0);
+
+        // Depth: the box blur, into the float field the vertex shader reads. The
+        // tap count is the divisor, so rangeFix is only about the colour RANGE --
+        // a depth clip written full-range (which ours is) must not be expanded again.
+        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_DEPTH), 1f,
+                1f / Math.max(1, blit.depth.w), 1f / Math.max(1, blit.depth.h));
+
+        if (blit.normal != null) {
+            blit.blit(blit.normal, blit.program(ClipBlitter.COPY_SCALED), 1f, 0, 0);
+        }
+        framesArrived = true;
+    }
+
+    /**
+     * Stop and release everything. GL thread, and safe to call twice.
+     *
+     * <p>Decoders first, surfaces second, GL names last. Every other order here hands
+     * a frame to something that no longer exists.
+     */
+    void stop() {
+        if (color != null) {
+            color.stop();
+            color = null;
+        }
+        if (depth != null) {
+            depth.stop();
+            depth = null;
+        }
+        if (normal != null) {
+            normal.stop();
+            normal = null;
+        }
+        if (blit != null) {
+            release(blit.colour);
+            release(blit.depth);
+            release(blit.normal);
+            blit = null;
+        }
+        running = false;
+        framesArrived = false;
+    }
+
+    private static void release(ClipBlitter.Channel c) {
+        if (c == null) return;
+        c.st.release();
+        if (c.oesName != 0) GLES20.glDeleteTextures(1, new int[]{c.oesName}, 0);
+        GLES20.glDeleteTextures(1, new int[]{c.tex2d}, 0);
+        GLES20.glDeleteFramebuffers(1, new int[]{c.fbo}, 0);
+    }
+
+    /** The colour track's own duration, so a loop can be placed on the clock. */
+    private static long durationUs(File f) {
+        android.media.MediaExtractor ex = null;
+        try {
+            ex = new android.media.MediaExtractor();
+            ex.setDataSource(f.getPath());
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat fmt = ex.getTrackFormat(i);
+                String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/") && fmt.containsKey("durationUs")) {
+                    return fmt.getLong("durationUs");
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (ex != null) {
+                try { ex.release(); } catch (Throwable ignored) { }
+            }
+        }
+        return 0L;
+    }
+
+    /**
+     * Read a track's dimensions into {@link #videoW}/{@link #videoH}.
+     *
+     * <p>Deliberately a reader rather than a getter: the targets have to be allocated
+     * before the codecs can be configured, and the only source for a track's size is
+     * the container.
+     */
+    private void probeSize(File f) {
+        android.media.MediaExtractor ex = null;
+        try {
+            ex = new android.media.MediaExtractor();
+            ex.setDataSource(f.getPath());
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat fmt = ex.getTrackFormat(i);
+                String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    if (fmt.containsKey(android.media.MediaFormat.KEY_WIDTH)) {
+                        videoW = fmt.getInteger(android.media.MediaFormat.KEY_WIDTH);
+                    }
+                    if (fmt.containsKey(android.media.MediaFormat.KEY_HEIGHT)) {
+                        videoH = fmt.getInteger(android.media.MediaFormat.KEY_HEIGHT);
+                    }
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (ex != null) {
+                try { ex.release(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+}

@@ -91,7 +91,19 @@ final class ClipBlitter {
             "  gl_FragColor = vec4(texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb * uRangeFix, 1.0);\n" +
             "}\n";
 
+    /**
+     * The three blit programs, named by what they DO rather than left as ints.
+     *
+     * <p>{@link ClipPlayer} picks one per channel, and a bare int would let it pick
+     * the depth box for colour -- which compiles, links, and blurs a colour frame
+     * into a grey one with no error anywhere.
+     */
+    static final int COPY = 0, BLUR_DEPTH = 1, COPY_SCALED = 2;
     private int progColour, progDepth, progPlain;
+
+    int program(int which) {
+        return which == BLUR_DEPTH ? progDepth : which == COPY_SCALED ? progPlain : progColour;
+    }
     private int aPos, aUV;
     private FloatBuffer quadPos, quadUv;
     private int fbo = -1;
