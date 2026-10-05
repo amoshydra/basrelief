@@ -187,7 +187,15 @@ final class LibraryStore {
         LibraryItem item = lib.find(id);
         if (item == null) return lib;
         Library next = lib.withItem(editor.edit(item));
-        saveNow(prefs, next);
+        // apply(), not commit(). A per-item edit is a control release, and commit()
+        // was measured at 33-430ms of BLOCKED UI THREAD depending on the write queue
+        // -- reported as "releasing a control freezes the UI". The serialisation and
+        // the in-memory update still happen here (milliseconds); only the fsync moves
+        // to the framework's background writer. The writes that keep commit() are the
+        // ones whose loss would STRAND the user -- add, remove, select -- because a
+        // resurrected deleted photo or a selection pointing at nothing is worse than
+        // a nudged slider lost to a crash.
+        save(prefs, next);
         return next;
     }
 

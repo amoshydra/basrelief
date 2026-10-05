@@ -4,6 +4,7 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.Library;
@@ -647,7 +648,17 @@ public class MainActivity extends Activity {
             new SharedPreferences.OnSharedPreferenceChangeListener() {
                 @Override
                 public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-                    cachedState = null;
+                    // THE INDEX KEYS ONLY, and they are exactly three. Prefs carry far
+                    // more than the index -- gyro_status and wallpaper_debug are
+                    // written every second by the tilt sleep and the wallpaper -- and
+                    // clearing on those re-parsed the whole index every second, which
+                    // is the lag this cache exists to remove. The keys are listed here
+                    // because they ARE the index transport: Library, Config and
+                    // Playlists each own one, and a new one must be added here.
+                    if (Library.KEY.equals(key) || Config.KEY.equals(key)
+                            || Playlists.KEY.equals(key)) {
+                        cachedState = null;
+                    }
                 }
             };
 
