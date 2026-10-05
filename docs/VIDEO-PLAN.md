@@ -135,15 +135,15 @@ ceiling it has to fit under is the measured **60 fps at 1440×3120** (§5).
 one frame moves to import; the blur stays at runtime because it is a function of
 the frame **and** of the quantisation that frame passed through.
 
-**Conflicts left standing on purpose.** Step 5 contradicts §1 and §5 as they
-are written, which still describe a fragment-shader relief with normals derived
-from their neighbours, and it contradicts `MOGE-OUTPUTS-PLAN.md` §5, which rules
-that a video stores no normal — 3× the bytes, 4:2:0 corrupts a vector field, and
-a third decoder to hold in lockstep. `AGENTS.md` and the shipping renderer settle
-the first question the other way (GLES3 vertex displacement, the normal as a
-texture), and §4 makes the third ring a non-issue: it is one more ring asked the
-same question with the same number. §1, §5 and `MOGE-OUTPUTS-PLAN.md` §5 are
-what need correcting, deliberately and together.
+**These conflicts are now resolved, deliberately and together (2026-10-05).**
+Step 5 contradicted §1 and §5, which described a fragment-shader relief with
+normals derived from their neighbours, and it contradicted `MOGE-OUTPUTS-PLAN.md`
+§5, which ruled that a video stores no normal. `AGENTS.md` and the shipping
+renderer settle the first question the other way — GLES3 vertex displacement, the
+normal as a texture, and **no derivation anywhere** — and §4 makes the third ring
+a non-issue: one more ring asked the same question with the same number. All three
+sites have been edited rather than left standing, and `MOGE-OUTPUTS-PLAN.md` now
+carries a status banner recording that its whole derivation premise is void.
 
 **Resolved 2026-10-05, deliberately.** The two stale claims flagged above have
 now been edited rather than left standing: §1's *"live displacement in a vertex
@@ -280,12 +280,31 @@ compromise forced by elegance: it is the only combination measured to work.
 ### What the format decisions are, and what they cost
 
 - **4:4:4 for the normals video, and it is affordable.** `MOGE-OUTPUTS-PLAN.md`
-  §5 is right that 4:2:0 corrupts a vector field, because U and V carry X and Y.
+  §5 is right that 4:2:0 corrupts a vector field — **chroma is kept at half
+  resolution and for a normal map the chroma axes carry the in-plane direction**,
+  so the chroma detail that is discarded is the direction itself.
   Its open question — *"4:4:4, which hardware decoders do not universally
   offer"* — is now **measured on two GPUs**: `High 4:4:4 Predictive` configured
   and decoded on an **Adreno 630** (OnePlus 6T, sdk 35) and a **Mali-G710**
-  (Pixel 7 Pro, sdk 37). Cost on a 4 s / 100-frame clip: **2.87 MB against
-  colour's 1.17 MB.**
+  (Pixel 7 Pro, sdk 37).
+- **Store the normal track GRID-SIZED, like the depth track — not colour-sized.**
+  This is the correction that matters, and it came from re-reading
+  `MOGE-OUTPUTS-PLAN.md` §5's byte objection rather than answering it. Measured on
+  the same 4 s / 100-frame clip:
+
+  | file | bytes | resolution |
+  |---|---:|---|
+  | normal, colour-sized (wrong) | 2 872 721 | 720×1366 |
+  | **normal, grid-sized** | **301 043** | 256×256 |
+  | colour | 1 174 617 | 720×1366 |
+  | depth | 56 431 | 256×256 |
+
+  **9.5× smaller**, and the byte objection stops being an objection at all: the
+  shading track is 26% of the colour clip. The first attempt here recorded
+  *"2.87 MB, affordable"* — an honest number for the wrong format, because §3 step
+  5's *"timed like the depth"* was read as timing only when it means **resolution
+  too**. Nothing is lost: the mesh samples 257² points and the fragment shader wants
+  a smooth direction field, not fine detail.
 - **Store the depth field ASPECT-MATCHED to the grid, not square.** The stored
   field's dimensions are free — `resample(src, dw, dh, …)` indexes it by its own
   `dw`/`dh` in normalised uv — while the *lattice* must be square, because

@@ -1,5 +1,35 @@
 # Using MoGe's depth, normals and mask — the plan
 
+> ## STATUS 2026-10-05 — the derivation premise below is VOID
+>
+> **This document is premised on a renderer that no longer exists.** It was written
+> 2026-10-04, and its central question was *"what should a photograph with depth but
+> no normal do?"* — answered throughout as **derive the normal from the depth
+> gradient**. `c7c2578` removed that path from both backends, and `AGENTS.md` now
+> forbids it outright: *shading is supplied, never derived… do not reintroduce a
+> derivative; that is the banding artifact the float blur exists to hide.*
+>
+> **So every "derive" below is the record of a design that was considered and
+> rejected, not a rule to implement.** They are left in place deliberately: this file
+> is a design record and the reasoning is worth more than a tidy rewrite, and several
+> passages say *why* derivation was tempting. Read them as history.
+>
+> **The operative rule now, stated once so it cannot be misread:**
+>
+> | situation | what happens |
+> |---|---|
+> | normal track/file present | **shaded** from the supplied normal |
+> | depth present, **no** normal | **flat lit** — a deliberate, *reported* state |
+> | normal present, no depth | the normal is **inert** (it predicts the surface for one depth map) |
+> | a clip, before the decoder has reported | **`UNREAD`** — claims nothing |
+>
+> `NormalSource` has **no `DERIVED` kind**, deliberately, so nothing can inherit one;
+> `VideoSource` and `DepthSource` each have their own `UNREAD`. Nothing is derived in
+> any path.
+>
+> The operative statements have been corrected. The historical ones have not, and are
+> marked where a reader could otherwise implement from them.
+
 Written 2026-10-04. A design document, not code. It decides how the three
 useful `MoGeRender` outputs reach the app, and it is written to be the interface
 between two changes happening in parallel: the still graph moving to MoGe
@@ -39,7 +69,8 @@ quantisation to smooth and no noise to amplify. The banding's *cause* is
 removed, not attenuated.
 
 **But that only holds where MoGe made the depth.** A user's own imported depth
-file has no predicted normal, so the derived path must stay, and stay correct.
+file has no predicted normal, so the row is **flat lit** — a deliberate reported
+state. *It did not "stay": `c7c2578` removed the derived path entirely.*
 Everything below is about keeping those two worlds from drifting apart.
 
 ---
@@ -67,14 +98,15 @@ with neither in-flight conversion (it runs on the server plus one photo).
 ## 1. Storage — a third bare filename, scoped to depth
 
 **Verdict: add `normalName` to `LibraryItem`, exactly parallel to `depthName`.**
-Null means "derive the normal from depth", which is precisely what every
+Null means **flat lit**, reported as such. It did once mean "derive from depth",
+which is precisely what every
 existing item already does. So the migration is a no-op and **`Library.VERSION`
 stays 3**; an old build reading a new blob ignores the unknown `normal` key and
-derives, which is the right degradation, and a new build reading an old blob
-reads null and derives.
+was the right degradation on 2026-10-04 and is **banned now**; the degradation is
+flat lit, and a new build reading an old blob reads null and is flat lit.
 
 Do **not** infer "has normals" from provenance (a "came from MoGe" flag). The
-renderer reads a *file*; if the file is absent the renderer must derive. A flag
+renderer reads a *file*; if the file is absent the renderer is **flat lit**. A flag
 that says normals exist while the file does not is the "asset with zero
 references" failure `AGENTS.md` already records twice — a thing that looks
 right in a build log and renders flat.
@@ -91,12 +123,13 @@ right in a build log and renders flat.
 
 The image+depth pair stays the renderable pair, and a missing half still renders
 FLAT with a status tell. **Normals are a modifier of the depth half, not a peer
-of it.** Missing normals must *degrade to the derived path*, which is a correct,
+of it.** Missing normals **are flat lit**. (This said *degrade to the derived path*,
+which was correct then and is forbidden now.) The degradation is still correct —
 shipping render — not a flat one. So:
 
 - **Failure mode of a missing normal file: you get banding back.** Honest and
   self-healing, because `PrefFiles.resolve` returns null for a file that is not
-  there and the renderer then derives. No row is dropped, because
+  there and the renderer is then **flat lit**. No row is dropped, because
   `retainExisting` only tests the image file (and it should stay that way: a
   missing normal is not grounds to lose the photo).
 - **The failure mode to design against is not a missing normal but a *stale*
@@ -139,17 +172,21 @@ the renderer drew the embedded map). One function, and a test.
 
 The marble bust stays without a normal. It is only 4-level quantised and hides
 artifacts by construction (`AGENTS.md`), so it is the *wrong* photo on which to
-demonstrate the improvement. Its normal is legitimately null → derived, which is
+demonstrate the improvement. Its normal is legitimately null → **flat lit**, which is
 also the proof that adding the field changes nothing on upgrade.
 
 ---
 
 ## 2. The branch — one source of truth, one shading path
 
-The proposed rule, "use MoGe's normals when the depth came from MoGe; derive
-otherwise", is right. The risk is that "derive" already exists in two places
-(CPU faces, GPU central differences) and "supply" would make three. Make it
-one.
+The proposed rule, "use MoGe's normals when the depth came from MoGe; **flat lit
+otherwise**", is right. (It read *derive otherwise*, which `AGENTS.md` now forbids.)
+
+The risk that was named here — *"'derive' already exists in two places (CPU faces,
+GPU central differences) and 'supply' would make three"* — turned out to be the
+**strongest** argument for the change rather than an argument against it: three
+sources of a normal is one too many whichever way it went, and **two of them were
+deleted** rather than reconciled.
 
 **Verdict: resolve the source once per load into a `NormalSource` carried on the
 render, and give the shader exactly one way to consume a normal — a normal map.**
@@ -166,7 +203,8 @@ Concretely, the strongest form collapses both worlds into the same artifact:
 
 Then the shader samples `uNormal` at `vUv` and lights it. There is no
 `if (hasNormals)` in the shading code and **no second lighting path to drift**.
-The derived formula lives in `:core`, where `ReliefMeshGoldenTest` can pin it,
+*There was to be a derived formula in `:core`, where `ReliefMeshGoldenTest` could
+pin it.* There is not one:
 instead of being re-expressed in GLSL. The GLES3 vertex shader's
 central-difference code is then retired for stills rather than duplicated. The
 upload cost is trivial next to the 12.6 MB mesh the GLES3 path already deleted:
@@ -179,8 +217,9 @@ belongs is the inversion clamp in §3, which is a cheap safety net, not the
 primary path.
 
 **The one place a real branch is unavoidable** is video: per-frame CPU baking is
-too expensive, so the video fragment shader must derive from the depth texture
-itself. Until then, pin the GLSL derivative and the `:core` derivative with one
+too expensive, so the video fragment shader would have had to derive from the depth
+texture itself. **It does not, and must not** — there is no GLSL derivative to pin and
+no `:core` derivative to keep consistent with it.
 golden test, so the "two places" are provably equal rather than assumed.
 
 ### The correction supplied normals need
@@ -209,7 +248,8 @@ For the GLES3 agent, the interface is small and should be stated, not
 discovered:
 
 - `Pending` carries the decoded normal (or null) beside `gray`.
-- `Render` carries `textureNormal` (0 = derive). `isDrawable()` is unchanged:
+- `Render` carries `textureNormal` (**absent = flat lit**; it did read `0 = derive`,
+  and no `DERIVED` kind exists to inherit). `isDrawable()` is unchanged:
   a normal is never required to draw.
 - `showingSamePair(image, depth)` becomes `showingSamePair(image, depth,
   normal)` and `PairCache` keys on all three. This is the `hasInstalled` trap
@@ -217,7 +257,8 @@ discovered:
   normal arrives later is "already showing" and the new texture is never
   uploaded.
 - The status line distinguishes `custom image + MoGe depth + normals` from
-  `+ depth (normals derived)`. `AGENTS.md`: an unreferenced asset is
+  `+ depth (**flat lit** — it read "normals derived")`. `AGENTS.md`: an
+  unreferenced asset is
   indistinguishable from a working one in a build log; the status line is the
   tell.
 
@@ -299,7 +340,7 @@ What it does at import:
    than flatten: a constant plate is still a plate, and a real foreground object
    wrongly marked should sink toward its surroundings, not become a shelf.
 4. **Clean the normals**: replace the supplied normal at `invalid` pixels with
-   the normal derived from the cleaned depth, so the shipped normal map is
+   the normal produced from the cleaned depth, so the shipped normal map is
    internally consistent with the shipped depth.
 5. Blur in float (unchanged), tessellate, save depth + normal. Discard the
    mask.
@@ -319,17 +360,20 @@ the mask is still import-only.
 
 A normal is 3 channels against depth's 1, so **3× the bytes as RGB, 4× if
 padded to RGBA** — and, worse for video, the wrong kind of data for a camera
-codec: H.264/HEVC 4:2:0 subsamples two of the three components to half
-resolution, which corrupts a vector field. Preserving it needs 4:4:4, which
+codec: H.264/HEVC 4:2:0 keeps luma at full resolution and **subsamples
+chroma to half**, and for a normal map the chroma axes carry the in-plane direction —
+so half the chroma detail discarded is half the vector field. Preserving it needs 4:4:4, which
 hardware decoders do not universally offer.
 
 > **Updated 2026-10-05 — the 4:4:4 question is now measured, and the verdict
 > below is wrong for video.** `High 4:4:4 Predictive` configured and decoded on
 > an **Adreno 630** (OnePlus 6T, sdk 35) and a **Mali-G710** (Pixel 7 Pro,
 > sdk 37) — the two GPUs this app actually runs on. Measured cost on a 4 s,
-> 100-frame clip: **2.87 MB, against colour's 1.17 MB.** That is a real 2.4× on
-> the shading stream and it is *affordable at living-photo durations*, which is
-> the only regime §5 was pricing.
+> 100-frame clip, **GRID-SIZED rather than colour-sized: 301 043 bytes, against
+> colour's 1 174 617** — the shading track is 26% of the colour clip. The
+> colour-sized version of the same frames is 2 872 721, so grid-sizing is **9.5×**,
+> and the byte objection disappears rather than being answered. §5's own table
+> listed "normal at grid 257², 3ch" and then did not use it.
 >
 > So **video does store a normal**, as `VIDEO-PLAN.md` §3 step 5 says, and the
 > decision is the same one §5 already reaches for stills.
@@ -369,7 +413,7 @@ resident, which is why `VIDEO-PLAN` §3 downscales at import.
 
   | reason | still true? |
   |---|---|
-  | 3× the bytes | **yes, and affordable** — 2.87 MB vs colour's 1.17 MB on a 4 s clip, at living-photo durations |
+  | 3× the bytes | **no longer true once grid-sized** — 301 KB vs colour's 1.17 MB on a 4 s clip. It *is* 3× at colour size, which is why the track is stored at the grid like the depth |
   | 4:2:0 corrupts a vector field | **yes** — which is why it must be **`yuv444p`**, not a default encode |
   | a third decoder to hold in lockstep | **answered**: §4's clock gate is the primitive, and a third stream is just a third decoder on the same gate and the same latch tick |
   | *(new)* decoder support for 4:4:4 | **measured on both target GPUs** — Adreno 630, Mali-G710 |
@@ -413,7 +457,8 @@ field with no reader is a bug, not a placeholder).
      `uIntensity` correction and the vertical flip.
    - `showingSamePair`/`PairCache` learn the third name; status line gains the
      tell.
-   The `:core` normal derivation should be consolidated here if the renderer
+   *There was a `:core` normal derivation to consolidate here.* There is none — the
+   path was removed rather than moved:
    conversion has not already done it, so the still path has one formula.
 
 3. **Consistency clamp/ gate, only if §0.2 showed a visible inversion.** The
