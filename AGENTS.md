@@ -711,31 +711,27 @@ has run.**
   server without the whole pipeline offers nothing and an ordinary node on the
   same server is untouched; a test asserts the two shapes have different node
   counts and different `SaveImage` sources so an edit cannot collapse them.
-- `ModelRankingTest` — the model chooser's ordering: the most recently used
-  models first, then discovery order. It exists because the dialog preferred the
-  first MoGe entry it found, so the default checkpoint followed the server's
-  listing order — the device selected MoGe 2 while MoGe 3 sat unselected. There is
-  no - **The VIDEO shape is a bookend on the same pipeline, and its node COUNT
-    proves nothing.** `VHS_LoadVideoPath → MoGeInference → MoGeRender(depth /
-    normal_opengl) → VHS_VideoCombine` each. It is four lines of new wiring rather
-    than a new pipeline because **`MoGeInference.image` takes an IMAGE, and an IMAGE
-    is a batch** — a clip's frames go in as one node and come back as one geometry,
-    where the alternative (extract frames, run the still graph per frame) costs one
-    round trip, one prompt and one model load per frame for a clip that is dozens of
-    frames. One inference serves the whole clip, and it was worth checking the
-    server's `/object_info` rather than assuming: the whole VHS pack is installed.
-    Three things it deliberately does **not** inherit from the still builders. The
-    loader's **output 0** is pinned by test, because the loader has two
-    `IMAGE`-typed outputs and output 1 is the MASK — feeding that to MoGe gives a
-    plausible depth map of nothing with no error anywhere. The render factory takes
-    **which inference it reads** as a parameter, because sharing one factory across
-    shapes is the whole point (so a scalar the server adds reaches both) and a
-    hardcoded still-shape id wires the video's depth to a node that is not in the
-    graph. And the combiner's format is forced to **h264**, not the format list's
-    first entry, which is a GIF — a GIF has no reliable frame timing, which would put
-    the depth a frame off the colour for the whole clip. The loader and both
-    combiners are given the **same** rate: it is the one number whose disagreement
-    slides the depth against the colour.
+  - **The VIDEO shape is a bookend on the same pipeline, and its node COUNT
+      proves nothing.** `VHS_LoadVideoPath → MoGeInference → MoGeRender(depth /
+      normal_opengl) → VHS_VideoCombine` each. It is four lines of new wiring rather
+      than a new pipeline because **`MoGeInference.image` takes an IMAGE, and an IMAGE
+      is a batch** — a clip's frames go in as one node and come back as one geometry,
+      where the alternative (extract frames, run the still graph per frame) costs one
+      round trip, one prompt and one model load per frame for a clip that is dozens of
+      frames. One inference serves the whole clip, and it was worth checking the
+      server's `/object_info` rather than assuming: the whole VHS pack is installed.
+      Three things it deliberately does **not** inherit from the still builders. The
+      loader's **output 0** is pinned by test, because the loader has two
+      `IMAGE`-typed outputs and output 1 is the MASK — feeding that to MoGe gives a
+      plausible depth map of nothing with no error anywhere. The render factory takes
+      **which inference it reads** as a parameter, because sharing one factory across
+      shapes is the whole point (so a scalar the server adds reaches both) and a
+      hardcoded still-shape id wires the video's depth to a node that is not in the
+      graph. And the combiner's format is forced to **h264**, not the format list's
+      first entry, which is a GIF — a GIF has no reliable frame timing, which would put
+      the depth a frame off the colour for the whole clip. The loader and both
+      combiners are given the **same** rate: it is the one number whose disagreement
+      slides the depth against the colour.
   - **A guard that prints "matches" while exiting 1 is worse than no guard, and
     this one did.** `checkTestCounts` logged "matches AGENTS.md" from the *class*
     check's happy path while the *test* check had already pushed a failure, so a
@@ -750,7 +746,12 @@ has run.**
     and a guard that holds for the wrong reason is one that cannot fail. It pins the
     CLASSES instead — no `LoadImage`, no `SaveImage`, two combines, exactly one
     inference.
-  - **Version ranking and no model named in `:core`: `rank` is a permutation, so a
+
+- `ModelRankingTest` — the model chooser's ordering: the most recently used
+  models first, then discovery order. It exists because the dialog preferred the
+  first MoGe entry it found, so the default checkpoint followed the server's
+  listing order — the device selected MoGe 2 while MoGe 3 sat unselected. There is
+  no version ranking and no model named in `:core`: `rank` is a permutation, so a
   history entry the server no longer offers is **skipped, never invented**, and
   the rest keep their order. The history is capped and deduplicated by `remember`,
   called on the **selection** rather than a finished run, and `encode`/`decode`
