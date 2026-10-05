@@ -581,6 +581,43 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile boolean hasInstalled = false;
 
     /**
+     * The medium of the pair currently on screen: {@code Framing.SOURCE_STILL} or
+     * {@code SOURCE_VIDEO}.
+     *
+     * <p><b>A field because {@link #snapshot()} has to be able to say it.</b> Not
+     * derived per draw and not asked of the index: the renderer is what is drawing,
+     * so it is what knows — the same reason {@link #snapshot()} exists rather than
+     * taking a caller's idea of the current framing, which a drag or a fade has
+     * already moved.
+     *
+     * <p><b>Written where the pair changes, never per frame.</b> {@code install} is
+     * the only thing that can put a different medium on screen, so it is the only
+     * place this moves; a draw reads it. And it is written <i>after</i> the pair has
+     * been made current rather than before, so a snapshot taken mid-install cannot
+     * name a medium the screen has not reached yet.
+     *
+     * <p><b>Still until something sets it otherwise, and that is the honest default
+     * rather than a placeholder.</b> Every photograph in the library renders through
+     * this path today, so {@code SOURCE_STILL} is not "unimplemented" — it is what
+     * the renderer draws unless a clip arrives. A default of {@code SOURCE_VIDEO}
+     * would make every photograph compare unequal to itself.
+     */
+    private volatile float sourceKind = Framing.SOURCE_STILL;
+
+    /**
+     * Set by a host before it asks for a pair, and cleared by nothing: it says what
+     * the NEXT decode is for, not what is on screen.
+     *
+     * <p>Written on the UI thread beside the request, and read on the {@code Io}
+     * thread that performs the decode, so it is {@code volatile} for the same reason
+     * every other request field is. It is a flag and not the {@link #sourceKind}
+     * float deliberately: this is a request, and that is a fact about the screen.
+     * Two fields because conflating them would mean a late decode could rename the
+     * medium of the pair already being displayed.
+     */
+    private volatile boolean clipRequested;
+
+    /**
      * Monotonic tag for the most recently issued load.
      *
      * <p>Written wherever a request is issued -- the wallpaper requests on the
@@ -709,6 +746,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /** An active glide between the two surfaces' configs, or a null glideTo. */
     private volatile Framing glideFrom, glideTo;
+    /**
+     * The medium {@link #glideTo} names, held so {@link #stepGlide} can switch the
+     * live value when the glide lands WITHOUT interpolating it. See the assignment
+     * in {@link #glide} for why a lerp here is the instant-paint snap.
+     */
+    private volatile float glideSourceKind;
     private volatile long glideStartNanos;
     private volatile float glideSpanMs;
 
@@ -1042,6 +1085,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * how it is lit.
      */
     private Pending decodePair(String imagePath, String depthPath, String normalPath) {
+        // The medium travels WITH the decode rather than being re-derived at install
+        // time: it is a property of the pair this request is asking for, and asking
+        // install() to work it out again from the paths would be a second derivation
+        // of a value that has exactly one owner.
+        final boolean clip = clipRequested;
         // Already decoded by the other surface in this process? Then uploading it
         // is the only work left, which is what makes the wallpaper's very first
         // frame correct: the system snapshots the surface ~100ms after it appears
@@ -1131,7 +1179,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
         Pending result = new Pending(colorBmp, grayOut, dims[0], dims[1],
                 customImage, customDepth, embedded, flat, normalBmp,
-                imagePath, depthPath, normalPath);
+                imagePath, depthPath, normalPath, clip);
         // Offer it to the other surface. Only the selected pair is worth keeping,
         // and the studio is always the one that decodes first.
         PairCache.put(imagePath, depthPath, normalPath, result);
@@ -1172,11 +1220,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
          * {@link #loadedImagePath}.
          */
         final String requestedImage, requestedDepth, requestedNormal;
+        /**
+         * Whether the pair this decode answers is a clip's, rather than a
+         * photograph's.
+         *
+         * <p>Carried on the decode, not re-derived at install: it is a property of
+         * what was asked for, and {@link #isClip()} is the only reader so there is one
+         * answer rather than a value and a re-derivation that could disagree.
+         */
+        private final boolean clip;
 
         Pending(Bitmap colorBmp, byte[] gray, int w, int h,
                 boolean customImage, boolean customDepth, boolean embedded, boolean flat,
                 Bitmap normalBmp,
-                String requestedImage, String requestedDepth, String requestedNormal) {
+                String requestedImage, String requestedDepth, String requestedNormal,
+                boolean clip) {
             this.colorBmp = colorBmp;
             this.gray = gray;
             this.w = w;
@@ -1188,12 +1246,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             this.requestedImage = requestedImage;
             this.requestedDepth = requestedDepth;
             this.requestedNormal = requestedNormal;
+            this.clip = clip;
             this.flat = flat;
         }
 
         /** Whether a normal texture was decoded and will be uploaded. */
         boolean suppliedNormal() {
             return normalBmp != null;
+        }
+
+        /** Whether this pair is a clip's. See {@link #clip}. */
+        boolean isClip() {
+            return clip;
         }
     }
 
@@ -1241,6 +1305,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // The normal is part of the pair identity, so a photo that gains one is
         // re-installed and this records it. See showingSamePair.
         loadedNormalPath = p.suppliedNormal() ? p.requestedNormal : null;
+        // The medium moves HERE, beside the pair identity it describes and in the
+        // same event as the swap -- not at request time, because a request that
+        // never completes would then have named a medium the screen never reached,
+        // and not per draw, because the renderer is the only thing that knows what
+        // it is drawing.
+        //
+        // Still until a clip asks otherwise. Every photograph renders through this
+        // path, so this is not a placeholder default: it is what the renderer draws
+        // unless a clip arrives, and a default of SOURCE_VIDEO would make every
+        // photograph compare unequal to itself and repaint on every resolve.
+        sourceKind = p.isClip() ? Framing.SOURCE_VIDEO : Framing.SOURCE_STILL;
         hasInstalled = true;
         // The wait is over in the same event that swapped the pair, so the live
         // framing (the new item's, applied before the decode landed) starts
@@ -1587,6 +1662,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         apply(from);
         glideFrom = from;
         glideTo = to;
+        // The medium the glide is HEADING FOR, carried whole.
+        //
+        // A glide moves a value smoothly to its destination; the medium is not a
+        // value that can be moved, and stepGlide must not lerp it. A lerp from
+        // still to clip is a sourceKind of 0.5, which names neither picture — and
+        // because `sameAs` compares sourceKind, every frame of the glide would
+        // differ from the one before it, so the no-op-paint guard would be defeated
+        // for the whole duration and a resolve would paint mid-glide. That is the
+        // instant-paint snap, reached the long way round.
+        //
+        // So the live value stays on `from`'s medium for the duration and switches
+        // when the glide lands. In practice a medium change always arrives as
+        // Apply.PAIR_CHANGE with a null origin (the pair changed, so there is no
+        // "from" to ease away from), which skips the glide entirely; this is here
+        // so that if a glide IS armed across a medium boundary it degrades to a
+        // switch at the end rather than to a frame-by-frame lie.
+        glideSourceKind = to.sourceKind;
+        // apply(from) above may have ended an earlier glide; this assignment comes
+        // after it so a cancelled glide cannot leave this one pointing at a pair that
+        // is no longer on screen. Same reason the values are applied before the glide
+        // is armed, which shipped as "the glide does not work".
         glideStartNanos = System.nanoTime();
         glideSpanMs = Math.max(1f, spanMs);
     }
@@ -1640,6 +1736,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         float t = (System.nanoTime() - glideStartNanos) / 1_000_000f / glideSpanMs;
         if (t >= 1f) {
             Framing end = glideTo;
+            // The medium switches HERE, with the rest of the destination, and not a
+            // lerp per frame above. A glide across a medium boundary is unusual --
+            // a pair change glides from null, so it skips here entirely -- but if one
+            // is armed it must land as a switch rather than spend its duration
+            // naming a picture that is neither.
+            sourceKind = glideSourceKind;
             glideFrom = null;
             glideTo = null;
             apply(end);
@@ -1648,6 +1750,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // smoothstep, not linear: the same easing the tilt glide uses, so one rate
         // reads as one motion in both places.
         float e = t * t * (3f - 2f * t);
+        // NOT interpolated -- see glideSourceKind. The eleven values below are eased;
+        // this one is held at the origin's medium for the whole glide and switched by
+        // the t >= 1f branch above. Easing it would make every frame differ from the
+        // last, which is precisely what sameAs uses to decide that a resolve may
+        // no-op, and the result would be a repaint in the middle of a glide.
         depth = lerp(glideFrom.depth, glideTo.depth, e);
         zoom = lerp(glideFrom.zoom, glideTo.zoom, e);
         motion = lerp(glideFrom.motion, glideTo.motion, e);
@@ -1679,10 +1786,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and a reflective one is a second way that breaks the day a field is added.
         // The light goes back as angles so the glide interpolates the way the
         // stored value does; setLight's vector is derived, not the source.
+        //
+        // TWELVE arguments, and the twelfth is the medium. This was the last caller
+        // of the eleven-argument form, which cannot name it — so a snapshot of a
+        // playing clip came back saying "still", compared unequal to the frame on
+        // screen, and apply(RESOLVE)'s no-op guard repainted on every resolve. That
+        // is the instant-paint snap, and it would have shipped the moment a clip
+        // existed rather than as a visible bug. AGENTS.md: a field ofValues cannot
+        // reproduce is a field the no-op-paint guard cannot see.
         return com.amoshydra.basrelief.core.render.Framing.ofValues(
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
                 pendingBrightnessGain, pendingShadowLift,
-                lightAzimuth, lightElevation);
+                lightAzimuth, lightElevation,
+                sourceKind);
     }
 
     /**

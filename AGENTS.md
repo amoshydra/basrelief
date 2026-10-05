@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 515 tests across twenty-eight classes:
+it**. 516 tests across twenty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -647,6 +647,28 @@ has run.**
   still and a clip at identical depth, zoom and light are two pictures. It is a float rather
   than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
   `ofValues` cannot reproduce is a field the no-op-paint guard cannot see.
+  - **The medium is SWITCHED, never eased — and `isVideo()` matches it EXACTLY.**
+    `ReliefRenderer.snapshot()` is the twelve-argument `ofValues` and was the last
+    caller of the deprecated eleven-argument form. Through that one a snapshot of a
+    playing clip came back saying "still", compared unequal to the frame on screen,
+    and `apply(RESOLVE)` repainted on every resolve — **the instant-paint snap, live
+    the moment a clip existed rather than as a visible bug.** A glide eases its eleven
+    values and **holds `sourceKind` whole**, switching it in the `t >= 1f` branch:
+    because `sameAs` compares it, easing would make *every frame of the glide differ
+    from the one before*, defeating the no-op-paint guard for the whole duration.
+    `isVideo()` was `!= SOURCE_STILL` and is now `== SOURCE_VIDEO`, because a test
+    caught the consequence: `lerp(STILL, VIDEO, 0.5)` answered **true** there, so an
+    interpolated medium did not merely fail to name a picture, it **claimed to be a
+    clip.** Nothing in the shipping path eases it, which is exactly why that would
+    have survived review — and `== SOURCE_VIDEO` is also what survives a third medium,
+    since `!= STILL` would call a future `SOURCE_DEPTH_ONLY` a video.
+  - **The renderer's medium is a FIELD, written where the pair swaps and nowhere
+    else.** `clipRequested` is what a host sets before it asks for a pair; the decode
+    carries it as `Pending.isClip()`; `applyPending` writes `sourceKind` in the same
+    GL event as the swap — **not at request time**, because a request that never
+    completes would then have named a medium the screen never reached. Two fields on
+    purpose: conflating a request with a fact about the screen would let a late decode
+    rename the medium of the pair already being displayed.
 - `FramingRowValueTest` — the three numbers a framing row *prints*, and above all
   that Origin and Pan cannot be converted by one rule. It is the display half of the
   rule `ConfigTest` and `PerItemSettingsTest` pin on the stored half: **pan is in

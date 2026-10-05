@@ -108,7 +108,20 @@ public final class Framing {
      * window around it.
      */
     public boolean isVideo() {
-        return sourceKind != SOURCE_STILL;
+        // EXACT match, not "anything that is not still".
+        //
+        // This was `!= SOURCE_STILL`, and it was wrong in a way a test caught: a
+        // half-eased medium — `lerp(SOURCE_STILL, SOURCE_VIDEO, 0.5)` — answered
+        // TRUE here, so an interpolated value did not merely fail to name a picture,
+        // it actively claimed to be a clip. Nothing in the shipping path produces one
+        // today, which is exactly why it would have survived: the field is only
+        // interpolated if somebody eases it, and the easing is what this protects.
+        //
+        // An exact match is also the answer that survives a THIRD medium. `!= STILL`
+        // would call a future SOURCE_DEPTH_ONLY a video; `== SOURCE_VIDEO` calls it
+        // what it is, which is the same rule the rest of the class follows -- a value
+        // means what it says and not what it is merely not.
+        return sourceKind == SOURCE_VIDEO;
     }
 
     /**

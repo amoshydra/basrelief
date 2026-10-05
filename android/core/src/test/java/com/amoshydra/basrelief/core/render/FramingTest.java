@@ -269,6 +269,51 @@ public class FramingTest {
     }
 
     /**
+     * An INTERPOLATED medium matches neither picture — which is why the glide must
+     * never lerp it.
+     *
+     * <p>This is the trap in the one field nobody would think to guard. A glide eases
+     * eleven values; it is obvious that easing the medium is wrong because a
+     * half-way point is not a picture. It is less obvious that the damage is to the
+     * no-op-paint guard rather than to the picture: {@code sourceKind} is compared
+     * by {@code sameAs}, so a glide that eased it would make **every frame differ
+     * from the one before it**. The guard would then be defeated for the whole
+     * duration, and a resolve arriving mid-glide would paint — the instant-paint
+     * snap, reached without anybody changing the picture at all.
+     *
+     * <p>So the property pinned here is that an intermediate value is a third thing,
+     * equal to neither endpoint. A test that only asserted "still differs from clip"
+     * would pass happily while the renderer interpolated between them.
+     */
+    @Test
+    public void anInterpolatedMediumIsNeitherPicture() {
+        Framing still = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
+                0f, 0f, 125f, 51f, Framing.SOURCE_STILL);
+        Framing clip = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
+                0f, 0f, 125f, 51f, Framing.SOURCE_VIDEO);
+        // Exactly what lerp(SOURCE_STILL, SOURCE_VIDEO, t) would produce at t = 0.5.
+        Framing half = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
+                0f, 0f, 125f, 51f,
+                Framing.SOURCE_STILL + (Framing.SOURCE_VIDEO - Framing.SOURCE_STILL) * 0.5f);
+
+        assertFalse("a half-eased medium is not the frame already showing",
+                half.sameAs(still));
+        assertFalse("nor the one being glided toward", half.sameAs(clip));
+        // The sharper half, and the reason this test exists. isVideo() was
+        // `!= SOURCE_STILL`, so a half-eased medium answered TRUE: an interpolated
+        // value did not merely fail to name a picture, it claimed to be a clip.
+        // Exact match is the fix, and it is also what survives a third medium.
+        assertFalse("and it does not claim to be a clip either",
+                half.isVideo());
+        assertTrue("the real clip still does", clip.isVideo());
+        assertFalse("and the real still still does not", still.isVideo());
+        // The consequence, stated as the property it exists to protect: the frame
+        // before and the frame during a glide differ, which is exactly why the
+        // renderer must hold the medium whole rather than easing it.
+        assertFalse(still.sameAs(half));
+    }
+
+    /**
      * Nothing selected, and the bundled demo, are both stills — the medium follows
      * the row and never a fallback.
      *
