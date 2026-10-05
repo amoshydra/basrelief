@@ -1461,6 +1461,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private static String statusFor(Pending p) {
         String shade = p.suppliedNormal() ? " + normals" : " (flat lit)";
+        // The medium first, and above every other branch, because this line is the
+        // only tell for a pair that decoded but is not the medium the row asked for.
+        // A clip whose tracks are not being played still has a poster frame, and the
+        // poster decodes perfectly -- so without this branch a clip reported itself
+        // as "custom image + depth map", which is exactly the failure this status
+        // line exists for: an asset or a medium nothing is reading, invisible in a
+        // build log.
+        if (p.isClip()) {
+            return "clip + depth" + shade;
+        }
         if (p.customImage && p.customDepth) {
             return p.flat ? "custom image, flat (no depth found)"
                     : p.embedded ? "custom image + embedded depth"

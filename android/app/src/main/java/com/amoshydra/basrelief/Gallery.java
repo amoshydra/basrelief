@@ -21,6 +21,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.amoshydra.basrelief.core.store.DepthSource;
+import com.amoshydra.basrelief.core.store.VideoSource;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
@@ -1568,7 +1570,51 @@ final class Gallery {
      * one chip nobody is allowed to get wrong.
      */
     private boolean canStandOut(LibraryItem item) {
-        return item.isBundled() || item.hasDepth();
+        return standsOut(item, null);
+    }
+
+    /**
+     * Whether this row can produce relief, from the one derivation — with the
+     * embedded flag where the read has landed and {@code null} where it has not.
+     *
+     * <p>This used to be {@code item.isBundled() || item.hasDepth()} here and a
+     * separate {@code embedded && !hasFile} in the thumbnail callback, which is two
+     * derivations of one question and therefore two chances for one of them to be
+     * wrong about a photograph carrying a {@code dePH} chunk. The callback form was
+     * the one that patched the chip visible, so the index form was never wrong by
+     * itself — it was simply half the answer, and the half that was missing was the
+     * clip.
+     *
+     * <p><b>A clip stands out on its track</b>, which {@code hasDepth()} cannot see:
+     * that asks about the <i>still</i> files, because that is the question with one
+     * answer for a photograph. A row naming clips is {@link DepthSource.Kind#TRACK}
+     * and has relief whatever its poster frame happens to carry — and reading the
+     * still would answer for the photograph a user is no longer looking at.
+     *
+     * <p>{@code null} for the embedded flag is deliberate rather than a hedge: it
+     * makes the answer {@link DepthSource.Kind#UNKNOWN} rather than false for a
+     * photograph whose depth is inside its own PNG, which is the same window the fix
+     * line has, and the chip is reversible — built with it, shown from the callback
+     * the read delivers. An absent chip for one thumbnail's load is invisible; a
+     * chip on a photograph with no map is a lie that survives the load.
+     */
+    private boolean standsOut(LibraryItem item, Boolean embedded) {
+        if (item == null) return false;
+        // The reserved id, first and outside the derivation, because :core's
+        // DepthSource deliberately has no branch for it. `Library.withBundled`
+        // accepts a NULL depthName -- that is the pre-migration state, before the
+        // demo's assets have been copied into filesDir -- and the demo ships a map
+        // in res/raw either way, so it stands out. This guard was the only thing
+        // standing between that row and an absent chip, which is why it is kept
+        // rather than folded in: DepthSource cannot answer it, so folding it in
+        // would delete the answer instead of moving it.
+        if (item.isBundled()) return true;
+        // The clip's playable flag comes from the ONE cache in the process, keyed
+        // by id. A second cache here would be a second answer to the same question,
+        // and this is the class of bug that put "No depth" over a photograph with a
+        // map. Absent means unread, which is the window DepthSource already models.
+        return DepthSource.forItem(item, embedded,
+                VideoSource.forItem(item, activity.clipPlayableFor(item.id))).hasDepth();
     }
 
     /**
@@ -1618,13 +1664,19 @@ final class Gallery {
         tile.addView(chip, chipParams());
         tile.addView(menuButton(item), menuParams());
         // The embedded-depth answer comes out of the same read that decodes the
-        // thumbnail; see PhotoTile.show. The bundled demo's map is the separate
-        // res/raw/depth.png, so canStandOut has already shown the chip for it.
-        final boolean hasFile = item.hasDepth();
+        // thumbnail; see PhotoTile.show. Re-derived rather than OR-ed in: the chip
+        // asks the same question the fix line asks, so a row that could stand out
+        // for a reason other than an embedded chunk -- a clip's depth track -- is
+        // answered by the same rule instead of by a second one. The bundled demo's
+        // map is the separate res/raw/depth.png, which DepthSource already reports
+        // as FILE for it.
+        final boolean before = chip.getVisibility() == View.VISIBLE;
         tile.show(item, new Io.EmbeddedDepthListener() {
             @Override
             public void onFound(boolean embedded) {
-                if (embedded && !hasFile) chip.setVisibility(View.VISIBLE);
+                if (!before && standsOut(item, Boolean.valueOf(embedded))) {
+                    chip.setVisibility(View.VISIBLE);
+                }
             }
         });
         cell.addView(tile);

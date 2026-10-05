@@ -12,10 +12,12 @@ import com.amoshydra.basrelief.core.store.NormalSource;
 import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Playlists;
-import com.amoshydra.basrelief.core.store.SurfaceSettings;
+import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
-import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
+import com.amoshydra.basrelief.core.store.VideoSource;
+import com.amoshydra.basrelief.core.store.VideoTracks;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -437,6 +439,30 @@ public class MainActivity extends Activity {
 
     /** Ids with a read already in flight, so a refresh cannot queue the same one twice. */
     private final java.util.Set<String> embeddedReadInFlight = new java.util.HashSet<>();
+
+    /**
+     * Whether each item's clips resolve to real files, by item id — and <b>absent
+     * means "not read yet"</b>, exactly as {@link #embeddedDepthById} does.
+     *
+     * <p>A second window of the same shape, opened by a different question. Both of a
+     * clip's files have to exist before it can play, which is an I/O answer, so it
+     * cannot come from the index: a row that names two clips is {@code UNREAD}
+     * until {@link VideoTracks#playable} has run, and asking anything before that
+     * would have to guess. Guessing is the bug this project has already shipped once
+     * — defaulting an unknown to a negative <i>is</i> the reported "No depth over a
+     * photograph with a map", and the clip version of it would be "a clip playing"
+     * over a photograph.
+     *
+     * <p><b>Photographs never appear in this map.</b> {@code VideoSource.resolve}
+     * answers {@code STILL} from {@code hasClips} alone, so a row with no clips is
+     * settled from the index and never opens the window — which is what keeps the
+     * window narrow. No still's status line flickers through {@code UNREAD}.
+     */
+    private final java.util.Map<String, Boolean> clipPlayableById =
+            new java.util.HashMap<>();
+
+    /** Ids with a clip read already in flight, for the same reason as the embedded one. */
+    private final java.util.Set<String> clipReadInFlight = new java.util.HashSet<>();
     /**
      * The first group caption, "Standing out of the plane".
      *
@@ -4222,13 +4248,107 @@ public class MainActivity extends Activity {
      */
     private DepthSource.Answer depthSourceFor(AppState state) {
         LibraryItem item = state.activeItem();
+        // The medium first, because "where does this photo's depth live" has the clip
+        // as one of its answers and cannot be asked without knowing what the pixels
+        // are. It is threaded rather than re-derived because the three-argument form
+        // exists precisely so one derivation answers for a row instead of each
+        // caller reaching for a different one of its own.
+        VideoSource.Answer video = videoSourceFor(state);
         DepthSource.Answer answer =
-                DepthSource.forItem(item, embeddedAnswerOf(item));
+                DepthSource.forItem(item, embeddedAnswerOf(item), video);
         // Only a photo the index cannot answer needs the file, so this is the only
         // case that can open the window — and an item with a depth file therefore
         // never flickers through "unknown" on a selection.
         if (answer.isUnknown()) requestEmbeddedDepth(item);
         return answer;
+    }
+
+    /**
+     * Whether the selected row is a photograph or a clip that can play.
+     *
+     * <p><b>The one place a clip's medium is derived</b>, for the same reason
+     * {@link #depthSourceFor} is: two answers to one question is the class of bug
+     * this project keeps paying for, and the fix line and the status line would
+     * otherwise each pick their own.
+     *
+     * <p><b>It starts the read when the answer needs one</b>, for the same reason.
+     * A row naming clips is {@link VideoSource.Kind#UNREAD} until
+     * {@link VideoTracks#playable} has run against {@code filesDir}, because whether
+     * a clip can play is an I/O question — and {@code UNREAD} claims nothing, which
+     * is what makes the window survivable: the fix line says nothing rather than
+     * claiming a clip is playing when it may not be.
+     */
+    private VideoSource.Answer videoSourceFor(AppState state) {
+        LibraryItem item = state.activeItem();
+        VideoSource.Answer answer = VideoSource.forItem(item, clipPlayableAnswerOf(item));
+        // Only a clip can be UNREAD: a photograph is settled from the index alone,
+        // so this opens no window for any of the photos in the library.
+        if (answer.kind() == VideoSource.Kind.UNREAD) requestClipPlayable(item);
+        return answer;
+    }
+
+    /**
+     * The cached "clips resolve" flag for one id, or null while it has not been read.
+     *
+     * <p><b>Package-private, and the gallery asks here rather than keeping its
+     * own.</b> The gallery draws a chip for every row, so it needs this answer for
+     * every row; a second cache would be a second derivation of one question, which
+     * is the mistake {@link #depthSourceFor} exists to end. Read-only, and it starts
+     * nothing: the gallery is drawn from the index, so a row whose flag has not
+     * landed answers through the window rather than triggering a read per cell.
+     */
+    Boolean clipPlayableFor(String id) {
+        return clipPlayableById.get(id);
+    }
+
+    /** The cached "clips resolve" flag for an item, or null while it has not been read. */
+    private Boolean clipPlayableAnswerOf(LibraryItem item) {
+        if (item == null) return null;
+        return clipPlayableById.get(item.id);
+    }
+
+    /**
+     * Read whether one row's clips are actually on disk, and remember it.
+     *
+     * <p><b>Off the UI thread, on the shared {@link Io} worker</b>, and for the same
+     * reason as {@link #requestEmbeddedDepth}: this resolves filenames against
+     * {@code filesDir} and stats them, so it is disk work reached from the fix line
+     * on the UI thread and from the wall paint's GL-thread read of the index.
+     *
+     * <p><b>The delivery's only effect is the cache, then a re-derive</b> — keyed by
+     * the id it read, with the refresh resolving the <i>current</i> selection. So a
+     * slow stat for a clip the user has already scrolled away from cannot land on
+     * the row now on screen. That is the whole safety property of this cache, and it
+     * is the same one {@link #embeddedDepthById} rests on.
+     */
+    private void requestClipPlayable(final LibraryItem item) {
+        if (item == null || item.video == null) return;
+        synchronized (clipReadInFlight) {
+            if (clipPlayableById.containsKey(item.id)) return;   // already answered
+            if (!clipReadInFlight.add(item.id)) return;          // already reading
+        }
+        final String id = item.id;
+        final VideoTracks tracks = item.video;
+        final File filesDir = getFilesDir();
+        Io.run(this, new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                return Boolean.valueOf(tracks.playable(filesDir));
+            }
+        }, new Io.Callback<Boolean>() {
+            @Override
+            public void onDone(Boolean playable, Exception error) {
+                synchronized (clipReadInFlight) {
+                    clipReadInFlight.remove(id);
+                }
+                // A failed read is a settled FALSE, not UNREAD for ever: the row is a
+                // clip whose files are not here, which is exactly what POSTER means.
+                // The alternative is a fix line that stays silent on a photo the user
+                // can plainly see is not playing.
+                clipPlayableById.put(id, playable != null && playable.booleanValue());
+                refreshSliders();
+            }
+        });
     }
 
     /** The cached embedded flag for an item, or null while it has not been read. */
@@ -4434,7 +4554,13 @@ public class MainActivity extends Activity {
             // The one resolution of that question, so this line, the renderer and the
             // status line cannot disagree. Nothing selected is the packaged trio,
             // which ships a normal, so it is silent like every shaded photo.
-            NormalSource.Answer normals = NormalSource.forItem(item);
+            //
+            // Given the medium rather than left to derive it: a clip's poster can be
+            // shaded while the clip itself is flat lit, and both carry identical still
+            // files — so a derivation reading only the still files answers the same
+            // for both and is wrong about one. That is why NormalSource takes a
+            // VideoSource.Answer here.
+            NormalSource.Answer normals = NormalSource.forItem(item, videoSourceFor(state));
             if (normals.needsNormals()) {
                 setFixLine(getString(R.string.fix_flat_lit),
                         getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
