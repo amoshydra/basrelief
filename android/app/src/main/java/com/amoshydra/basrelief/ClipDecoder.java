@@ -88,6 +88,14 @@ final class ClipDecoder {
     private volatile boolean fullRange = true;
     private volatile int trackW, trackH;
     private volatile long lastAbsPts = -1L;
+    /**
+     * The accumulated loop offset added to every input timestamp.
+     *
+     * <p>Timestamps are rewritten to be ABSOLUTE at the INPUT, so the codec's own
+     * output pts stay monotonic across a loop and no flush is needed. See the loop
+     * seam note in {@link #loop0}.
+     */
+    private long basePtsUs;
     private volatile int produced;
     private volatile int loops;
     private volatile String error;
@@ -270,16 +278,32 @@ final class ClipDecoder {
                             int size = extractor.readSampleData(buf, 0);
                             if (size < 0) {
                                 if (loop) {
-                                    codec.flush();
+                                    // NO FLUSH. flush() discards every decoded frame
+                                    // still in the codec's pipeline -- several frames
+                                    // deep -- so the surface holds the last frame while
+                                    // the decoder refills: the visible pause at every
+                                    // seam (measured as 458-541ms of skew on boundary
+                                    // samples). The extractor rewinds and input keeps
+                                    // being queued with timestamps REWRITTEN to be
+                                    // absolute (sampleTime + basePtsUs), so the codec
+                                    // never sees EOS, never drains, and the seam frame
+                                    // is simply the next one -- held by the gate to
+                                    // exactly the loop boundary, so last-to-first is
+                                    // continuous.
                                     extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
                                     loops++;
+                                    basePtsUs += clipUs;
                                     continue;
                                 }
                                 codec.queueInputBuffer(in, 0, 0, 0,
                                         MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                                 inputDone = true;
                             } else {
-                                codec.queueInputBuffer(in, 0, size, extractor.getSampleTime(), 0);
+                                // ABSOLUTE pts at the input: the codec's output stays
+                                // monotonic across loops, which is what makes the
+                                // no-flush rewind safe.
+                                codec.queueInputBuffer(in, 0, size,
+                                        extractor.getSampleTime() + basePtsUs, 0);
                                 extractor.advance();
                             }
                         }
@@ -290,9 +314,10 @@ final class ClipDecoder {
                         boolean cfg = (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                         if (!cfg) {
                             // GATE BEFORE RELEASE, on the ABSOLUTE time. See the class note.
-                            long absPts = clipUs > 0
-                                    ? info.presentationTimeUs + loops * clipUs
-                                    : info.presentationTimeUs;
+                            // Already absolute: the offset was added when the frame was
+                            // QUEUED, so the codec's own pts is the loop clock's time
+                            // and nothing is recomputed from `loops` here.
+                            long absPts = info.presentationTimeUs;
                             awaitSpace(absPts);
                             codec.releaseOutputBuffer(out, true);
                             lastAbsPts = absPts;

@@ -58,10 +58,12 @@ final class VideoImport {
      * <p><b>A living photo is a loop, not a video.</b> One MoGe inference runs per
      * clip -- the frames are a batch -- so the cost scales with frames, and a
      * one-hour clip at 24 fps is 86,400 of them. The cap is what makes the feature
-     * reachable in one gesture: a short loop that tiles, rather than an unbounded
-     * server job the user waits on for an hour.
+     * reachable in one gesture: a loop that tiles, rather than an unbounded server
+     * job the user waits on for an hour. 120 frames is 4 seconds at 30 fps, and it
+     * is a TRADE, not a limit: server time and file size scale with it, so a longer
+     * loop costs both, and the resolution is the other side of the same trade.
      */
-    static final int FRAME_CAP = 48;
+    static final int FRAME_CAP = 0; // 0 = the whole clip; see the note above
 
     /** Poll interval and ceiling for the server-side run. */
     private static final long POLL_MS = 3000L;
