@@ -743,6 +743,10 @@ public class MainActivity extends Activity {
         });
         glView.setRenderer(renderer);
         glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        // Started once here, not only from applyFiles: the poll is the only thing
+        // that asks for frames while a clip plays, and a clip that starts before any
+        // applyFiles -- a wake onto an already-running row -- must be noticed too.
+        startClipPump();
         root.addView(glView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -1917,9 +1921,24 @@ public class MainActivity extends Activity {
     private final Runnable clipTick = new Runnable() {
         @Override
         public void run() {
-            if (renderer == null || !renderer.clipWantsFrames()) return;
-            glView.requestRender();
-            glidePump.postDelayed(this, 16);
+            // SELF-SUSTAINING, and that is the whole point. Every previous shape
+            // returned early when clipWantsFrames() was false for a single sample --
+            // which ENDS the chain -- and there are three windows where that happens
+            // legitimately: arming before the decode lands, the start window itself,
+            // and the instant onSurfaceCreated calls stopClip when the screen wakes
+            // and the GL context is recreated. Each was patched by teaching
+            // clipWantsFrames one more state, and each patch left the next window
+            // open: measured on the Pixel, draws/s 60 -> 27 -> 1 across the wake, with
+            // produced still climbing and latch/s 2, so the picture advanced two
+            // frames a second.
+            //
+            // The poll now never dies. It requests frames only while a clip wants
+            // them, and idles at 100ms (ten posts a second, a volatile read each)
+            // when none does -- cheap enough that the guarantee is worth more than
+            // the wakeups. A clip starting is noticed within 100ms.
+            boolean want = renderer != null && renderer.clipWantsFrames();
+            if (want) glView.requestRender();
+            glidePump.postDelayed(this, want ? 16 : 100);
         }
     };
 

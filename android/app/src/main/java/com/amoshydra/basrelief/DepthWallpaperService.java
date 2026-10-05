@@ -208,9 +208,11 @@ public class DepthWallpaperService extends WallpaperService {
         private final Runnable clipTick = new Runnable() {
             @Override
             public void run() {
-                if (renderer == null || !renderer.clipWantsFrames()) return;
-                if (glView != null) glView.requestRender();
-                clipHandler.postDelayed(this, 16);
+                // Self-sustaining; see the studio's copy for why a chain that ends on
+                // a single false sample always leaves one more window open.
+                boolean want = renderer != null && renderer.clipWantsFrames();
+                if (want && glView != null) glView.requestRender();
+                clipHandler.postDelayed(this, want ? 16 : 100);
             }
         };
 
