@@ -662,6 +662,55 @@ has run.**
     clip.** Nothing in the shipping path eases it, which is exactly why that would
     have survived review — and `== SOURCE_VIDEO` is also what survives a third medium,
     since `!= STILL` would call a future `SOURCE_DEPTH_ONLY` a video.
+  - **Two shader families, two unit systems, and the uniform that goes to
+    location -1 is dropped in silence.** The clip's depth shader works in **0..255**
+    (it scales the blurred mean by 255 in-shader) and its range offset is
+    `-16f * (255f / 219f)`. The colour and normal shaders work in **0..1** (normalized
+    samples) and their offset is `-16f / 219f`. Handing the 0..255 offset to the 0..1
+    shaders makes every pixel negative and clamps it to black — reported as "normal
+    is completely black". And the colour shader originally **never declared
+    `uRangeFix`**, so `glUniform2f` went to location -1 and was silently discarded:
+    colour looked fine while normal, declaring the same uniform, went black from the
+    same value — and colour was displayed unexpanded (washed-out blacks) the whole
+    time. **A shader that receives a uniform must declare it, and the units belong in
+    a comment beside the value.**
+  - **The depth FIELD's row 0 is the image's TOP row, and the clip blit must
+    un-flip to match.** The mesh reads the field with `gy = (1 - aUV.y) * grid`
+    (`VERT3`), and `ReliefMesh` stores it top-first with `uploadField`'s unflipped
+    upload — the still convention, pinned by the golden test's v case. The clip
+    blit writes the field through the SurfaceTexture transform, which includes
+    Android's bottom-up flip, so sampling straight through `uST` writes the image's
+    BOTTOM row at field row 0: the depth vertically mirrored against the video,
+    protrusions where the scene recedes. The colour needs no such correction
+    (the still path flips colour at upload), which is why the video looked right
+    while the relief did not. The fix is `uv.y = 1.0 - uv.y` after the transform,
+    **in the depth shader only**.
+  - **An R32F texture must be NEAREST, both filters.** It is not filterable without
+    the float-linear extension, and a LINEAR float texture is *incomplete* — the
+    sampler returns a constant wherever it is read. The still path's `uploadField`
+    has said NEAREST since it was written; the clip's `makeField` said LINEAR, so the
+    vertex shader read a uniform depth and every clip drew as a flat plane whose
+    Depth slider multiplied a constant.
+  - **This driver refuses a GLSL ES 1.00 program that mixes `samplerExternalOES`
+    with `sampler2D`.** The temporal depth blend put a `sampler2D` over an R32F
+    texture beside the OES one, and Mali dropped the DRAW with
+    `GL_INVALID_OPERATION` — uniforms and pointers clean, the draw alone refused.
+    **The temporal blend is parked for this reason**; if depth flicker needs it back,
+    it must be a separate pass whose two samplers are the same type. Probe every GL
+    call in a pass before theorising about which one fails.
+  - **A debug view must sample what the draw SAMPLES.** The layer view first read
+    the render's still fields (`r.textureColor`/`r.textureNormal`) instead of the
+    clip-aware helpers, so colour and normal showed the frozen poster while relief
+    and depth played; and it must view the depth field through the mesh's own flip
+    (`1 - v`), or it shows mirrored while the relief is correct. Both were reported
+    as debug-view faults, and both were. Long-press the status line to cycle it.
+  - **A GLSL comment must never share a line with the statement after it.** A `//`
+    comment written into the fragment shader swallowed the `vec2 uv` declaration on
+    the same line: the shader never compiled, the program never linked, every draw
+    was refused, and the debug view simply stopped appearing with **nothing logged**.
+    This is the third comment-eats-code bug of one session, after `--` inside an XML
+    comment and a brace-eating splice — and the cure each time was to measure the
+    failing call rather than reason about the pipeline.
   - **The renderer's medium is a FIELD, written where the pair swaps and nowhere
     else.** `clipRequested` is what a host sets before it asks for a pair; the decode
     carries it as `Pending.isClip()`; `applyPending` writes `sourceKind` in the same
