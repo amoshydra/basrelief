@@ -5570,17 +5570,35 @@ public class MainActivity extends Activity {
                 renderer.apply(framing, why);
             }
         });
-        // Async for the same reason as the wallpaper: a synchronous load stalls
-        // the GL thread for the length of a full decode plus mesh build.
-        renderer.loadPairAsync(img, dep, nrm);
-        // The medium, handed over on EVERY applyFiles and not only when the pair
-        // changed. The still pair has a cheap "is this on screen" test and a clip
-        // does not, so conditioning this on a pair change would leave a clip playing
-        // over a photograph that had just been selected -- the studio showing the
-        // wrong medium. Null for a photograph, which is every row without tracks,
-        // and explicit because a request never made is indistinguishable from a
-        // request for no clip.
+        // GUARDED, and this was the bug that made a clip show one frozen frame.
+        //
+        // `showingSamePair` above only chose `why`; the load ran on EVERY applyFiles,
+        // so each one re-decoded and re-installed the pair. A still survives that --
+        // it is wasteful and invisible. A clip does not: the install is what arms the
+        // clip, so every re-install rewound it to frame 0, several times a second, and
+        // a video that keeps rewinding is a photograph. The wallpaper has always had
+        // this guard; the studio did not, which is the same asymmetry as every other
+        // one between the two surfaces.
+        //
+        // Async for the same reason as the wallpaper: a synchronous load stalls the GL
+        // thread for the length of a full decode plus mesh build.
+        // The medium is armed BEFORE the load, and the order is load-bearing.
+        //
+        // The decode reads the medium on the Io thread and carries it to the install,
+        // so arming after the load is a race: a decode that reaches its first line
+        // first sees the PREVIOUS item's medium, and the clip then installs as a
+        // photograph and never starts. That is silent -- the poster frame renders, the
+        // row has a perfectly good clip on disk, and nothing says otherwise.
+        //
+        // Armed on EVERY applyFiles, not only when the pair changed: the still pair
+        // has a cheap "is this on screen" test and a clip does not, so conditioning it
+        // on a pair change would leave a clip playing over a photograph just selected.
+        // Null for a photograph, explicit because a request never made is
+        // indistinguishable from a request for no clip.
         renderer.requestClip(active == null ? null : active.video, getFilesDir());
+        if (!renderer.showingSamePair(img, dep, nrm)) {
+            renderer.loadPairAsync(img, dep, nrm);
+        }
         glView.requestRender();
         refreshStatus();
     }

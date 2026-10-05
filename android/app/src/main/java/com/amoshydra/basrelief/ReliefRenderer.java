@@ -633,6 +633,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * work until it does not.
      */
     private ClipPlayer clip;
+    private long lastClipStatNanos;
 
     /**
      * Play this clip on top of whatever pair is installed. GL thread (queue it).
@@ -641,6 +642,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *         a failure: the still pair stays on screen and the sheet says why.
      */
     boolean startClip(com.amoshydra.basrelief.core.store.VideoTracks tracks, java.io.File filesDir) {
+        // IDEMPOTENT, and this is the property that actually matters. An install can
+        // arrive for a clip that is already playing -- a re-resolve, a surface switch,
+        // a prefs write -- and tearing the three decoders down and starting them again
+        // rewinds the clip to frame 0. A video that rewinds on every resolve is a
+        // photograph, which is exactly what was reported.
+        //
+        // So the running clip's IDENTITY is compared, not "is one running". The
+        // three filenames are the identity: two VideoTracks naming the same files are
+        // the same clip, and comparing the object would restart a clip that had merely
+        // been rebuilt from the same JSON.
+        if (clip != null && clip.isRunning() && clip.isSameClips(tracks)) {
+            return true;
+        }
         stopClip();
         if (tracks == null || filesDir == null) return false;
         // GLES3 only, and said out loud rather than half-attempted: the GLES2 path
@@ -682,6 +696,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         this.pendingTracks = tracks;
         this.pendingFilesDir = filesDir;
         this.clipRequested = tracks != null;
+        android.util.Log.i("Basrelief", "requestClip tracks="
+                + (tracks == null ? "null" : tracks.toJson())
+                + " running=" + (clip != null && clip.isRunning())
+                + " playingJson=" + (clip == null ? "-" : String.valueOf(clip.playingJsonForLog())));
     }
 
     /**
@@ -2096,6 +2114,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // re-reads and re-validates the whole gallery.
         final AppState state = AppState.load(context, p, context.getFilesDir());
         final LibraryItem active = state.activeItem();
+        // The medium is armed HERE, not only where the activity asks for it, because
+        // this is the one path both surfaces converge on -- the studio's cold start
+        // and the wallpaper's engine both come through here -- and arming it only at
+        // the activity's applyFiles meant a fresh launch resolved and installed the
+        // pair with nothing having said whether it was a clip. The poster frame then
+        // rendered and stayed there: a video that never started, with a perfectly good
+        // clip on disk and nothing anywhere saying so.
+        //
+        // Arming rather than starting, because the medium belongs to the install that
+        // is about to happen and not to the request -- see requestClip.
+        requestClip(active == null ? null : active.video, context.getFilesDir());
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
         Framing mine = Framing.of(state.activeItem(), editSurface);
@@ -2206,7 +2235,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the blit are what make this frame's colour, depth and normals exist, and a
         // draw that ran ahead of them would show the previous frame's depth against
         // this frame's colour -- a relief that does not match its picture.
-        if (clip != null && clip.isRunning()) clip.tick();
+        if (clip != null && clip.isRunning()) {
+            clip.tick();
+            // One line a second, because "is it actually playing" cannot be answered
+            // by anything else. The log proves the decoders STARTED; only a climbing
+            // frame count proves they are still running, and a clip that has stopped
+            // advancing is indistinguishable from one that never started -- both show
+            // a single correct frame.
+            long nowClip = now;
+            if (lastClipStatNanos == 0) lastClipStatNanos = nowClip;
+            if (nowClip - lastClipStatNanos >= 1_000_000_000L) {
+                lastClipStatNanos = nowClip;
+                android.util.Log.i("Basrelief", "clip " + clip.stats());
+            }
+        }
 
         recomputeScale();
         float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);

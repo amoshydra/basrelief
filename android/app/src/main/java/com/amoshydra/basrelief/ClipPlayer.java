@@ -43,6 +43,11 @@ final class ClipPlayer {
     private ClipBlitter blit;
 
     private long clockStartNanos;
+    /**
+     * The clips this player was started with, as their stored form. See
+     * {@link #isSameClips}.
+     */
+    private String playingJson;
     private int videoW, videoH;
     private boolean fullRange = true;
     private boolean running;
@@ -70,6 +75,29 @@ final class ClipPlayer {
 
     boolean isRunning() {
         return running;
+    }
+
+    /**
+     * Whether these are the clips already playing.
+     *
+     * <p><b>By stored form, not by object.</b> Two {@code VideoTracks} parsed from the
+     * same index entry name the same three files and are still two objects, and
+     * comparing them by identity restarts a clip that was merely re-parsed -- which is
+     * what happens on <i>every</i> read of the index, so the clip would never survive a
+     * resolve. The stored form is the identity the rest of the app already treats as
+     * such: the index owns the row, and two rows are the same row when their blobs
+     * match.
+     *
+     * <p>Compared rather than relying on object identity is also why a clip with no
+     * normal track and one with it are different here: the two blobs differ, so a clip
+     * whose normal arrives is a different clip and is genuinely restarted.
+     */
+    String playingJsonForLog() {
+        return playingJson;
+    }
+
+    boolean isSameClips(com.amoshydra.basrelief.core.store.VideoTracks other) {
+        return other != null && playingJson != null && playingJson.equals(other.toJson());
     }
 
     String error() {
@@ -126,6 +154,7 @@ final class ClipPlayer {
         long clipUs = durationUs(cf);
         clockStartNanos = System.nanoTime();
 
+        playingJson = tracks.toJson();
         color = new ClipDecoder(cf.getPath(), "colour", clipUs);
         depth = new ClipDecoder(df.getPath(), "depth", clipUs);
         // The normal track is OPTIONAL and its absence is not a failure: the clip is
@@ -264,6 +293,11 @@ final class ClipPlayer {
         }
         running = false;
         framesArrived = false;
+        // The identity goes with the clip. Leaving it behind would make a later
+        // isSameClips answer for a player that is not running -- harmless only because
+        // every caller checks isRunning first, which is exactly the kind of coupling a
+        // stale field invites.
+        playingJson = null;
     }
 
     private static void release(ClipBlitter.Channel c) {
