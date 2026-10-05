@@ -81,18 +81,6 @@
           activity that is also the launcher entry, so separating the two would
           give the user two tasks for one screen - the problem being fixed.
         -->
-        <!-- THROWAWAY SPIKE. Explicit-start only, no launcher icon, no other
-             code references it. Added to answer the fragment-shader video
-             question in docs/VIDEO-PLAN.md; delete it and this entry when the
-             spike is done. -->
-        <activity
-            android:name=".VideoSpikeActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:label="Video Spike"
-            android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
