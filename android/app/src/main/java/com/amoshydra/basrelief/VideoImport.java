@@ -121,7 +121,7 @@ final class VideoImport {
                 "ai_depth_" + stamp + ".png",       // depth still -- the still path's convention
                 "ai_normal_" + stamp + ".png",      // normal still
         };
-        LibraryItem updated = generate(app, prefs, api, colour, names, listener,
+        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -154,10 +154,14 @@ final class VideoImport {
      * @return the built-but-unstored item, or null after reporting a failure
      */
     private static LibraryItem generate(final Context app, final SharedPreferences prefs,
-                                        final ComfyApi api, final File colourSource,
+                                        final ComfyApi api, final String rowId,
+                                        final File colourSource,
                                         final String[] names, final Listener listener,
                                         final Finisher finisher) {
-        final String id = LibraryItem.newId();
+        // The ROW's id, passed in. generate() used to mint its own, so a row could end
+        // up holding files named after a DIFFERENT id -- harmless until something
+        // derived a filename from the row id and silently missed.
+        final String id = rowId;
         float fps = frameRateOf(colourSource);
         Log.i(TAG, "video generate id=" + id + " source=" + colourSource.getName()
                 + " fps=" + fps);
@@ -293,7 +297,7 @@ final class VideoImport {
                 LibraryItem.depthFileName(id),
                 LibraryItem.normalFileName(id),
         };
-        LibraryItem item = generate(app, prefs, api, colourSource, names, listener,
+        LibraryItem item = generate(app, prefs, api, id, colourSource, names, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
