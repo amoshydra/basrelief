@@ -632,8 +632,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * and a decoder thread making them would be a context violation that happens to
      * work until it does not.
      */
-    private ClipPlayer clip;
+    private volatile ClipPlayer clip;
     private long lastClipStatNanos;
+    /** Draws since the previous stats window; the pump's report card. */
+    private long lastClipDraws, clipDraws;
+    /** Frames the tick newly latched, last window. 0 means the draw ate nothing. */
+    private int lastLatch, latchDelta;
 
     /**
      * Whether a clip is drawing, so the host can keep frames coming.
@@ -645,7 +649,46 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * GLSurfaceView is the only thing that can requestRender, so it has to know.
      * Written from the GL thread by the tick; read by the hosts' pumps.
      */
-    public volatile boolean drawingClip;
+    /**
+     * Whether frames should keep being pumped.
+     *
+     * <p>Three states, and the pump needs ALL of them because each one is false while
+     * a clip is still legitimately wanted:
+     *
+     * <ul>
+     *   <li>{@code drawingClip} -- a frame was drawn with a clip on it.</li>
+     *   <li>{@code pendingTracks != null} -- armed, decode in flight. The gap between
+     *       arming and {@code applyPending} can be a second, and a pump that reads only
+     *       "is something drawing" ends itself inside it.</li>
+     *   <li>{@code clip.isRunning()} -- the clip STARTED but no frame has been drawn
+     *       yet, so {@code drawingClip} is still false. This is the one that killed it
+     *       for good: {@code startClip}'s first act is {@code stopClip()}, which clears
+     *       {@code pendingTracks} -- the pump's only live signal -- one tick before the
+     *       clip comes up. The pump exited, the clip ran, and nothing ever asked for a
+     *       frame again: measured on device as {@code Total frames rendered: 32}, the
+     *       decode gap's worth, then silence.
+     *   </li>
+     * </ul>
+     */
+    public boolean clipWantsFrames() {
+        return pendingTracks != null || (clip != null && clip.isRunning());
+    }
+
+    /**
+     * Whether what is on screen already matches this medium request.
+     *
+     * <p>The question {@code showingSamePair} cannot answer: it compares the STILL
+     * pair, and a row's still files do not change when its clips are what changed.
+     * So "already showing that pair" is true for a re-selected clip row whose clip
+     * never started, and without this test the load is skipped and nothing ever
+     * swaps the medium in. Null means "no clip wanted": true only when nothing is
+     * running, so a photograph re-selected keeps its cheap no-op and a clip still
+     * playing behind a photograph forces the load that stops it.
+     */
+    public boolean clipMatches(com.amoshydra.basrelief.core.store.VideoTracks t) {
+        if (t == null) return clip == null || !clip.isRunning();
+        return clip != null && clip.isRunning() && clip.isSameClips(t);
+    }
 
     /**
      * Play this clip on top of whatever pair is installed. GL thread (queue it).
@@ -685,8 +728,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return true;
     }
 
-    private com.amoshydra.basrelief.core.store.VideoTracks pendingTracks;
-    private java.io.File pendingFilesDir;
+    private volatile com.amoshydra.basrelief.core.store.VideoTracks pendingTracks;
+    private volatile java.io.File pendingFilesDir;
 
     /**
      * Ask for this clip to play on top of the pair. Any thread.
@@ -725,7 +768,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         pendingTracks = null;
         pendingFilesDir = null;
         clipRequested = false;
-        drawingClip = false;
         if (clip != null) {
             clip.stop();
             clip = null;
@@ -1470,6 +1512,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // unless a clip arrives, and a default of SOURCE_VIDEO would make every
         // photograph compare unequal to itself and repaint on every resolve.
         sourceKind = p.isClip() ? Framing.SOURCE_VIDEO : Framing.SOURCE_STILL;
+        android.util.Log.i("Basrelief", "applyPending src="
+                + (sourceKind == Framing.SOURCE_VIDEO ? "VIDEO" : "STILL")
+                + " stopRunning=" + (clip != null && clip.isRunning()));
         hasInstalled = true;
         // The clip starts HERE, beside the medium it names and in the same event as
         // the pair swap -- so there is no window in which the screen reports a clip
@@ -2249,8 +2294,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // draw that ran ahead of them would show the previous frame's depth against
         // this frame's colour -- a relief that does not match its picture.
         if (clip != null && clip.isRunning()) {
-            drawingClip = true;
-            clip.tick();
+            clipDraws++;
+            int l = clip.tick();
             // One line a second, because "is it actually playing" cannot be answered
             // by anything else. The log proves the decoders STARTED; only a climbing
             // frame count proves they are still running, and a clip that has stopped
@@ -2260,6 +2305,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             if (lastClipStatNanos == 0) lastClipStatNanos = nowClip;
             if (nowClip - lastClipStatNanos >= 1_000_000_000L) {
                 lastClipStatNanos = nowClip;
+                // Rolling counters for the next window, so the line reports per
+                // second rather than per process.
+                latchDelta = clip.latches() - lastLatch;
                 // `usingClip` is the whole question. A clip that DECODES and is never
                 // BOUND is indistinguishable from a frozen one -- both show one correct
                 // frame -- so the line says which texture the last draw actually used,
@@ -2270,7 +2318,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                         + " texColour=" + cc
                         + " clipTex=" + clip.colourTex()
                         + " stillTex=" + (displayed == null ? -1 : displayed.textureColor)
-                        + " usingClip=" + (cc != 0 && cc == clip.colourTex()) );
+                        + " usingClip=" + (cc != 0 && cc == clip.colourTex())
+                        + " draws/s=" + (clipDraws - lastClipDraws)
+                        + " latch/s=" + latchDelta);
+                // AFTER the line: the next window's baseline. Doing it above the log
+                // made the line report the PREVIOUS window's draws, which is exactly
+                // the sort of off-by-one-window that reads as a pump running when it
+                // is not.
+                lastClipDraws = clipDraws;
+                lastLatch = clip.latches();
             }
         }
 

@@ -208,7 +208,7 @@ public class DepthWallpaperService extends WallpaperService {
         private final Runnable clipTick = new Runnable() {
             @Override
             public void run() {
-                if (renderer == null || !renderer.drawingClip) return;
+                if (renderer == null || !renderer.clipWantsFrames()) return;
                 if (glView != null) glView.requestRender();
                 clipHandler.postDelayed(this, 16);
             }

@@ -1868,7 +1868,7 @@ public class MainActivity extends Activity {
     private final Runnable clipTick = new Runnable() {
         @Override
         public void run() {
-            if (renderer == null || !renderer.drawingClip) return;
+            if (renderer == null || !renderer.clipWantsFrames()) return;
             glView.requestRender();
             glidePump.postDelayed(this, 16);
         }
@@ -5591,7 +5591,17 @@ public class MainActivity extends Activity {
         // the calling thread, because the renderer's own record is the only honest
         // answer and it is volatile. The normal is part of the identity: a photo
         // that gains one is a pair change, or the new texture is never uploaded.
-        final ReliefRenderer.Apply why = renderer.showingSamePair(img, dep, nrm)
+        // The MEDIUM is part of the pair identity too, and this is the line that
+        // made re-selecting a clip row free it in place: showingSamePair compares
+        // only the still files, which do not change when the clips are what changed,
+        // so it answered "same" and nothing ever swapped the medium in. The clip
+        // stayed paused at its poster for ever -- until a hide/foreground ran a path
+        // that did load. The question has one answer and it is the renderer's.
+        boolean sameMedia = renderer.clipMatches(active == null ? null : active.video);
+        android.util.Log.i("Basrelief", "applyFiles id=" + (active == null ? "none" : active.id)
+                + " samePair=" + renderer.showingSamePair(img, dep, nrm)
+                + " sameMedia=" + sameMedia);
+        final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
         glView.queueEvent(new Runnable() {
@@ -5626,6 +5636,12 @@ public class MainActivity extends Activity {
         // Null for a photograph, explicit because a request never made is
         // indistinguishable from a request for no clip.
         renderer.requestClip(active == null ? null : active.video, getFilesDir());
+        if (!renderer.showingSamePair(img, dep, nrm) || !sameMedia) {
+            // The medium changed, so the pair load has to happen even when the stills
+            // are identical: applyPending is what stops/starts the running clip, and
+            // skipping it is how a re-selected clip stayed paused for ever.
+            renderer.loadPairAsync(img, dep, nrm);
+        }
         startClipPump();
         if (!renderer.showingSamePair(img, dep, nrm)) {
             renderer.loadPairAsync(img, dep, nrm);

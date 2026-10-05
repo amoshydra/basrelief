@@ -52,6 +52,8 @@ final class ClipPlayer {
     private boolean fullRange = true;
     private boolean running;
     private volatile boolean framesArrived;
+    /** Frames newly latched since start; the once-a-second line reports its delta. */
+    private volatile int latches;
     private String error;
 
     /** The colour texture the fragment shader samples. 0 until started. */
@@ -225,8 +227,13 @@ final class ClipPlayer {
      * frame rotated by a stale matrix, which looks exactly like a texture orientation
      * bug and is not one.
      */
-    void tick() {
-        if (!running || blit == null) return;
+    /** Frames newly latched since start. */
+    int latches() {
+        return latches;
+    }
+
+    int tick() {
+        if (!running || blit == null) return 0;
         // Latch first, and let updateTexImage's OWN return value be the "is there
         // anything new" test.
         //
@@ -250,10 +257,11 @@ final class ClipPlayer {
         boolean fresh = blit.update(blit.colour);
         blit.update(blit.depth);
         if (blit.normal != null) blit.update(blit.normal);
+        if (fresh) latches++;
         if (!fresh) {
             // Nothing new this frame. Returning is right and cheap: re-blitting the
             // same content would cost a full-screen pass for an identical result.
-            return;
+            return 0;
         }
 
         // The container's OWN colour range, per track, read from the decoder rather
@@ -290,6 +298,7 @@ final class ClipPlayer {
                     normal.fullRange() ? 0f : -16f * (255f / 219f), 0, 0);
         }
         framesArrived = true;
+        return 1;
     }
 
     /**
