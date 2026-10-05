@@ -201,18 +201,38 @@ final class ClipPlayer {
         blit.update(blit.depth);
         if (blit.normal != null) blit.update(blit.normal);
 
+        // The container's OWN colour range, per track, read from the decoder rather
+        // than assumed -- because the depth and the normal do not have to agree.
+        //
+        // Limited ("tv", luma 16-235) is what the server actually writes: measured on
+        // a generated clip, `color_range=tv`. The vertex shader reads `/255.0 - 0.5`,
+        // so an unexpanded luma loses 16/255 at the bottom and floats the whole
+        // surface -- uniformly shallower relief with no error anywhere. Full range is
+        // the identity, which is the same rule Picture follows for brightness: 0 must
+        // mean "unchanged" or every first frame takes the wrong path.
+        float depthScale = depth.fullRange() ? 1f : 255f / 219f;
+        float depthOffset = depth.fullRange() ? 0f : -16f * (255f / 219f);
+
         // Colour: a straight copy. The sampler does the YUV to RGB here, which is
-        // where it is free.
-        blit.blit(blit.colour, blit.program(ClipBlitter.COPY), 1f, 0, 0);
+        // where it is free. Range-corrected for the same reason, from the colour
+        // track's own report rather than the depth's.
+        blit.blit(blit.colour, blit.program(ClipBlitter.COPY),
+                color.fullRange() ? 1f : 255f / 219f, color.fullRange() ? 0f : -16f * (255f / 219f),
+                0, 0);
 
         // Depth: the box blur, into the float field the vertex shader reads. The
-        // tap count is the divisor, so rangeFix is only about the colour RANGE --
-        // a depth clip written full-range (which ours is) must not be expanded again.
-        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_DEPTH), 1f,
+        // shader divides by its own tap count, so the divisor travels with the loop.
+        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_DEPTH), depthScale, depthOffset,
                 1f / Math.max(1, blit.depth.w), 1f / Math.max(1, blit.depth.h));
 
         if (blit.normal != null) {
-            blit.blit(blit.normal, blit.program(ClipBlitter.COPY_SCALED), 1f, 0, 0);
+            // NORMAL_TRACK_RANGE, not 1. The normal map is a DIRECTION, so its 0.5 is
+            // a middle and the expansion is what makes that middle the renderer's 0.
+            // Skip it and every normal map reads as a lit-from-the-bottom-left
+            // surface, which looks like a plausible lighting bug and is not one.
+            blit.blit(blit.normal, blit.program(ClipBlitter.COPY_SCALED),
+                    normal.fullRange() ? 1f : 255f / 219f,
+                    normal.fullRange() ? 0f : -16f * (255f / 219f), 0, 0);
         }
         framesArrived = true;
     }

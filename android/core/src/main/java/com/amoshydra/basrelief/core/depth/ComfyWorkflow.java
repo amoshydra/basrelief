@@ -97,7 +97,7 @@ public final class ComfyWorkflow {
     private static final String V_MOGE_NORMAL_RENDER_ID = "15";
     private static final String V_NORMAL_COMBINE_ID = "16";
 
-    static final String VIDEO_LOADER = "VHS_LoadVideoPath";
+    static final String VIDEO_LOADER = "VHS_LoadVideo";
     static final String VIDEO_COMBINE = "VHS_VideoCombine";
 
 
@@ -321,6 +321,15 @@ public final class ComfyWorkflow {
      * the silent failure this class exists to prevent — a mask fed to MoGe produces a
      * plausible depth map of nothing, and nothing anywhere says so — so the index is
      * pinned by test rather than trusted.
+     *
+     * <p><b>{@code VHS_LoadVideo}, NOT {@code VHS_LoadVideoPath}.</b> The two look
+     * interchangeable and only one of them works: {@code Path} validates its argument
+     * as a path on the <b>server's</b> filesystem and rejects the name of an uploaded
+     * file outright — measured, {@code "video - Invalid file path: up.mp4"} — while
+     * {@code LoadVideo} takes a filename from the combo the server builds out of its
+     * input directory, which is where {@code /upload/image} puts it. Since the depth
+     * server is reached over HTTP and is not on the phone, there is no path we could
+     * hand the other node. Verified end to end: both clips generate.
      *
      * <p><b>Both clips come out of one graph</b> for the reason the still path emits
      * both: {@code MoGeRender} selects exactly one output, so depth and normal are two

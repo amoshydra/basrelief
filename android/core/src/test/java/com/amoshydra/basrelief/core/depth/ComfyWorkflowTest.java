@@ -399,7 +399,7 @@ public class ComfyWorkflowTest {
 
     private static JSONObject videoServerInfo() throws JSONException {
         JSONObject base = moGeServerInfo();
-        base.put("VHS_LoadVideoPath", new JSONObject("{"
+        base.put("VHS_LoadVideo", new JSONObject("{"
                 + "\"input\": {\"required\": {"
                 + "  \"video\": [\"STRING\", {}],"
                 + "  \"force_rate\": [\"FLOAT\", {\"default\": 0.0}],"

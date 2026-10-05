@@ -86,9 +86,9 @@ final class ClipBlitter {
             "varying vec2 vUv;\n" +
             "uniform samplerExternalOES uTex;\n" +
             "uniform mat4 uST;\n" +
-            "uniform float uRangeFix;\n" +
+            "uniform vec2 uRangeFix;\n" +
             "void main() {\n" +
-            "  gl_FragColor = vec4(texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb * uRangeFix, 1.0);\n" +
+            "  gl_FragColor = vec4(texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb * uRangeFix.x + uRangeFix.y, 1.0);\n" +
             "}\n";
 
     /**
@@ -139,6 +139,10 @@ final class ClipBlitter {
 
     ClipBlitter(int blurRadius) {
         this.blurRadius = blurRadius;
+        // The tap count of the box below, as a literal, so the normalisation cannot
+        // drift from the loop it is dividing. Two copies of one number is the thing
+        // that goes stale; one number written into both at construction is not.
+        final String TAPS = String.valueOf((2 * blurRadius + 1) * (2 * blurRadius + 1));
         this.blitFragDepth =
                 "#extension GL_OES_EGL_image_external : require\n" +
                 "precision highp float;\n" +
@@ -146,7 +150,7 @@ final class ClipBlitter {
                 "uniform samplerExternalOES uTex;\n" +
                 "uniform mat4 uST;\n" +
                 "uniform vec2 uTexel;\n" +
-                "uniform float uRangeFix;\n" +
+                "uniform vec2 uRangeFix;\n" +
                 "void main() {\n" +
                 // A greyscale video's depth is its LUMA, which is what .r gives after
                 // the sampler has converted. Reading .r and not a channel average is
@@ -161,7 +165,23 @@ final class ClipBlitter {
                 // Normalised by the TAP COUNT. A box blur that normalises by anything
                 // else changes the depth's mean, which reads as the whole surface
                 // sinking rather than as a blur.
-                "  gl_FragColor = vec4(vec3(sum * uRangeFix), 1.0);\n" +
+                // Normalise FIRST, by the tap count, then expand the range.
+                //
+                // The order matters and getting it wrong is invisible: without the
+                // divide, the field is the sum of N taps, so the relief is N times too
+                // deep and the far plane is off the top of the camera. It looks like
+                // "depth is too strong" rather than like a missing divide.
+                //
+                // The expansion is needed because the server writes LIMITED range:
+                // measured on a real generated clip, `color_range=tv`, luma 16-235,
+                // while the vertex shader reads `/255.0 - 0.5` and so assumes 0-255.
+                // Taking a tv-range luma at face value loses 16/255 at the bottom and
+                // puts the surface high -- a uniformly shallower, floated relief with
+                // no error anywhere. VHS_VideoCombine has no pix_fmt control, so this
+                // cannot be fixed at the source and is done in the shader, from the
+                // range the DECODER reported.
+                "  float mean = sum * " + TAPS + ".0;\n" +
+                "  gl_FragColor = vec4(vec3(mean * uRangeFix.x + uRangeFix.y), 1.0);\n" +
                 "}\n";
     }
 
@@ -186,7 +206,8 @@ final class ClipBlitter {
      * frame rotated by a stale matrix, which looks like a texture orientation bug and
      * is not one.
      */
-    void blit(Channel src, int program, float rangeFix, float texelW, float texelH) {
+    void blit(Channel src, int program, float rangeScale, float rangeOffset,
+              float texelW, float texelH) {
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, src.fbo);
         GLES30.glViewport(0, 0, src.w, src.h);
         GLES20.glUseProgram(program);
@@ -197,7 +218,8 @@ final class ClipBlitter {
         float[] m = new float[16];
         src.st.getTransformMatrix(m);
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uST"), 1, false, m, 0);
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uRangeFix"), rangeFix);
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uRangeFix"),
+                rangeScale, rangeOffset);
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uTexel"), texelW, texelH);
 
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
