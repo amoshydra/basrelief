@@ -119,6 +119,33 @@ final class ClipBlitter {
     private int myGeneration = -1;
     private int progColour, progDepth, progPlain;
 
+    /**
+     * Uniform and attribute locations, per program, resolved ONCE.
+     *
+     * <p>They were queried every pass -- about six uniforms and two attributes,
+     * three passes, every frame, ~24 driver calls -- for values that cannot change
+     * while a program lives. Keyed BY PROGRAM: the earlier bug in this file was a
+     * cache filled from one program and read for another, which is why the key is
+     * the program id and not a shared slot.
+     */
+    private final java.util.HashMap<Integer, int[]> locs = new java.util.HashMap<>();
+
+    /** uTex, uST, uRangeFix, uTexel, aPos, aUV -- resolved once per program. */
+    private int[] locsFor(int program) {
+        int[] L = locs.get(program);
+        if (L == null) {
+            L = new int[]{
+                    GLES20.glGetUniformLocation(program, "uTex"),
+                    GLES20.glGetUniformLocation(program, "uST"),
+                    GLES20.glGetUniformLocation(program, "uRangeFix"),
+                    GLES20.glGetUniformLocation(program, "uTexel"),
+                    GLES20.glGetAttribLocation(program, "aPos"),
+                    GLES20.glGetAttribLocation(program, "aUV")};
+            locs.put(program, L);
+        }
+        return L;
+    }
+
     int program(int which) {
         return which == BLUR_DEPTH ? progDepth : which == COPY_SCALED ? progPlain : progColour;
     }
@@ -297,18 +324,18 @@ final class ClipBlitter {
         // Clear the sticky error left by anything earlier this frame, so the one we
         // report after the draw actually belongs to THIS pass.
         GLES20.glGetError();
-        curApos = GLES20.glGetAttribLocation(program, "aPos");
-        curAuv = GLES20.glGetAttribLocation(program, "aUV");
+        int[] L = locsFor(program);
+        curApos = L[4];
+        curAuv = L[5];
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, src.oesName);
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uTex"), 0);
+        GLES20.glUniform1i(L[0], 0);
 
         float[] m = new float[16];
         src.st.getTransformMatrix(m);
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uST"), 1, false, m, 0);
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uRangeFix"),
-                rangeScale, rangeOffset);
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uTexel"), texelW, texelH);
+        GLES20.glUniformMatrix4fv(L[1], 1, false, m, 0);
+        GLES20.glUniform2f(L[2], rangeScale, rangeOffset);
+        GLES20.glUniform2f(L[3], texelW, texelH);
         if (prevTex > 0) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, prevTex);
