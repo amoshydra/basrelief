@@ -868,7 +868,19 @@ public class DepthWallpaperService extends WallpaperService {
                     // photo until the process died. Re-decoding on every Depth
                     // nudge would drop a frame for nothing, so the check earns
                     // its keep.
-                    if (!renderer.showingSamePair(img, dep, nrm)) {
+                    // The MEDIUM is part of the identity, exactly as it is in the
+                    // studio's applyFiles. showingSamePair compares only the still
+                    // files, and a row's stills do not change when its clips are what
+                    // changed -- so a freshly created engine whose frame was inherited
+                    // (or whose pair came warm from the cache) answered "same", the
+                    // load was skipped, and applyPending never ran. applyPending is the
+                    // ONLY thing that starts a clip, so the wallpaper showed the frozen
+                    // poster on the lock screen while the studio played the same row:
+                    // measured, the engine's requestClip armed twice 50s apart with
+                    // running=false both times. clipMatches asks the question the still
+                    // comparison cannot.
+                    if (!renderer.showingSamePair(img, dep, nrm)
+                            || !renderer.clipMatches(active.video)) {
                         // Async: the read/decode/mesh-build must not happen
                         // between two frames of the wallpaper, or it visibly
                         // freezes for seconds.
