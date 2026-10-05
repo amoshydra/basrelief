@@ -70,8 +70,10 @@ android/app  ──depends on──▶  android/core
 without a device. It holds depth→geometry (`ReliefMesh`), the camera
 (`CameraModel`), the picture adjustments (`Picture`), a vendored `Mat4`, the prefs
 path scheme (`PrefFiles`), the whole persisted schema (`Config`, `Library`,
-`LibraryItem`, `Surface`, `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`),
-and the one resolution of state into numbers (`Framing`, `SurfaceResolver`).
+`LibraryItem`, `Surface`, `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`,
+`VideoTracks`), the three "where did this come from" vocabularies (`DepthSource`,
+`NormalSource`, `VideoSource`), and the one resolution of state into numbers
+(`Framing`, `SurfaceResolver`).
 
 Anything that would otherwise be untestable GL or platform code belongs here as a
 pure function of plain values — that is the whole test. `Picture` is the pattern:
@@ -171,6 +173,54 @@ already cost real time.
   "bundled demo, FLAT (no depth found)". If you add or replace an asset, confirm
   something actually reads it — this has now bitten twice, and an asset with zero
   references is indistinguishable from a working one in a build log.
+- **A clip is a photograph plus one nullable reference, and it is not a second kind
+  of row.** `LibraryItem` carries `VideoTracks` (colour, depth and normal clips) and
+  nothing else changed; `Library`, the selection, the sort, the archive flag and
+  `Playlists` have no branch for a clip. The alternative was rejected on the same
+  ground the selection pointer is: **the index owns the selection and only the
+  index**, so a separate container of clips would let the pointer name a photograph
+  while a second structure said it was a video — and that disagreement is invisible
+  until the wallpaper is showing the wrong medium on the user's home screen.
+  Everything about the *render values* stays exactly as it was for photographs: the
+  same six per-surface settings, the same `settings(Surface)` read, and `hasDepth()`
+  still asks about the **still** files, because the real question has one answer and
+  `DepthSource` is where it lives.
+  - **The poster frame stays `imageName`.** §3 step 8 of `docs/VIDEO-PLAN.md` makes
+    the poster "the still shown in the gallery, and the fallback if the video cannot
+    decode", so keeping it on the photograph is what lets a clip degrade to a
+    photograph on the spot rather than becoming a row with no image — which
+    `LibraryItem.fromJson` drops, taking the user's photo with it.
+  - **The pair invariant is in the type, not in a writer.** §2: colour without depth
+    renders **flat, with no relief and no error**. Three loose strings could each be
+    null with every writer having to remember; `VideoTracks` refuses to be built
+    without both. `playable(filesDir)` asks the same pair one layer out, and a
+    half-written clip object in a blob parses as **no clip at all** rather than as a
+    row claiming a track that is not there.
+  - **Filenames, never absolute paths — the same rule as an image.** §7 says so
+    explicitly ("a video pair is two more filenames and the same rule"), and the
+    consequence is sharper than for a still: a restored absolute path does not give a
+    degraded clip, it gives a gallery row that renders nothing. Resolution goes
+    through `PrefFiles` so both forms work.
+  - **Two windows, one rule: a window claims nothing.** `DepthSource.UNKNOWN` (a PNG's
+    chunk not yet read), `VideoSource.UNREAD` (a clip's container not yet read) and
+    `NormalSource.UNREAD` all exist because defaulting an unknown to a negative *is*
+    the bug this project has already shipped once. `VideoSource.Kind.POSTER` is the
+    other half: a clip whose files are missing is **not** a photograph, and reporting
+    it as one would offer a depth map to regenerate when what is missing is a file
+    that was there.
+  - **The bundled demo is refused a clip, from both sides.** `res/raw` ships three
+    PNGs, so a clip on that row names files that cannot exist; `withVideo` throws and
+    the parse ignores the key. Gated on the reserved id, which already gates the one
+    other thing true of it (a null image name) — so this is one id-gated fact rather
+    than a second special case.
+  - **`Framing.sourceKind` is a float and is compared, unlike `bundled`.** It says
+    what the *pixels* are rather than which row produced them, so a still and a clip
+    at identical numbers are two pictures and a resolve that conflated them would drop
+    a real frame. It is a float so `ofValues` can reproduce it; the **eleven-argument
+    `ofValues` is deprecated** because it cannot, and `ReliefRenderer.snapshot()` is
+    the one caller that has to move before any clip can be imported. Do not add a
+    medium flag to `Framing` as a boolean — that is the `bundled` trap one level
+    worse.
 - **Shading is supplied, never derived, and flat lit is a deliberate state.**
   The old path derived a normal from the depth gradient
   (`normalize(-dzdx, -dzdy, 1)`); it is gone from both backends, as is the
@@ -552,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 457 tests across twenty-five classes:
+it**. 515 tests across twenty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -585,8 +635,18 @@ has run.**
   with the same values, and without a value comparison the renderer cannot tell "a different
   picture" from "the picture I am gliding towards" — so the second resolve painted the
   destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
-  **eleven** fields is compared, and the field count is asserted, because a twelfth added
-  without teaching `sameAs` about it would make a real frame silently a no-op.
+  **twelve** fields is compared, and the field count is asserted, because a thirteenth added
+  without teaching `sameAs` about it would make a real frame silently a no-op. The reflection
+  that drives it **excludes static fields**, which it had to start doing when the twelfth
+  arrived: `SOURCE_STILL`/`SOURCE_VIDEO` are `public static final float`, so counting every
+  float found fourteen and the count could then be "updated" to match whatever the code
+  happened to declare — which is a guard that can no longer fail. That twelfth field is
+  `sourceKind`, and it is **compared where `bundled` is not**, which is the whole reason to
+  read the two together: `bundled` says which *row* produced a framing, so two framings of
+  the same numbers are the same picture, while the medium says what the *pixels* are, so a
+  still and a clip at identical depth, zoom and light are two pictures. It is a float rather
+  than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
+  `ofValues` cannot reproduce is a field the no-op-paint guard cannot see.
 - `FramingRowValueTest` — the three numbers a framing row *prints*, and above all
   that Origin and Pan cannot be converted by one rule. It is the display half of the
   rule `ConfigTest` and `PerItemSettingsTest` pin on the stored half: **pan is in
@@ -639,13 +699,6 @@ has run.**
   called on the **selection** rather than a finished run, and `encode`/`decode`
   are the newline prefs form — an empty history is the empty string, so a fresh
   install is discovery order exactly as before.
-- `NormalSourceTest` — the new middle state: a photo with depth and no normal is
-  **flat lit**, not shaded and not broken. The trap is the state that no longer
-  exists: `DERIVED` is deliberately absent, so a kind that named it would put
-  "shaded" on the sheet while the shader drew flat. A normal with no depth is
-  inert, nothing selected is the packaged trio (which ships a normal), and
-  exactly one kind reports supplied normals — pinned over every reachable answer
-  so a future kind cannot inherit a default.
 - `FramingTest` — the one resolution of what should be on screen. It
   is in `:core` rather than `:app` for a reason: it lived in `:app` for one
   commit, and in that window the studio loaded a newly selected photo's
@@ -865,12 +918,87 @@ has run.**
   bug it exists for: `hasDepth()` asked only whether a separate depth *file* exists, so a
   PNG carrying its map inside itself in a `dePH`/`dEPt` chunk reported **"No depth" while
   the renderer was drawing the embedded map** — the status line lied about the photo on
-  screen, and the gallery, which reads the file, got it right. Three kinds, not two:
-  `NONE`, `FILE`, `EMBEDDED`. Its traps are the user's decisions rather than the
+  screen, and the gallery, which reads the file, got it right. Four kinds, not two:
+  `NONE`, `FILE`, `EMBEDDED`, `TRACK`. Its traps are the user's decisions rather than the
   author's: an embedded map reports **has depth** and offers **neither** Regenerate nor
   Replace, because there is no depth file to replace. And the window where the embedded
   flag is still being read must NOT answer `NONE` — defaulting an unknown to "no depth"
-  *is* the bug, so there is a third answer for it and a test that says so.
+  *is* the bug, so there is a third answer for it and a test that says so. `TRACK` is a
+  clip's depth, and it is a fourth kind rather than an `EMBEDDED` special case because
+  which file the map is in is the whole difference: an embedded map is a chunk of the image
+  being drawn, a track is a second video that must stay frame-locked to the first
+  (`docs/VIDEO-PLAN.md` §2, §4). It offers neither action for two separate reasons —
+  regenerating is §3's offline pass over every frame, and replacing a depth clip alone
+  would leave it locked to a colour clip it no longer matches (§3 step 7). A clip opens a
+  **second window of the same shape**, and it is the wider one: before the decoder reports,
+  a row naming clips will render as one of two different pictures, so `UNREAD` is reached
+  from `VideoSource` exactly as it is from the PNG's chunk. The two-argument `forItem` is
+  kept and is *honest about a clip rather than convenient*: it cannot have read a
+  container, so a clip row comes back `UNKNOWN` instead of being guessed at.
+- `NormalSourceTest` — the new middle state: a photo with depth and no normal is
+  **flat lit**, not shaded and not broken. The trap is the state that no longer
+  exists: `DERIVED` is deliberately absent, so a kind that named it would put
+  "shaded" on the sheet while the shader drew flat. A normal with no depth is
+  inert, nothing selected is the packaged trio (which ships a normal), and
+  exactly one kind reports supplied normals — pinned over every reachable answer
+  so a future kind cannot inherit a default. **Its second theme is `UNREAD`, the
+  state this class did not have and had to grow.** Its old claim — "nothing has to
+  be read to answer this" — was true for a file the index names and false for a
+  track a decoder has to produce, so a clip row is genuinely unknown between
+  selection and first frame. Folding that window into `NONE` would put "Flat lit —
+  depth, no normals" and a "generate normals" button over a clip whose every frame
+  is shaded: the reported "No depth over a photograph with a map" bug again, with a
+  different verb. The clip answers are also the test that a rule reading
+  `normalName` would fail — a clip's *poster* can be shaded while the clip is flat
+  lit, and both rows carry identical still files, so reading the still would answer
+  the same for both and be wrong about one.
+- `VideoSourceTest` — whether a row is a photograph or a clip, and **whether the
+  clip can play yet**. It is a third source class because neither sibling can answer
+  it: a clip's depth is a track inside a *second* video and its shading a third, so
+  "where did this come from" is being asked of a different thing. The trap is the
+  window, and it is the same rule the other two carry: **it claims nothing**, not
+  "still" and not "clip", because both are claims and the default has to be the one
+  that says nothing. Two supporting properties are pinned because they are what
+  keeps the window narrow and honest: **no photograph ever has one** (a row with no
+  clips is answered from the index alone, so no still flickers through the window on
+  selection), and **`POSTER` is not `STILL`** — a clip whose files are not here is a
+  clip that fell back to its poster frame, and reporting it as a photograph would
+  send the user to regenerate a depth map when what is missing is a file that was
+  there. The kind enumeration iterates `Kind.values()` rather than a hand-written
+  answer list, because a hand-written list is exactly the guard that goes stale: a
+  fifth kind could arrive and the old test would keep passing.
+- `VideoTracksTest` — the clip's three files, and the invariant that makes them one
+  thing. §2 says *"never store one without the other"* — colour without depth renders
+  **flat, with no relief and no error** — and three loose `String`s could each be null
+  with every writer having to remember, so the type refuses to be constructed without
+  both and the rule lives where a writer cannot forget it. The traps: a **stored
+  absolute path is the restore case** for all three names (with `allowBackup="true"`
+  it survives a restore and still names the previous device's `filesDir`, so the clip
+  is not degraded — it is a row that renders nothing), and resolution therefore goes
+  through `PrefFiles`, which accepts both forms, because a basename that is never
+  re-resolved against `filesDir` is the same bug with the other half of the fix
+  missing. A **half-written clip object parses as no clip at all**, because the
+  degradation is the poster photograph and dropping the row would take the user's
+  photo with it. And `playable` is deliberately the *cheap* question — both required
+  files resolve — because the decoder's answer belongs to the window above it, not
+  here. The normal track's absence is asserted as a *state*, not an omission.
+- `VideoLibraryTest` — a clip as a row, and the property everything else rests on:
+  **a clip is not a second kind of row**. The index owns the selection and only the
+  index, and a separate container of clips would have made the same disagreement
+  possible for the *medium* as for the pointer — invisible until the home screen was
+  wrong. So a clip is one `LibraryItem` with one extra nullable reference, and
+  `Library`, the selection, the sort, the archive flag and `Playlists` need no branch
+  of their own; that is asserted per piece of machinery rather than in prose. Two
+  halves of the round trip are separate risks and both are checked, because losing
+  the clips looks like a video turned back into a photo and losing the *selection* is
+  invisible on a photograph. The `everyMutatorCarriesTheClip` enumeration is the
+  `withDepth` scar one field over: a clip is exactly the shape of value that was added
+  after the writers existed, so a writer that forgot it would quietly turn a user's
+  video back into a photograph with no error anywhere. The one decision the documents
+  do not make is pinned as `aClipWhoseFilesAreGoneKeepsItsRowAndReadsAsAPhoto` — the
+  row is kept (its poster is a file, and dropping it would delete a photo the user can
+  still see) while the medium is `POSTER`, so the status line says the clip is not
+  playing rather than claiming the row is a photograph.
 - `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
   a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
   for. The trap is reading a *position* when the user changed *direction*: the

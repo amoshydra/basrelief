@@ -257,5 +257,162 @@ public class DepthSourceTest {
         assertEquals("DepthSource.NONE", DepthSource.resolve(false, false).toString());
         assertEquals("DepthSource.FILE", DepthSource.resolve(true, false).toString());
         assertEquals("DepthSource.EMBEDDED", DepthSource.resolve(false, true).toString());
+        assertEquals("DepthSource.TRACK", DepthSource.resolve(
+                VideoSource.forItem(clip("a"), Boolean.TRUE),
+                Boolean.FALSE, Boolean.FALSE).toString());
+    }
+
+    // ------------------------------------------------------- a clip's depth
+
+    private static LibraryItem clip(String id) {
+        return LibraryItem.of(id, id + ".png", id + "-depth.png", 1L)
+                .withVideo(VideoTracks.of(id + ".mp4", id + "-depth.mp4"));
+    }
+
+    private static LibraryItem shadedClip(String id) {
+        return LibraryItem.of(id, id + ".png", id + "-depth.png", 1L)
+                .withVideo(VideoTracks.of(id + ".mp4", id + "-depth.mp4", id + "-normal.mp4"));
+    }
+
+    /**
+     * A clip's depth is a <b>track</b>, and it is a fourth answer rather than
+     * {@code EMBEDDED}.
+     *
+     * <p>Which file the map is in is the whole difference: an embedded map is a chunk
+     * of the image being drawn, a track is a second video that has to stay
+     * frame-locked to the first. Reporting one as the other would describe a render
+     * that is not happening, which is the same lie this class exists to remove — and
+     * it would be a lie about the two things a caller most needs to get right.
+     */
+    @Test
+    public void aPlayingClipsDepthIsATrack() {
+        DepthSource.Answer a = DepthSource.forItem(clip("a"), null,
+                VideoSource.forItem(clip("a"), Boolean.TRUE));
+        assertEquals(DepthSource.Kind.TRACK, a.kind());
+        assertTrue("the relief is drawing it", a.hasDepth());
+        assertFalse("and must never be told it has none", a.reportsNoDepth());
+    }
+
+    /**
+     * A track offers <b>neither</b> action, and the reasons are different from the
+     * embedded case.
+     *
+     * <p>Regenerating is §3's offline pass over every frame, not a write of one map
+     * file; and replacing the depth clip alone would leave it locked to a colour clip
+     * it no longer matches (§3 step 7: same frame count, same rate, same GOP). A
+     * control that could only half-apply is the {@code withDepth} trap with a
+     * button on it.
+     */
+    @Test
+    public void aTrackOffersNeitherRegenerateNorReplace() {
+        DepthSource.Answer a = DepthSource.forItem(clip("a"), null,
+                VideoSource.forItem(clip("a"), Boolean.TRUE));
+        assertFalse(a.canRegenerate());
+        assertFalse(a.canReplace());
+    }
+
+    /**
+     * A clip row is <b>unknown</b> until its clips are read — the second window, and
+     * it is the same rule.
+     *
+     * <p>Not {@code NONE}, because that is the reported bug this class exists to
+     * remove; not {@code FILE}, because the render may be a track; and not
+     * {@code TRACK}, because the clips may not decode at all. Every claim is checked,
+     * because each was separately a way to assert something not known.
+     */
+    @Test
+    public void aClipRowClaimsNothingUntilItsClipsAreRead() {
+        DepthSource.Answer u = DepthSource.forItem(clip("a"), null,
+                VideoSource.forItem(clip("a"), null));
+        assertTrue(u.isUnknown());
+        assertFalse("not evidence of absence", u.hasDepth());
+        assertFalse("THE bug, in a new place: never \"No depth\"", u.reportsNoDepth());
+        assertFalse(u.canRegenerate());
+        assertFalse(u.canReplace());
+
+        // And the two-argument form cannot have read them, so it is silent for a clip
+        // rather than convenient.
+        DepthSource.Answer stillOnly = DepthSource.forItem(clip("a"), null);
+        assertTrue("a caller with no clip state must claim nothing", stillOnly.isUnknown());
+        assertFalse(stillOnly.reportsNoDepth());
+    }
+
+    /**
+     * A clip whose files are missing answers as the photograph it now is.
+     *
+     * <p>The poster frame is what renders, so its own still files are the truth: not
+     * {@code TRACK}, because nothing is reading a track, and not {@code NONE}, because
+     * the poster may have a map of its own. A user whose clips a restore lost gets the
+     * ordinary photograph answers rather than advice about a track.
+     */
+    @Test
+    public void aClipThatFellBackToItsPosterAnswersAsThatPhotograph() {
+        LibraryItem item = clip("a");
+        VideoSource.Answer poster = VideoSource.forItem(item, Boolean.FALSE);
+
+        DepthSource.Answer mapped = DepthSource.forItem(item, null, poster);
+        assertEquals("the poster has a map of its own", DepthSource.Kind.FILE,
+                mapped.kind());
+        assertTrue(mapped.canRegenerate());
+
+        LibraryItem posterOnly = LibraryItem.of("a", "a.png", null, 1L)
+                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        DepthSource.Answer embedded = DepthSource.forItem(posterOnly, Boolean.TRUE, poster);
+        assertEquals(DepthSource.Kind.EMBEDDED, embedded.kind());
+        assertEquals("and the embedded rule still applies to it",
+                DepthSource.Kind.NONE,
+                DepthSource.forItem(posterOnly, Boolean.FALSE, poster).kind());
+    }
+
+    /**
+     * A clip's shading normal is irrelevant to where its depth comes from.
+     *
+     * <p>Stated because it is the one fact a caller might reasonably get wrong in
+     * passing: the clip's own normal track is a <i>third</i> file and has no bearing
+     * on whether the depth is a track. {@link NormalSource} is where that question
+     * lives.
+     */
+    @Test
+    public void aClipsNormalTrackDoesNotChangeWhereItsDepthComesFrom() {
+        assertEquals(DepthSource.Kind.TRACK, DepthSource.forItem(clip("a"), null,
+                VideoSource.forItem(clip("a"), Boolean.TRUE)).kind());
+        assertEquals("with or without the normal track",
+                DepthSource.Kind.TRACK, DepthSource.forItem(shadedClip("a"), null,
+                        VideoSource.forItem(shadedClip("a"), Boolean.TRUE)).kind());
+    }
+
+    /**
+     * The whole surface, extended over a clip. {@code hasDepth} is true for exactly
+     * FILE, EMBEDDED and TRACK and {@code NONE} alone reports absence, so a kind added
+     * later fails here instead of inheriting a default.
+     */
+    @Test
+    public void everyAnswerIncludingAClipKeepsTheFlagsConsistent() {
+        LibraryItem[] items = {null, withMap("a"), noMap("a"), clip("a"), shadedClip("a")};
+        Boolean[] media = {null, Boolean.TRUE, Boolean.FALSE};
+        Boolean[] embedded = {null, Boolean.TRUE, Boolean.FALSE};
+        int seen = 0;
+        for (LibraryItem item : items) {
+            for (Boolean m : media) {
+                for (Boolean e : embedded) {
+                    DepthSource.Answer a = DepthSource.forItem(item, e,
+                            VideoSource.forItem(item, m));
+                    assertEquals("hasDepth must be FILE, EMBEDDED or TRACK, got " + a,
+                            a.kind() == DepthSource.Kind.FILE
+                                    || a.kind() == DepthSource.Kind.EMBEDDED
+                                    || a.kind() == DepthSource.Kind.TRACK, a.hasDepth());
+                    assertEquals("actions must be NONE or FILE, got " + a,
+                            a.kind() == DepthSource.Kind.NONE
+                                    || a.kind() == DepthSource.Kind.FILE, a.canRegenerate());
+                    assertEquals(a.canRegenerate(), a.canReplace());
+                    assertEquals("reportsNoDepth is NONE alone, got " + a,
+                            a.kind() == DepthSource.Kind.NONE, a.reportsNoDepth());
+                    assertEquals("isUnknown is UNKNOWN alone, got " + a,
+                            a.kind() == DepthSource.Kind.UNKNOWN, a.isUnknown());
+                    seen++;
+                }
+            }
+        }
+        assertEquals(45, seen);
     }
 }

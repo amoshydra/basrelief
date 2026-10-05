@@ -563,4 +563,64 @@ public class LibraryItemTest {
         assertNotNull(item);
         assertNull("a JSON null label is absent", item.label);
     }
+
+    // -------------------------------------------------------------------- clips
+
+    /**
+     * The three clip names survive the item's own round trip, and a photograph
+     * writes no clip key at all.
+     *
+     * <p>The second half is a byte-stability property, not a style choice, and the
+     * reason clips needed no version bump: a library of photographs must serialise
+     * exactly as it did before the feature existed. See
+     * {@link VideoLibraryTest} for the same property asserted over a whole index.
+     */
+    @Test
+    public void clipNamesSurviveARoundTripAndAreAbsentForAPhotograph() {
+        LibraryItem clip = sample().withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        LibraryItem back = LibraryItem.fromJson(json(clip.toJson()));
+        assertNotNull(back);
+        assertEquals("a.mp4", back.video.color);
+        assertEquals("a-depth.mp4", back.video.depth);
+        assertNull(back.video.normal);
+        assertTrue(back.isVideo());
+
+        LibraryItem photo = sample();
+        assertFalse(photo.isVideo());
+        assertNull(photo.video);
+        assertFalse("a photograph must not write a video key",
+                photo.toJson().contains("video"));
+        assertNull(LibraryItem.fromJson(json(photo.toJson())).video);
+    }
+
+    /**
+     * A clip is a photograph as far as every other field is concerned, and this is
+     * asserted rather than assumed because the opposite shipped once.
+     *
+     * <p>{@code withDepth} reset Motion, brightness and shadow when it was called,
+     * because those values had been added after it was written and the constructor it
+     * used defaulted everything it was not given. A clip is exactly that shape of
+     * value — a field added after the writers existed — so a writer that forgot it
+     * would quietly turn a user's video back into a photograph, with no error
+     * anywhere. The full enumeration over every mutator is in
+     * {@link VideoLibraryTest}; this is the item-level half.
+     */
+    @Test
+    public void aDepthWriteOnAClipKeepsTheClip() {
+        LibraryItem shaded = sample()
+                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4", "a-normal.mp4"))
+                .withIntensity(Surface.HOME, 70)
+                .withMotion(Surface.HOME, 55);
+        LibraryItem remapped = shaded.withDepth("b-depth.png");
+
+        assertEquals("the poster's map is what withDepth writes", "b-depth.png",
+                remapped.depthName);
+        assertNull("and its normal is cleared with it, as always", remapped.normalName);
+        assertNotNull("but the clip is a different asset and rides along",
+                remapped.video);
+        assertEquals("a.mp4", remapped.video.color);
+        assertEquals("a-normal.mp4", remapped.video.normal);
+        assertEquals(70, remapped.settings(Surface.HOME).depth);
+        assertEquals(55, remapped.settings(Surface.HOME).motion);
+    }
 }
