@@ -32,6 +32,21 @@ final class ClipPlayer {
     private static final String TAG = "Basrelief";
 
     /**
+     * The weight of the CURRENT frame in the depth field's temporal blend.
+     *
+     * <p>MoGe estimates each frame independently, so its per-frame errors shimmer;
+     * the field is mixed with the PREVIOUS frame's field to remove the shimmer. Near
+     * 1 the lag is under a frame and the smoothing is weakest; near 0 the depth is
+     * nearly frozen. 0.7 is a start, filed as a constant rather than a suggestion so
+     * tuning it is a one-line edit with a name.
+     */
+    static final float DEPTH_TEMPORAL_BLEND = 0.7f;
+
+    /** The previous depth field, for the temporal blend; null until first blit. */
+    private ClipBlitter.Channel prevField;
+    private boolean depthPrevValid;
+
+    /**
      * How far ahead of the clock a frame may be released. Equal for every decoder.
      *
      * <p>Measured at 120 ms with all streams gated identically: {@code skew=40000us}
@@ -326,6 +341,13 @@ final class ClipPlayer {
             release(blit.normal);
             blit = null;
         }
+        if (prevField != null) {
+            release(prevField);
+            prevField = null;
+        }
+        // The temporal blend restarts with the clip: the stale previous field belongs
+        // to a pair that is gone.
+        depthPrevValid = false;
         running = false;
         framesArrived = false;
         // The identity goes with the clip. Leaving it behind would make a later

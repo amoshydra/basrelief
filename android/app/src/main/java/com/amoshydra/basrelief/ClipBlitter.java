@@ -99,7 +99,7 @@ final class ClipBlitter {
      * into a grey one with no error anywhere.
      */
     static final int COPY = 0, BLUR_DEPTH = 1, COPY_SCALED = 2;
-    private int progColour, progDepth, progPlain;
+    private int progColour, progDepth, progPlain, progCopy;
 
     int program(int which) {
         return which == BLUR_DEPTH ? progDepth : which == COPY_SCALED ? progPlain : progColour;
@@ -166,6 +166,8 @@ final class ClipBlitter {
                 "uniform mat4 uST;\n" +
                 "uniform vec2 uTexel;\n" +
                 "uniform vec2 uRangeFix;\n" +
+                "uniform sampler2D uPrev;\n" +
+                "uniform float uBlend;\n" +
                 "void main() {\n" +
                 // A greyscale video's depth is its LUMA, which is what .r gives after
                 // the sampler has converted. Reading .r and not a channel average is
@@ -196,7 +198,15 @@ final class ClipBlitter {
                 // cannot be fixed at the source and is done in the shader, from the
                 // range the DECODER reported.
                 "  float mean = sum * " + TAPS + ".0;\n" +
-                "  gl_FragColor = vec4(vec3(mean * uRangeFix.x + uRangeFix.y), 1.0);\n" +
+                // The temporal low-pass. MoGe estimates each frame's depth
+                // INDEPENDENTLY, so per-frame errors shimmer frame to frame -- the
+                // flicker reported on the aligned clip once sync and length were
+                // fixed and nothing else moved any more. Mixing the PREVIOUS field
+                // with this one at uBlend removes the shimmer; the lag it adds is the
+                // price, and uBlend set near 1 keeps it under a frame or two.
+                "  float cur = mean * uRangeFix.x + uRangeFix.y;\n" +
+                "  float prev = texture2D(uPrev, vUv).r;\n" +
+                "  gl_FragColor = vec4(vec3(mix(prev, cur, uBlend)), 1.0);\n" +
                 "}\n";
     }
 
@@ -205,6 +215,14 @@ final class ClipBlitter {
         progColour = program(blitFragColour);
         progDepth = program(blitFragDepth);
         progPlain = program(blitFragPlain);
+        progCopy = program(
+                "#extension GL_OES_EGL_image_external : not needed\n" +
+                "precision highp float;\n" +
+                "varying vec2 vUv;\n" +
+                "uniform sampler2D uSrc;\n" +
+                "void main() {\n" +
+                "  gl_FragColor = vec4(texture2D(uSrc, vUv).r, 0.0, 0.0, 1.0);\n" +
+                "}\n");
         aPos = GLES20.glGetAttribLocation(progColour, "aPos");
         aUV = GLES20.glGetAttribLocation(progColour, "aUV");
         float[] p = {-1, -1, 1, -1, -1, 1, 1, 1};
@@ -223,6 +241,18 @@ final class ClipBlitter {
      */
     void blit(Channel src, int program, float rangeScale, float rangeOffset,
               float texelW, float texelH) {
+        blit(src, program, rangeScale, rangeOffset, texelW, texelH, 0, 1f);
+    }
+
+    /**
+     * One full-screen pass, with an optional previous-frame texture for the depth
+     * field's temporal blend.
+     *
+     * @param prevTex a {@code GL_TEXTURE_2D} to mix into the output, or 0 for none
+     * @param blend   the mix weight for the CURRENT frame; 1 when there is no prev
+     */
+    void blit(Channel src, int program, float rangeScale, float rangeOffset,
+              float texelW, float texelH, int prevTex, float blend) {
         // Save the viewport and put it back, because this pass runs at the clip's own
         // size and the relief draw does not set a viewport per frame.
         //
@@ -247,13 +277,20 @@ final class ClipBlitter {
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uRangeFix"),
                 rangeScale, rangeOffset);
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uTexel"), texelW, texelH);
+        if (prevTex > 0) {
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, prevTex);
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uPrev"), 1);
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uBlend"), blend);
+        }
 
 
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
-        GLES20.glEnable(GLES20.GL_BLEND);
-        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ZERO);
+        // NO blending, deliberately. These passes are full-coverage overwrites, so
+        // the blend unit does nothing here even where it works -- and where the
+        // target is a 32-bit float, blending needs EXT_float_blend and silently
+        // mis-writes without it. The passes do not need it, so they do not ask.
         drawQuad();
-        GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         // The viewport is part of this pass's borrow, not global state: restore it.
@@ -318,6 +355,26 @@ final class ClipBlitter {
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
                 GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
         return t[0];
+    }
+
+    /**
+     * Copy one 2D target into another, one texel for one texel.
+     *
+     * <p>The depth field's temporal blend needs its previous output, so after
+     * blending, the field is copied here for the next frame. Integer-exact at the
+     * field's own size, so there is nothing to filter and nothing to align.
+     */
+    void copy(Channel src, Channel dst) {
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, dst.fbo);
+        GLES30.glViewport(0, 0, dst.w, dst.h);
+        GLES20.glUseProgram(progCopy);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, src.tex2d);
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(progCopy, "uSrc"), 0);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        drawQuad();
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
     }
 
     /** Allocate an ordinary RGBA8 2D target and its framebuffer. */
