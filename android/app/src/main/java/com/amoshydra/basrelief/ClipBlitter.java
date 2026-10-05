@@ -108,7 +108,7 @@ final class ClipBlitter {
      * the depth box for colour -- which compiles, links, and blurs a colour frame
      * into a grey one with no error anywhere.
      */
-    static final int COPY = 0, BLUR_DEPTH = 1, COPY_SCALED = 2;
+    static final int COPY = 0, BLUR_H = 1, BLUR_V = 2, COPY_SCALED = 3;
     /**
      * Bumped by the renderer on every new EGL context, so a release can tell whether
      * the names it holds belong to the current context. Deleting a name in a context
@@ -117,7 +117,7 @@ final class ClipBlitter {
     static int contextGeneration;
 
     private int myGeneration = -1;
-    private int progColour, progDepth, progPlain;
+    private int progColour, progDepth, progPlain, progBlurV;
 
     /**
      * Uniform and attribute locations, per program, resolved ONCE.
@@ -147,7 +147,9 @@ final class ClipBlitter {
     }
 
     int program(int which) {
-        return which == BLUR_DEPTH ? progDepth : which == COPY_SCALED ? progPlain : progColour;
+        return which == BLUR_H ? progDepth
+                : which == BLUR_V ? progBlurV
+                : which == COPY_SCALED ? progPlain : progColour;
     }
     private int aPos, aUV;
     private FloatBuffer quadPos, quadUv;
@@ -196,6 +198,12 @@ final class ClipBlitter {
     Channel depth;
     /** The normal map, as an ordinary 2D texture. Null for a flat-lit clip. */
     Channel normal;
+    /**
+     * The separable blur's intermediate: the horizontal pass's raw output, R32F at
+     * the field's size, read by the vertical pass. Float, like the field, because
+     * re-quantising between the two halves is the same terrace bug one step earlier.
+     */
+    Channel tmp;
 
     ClipBlitter(int blurRadius) {
         this.blurRadius = blurRadius;
@@ -226,16 +234,20 @@ final class ClipBlitter {
             // colour is unaffected because the still path flips the colour bitmap at
             // upload: colour and clip colour agree; only the field needed the inverse.
             "  uv.y = 1.0 - uv.y;\n" +
+                // SEPARABLE, half one: the horizontal box only. A 2D box blur is
+                // exactly the horizontal box followed by the vertical one, so this
+                // is the same filter -- but 7 taps here and 7 in the second pass,
+                // against 49 in one. OES fetches are the expensive ones on Mali and
+                // this pass was the biggest single term in the clip's frame.
                 "  float sum = 0.0;\n" +
-                "  for (int j = -" + blurRadius + "; j <= " + blurRadius + "; j++) {\n" +
-                "    for (int i = -" + blurRadius + "; i <= " + blurRadius + "; i++) {\n" +
-                "      sum += texture2D(uTex, uv + vec2(float(i), float(j)) * uTexel).r;\n" +
-                "    }\n" +
+                "  for (int i = -" + blurRadius + "; i <= " + blurRadius + "; i++) {\n" +
+                "    sum += texture2D(uTex, uv + vec2(float(i), 0.0) * uTexel).r;\n" +
                 "  }\n" +
-                // Normalised by the TAP COUNT. A box blur that normalises by anything
-                // else changes the depth's mean, which reads as the whole surface
-                // sinking rather than as a blur.
-                // Normalise FIRST, by the tap count, then expand the range.
+                // Normalised by the tap count, and RAW -- no range expansion here.
+                // The expansion belongs to the vertical pass, which is the one that
+                // writes the field's 0..255 units; see blurFragV. A box blur that
+                // normalises by anything else changes the depth's mean, which reads as
+                // the whole surface sinking rather than as a blur.
                 //
                 // The order matters and getting it wrong is invisible: without the
                 // divide, the field is the sum of N taps, so the relief is N times too
@@ -250,25 +262,8 @@ final class ClipBlitter {
                 // no error anywhere. VHS_VideoCombine has no pix_fmt control, so this
                 // cannot be fixed at the source and is done in the shader, from the
                 // range the DECODER reported.
-                "  float mean = sum / " + TAPS + ".0;\n" +
-                // The temporal low-pass. MoGe estimates each frame's depth
-                // INDEPENDENTLY, so per-frame errors shimmer frame to frame -- the
-                // flicker reported on the aligned clip once sync and length were
-                // fixed and nothing else moved any more. Mixing the PREVIOUS field
-                // with this one at uBlend removes the shimmer; the lag it adds is the
-                // price, and uBlend set near 1 keeps it under a frame or two.
-                // To the VERTEX shader's units: it unpacks the field as
-                // `field / 255.0 - 0.5`, and the CPU path feeds it 0..255 -- but the
-                // OES sampler above hands this shader 0..1. Writing 0..1 into the
-                // field made every clip draw as a nearly flat plane a half-unit deep:
-                // the Depth slider multiplied a near-constant and did nothing, which
-                // is how it was reported. The scale 255 belongs to the vertical range
-                // fix's units, so it is applied before the fix and the shader's
-                // /255 unpack returns exactly what the still path produces.
-                "  float cur255 = mean * 255.0;\n" +
-                "  float cur = cur255 * uRangeFix.x + uRangeFix.y;\n" +
-                "  gl_FragColor = vec4(vec3(cur), 1.0);\n" +
-                "}\n";
+                "  gl_FragColor = vec4(vec3(sum / " + String.valueOf(2 * blurRadius + 1) + ".0), 1.0);\n" +
+"}\n";
     }
 
     /** GL thread. Creates the programs and the quad, once per EGL context. */
@@ -277,6 +272,7 @@ final class ClipBlitter {
         progColour = program(blitFragColour);
         progDepth = program(blitFragDepth);
         progPlain = program(blitFragPlain);
+        progBlurV = program(blurVert300(), blurFragV());
         aPos = GLES20.glGetAttribLocation(progColour, "aPos");
         aUV = GLES20.glGetAttribLocation(progColour, "aUV");
         float[] p = {-1, -1, 1, -1, -1, 1, 1, 1};
@@ -293,6 +289,69 @@ final class ClipBlitter {
      * frame rotated by a stale matrix, which looks like a texture orientation bug and
      * is not one.
      */
+    /**
+     * One full-screen pass whose SOURCE is an ordinary 2D texture and whose target is
+     * another channel. The vertical half of the separable blur reads the intermediate
+     * the horizontal half wrote, and an OES sampler cannot read it.
+     */
+    void blit2d(Channel src, Channel dst, int program, float rangeScale, float rangeOffset,
+                float texelW, float texelH) {
+        int[] vp = new int[4];
+        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0);
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, dst.fbo);
+        GLES30.glViewport(0, 0, dst.w, dst.h);
+        GLES20.glUseProgram(program);
+        GLES20.glGetError();
+        int[] L = locsFor(program);
+        curApos = L[4];
+        curAuv = L[5];
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, src.tex2d);
+        GLES20.glUniform1i(L[0], 0);
+        GLES20.glUniform2f(L[2], rangeScale, rangeOffset);
+        GLES20.glUniform2f(L[3], texelW, texelH);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        drawQuad();
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(vp[0], vp[1], vp[2], vp[3]);
+    }
+
+    /** The 300 es vertex shader for the vertical pass; see {@link #blurFragV}. */
+    private static String blurVert300() {
+        return "#version 300 es\n"
+                + "in vec2 aPos; in vec2 aUV; out vec2 vUv;\n"
+                + "void main(){ vUv = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+    }
+
+    /**
+     * The vertical box and the range expansion, in the units the vertex shader
+     * unpacks.
+     *
+     * <p>300 es, deliberately: this pass samples the intermediate R32F with a
+     * {@code sampler2D}, and the ES 1.00 sampler family is the one this driver
+     * refuses when it meets a float texture. The debug view's quad is the proof that
+     * R32F reads cleanly through {@code texture()} here.
+     *
+     * <p>The {@code * 255.0} and the range fix belong to THIS pass and nowhere else:
+     * the horizontal pass writes a raw 0..1 mean, and the vertex shader unpacks the
+     * finished field as {@code field / 255.0 - 0.5}.
+     */
+    private String blurFragV() {
+        return "#version 300 es\n"
+                + "precision highp float;\n"
+                + "uniform sampler2D uTex; uniform vec2 uTexel; uniform vec2 uRangeFix;\n"
+                + "in vec2 vUv; out vec4 o;\n"
+                + "void main(){\n"
+                + "  float sum = 0.0;\n"
+                + "  for (int j = -" + blurRadius + "; j <= " + blurRadius + "; j++) {\n"
+                + "    sum += texture(uTex, vUv + vec2(0.0, float(j)) * uTexel).r;\n"
+                + "  }\n"
+                + "  float mean = sum / " + (2 * blurRadius + 1) + ".0;\n"
+                + "  o = vec4(vec3(mean * 255.0 * uRangeFix.x + uRangeFix.y), 1.0);\n"
+                + "}\n";
+    }
+
     void blit(Channel src, int program, float rangeScale, float rangeOffset,
               float texelW, float texelH) {
         blit(src, program, rangeScale, rangeOffset, texelW, texelH, 0, 1f);
@@ -598,7 +657,12 @@ final class ClipBlitter {
     volatile boolean available;
 
     private int program(String frag) {
-        int v = compile(GLES20.GL_VERTEX_SHADER, blitVert);
+        return program(blitVert, frag);
+    }
+
+    /** A program with its own vertex shader -- the 300 es vertical blur needs one. */
+    private int program(String vert, String frag) {
+        int v = compile(GLES20.GL_VERTEX_SHADER, vert);
         int f = compile(GLES20.GL_FRAGMENT_SHADER, frag);
         int p = GLES20.glCreateProgram();
         GLES20.glAttachShader(p, v);

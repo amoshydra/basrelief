@@ -198,6 +198,7 @@ final class ClipPlayer {
         probeSize(cf);
         blit.colour = ClipBlitter.makeRgba(Math.max(1, videoW), Math.max(1, videoH));
         blit.depth = ClipBlitter.makeField(grid + 1);
+        blit.tmp = ClipBlitter.makeField(grid + 1);
         if (normal != null) {
             int nw = videoW, nh = videoH;
             probeSize(nf);
@@ -307,8 +308,14 @@ final class ClipPlayer {
 
         // Depth: the box blur, into the float field the vertex shader reads. The
         // shader divides by its own tap count, so the divisor travels with the loop.
-        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_DEPTH), depthScale, depthOffset,
-                1f / Math.max(1, blit.depth.w), 1f / Math.max(1, blit.depth.h));
+        // Separable: the horizontal box out of the OES into the intermediate, then
+        // the vertical box out of the intermediate into the field. The same filter,
+        // 7 taps each instead of 49 in one -- and the range expansion rides the
+        // SECOND pass, which is the one that writes the field's units.
+        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_H), 1f, 0f,
+                1f / Math.max(1, blit.tmp.w), 0f);
+        blit.blit2d(blit.tmp, blit.depth, blit.program(ClipBlitter.BLUR_V),
+                depthScale, depthOffset, 0f, 1f / Math.max(1, blit.depth.h));
 
         if (blit.normal != null) {
             // NORMAL_TRACK_RANGE, not 1. The normal map is a DIRECTION, so its 0.5 is
@@ -346,6 +353,7 @@ final class ClipPlayer {
             release(blit.colour);
             release(blit.depth);
             release(blit.normal);
+            release(blit.tmp);
             blit.releasePrograms();
             blit = null;
         }

@@ -84,6 +84,21 @@ final class ClipDecoder {
     private volatile boolean running;
     private volatile boolean waiting;
 
+    /**
+     * Set on a rewind, cleared by the first KEY frame.
+     *
+     * <p>The seam showed a macroblock MOSAIC -- black with scattered coloured
+     * tiles -- which is what a decoder emits for a frame whose references it does
+     * not have. The rewind lands on the nearest sync sample, and that is not
+     * guaranteed to be an IDR: with an open GOP, or a sync sample that is a plain
+     * I frame, everything until the next key frame references pictures from before
+     * the seek. Releasing those renders the mosaic; DROPPING them renders nothing,
+     * which is a held frame for a few frames instead of garbage. The flag is what
+     * makes the seam correct for any encoder's GOP, rather than for the one we
+     * happened to measure.
+     */
+    private volatile boolean awaitingKeyframe;
+
     private volatile String rangeName = "unspecified->assume studio";
     private volatile boolean fullRange = true;
     private volatile int trackW, trackH;
@@ -293,6 +308,7 @@ final class ClipDecoder {
                                     extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
                                     loops++;
                                     basePtsUs += clipUs;
+                                    awaitingKeyframe = true;
                                     continue;
                                 }
                                 codec.queueInputBuffer(in, 0, 0, 0,
@@ -313,6 +329,18 @@ final class ClipDecoder {
                         boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                         boolean cfg = (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                         if (!cfg) {
+                            // Drop anything before the first key frame after a rewind:
+                            // see awaitingKeyframe. Released without rendering, so the
+                            // surface keeps the last good frame instead of a mosaic.
+                            if (awaitingKeyframe) {
+                                boolean key = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                                if (!key) {
+                                    codec.releaseOutputBuffer(out, false);
+                                    if (eos) outputDone = true;
+                                    continue;
+                                }
+                                awaitingKeyframe = false;
+                            }
                             // GATE BEFORE RELEASE, on the ABSOLUTE time. See the class note.
                             // Already absolute: the offset was added when the frame was
                             // QUEUED, so the codec's own pts is the loop clock's time
