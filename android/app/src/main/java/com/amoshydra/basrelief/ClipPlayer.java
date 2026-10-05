@@ -40,12 +40,6 @@ final class ClipPlayer {
      * nearly frozen. 0.7 is a start, filed as a constant rather than a suggestion so
      * tuning it is a one-line edit with a name.
      */
-    static final float DEPTH_TEMPORAL_BLEND = 0.7f;
-
-    /** The previous depth field, for the temporal blend; null until first blit. */
-    private ClipBlitter.Channel prevField;
-    private boolean depthPrevValid;
-
     /**
      * How far ahead of the clock a frame may be released. Equal for every decoder.
      *
@@ -142,7 +136,8 @@ final class ClipPlayer {
         return "colour[" + color.state() + " loops=" + color.loops() + "]"
                 + " depth[" + depth.state() + " loops=" + depth.loops() + "]"
                 + " skew=" + (Math.abs(color.lastAbsPts() - depth.lastAbsPts()) / 1000L) + "ms"
-                + " range=" + color.rangeName();
+                + " range=" + color.rangeName()
+                + " fieldCentre=" + blit.fieldCentreSample();
     }
 
     /**
@@ -341,13 +336,7 @@ final class ClipPlayer {
             release(blit.normal);
             blit = null;
         }
-        if (prevField != null) {
-            release(prevField);
-            prevField = null;
-        }
-        // The temporal blend restarts with the clip: the stale previous field belongs
-        // to a pair that is gone.
-        depthPrevValid = false;
+
         running = false;
         framesArrived = false;
         // The identity goes with the clip. Leaving it behind would make a later

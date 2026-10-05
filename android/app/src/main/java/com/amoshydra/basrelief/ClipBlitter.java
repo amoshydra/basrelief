@@ -99,7 +99,7 @@ final class ClipBlitter {
      * into a grey one with no error anywhere.
      */
     static final int COPY = 0, BLUR_DEPTH = 1, COPY_SCALED = 2;
-    private int progColour, progDepth, progPlain, progCopy;
+    private int progColour, progDepth, progPlain;
 
     int program(int which) {
         return which == BLUR_DEPTH ? progDepth : which == COPY_SCALED ? progPlain : progColour;
@@ -166,8 +166,6 @@ final class ClipBlitter {
                 "uniform mat4 uST;\n" +
                 "uniform vec2 uTexel;\n" +
                 "uniform vec2 uRangeFix;\n" +
-                "uniform sampler2D uPrev;\n" +
-                "uniform float uBlend;\n" +
                 "void main() {\n" +
                 // A greyscale video's depth is its LUMA, which is what .r gives after
                 // the sampler has converted. Reading .r and not a channel average is
@@ -197,16 +195,24 @@ final class ClipBlitter {
                 // no error anywhere. VHS_VideoCombine has no pix_fmt control, so this
                 // cannot be fixed at the source and is done in the shader, from the
                 // range the DECODER reported.
-                "  float mean = sum * " + TAPS + ".0;\n" +
+                "  float mean = sum / " + TAPS + ".0;\n" +
                 // The temporal low-pass. MoGe estimates each frame's depth
                 // INDEPENDENTLY, so per-frame errors shimmer frame to frame -- the
                 // flicker reported on the aligned clip once sync and length were
                 // fixed and nothing else moved any more. Mixing the PREVIOUS field
                 // with this one at uBlend removes the shimmer; the lag it adds is the
                 // price, and uBlend set near 1 keeps it under a frame or two.
-                "  float cur = mean * uRangeFix.x + uRangeFix.y;\n" +
-                "  float prev = texture2D(uPrev, vUv).r;\n" +
-                "  gl_FragColor = vec4(vec3(mix(prev, cur, uBlend)), 1.0);\n" +
+                // To the VERTEX shader's units: it unpacks the field as
+                // `field / 255.0 - 0.5`, and the CPU path feeds it 0..255 -- but the
+                // OES sampler above hands this shader 0..1. Writing 0..1 into the
+                // field made every clip draw as a nearly flat plane a half-unit deep:
+                // the Depth slider multiplied a near-constant and did nothing, which
+                // is how it was reported. The scale 255 belongs to the vertical range
+                // fix's units, so it is applied before the fix and the shader's
+                // /255 unpack returns exactly what the still path produces.
+                "  float cur255 = mean * 255.0;\n" +
+                "  float cur = cur255 * uRangeFix.x + uRangeFix.y;\n" +
+                "  gl_FragColor = vec4(vec3(cur), 1.0);\n" +
                 "}\n";
     }
 
@@ -215,14 +221,6 @@ final class ClipBlitter {
         progColour = program(blitFragColour);
         progDepth = program(blitFragDepth);
         progPlain = program(blitFragPlain);
-        progCopy = program(
-                "#extension GL_OES_EGL_image_external : not needed\n" +
-                "precision highp float;\n" +
-                "varying vec2 vUv;\n" +
-                "uniform sampler2D uSrc;\n" +
-                "void main() {\n" +
-                "  gl_FragColor = vec4(texture2D(uSrc, vUv).r, 0.0, 0.0, 1.0);\n" +
-                "}\n");
         aPos = GLES20.glGetAttribLocation(progColour, "aPos");
         aUV = GLES20.glGetAttribLocation(progColour, "aUV");
         float[] p = {-1, -1, 1, -1, -1, 1, 1, 1};
@@ -267,6 +265,11 @@ final class ClipBlitter {
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, src.fbo);
         GLES30.glViewport(0, 0, src.w, src.h);
         GLES20.glUseProgram(program);
+        // Clear the sticky error left by anything earlier this frame, so the one we
+        // report after the draw actually belongs to THIS pass.
+        GLES20.glGetError();
+        curApos = GLES20.glGetAttribLocation(program, "aPos");
+        curAuv = GLES20.glGetAttribLocation(program, "aUV");
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, src.oesName);
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uTex"), 0);
@@ -292,10 +295,39 @@ final class ClipBlitter {
         // mis-writes without it. The passes do not need it, so they do not ask.
         drawQuad();
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        if (program == progDepth) {
+            // The depth pass's own GL error. It was 0x0502 -- INVALID_OPERATION at the
+            // DRAW -- while the colour pass, the same drawQuad, drew fine: the depth
+            // shader's second sampler (a sampler2D over an R32F texture, beside the
+            // OES one) was the only state it added, and this driver dropped the draw
+            // for it. The temporal blend goes with it until the blend is a separate
+            // pass; without this check the drop was invisible and read as depth not
+            // working.
+            int werr = GLES20.glGetError();
+            blitWriteError = werr == 0 ? null : String.format("0x%04x", werr);
+        }
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         // The viewport is part of this pass's borrow, not global state: restore it.
         GLES20.glViewport(vp[0], vp[1], vp[2], vp[3]);
     }
+
+    /**
+     * Attribute locations for the program that is about to be drawn, queried PER
+     * PASS rather than cached from one program.
+     *
+     * <p>They were cached from {@code progColour} once, and locations are assigned
+     * PER PROGRAM: {@code progDepth}'s could land at different indices, so the depth
+     * pass enabled the wrong slots and drew nothing -- the field FBO stayed at its
+     * initial zeros, the vertex shader read a uniform depth everywhere, and the clip
+     * rendered as a flat plane whose Depth slider multiplied a constant. FIELD
+     * CENTRE reads measured the gap: colour worked, depth read 0.0 every sample.
+     * The colour pass looked fine precisely because it came from the chosen cache.
+     *
+     * <p>Queried per pass, no cache: two glGetAttribLocation calls per blit, three
+     * blits a frame, and the alternative is another silent mismatch the next time
+     * this shader set changes.
+     */
+    private int curApos, curAuv;
 
     private void drawQuad() {
         // BUFFER 0 or the client-side pointers below are offsets into whatever VBO
@@ -304,13 +336,13 @@ final class ClipBlitter {
         // state is the normal state of the frame we are called from.
         GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
         GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
-        GLES20.glEnableVertexAttribArray(aPos);
-        GLES20.glEnableVertexAttribArray(aUV);
-        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, quadPos);
-        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 0, quadUv);
+        GLES20.glEnableVertexAttribArray(curApos);
+        GLES20.glEnableVertexAttribArray(curAuv);
+        GLES20.glVertexAttribPointer(curApos, 2, GLES20.GL_FLOAT, false, 0, quadPos);
+        GLES20.glVertexAttribPointer(curAuv, 2, GLES20.GL_FLOAT, false, 0, quadUv);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        GLES20.glDisableVertexAttribArray(aPos);
-        GLES20.glDisableVertexAttribArray(aUV);
+        GLES20.glDisableVertexAttribArray(curApos);
+        GLES20.glDisableVertexAttribArray(curAuv);
     }
 
     /**
@@ -357,26 +389,6 @@ final class ClipBlitter {
         return t[0];
     }
 
-    /**
-     * Copy one 2D target into another, one texel for one texel.
-     *
-     * <p>The depth field's temporal blend needs its previous output, so after
-     * blending, the field is copied here for the next frame. Integer-exact at the
-     * field's own size, so there is nothing to filter and nothing to align.
-     */
-    void copy(Channel src, Channel dst) {
-        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, dst.fbo);
-        GLES30.glViewport(0, 0, dst.w, dst.h);
-        GLES20.glUseProgram(progCopy);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, src.tex2d);
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(progCopy, "uSrc"), 0);
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
-        drawQuad();
-        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
-        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
-    }
-
     /** Allocate an ordinary RGBA8 2D target and its framebuffer. */
     static Channel makeRgba(int w, int h) {
         int oes = makeOes();
@@ -416,8 +428,17 @@ final class ClipBlitter {
         int[] t = new int[1];
         GLES20.glGenTextures(1, t, 0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        // NEAREST, both filters, exactly like the still path's uploadField: an R32F
+        // texture is not filterable without the float-linear extension, and a
+        // GL_LINEAR float texture is INCOMPLETE -- the sampler returns a constant
+        // wherever it is read. The vertex shader reads this texture as uDepth, so
+        // LINEAR here made every clip draw as the constant flat plane 0.5 units
+        // deep: h did not vary, and the Depth slider multiplied a constant, which is
+        // precisely "changing depth does nothing". The still path was immune because
+        // uploadField has said NEAREST since it was written. Nothing is filtered that
+        // needs it: the field is sampled one texel per mesh vertex.
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
         GLES30.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES30.GL_R32F, n, n, 0,
@@ -457,6 +478,34 @@ final class ClipBlitter {
                 available = true;
             }
         });
+    }
+
+    /**
+     * One field texel, centre, read back — so the field's content is MEASURED rather
+     * than assumed. The temporal blend made the field worth observing; an incomplete
+     * target or a wrong write reads as a constant here, and a constant field is the
+     * symptom the user reports as depth not working. GL_RED/GL_FLOAT for an R32F
+     * target; a failed read reads back zeros, which is itself the finding.
+     */
+    /** "value, GL error" for the centre readback; err 0x0501 = the read was refused. */
+    private String blitWriteError;
+    private String fboState;
+
+    String fieldCentreSample() {
+        if (depth == null) return "no field";
+        java.nio.ByteBuffer one = java.nio.ByteBuffer.allocateDirect(4 * 4)
+                .order(java.nio.ByteOrder.nativeOrder());
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, depth.fbo);
+        GLES30.glReadPixels(depth.w / 2, depth.h / 2, 1, 1, GLES30.GL_RGBA,
+                GLES30.GL_FLOAT, one);
+        int err = GLES20.glGetError();
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        // RGBA+float: four floats, r then zeros. A wrong format combo returns zeros
+        // AND an error; the value with err==0 is evidence, the value alone is not --
+        // 'GL_RED/GL_FLOAT leaves all zeros' is exactly the trap a failing readback
+        // and a failing WRITE share.
+        return String.format("v=%.4f err=0x%04x blitErr=%s", one.getFloat(0), err,
+                blitWriteError == null ? "0" : blitWriteError);
     }
 
     /** Set by the frame-available callback, consumed by the draw path. */
