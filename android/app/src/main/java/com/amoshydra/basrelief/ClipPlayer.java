@@ -137,7 +137,8 @@ final class ClipPlayer {
                 + " depth[" + depth.state() + " loops=" + depth.loops() + "]"
                 + " skew=" + (Math.abs(color.lastAbsPts() - depth.lastAbsPts()) / 1000L) + "ms"
                 + " range=" + color.rangeName()
-                + " fieldCentre=" + blit.fieldCentreSample();
+                + " fieldCentre=" + blit.fieldCentreSample()
+                + " normalRGB=" + blit.normalCentreSample();
     }
 
     /**
@@ -289,9 +290,11 @@ final class ClipPlayer {
         // Colour: a straight copy. The sampler does the YUV to RGB here, which is
         // where it is free. Range-corrected for the same reason, from the colour
         // track's own report rather than the depth's.
-        blit.blit(blit.colour, blit.program(ClipBlitter.COPY),
-                color.fullRange() ? 1f : 255f / 219f, color.fullRange() ? 0f : -16f * (255f / 219f),
-                0, 0);
+        // 0..1 UNITS for colour and normal -- see the shaders. The depth path is the
+        // one that works in 0..255, and its offset below is the one that belongs there.
+        float cScale = color.fullRange() ? 1f : 255f / 219f;
+        float cOffset = color.fullRange() ? 0f : -16f / 219f;
+        blit.blit(blit.colour, blit.program(ClipBlitter.COPY), cScale, cOffset, 0, 0);
 
         // Depth: the box blur, into the float field the vertex shader reads. The
         // shader divides by its own tap count, so the divisor travels with the loop.
@@ -305,7 +308,7 @@ final class ClipPlayer {
             // surface, which looks like a plausible lighting bug and is not one.
             blit.blit(blit.normal, blit.program(ClipBlitter.COPY_SCALED),
                     normal.fullRange() ? 1f : 255f / 219f,
-                    normal.fullRange() ? 0f : -16f * (255f / 219f), 0, 0);
+                    normal.fullRange() ? 0f : -16f / 219f, 0, 0);
         }
         framesArrived = true;
         return 1;

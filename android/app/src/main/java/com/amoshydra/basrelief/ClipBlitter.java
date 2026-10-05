@@ -65,8 +65,14 @@ final class ClipBlitter {
             "varying vec2 vUv;\n" +
             "uniform samplerExternalOES uTex;\n" +
             "uniform mat4 uST;\n" +
+            // The range fix in the 0..1 units THIS shader works in. It was missing
+            // entirely, so the uniform went to location -1 and was silently dropped --
+            // which is why the colour looked fine while the normal, which declares the
+            // same uniform, went black from an offset meant for 0..255.
+            "uniform vec2 uRangeFix;\n" +
             "void main() {\n" +
-            "  gl_FragColor = vec4(texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb, 1.0);\n" +
+            "  vec3 c = texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb;\n" +
+            "  gl_FragColor = vec4(c * uRangeFix.x + uRangeFix.y, 1.0);\n" +
             "}\n";
 
     /**
@@ -88,6 +94,10 @@ final class ClipBlitter {
             "uniform mat4 uST;\n" +
             "uniform vec2 uRangeFix;\n" +
             "void main() {\n" +
+            // 0..1 units, like the colour: the offset must be -16/219 here, not the
+            // -16*(255/219) the DEPTH shader uses, because that one scales to 0..255
+            // first. Passing the 0..255 offset here made every normal pixel negative
+            // and clamped it to black -- reported as "normal is completely black".
             "  gl_FragColor = vec4(texture2D(uTex, (uST * vec4(vUv, 0.0, 1.0)).xy).rgb * uRangeFix.x + uRangeFix.y, 1.0);\n" +
             "}\n";
 
@@ -516,6 +526,19 @@ final class ClipBlitter {
         // and a failing WRITE share.
         return String.format("v=%.4f err=0x%04x blitErr=%s", one.getFloat(0), err,
                 blitWriteError == null ? "0" : blitWriteError);
+    }
+
+    /** RGB sum at the normal target's centre; 0 means black, which is the report. */
+    String normalCentreSample() {
+        if (normal == null) return "none";
+        java.nio.ByteBuffer px = java.nio.ByteBuffer.allocateDirect(4);
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, normal.fbo);
+        GLES20.glReadPixels(normal.w / 2, normal.h / 2, 1, 1,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, px);
+        int err = GLES20.glGetError();
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        return (px.get(0) & 0xFF) + "," + (px.get(1) & 0xFF) + "," + (px.get(2) & 0xFF)
+                + " e=0x" + Integer.toHexString(err);
     }
 
     /** Set by the frame-available callback, consumed by the draw path. */

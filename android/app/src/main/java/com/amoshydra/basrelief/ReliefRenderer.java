@@ -649,6 +649,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /** Cycle the debug layer; returns the name of the new one, for the toast. */
     public String cycleDebugLayer() {
         debugLayer = (debugLayer + 1) % 4;
+        android.util.Log.i("Basrelief", "debugLayer -> " + debugLayer);
         if (renderRequester != null) renderRequester.run();
         return new String[] {"relief", "colour", "depth", "normal"}[debugLayer];
     }
@@ -662,10 +663,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     "precision highp float;\n" +
                     "uniform sampler2D uTex; uniform int uLayer; in vec2 vUv; out vec4 o;\n" +
                     "void main(){\n" +
-                    "  // The DEPTH field is stored row 0 = image top (the mesh reads it" +
-                    " with gy = (1 - aUV.y) * grid), while this quad puts v=1 at screen" +
-                    " top -- so the depth layer is viewed through the same flip the mesh" +
-                    " applies, or it shows mirrored, which it did." +
+                    // The DEPTH field is stored row 0 = image top (the mesh reads it
+                    // with gy = (1 - aUV.y) * grid), while this quad puts v=1 at screen
+                    // top -- so the depth layer is viewed through the same flip the
+                    // mesh applies, or it shows mirrored, which it did.
                     "  vec2 uv = uLayer == 2 ? vec2(vUv.x, 1.0 - vUv.y) : vUv;\n" +
                     "  vec4 c = texture(uTex, uv);\n" +
                     "  if (uLayer == 2) c = vec4(vec3(c.r), 1.0);\n" +
@@ -679,6 +680,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glAttachShader(dbgProgram, vsh);
             GLES20.glAttachShader(dbgProgram, fsh);
             GLES20.glLinkProgram(dbgProgram);
+            int[] lok = new int[1];
+            GLES20.glGetProgramiv(dbgProgram, GLES20.GL_LINK_STATUS, lok, 0);
+            int[] cerr = new int[1];
+            GLES20.glGetShaderiv(vsh, GLES20.GL_COMPILE_STATUS, cerr, 0);
+            android.util.Log.i("Basrelief", "debug prog link=" + lok[0]
+                    + " vshCompile=" + cerr[0]
+                    + " linkLog=" + GLES20.glGetProgramInfoLog(dbgProgram)
+                    + " vshLog=" + GLES20.glGetShaderInfoLog(vsh));
             GLES20.glDeleteShader(vsh); GLES20.glDeleteShader(fsh);
             dbgULayer = GLES20.glGetUniformLocation(dbgProgram, "uLayer");
             dbgUTex = GLES20.glGetUniformLocation(dbgProgram, "uTex");
@@ -707,7 +716,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         GLES20.glDisableVertexAttribArray(dbgAPos);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        int err = GLES20.glGetError();
+        if (err != 0) {
+            // Redo the pass with a clear before each call: which one refused?
+            StringBuilder probe = new StringBuilder();
+            GLES20.glGetError();
+            GLES20.glUseProgram(dbgProgram);
+            probe.append("use=0x").append(Integer.toHexString(GLES20.glGetError())).append(' ');
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+            probe.append("bind=0x").append(Integer.toHexString(GLES20.glGetError())).append(' ');
+            GLES20.glUniform1i(dbgUTex, 0);
+            probe.append("uTex=0x").append(Integer.toHexString(GLES20.glGetError())).append(' ');
+            GLES20.glUniform1i(dbgULayer, debugLayer);
+            probe.append("uL=0x").append(Integer.toHexString(GLES20.glGetError())).append(' ');
+            GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+            GLES20.glEnableVertexAttribArray(dbgAPos);
+            GLES20.glVertexAttribPointer(dbgAPos, 2, GLES20.GL_FLOAT, false, 0, dbgQuad);
+            probe.append("ptr=0x").append(Integer.toHexString(GLES20.glGetError())).append(' ');
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            probe.append("draw=0x").append(Integer.toHexString(GLES20.glGetError()));
+            android.util.Log.i("Basrelief", "debug probe " + probe);
+        }
+        dbgFrames++;
+        if (err != 0 || dbgFrames < 3 || dbgFrames % 60 == 0) {
+            android.util.Log.i("Basrelief", "debug draw tex=" + tex + " layer=" + debugLayer
+                    + " err=0x" + Integer.toHexString(err) + " frames=" + dbgFrames);
+        }
     }
+
+    private long dbgFrames;
     private long lastClipStatNanos;
     /** Draws since the previous stats window; the pump's report card. */
     private long lastClipDraws, clipDraws;
