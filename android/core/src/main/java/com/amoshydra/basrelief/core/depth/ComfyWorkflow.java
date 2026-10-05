@@ -76,6 +76,31 @@ public final class ComfyWorkflow {
     static final String MOGE_INFERENCE = "MoGeInference";
     static final String MOGE_RENDER = "MoGeRender";
 
+    // ---- the VIDEO shape's own ids.
+    //
+    // A THIRD set, disjoint from both still shapes, and that is the point: the video
+    // graph is the same MoGe pipeline with a video loader in front and a video
+    // combiner behind, so every id it shares with the still pipeline would be one
+    // more wire to get wrong silently. Its own ids mean a wire into the still shape
+    // cannot compile against this one.
+
+    /** {@code VHS_LoadVideoPath}: the frames, as one IMAGE batch. */
+    private static final String VLOAD_ID = "10";
+    /** The MoGe loader — same class as the still shape, its own id here. */
+    private static final String V_MOGE_LOAD_ID = "11";
+    /** {@code MoGeInference}: ONE inference for the whole batch. */
+    private static final String V_MOGE_INFER_ID = "12";
+    /** {@code MoGeRender(output=depth)}, then {@code VHS_VideoCombine}. */
+    private static final String V_MOGE_RENDER_ID = "13";
+    private static final String V_DEPTH_COMBINE_ID = "14";
+    /** {@code MoGeRender(output=normal_opengl)}, then its own combiner. */
+    private static final String V_MOGE_NORMAL_RENDER_ID = "15";
+    private static final String V_NORMAL_COMBINE_ID = "16";
+
+    static final String VIDEO_LOADER = "VHS_LoadVideoPath";
+    static final String VIDEO_COMBINE = "VHS_VideoCombine";
+
+
     /**
      * The {@code MoGeRender.output} the still path asks for.
      *
@@ -122,6 +147,17 @@ public final class ComfyWorkflow {
      * association and a test pins them.
      */
     public static final String NORMAL_FILE_PREFIX = "normal_";
+    /**
+     * The prefix of the depth CLIP, mirroring {@link #DEPTH_FILE_PREFIX}.
+     *
+     * <p><b>Clip, not frame.</b> The still path saves a PNG per run and the fetch
+     * path takes the newest by prefix; here there is one file, an mp4, and it keeps
+     * the same leading prefix so the two fetch paths cannot confuse each other's
+     * files.
+     */
+    public static final String DEPTH_CLIP_PREFIX = DEPTH_FILE_PREFIX;
+    /** The prefix of the normal clip. See {@link #DEPTH_CLIP_PREFIX}. */
+    public static final String NORMAL_CLIP_PREFIX = NORMAL_FILE_PREFIX;
 
     /**
      * Assemble the ComfyUI graph for the chosen depth model.
@@ -241,8 +277,8 @@ public final class ComfyWorkflow {
         // Two renderers off the one inference. Built by one factory so the two
         // cannot drift in which scalar inputs they discover or which node they
         // read their geometry from; only the forced output differs.
-        JSONObject depthRender = moGeRenderNode(renderInfo, MOGE_STILL_OUTPUT);
-        JSONObject normalRender = moGeRenderNode(renderInfo, MOGE_NORMAL_OUTPUT);
+        JSONObject depthRender = moGeRenderNode(renderInfo, MOGE_STILL_OUTPUT, MOGE_INFER_ID);
+        JSONObject normalRender = moGeRenderNode(renderInfo, MOGE_NORMAL_OUTPUT, MOGE_INFER_ID);
 
         JSONObject depthSave = saveImageNode(MOGE_RENDER_ID, FIRST_OUTPUT,
                 DEPTH_FILE_PREFIX, timestampMs);
@@ -261,18 +297,146 @@ public final class ComfyWorkflow {
     }
 
     /**
+     * Assemble the video graph: the MoGe pipeline with a video loader in front and a
+     * video combiner behind each render.
+     *
+     * <pre>
+     * VHS_LoadVideoPath(video, force_rate, …)  ──▶ images, as ONE IMAGE batch
+     *   LoadMoGeModel(model_name) ──┐
+     *   MoGeInference(moge_model, image) ──▶ geometry for the WHOLE batch
+     *       ├→ MoGeRender(output=depth)        → VHS_VideoCombine(depthmap_…)
+     *       └→ MoGeRender(output=normal_opengl)→ VHS_VideoCombine(normal_…)
+     * </pre>
+     *
+     * <p><b>One inference for every frame, because an IMAGE is a batch.</b> This is
+     * the whole reason the graph is four lines of new wiring rather than a new
+     * pipeline: {@code MoGeInference.image} takes a batch, so a clip's frames go in
+     * as one node and come back as one geometry, and per-frame is only an
+     * implementation detail of the batch size. The alternative — extracting frames
+     * and running the existing still graph once per frame — costs one round trip,
+     * one prompt and one model load per frame, and a clip is dozens of frames.
+     *
+     * <p><b>Out[0] of the loader is the IMAGE.</b> The loader has four outputs and
+     * two of them are typed {@code IMAGE}: the frames and the mask. Guessing wrong is
+     * the silent failure this class exists to prevent — a mask fed to MoGe produces a
+     * plausible depth map of nothing, and nothing anywhere says so — so the index is
+     * pinned by test rather than trusted.
+     *
+     * <p><b>Both clips come out of one graph</b> for the reason the still path emits
+     * both: {@code MoGeRender} selects exactly one output, so depth and normal are two
+     * render nodes sharing one cached inference, and two combiners so neither file
+     * overwrites the other.
+     *
+     * @param fps        frames per second of the OUTPUT clips. It must be the source
+     *                   clip's rate, or the depth drifts against the colour by
+     *                   exactly this factor — the sync bug, at generation time
+     *                   instead of playback time.
+     * @param frameCap   how many frames to read, so a long video does not become an
+     *                   unbounded graph. {@code 0} means the server's own default.
+     */
+    static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
+                                     long timestampMs, float fps, int frameCap,
+                                     int width, int height) throws JSONException {
+        JSONObject vloadInfo = info.getJSONObject(VIDEO_LOADER);
+        JSONObject combineInfo = info.getJSONObject(VIDEO_COMBINE);
+        JSONObject loaderInfo = info.getJSONObject(MOGE_LOADER);
+        JSONObject inferInfo = info.getJSONObject(MOGE_INFERENCE);
+        JSONObject renderInfo = info.getJSONObject(MOGE_RENDER);
+
+        JSONObject vload = new JSONObject();
+        vload.put("class_type", VIDEO_LOADER);
+        JSONObject vloadIn = discoveredInputs(vloadInfo);
+        // A path on the SERVER's filesystem, which is why the clip is uploaded first
+        // -- exactly as the still path uploads its PNG before asking for a graph.
+        vloadIn.put("video", videoPath);
+        // The source rate is asked for explicitly rather than left to the loader's
+        // default, because the OUTPUT clips are written at this rate too and the two
+        // have to be the same number or the depth slides against the colour.
+        vloadIn.put("force_rate", (double) fps);
+        if (frameCap > 0) vloadIn.put("frame_load_cap", frameCap);
+        if (width > 0) vloadIn.put("custom_width", width);
+        if (height > 0) vloadIn.put("custom_height", height);
+        vload.put("inputs", vloadIn);
+
+        JSONObject loader = new JSONObject();
+        loader.put("class_type", MOGE_LOADER);
+        JSONObject loaderIn = discoveredInputs(loaderInfo);
+        if (!MOGE_INFERENCE.equals(model)) loaderIn.put("model_name", model);
+        loader.put("inputs", loaderIn);
+
+        JSONObject infer = new JSONObject();
+        infer.put("class_type", MOGE_INFERENCE);
+        JSONObject inferIn = discoveredInputs(inferInfo, "moge_model", "image");
+        inferIn.put("moge_model", link(V_MOGE_LOAD_ID));
+        // Output 0 of the loader -- the FRAMES. See the class note on the mask.
+        inferIn.put("image", link(VLOAD_ID, FIRST_OUTPUT));
+        infer.put("inputs", inferIn);
+
+        // The same two renders, the same forced outputs, the same discovered
+        // scalars as the still path -- one factory, so the video shape cannot drift
+        // into asking for depth_colored because someone edited one builder.
+        JSONObject depthRender = moGeRenderNode(renderInfo, MOGE_STILL_OUTPUT, V_MOGE_INFER_ID);
+        JSONObject normalRender = moGeRenderNode(renderInfo, MOGE_NORMAL_OUTPUT, V_MOGE_INFER_ID);
+
+        JSONObject depthCombine = videoCombineNode(combineInfo, V_MOGE_RENDER_ID,
+                FIRST_OUTPUT, DEPTH_CLIP_PREFIX, timestampMs, fps);
+        JSONObject normalCombine = videoCombineNode(combineInfo, V_MOGE_NORMAL_RENDER_ID,
+                FIRST_OUTPUT, NORMAL_CLIP_PREFIX, timestampMs, fps);
+
+        JSONObject wf = new JSONObject();
+        wf.put(VLOAD_ID, vload);
+        wf.put(V_MOGE_LOAD_ID, loader);
+        wf.put(V_MOGE_INFER_ID, infer);
+        wf.put(V_MOGE_RENDER_ID, depthRender);
+        wf.put(V_DEPTH_COMBINE_ID, depthCombine);
+        wf.put(V_MOGE_NORMAL_RENDER_ID, normalRender);
+        wf.put(V_NORMAL_COMBINE_ID, normalCombine);
+        return wf.toString();
+    }
+
+    /**
+     * One {@code VHS_VideoCombine}, discovering every scalar the server offers.
+     *
+     * <p><b>h264 in an mp4</b>, forced rather than discovered: the format list's
+     * first entry is a GIF, and a GIF has no reliable frame timing, which would put
+     * the depth and the colour a frame apart for the whole clip. The container is the
+     * renderer's contract — {@code MediaExtractor} reading it — so it is stated here
+     * and pinned by test.
+     */
+    private static JSONObject videoCombineNode(JSONObject combineInfo, String imagesNodeId,
+                                              int imagesOutputIndex, String prefix,
+                                              long timestampMs, float fps)
+            throws JSONException {
+        JSONObject n = new JSONObject();
+        n.put("class_type", VIDEO_COMBINE);
+        JSONObject in = discoveredInputs(combineInfo, "images");
+        in.put("images", link(imagesNodeId, imagesOutputIndex));
+        in.put("frame_rate", (double) fps);
+        in.put("filename_prefix", prefix + timestampMs);
+        in.put("format", "video/h264-mp4");
+        n.put("inputs", in);
+        return n;
+    }
+
+    /**
      * One {@code MoGeRender} selecting one of its outputs.
      *
      * <p>Every renderer reads the same inference, so it is built twice per graph
      * with only {@code output} differing. The factory exists so a future scalar the
      * server adds reaches both renders rather than one.
      */
-    private static JSONObject moGeRenderNode(JSONObject renderInfo, String output)
+    private static JSONObject moGeRenderNode(JSONObject renderInfo, String output,
+                                              String geometryNodeId)
             throws JSONException {
         JSONObject render = new JSONObject();
         render.put("class_type", MOGE_RENDER);
         JSONObject renderIn = discoveredInputs(renderInfo, "moge_geometry");
-        renderIn.put("moge_geometry", link(MOGE_INFER_ID));
+        // WHICH inference, passed in rather than closed over. Sharing this factory is
+        // the point -- so a scalar the server adds reaches both shapes at once -- but
+        // hardcoding the still shape's id here would silently wire the video's two
+        // renders to a node that does not exist in the video graph, which ComfyUI
+        // reports as a missing node rather than as a wrong depth.
+        renderIn.put("moge_geometry", link(geometryNodeId));
         renderIn.put("output", output);
         render.put("inputs", renderIn);
         return render;
