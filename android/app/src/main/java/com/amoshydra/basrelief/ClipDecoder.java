@@ -99,6 +99,18 @@ final class ClipDecoder {
      */
     private volatile boolean awaitingKeyframe;
 
+    /**
+     * How many frames may be dropped waiting for a key frame before giving up.
+     *
+     * <p>The flag is not guaranteed: measured on the Pixel, after a rewind this
+     * decoder never set {@code BUFFER_FLAG_KEY_FRAME} at all, so an unbounded wait
+     * dropped EVERY frame for ever -- produced frozen at 115/114/114, latch/s 0,
+     * draws/s 61, loops stuck: the clip froze instead of mosaicking. A bounded drop
+     * is the honest shape: prefer a possible one-frame artifact to a permanent
+     * freeze, and let the frame through when the flag does not come.
+     */
+    private int keyframeDropBudget;
+
     private volatile String rangeName = "unspecified->assume studio";
     private volatile boolean fullRange = true;
     private volatile int trackW, trackH;
@@ -291,36 +303,41 @@ final class ClipDecoder {
                         if (in >= 0) {
                             ByteBuffer buf = codec.getInputBuffer(in);
                             int size = extractor.readSampleData(buf, 0);
-                            if (size < 0) {
-                                if (loop) {
-                                    // NO FLUSH. flush() discards every decoded frame
-                                    // still in the codec's pipeline -- several frames
-                                    // deep -- so the surface holds the last frame while
-                                    // the decoder refills: the visible pause at every
-                                    // seam (measured as 458-541ms of skew on boundary
-                                    // samples). The extractor rewinds and input keeps
-                                    // being queued with timestamps REWRITTEN to be
-                                    // absolute (sampleTime + basePtsUs), so the codec
-                                    // never sees EOS, never drains, and the seam frame
-                                    // is simply the next one -- held by the gate to
-                                    // exactly the loop boundary, so last-to-first is
-                                    // continuous.
-                                    extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
-                                    loops++;
-                                    basePtsUs += clipUs;
-                                    awaitingKeyframe = true;
-                                    continue;
-                                }
-                                codec.queueInputBuffer(in, 0, 0, 0,
-                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                                inputDone = true;
-                            } else {
+                            if (size < 0 && loop) {
+                                // REWIND, and read the first sample into the SAME
+                                // buffer. The old shape dequeued this buffer, found
+                                // end-of-stream, and continued WITHOUT queueing it --
+                                // so every loop leaked one input buffer, and after as
+                                // many loops as the codec has buffers,
+                                // dequeueInputBuffer returns -1 for ever and all
+                                // three decoders stall. Measured on the Pixel:
+                                // produced frozen at 453/453/453, latch/s 0, draws/s
+                                // 61 -- four rewinds of a 4s clip at 30fps, against a
+                                // codec with about that many input buffers. The spike
+                                // ran four loops and stopped, which is why it never
+                                // showed: the leak is invisible until it is fatal.
+                                extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+                                loops++;
+                                basePtsUs += clipUs;
+                                awaitingKeyframe = true;
+                                keyframeDropBudget = 8;
+                                size = extractor.readSampleData(buf, 0);
+                            }
+                            if (size >= 0) {
                                 // ABSOLUTE pts at the input: the codec's output stays
                                 // monotonic across loops, which is what makes the
                                 // no-flush rewind safe.
                                 codec.queueInputBuffer(in, 0, size,
                                         extractor.getSampleTime() + basePtsUs, 0);
                                 extractor.advance();
+                            } else if (!loop) {
+                                codec.queueInputBuffer(in, 0, 0, 0,
+                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                inputDone = true;
+                            } else {
+                                // A rewind that yielded nothing: return the buffer so
+                                // it is not leaked, and try again on the next poll.
+                                codec.queueInputBuffer(in, 0, 0, 0, 0);
                             }
                         }
                     }
@@ -334,12 +351,18 @@ final class ClipDecoder {
                             // surface keeps the last good frame instead of a mosaic.
                             if (awaitingKeyframe) {
                                 boolean key = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
-                                if (!key) {
+                                if (key) {
+                                    awaitingKeyframe = false;
+                                } else if (keyframeDropBudget-- <= 0) {
+                                    // The flag never came. Render anyway: a possible
+                                    // one-frame artifact beats a frozen clip, which is
+                                    // what the unbounded wait produced on the Pixel.
+                                    awaitingKeyframe = false;
+                                } else {
                                     codec.releaseOutputBuffer(out, false);
                                     if (eos) outputDone = true;
                                     continue;
                                 }
-                                awaitingKeyframe = false;
                             }
                             // GATE BEFORE RELEASE, on the ABSOLUTE time. See the class note.
                             // Already absolute: the offset was added when the frame was
