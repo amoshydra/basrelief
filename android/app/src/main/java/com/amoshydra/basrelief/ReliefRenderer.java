@@ -1927,6 +1927,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         boundMesh = null;
         hasInstalled = false;
         loadedOnce = false;
+        // Every GL name from the old context is gone: the blit programs' cached ids
+        // must not be deleted against this one, where they may name something else.
+        ClipBlitter.contextGeneration++;
 
         // A new context means new GL names, so every cached one is gone -- including
         // the clip's three targets and its three SurfaceTextures. Same rule as
@@ -2426,7 +2429,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 // frame -- so the line says which texture the last draw actually used,
                 // and whether that was the clip's or the still's.
                 int cc = clipColour(displayed);
-                android.util.Log.i("Basrelief", "clip " + clip.stats()
+                android.util.Log.i("Basrelief", "clip " + clip.stats(debugLayer != 0)
                         + " produced=" + clip.producedCounts()
                         + " texColour=" + cc
                         + " clipTex=" + clip.colourTex()

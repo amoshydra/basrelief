@@ -131,14 +131,23 @@ final class ClipPlayer {
     }
 
     /** One line for the log: per-track state, the skew and the loop counts. */
-    String stats() {
+    /**
+     * @param withProbes true only while the debug view is up. The two readbacks are
+     *                   synchronous glReadPixels on the GL thread -- a pipeline stall
+     *                   each, one of them a float readback of an R32F target -- and
+     *                   diagnostics that cost a hitch every second in the shipping
+     *                   path are not diagnostics, they are the sluggishness.
+     */
+    String stats(boolean withProbes) {
         if (color == null) return "not started";
         return "colour[" + color.state() + " loops=" + color.loops() + "]"
                 + " depth[" + depth.state() + " loops=" + depth.loops() + "]"
                 + " skew=" + (Math.abs(color.lastAbsPts() - depth.lastAbsPts()) / 1000L) + "ms"
                 + " range=" + color.rangeName()
-                + " fieldCentre=" + blit.fieldCentreSample()
-                + " normalRGB=" + blit.normalCentreSample();
+                + (withProbes
+                    ? " fieldCentre=" + blit.fieldCentreSample()
+                        + " normalRGB=" + blit.normalCentreSample()
+                    : "");
     }
 
     /**
@@ -337,6 +346,7 @@ final class ClipPlayer {
             release(blit.colour);
             release(blit.depth);
             release(blit.normal);
+            blit.releasePrograms();
             blit = null;
         }
 

@@ -109,6 +109,14 @@ final class ClipBlitter {
      * into a grey one with no error anywhere.
      */
     static final int COPY = 0, BLUR_DEPTH = 1, COPY_SCALED = 2;
+    /**
+     * Bumped by the renderer on every new EGL context, so a release can tell whether
+     * the names it holds belong to the current context. Deleting a name in a context
+     * that did not create it can delete something else's texture or program.
+     */
+    static int contextGeneration;
+
+    private int myGeneration = -1;
     private int progColour, progDepth, progPlain;
 
     int program(int which) {
@@ -238,6 +246,7 @@ final class ClipBlitter {
 
     /** GL thread. Creates the programs and the quad, once per EGL context. */
     void create() {
+        myGeneration = contextGeneration;
         progColour = program(blitFragColour);
         progDepth = program(blitFragDepth);
         progPlain = program(blitFragPlain);
@@ -539,6 +548,23 @@ final class ClipBlitter {
         GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         return (px.get(0) & 0xFF) + "," + (px.get(1) & 0xFF) + "," + (px.get(2) & 0xFF)
                 + " e=0x" + Integer.toHexString(err);
+    }
+
+    /**
+     * Delete the programs, if this blitter's names still belong to this context.
+     *
+     * <p>They were compiled on every clip START and never deleted: a leak, and a
+     * shader recompile on every clip switch. The generation guard is the reason this
+     * is safe to call from stop(), which also runs on a brand-new context via
+     * onSurfaceCreated -- where the old names mean nothing and deleting them would
+     * be deleting a stranger.
+     */
+    void releasePrograms() {
+        if (myGeneration != contextGeneration) return;
+        int[] p = {progColour, progDepth, progPlain};
+        for (int id : p) if (id != 0) GLES20.glDeleteProgram(id);
+        progColour = progDepth = progPlain = 0;
+        myGeneration = -1;
     }
 
     /** Set by the frame-available callback, consumed by the draw path. */
