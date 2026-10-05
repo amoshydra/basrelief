@@ -354,7 +354,23 @@ final class ClipBlitter {
 
     void blit(Channel src, int program, float rangeScale, float rangeOffset,
               float texelW, float texelH) {
-        blit(src, program, rangeScale, rangeOffset, texelW, texelH, 0, 1f);
+        blitOesTo(src, src, program, rangeScale, rangeOffset, texelW, texelH, 0, 1f);
+    }
+
+    /**
+     * An OES source into a DIFFERENT target.
+     *
+     * <p>The separable blur's first half needs this, and the plain {@link #blit}
+     * silently did the wrong thing: it binds the channel's own fbo as the target, so
+     * asking it to read the depth OES wrote the raw horizontal mean into the FIELD --
+     * and the vertical pass then read {@code tmp}, never written, and overwrote the
+     * field with undefined memory. The depth was garbage and the relief with it.
+     * Source and destination are separate parameters here because that distinction
+     * is what the two-pass blur is built on.
+     */
+    void blitOesTo(Channel src, Channel dst, int program, float rangeScale,
+                   float rangeOffset, float texelW, float texelH) {
+        blitOesTo(src, dst, program, rangeScale, rangeOffset, texelW, texelH, 0, 1f);
     }
 
     /**
@@ -364,8 +380,9 @@ final class ClipBlitter {
      * @param prevTex a {@code GL_TEXTURE_2D} to mix into the output, or 0 for none
      * @param blend   the mix weight for the CURRENT frame; 1 when there is no prev
      */
-    void blit(Channel src, int program, float rangeScale, float rangeOffset,
-              float texelW, float texelH, int prevTex, float blend) {
+    void blitOesTo(Channel src, Channel dst, int program, float rangeScale,
+                   float rangeOffset, float texelW, float texelH, int prevTex,
+                   float blend) {
         // Save the viewport and put it back, because this pass runs at the clip's own
         // size and the relief draw does not set a viewport per frame.
         //
@@ -377,8 +394,8 @@ final class ClipBlitter {
         // reported. One leak, visible on every frame with a clip on it.
         int[] vp = new int[4];
         GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0);
-        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, src.fbo);
-        GLES30.glViewport(0, 0, src.w, src.h);
+        GLES20.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, dst.fbo);
+        GLES30.glViewport(0, 0, dst.w, dst.h);
         GLES20.glUseProgram(program);
         // Clear the sticky error left by anything earlier this frame, so the one we
         // report after the draw actually belongs to THIS pass.

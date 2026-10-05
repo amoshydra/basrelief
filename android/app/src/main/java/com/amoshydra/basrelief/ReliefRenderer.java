@@ -784,7 +784,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * </ul>
      */
     public boolean clipWantsFrames() {
-        return pendingTracks != null || (clip != null && clip.isRunning());
+        return startingClip || pendingTracks != null || (clip != null && clip.isRunning());
     }
 
     /**
@@ -810,6 +810,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *         a failure: the still pair stays on screen and the sheet says why.
      */
     boolean startClip(com.amoshydra.basrelief.core.store.VideoTracks tracks, java.io.File filesDir) {
+        startingClip = true;
+        try {
+            return startClipInner(tracks, filesDir);
+        } finally {
+            startingClip = false;
+        }
+    }
+
+    private boolean startClipInner(com.amoshydra.basrelief.core.store.VideoTracks tracks,
+                                   java.io.File filesDir) {
         // IDEMPOTENT, and this is the property that actually matters. An install can
         // arrive for a clip that is already playing -- a re-resolve, a surface switch,
         // a prefs write -- and tearing the three decoders down and starting them again
@@ -840,6 +850,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
         return true;
     }
+
+    /**
+     * True while {@link #startClip} is mid-flight on the GL thread.
+     *
+     * <p>Starting a clip takes roughly half a second to a second -- three
+     * MediaCodecs, three SurfaceTextures, FBOs and shader compiles -- and its first
+     * act is {@code stopClip()}, which clears {@code pendingTracks}, while the new
+     * player is not {@code isRunning()} yet. The pump polls every 16ms and ENDS ITS
+     * CHAIN on a false sample, so a tick landing inside that window left the clip
+     * running with nothing asking for frames: the intermittent pause, and
+     * intermittent because it depends on where the poll falls. This is that window,
+     * named, so the pump cannot fall into it.
+     */
+    private volatile boolean startingClip;
 
     private volatile com.amoshydra.basrelief.core.store.VideoTracks pendingTracks;
     private volatile java.io.File pendingFilesDir;

@@ -312,7 +312,7 @@ final class ClipPlayer {
         // the vertical box out of the intermediate into the field. The same filter,
         // 7 taps each instead of 49 in one -- and the range expansion rides the
         // SECOND pass, which is the one that writes the field's units.
-        blit.blit(blit.depth, blit.program(ClipBlitter.BLUR_H), 1f, 0f,
+        blit.blitOesTo(blit.depth, blit.tmp, blit.program(ClipBlitter.BLUR_H), 1f, 0f,
                 1f / Math.max(1, blit.tmp.w), 0f);
         blit.blit2d(blit.tmp, blit.depth, blit.program(ClipBlitter.BLUR_V),
                 depthScale, depthOffset, 0f, 1f / Math.max(1, blit.depth.h));
