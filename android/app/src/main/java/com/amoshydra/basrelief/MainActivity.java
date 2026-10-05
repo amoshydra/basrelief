@@ -1938,7 +1938,13 @@ public class MainActivity extends Activity {
             // the wakeups. A clip starting is noticed within 100ms.
             boolean want = renderer != null && renderer.clipWantsFrames();
             if (want) glView.requestRender();
-            glidePump.postDelayed(this, want ? 16 : 100);
+            // PACED to the content, not to the display: our clips are 24-30fps, so
+            // asking at 62/s drew roughly half its frames twice -- the blits are
+            // skipped when nothing is new, but the full-screen relief draw still
+            // ran. 30ms matches the fastest clip we produce. The sensor path and the
+            // glide pump are untouched: a tilt still composites at its own rate, and
+            // a glide still pumps at 16ms. Only the idle, clip-driven draws halve.
+            glidePump.postDelayed(this, want ? 30 : 100);
         }
     };
 
