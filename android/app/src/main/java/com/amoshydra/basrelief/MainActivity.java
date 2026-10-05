@@ -4305,13 +4305,35 @@ public class MainActivity extends Activity {
      * active id, and the depth panel captures its subject when it opens -- so a
      * stale row could only ever describe the wrong photo, never edit it.
      */
+    /**
+     * Whether this row has a staged colour clip waiting to be generated.
+     *
+     * <p>A CONVENTION ON THE ID, not a field: an import copies the video to
+     * {@code item-<id>.mp4} before it asks the server for anything, so a row with no
+     * clips and that file on disk is a row whose generation has not run or has
+     * failed. Keeping it as a convention is what lets the row be an ordinary
+     * photograph -- no schema holds half a clip, because half a clip is the thing
+     * {@code VideoTracks} exists to make unrepresentable.
+     */
+    private boolean hasStagedClip(LibraryItem item) {
+        if (item == null || item.video != null) return false;
+        return new java.io.File(getFilesDir(), LibraryItem.videoFileName(item.id)).exists();
+    }
+
     private View buildMapActions() {
         LinearLayout mapRow = new LinearLayout(this);
         mapRow.setOrientation(LinearLayout.HORIZONTAL);
         // Resolved at CLICK time, not build time, for the reason on the class: the
         // row is rebuilt per selection but a click can land after another change.
-        final boolean isClip = state().activeItem() != null
-                && state().activeItem().video != null;
+        // A CLIP ROW INCLUDES ONE WHOSE CLIPS ARE NOT ATTACHED YET: an import stages
+        // its colour clip under the row's own id and attaches the pair only when the
+        // generation lands, so between those two moments the row is a photograph with
+        // a staged clip behind it. It must still offer Generate -- through the VIDEO
+        // graph, which is the only thing that can produce a depth track -- and it must
+        // not offer Replace, which writes one still map over a clip's track set.
+        final LibraryItem activeNow = state().activeItem();
+        final boolean isClip = activeNow != null
+                && (activeNow.video != null || hasStagedClip(activeNow));
         mapRow.addView(makeButton(getString(R.string.action_regenerate),
                 new View.OnClickListener() {
                     @Override
@@ -4324,7 +4346,7 @@ public class MainActivity extends Activity {
                         // know.
                         LibraryItem item = state().activeItem();
                         if (item == null) return;
-                        if (item.video != null) {
+                        if (item.video != null || hasStagedClip(item)) {
                             regenerateClip(item);
                         } else {
                             openDepthGen();
@@ -5570,6 +5592,25 @@ public class MainActivity extends Activity {
                             @Override
                             public void failed(final String message) {
                                 problem[0] = message;
+                            }
+
+                            @Override
+                            public void added(final LibraryItem placed) {
+                                // THE ROW EXISTS NOW, before any depth does, and this
+                                // is the callback that shows it. Posted to the UI
+                                // thread because added() is called from the Io worker;
+                                // reindexed so the strip draws the poster and applied so
+                                // the studio renders it. The user watches their video
+                                // land instead of a toast for three minutes, and a
+                                // failed generation leaves them the photograph.
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        gallery.reindex();
+                                        applyFiles();
+                                        refreshSliders();
+                                    }
+                                });
                             }
                         });
                 if (problem[0] != null) throw new Exception(problem[0]);

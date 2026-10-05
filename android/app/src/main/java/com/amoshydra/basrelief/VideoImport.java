@@ -27,11 +27,23 @@ import java.io.OutputStream;
  * <p><b>Everything happens before the row exists.</b> A clip is colour AND depth —
  * {@link VideoTracks} refuses to be built with one without the other, because colour
  * without depth renders flat with no error anywhere — and at import we have only the
- * colour. So this copies the clip, generates the depth and normal clips, and then
- * writes the row ONCE with all of it. There is no "pending" half-row and no second
- * structure holding a colour clip on its own: the index owns the selection and only
- * the index, and a row that existed without its depth would be a claim the renderer
- * cannot honour.
+ * colour. So this copies the clip, puts the row in the gallery as a PHOTOGRAPH --
+ * the poster frame, no depth, no clips -- and then generates the depth and normal
+ * clips and attaches them to that row.
+ *
+ * <p><b>The row goes in first, and it is a photograph rather than a pending clip.</b>
+ * The old shape wrote the row only on success, so a failed generation lost the
+ * user's video and left them a message; and a successful one left them watching a
+ * toast for three minutes with nothing in the strip. A poster frame is a thing the
+ * app has always been able to render, and the sheet already offers Generate for a
+ * photo with no map -- so the row is that, the staged colour clip sits on disk under
+ * the row's own id, and Generate runs the VIDEO graph over it.
+ *
+ * <p><b>What has not changed is the pair invariant.</b> No clips are stored until
+ * there are colour AND depth, because a stored half-pair is the thing
+ * {@code VideoTracks} exists to make unrepresentable -- and the index still owns the
+ * selection and only the index. The row simply carries no clips until they exist,
+ * which is a state the schema has always had: a photograph with no map.
  *
  * <p><b>The poster frame is the first frame of the source, and the still depth and
  * normal are the first frames of the generated clips.</b> That is what keeps the
@@ -74,6 +86,21 @@ final class VideoImport {
         void phase(String message);
         void done(LibraryItem item);
         void failed(String message);
+
+        /**
+         * The row is in the index NOW, before any depth exists.
+         *
+         * <p>It is a photograph at this point -- a poster frame with no map -- which
+         * is a thing the app has always been able to show, so the strip can draw it
+         * and the sheet can offer Generate exactly as it does for a still. The host
+         * reindexes and selects on this callback, so the user sees their video land
+         * instead of watching a toast for three minutes.
+         *
+         * <p>Default no-op: a caller that only cares about the finished row (a
+         * regenerate, where the row already exists) does not implement it.
+         */
+        default void added(LibraryItem item) {
+        }
     }
 
     private VideoImport() {
@@ -104,12 +131,19 @@ final class VideoImport {
     static void regenerate(final Context app, final SharedPreferences prefs,
                            final LibraryItem item, final ComfyApi api,
                            final Listener listener) {
-        if (item == null || item.video == null) {
+        if (item == null) {
             listener.failed(app.getString(R.string.video_import_failed));
             return;
         }
         // The colour clip is already here; regeneration re-runs the graph over IT.
-        final File colour = item.video.colorFile(app.getFilesDir());
+        // TWO WAYS IT IS HERE: attached to the row as a clip, or STAGED under the
+        // row's own id by an import whose generation has not run or has failed. The
+        // second is what makes Generate work on a freshly added video, and it is a
+        // convention on the id rather than a field, so nothing about a photograph's
+        // schema had to change to hold half a clip.
+        final File colour = item.video != null
+                ? item.video.colorFile(app.getFilesDir())
+                : new File(app.getFilesDir(), LibraryItem.videoFileName(item.id));
         if (colour == null || !colour.exists()) {
             listener.failed(app.getString(R.string.video_import_failed));
             return;
@@ -346,16 +380,48 @@ final class VideoImport {
                 LibraryItem.depthFileName(id),
                 LibraryItem.normalFileName(id),
         };
+
+        // THE ROW GOES IN FIRST, as a photograph, and that is a deliberate reversal
+        // of "write the row once, at the end". The old shape left the user watching a
+        // toast for three minutes with nothing in the strip, and if the run failed
+        // they got a message and no row at all -- their video, gone. A poster frame is
+        // a photograph: the app has always rendered one, the sheet already offers
+        // Generate for a photo with no map, and the staged colour clip sits on disk
+        // under this row's own id, so Generate has something to run on.
+        //
+        // What has NOT changed is the pair invariant: no clips are stored until there
+        // are colour AND depth, because a stored half-pair is the thing VideoTracks
+        // exists to make unrepresentable. The row simply has none yet.
+        listener.phase(app.getString(R.string.video_phase_poster));
+        File poster;
+        try {
+            poster = firstFrameAsPng(app, colourSource, LibraryItem.imageFileName(id));
+        } catch (Exception e) {
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return;
+        }
+        LibraryItem placed = LibraryItem.of(id, poster.getName(), null,
+                System.currentTimeMillis()).withLabel(label);
+        Library added = LibraryStore.load(prefs).withItem(placed).withSelection(placed.id);
+        LibraryStore.saveNow(prefs, added);
+        listener.added(placed);
+
         LibraryItem item = generate(app, prefs, api, id, colourSource, names,
                 startFrame, frames, outHeight, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
-                        built = built.withLabel(label);
-                        Library next = LibraryStore.load(prefs)
-                                .withItem(built).withSelection(built.id);
-                        LibraryStore.saveNow(prefs, next);
-                        return built;
+                        // EDIT IN PLACE, the same derivation a regenerate uses: the row
+                        // is already the user's, and adding it a second time would
+                        // either duplicate it or lose the selection it carries.
+                        LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+                            @Override
+                            public LibraryItem edit(LibraryItem it) {
+                                return it.withFilesAndVideo(built.imageName,
+                                        built.depthName, built.normalName, built.video);
+                            }
+                        });
+                        return LibraryStore.load(prefs).activeItem();
                     }
                 });
         if (item != null) listener.done(item);
