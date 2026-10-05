@@ -220,6 +220,64 @@ final class VideoTrimSheet {
         return t;
     }
 
+    /**
+     * The direct seek: tap a time, flick minutes and seconds, Set.
+     *
+     * <p>The mockup calls this the ACCESSIBLE path, and it is the reason there is no
+     * whole-clip scrub bar: at any zoom a bar is coarse -- eleven seconds per dp on
+     * an hour -- so it cannot land on 55:30, and it would be a second timeline to
+     * learn. The picker is exact for a five-second clip and for an hour, and a screen
+     * reader reads it as a number rather than as a position.
+     *
+     * <p>Seconds wrap into minutes by hand rather than by carrying: a picker that
+     * carried would move the other wheel while the user is still turning this one.
+     */
+    private static void openPicker(final Activity a, final TrimBar bar, final boolean isStart) {
+        final ModalSheet sheet = new ModalSheet(a, 0.5f);
+        LinearLayout row = new LinearLayout(a);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        int total = Math.max(0, Math.round(
+                (isStart ? bar.startFrame() : bar.endFrame()) / bar.fps));
+        row.addView(wheel(a, R.string.trim_min, 59, Math.min(59, total / 60)));
+        row.addView(wheel(a, R.string.trim_sec, 59, total % 60));
+        final android.widget.NumberPicker min =
+                (android.widget.NumberPicker) ((LinearLayout) row.getChildAt(0)).getChildAt(0);
+        final android.widget.NumberPicker sec =
+                (android.widget.NumberPicker) ((LinearLayout) row.getChildAt(1)).getChildAt(0);
+        android.widget.Button set = ModalSheet.button(a,
+                a.getString(R.string.trim_set), true, false);
+        set.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                bar.seek(isStart, min.getValue() * 60 + sec.getValue());
+                sheet.dismiss();
+            }
+        });
+        sheet.body(row);
+        sheet.footerRow(set);
+        sheet.show(a);
+    }
+
+    /** One wheel with a caption under it. */
+    private static View wheel(Activity a, int captionRes, int max, int value) {
+        LinearLayout col = new LinearLayout(a);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        android.widget.NumberPicker p = new android.widget.NumberPicker(a);
+        p.setMinValue(0);
+        p.setMaxValue(max);
+        p.setValue(value);
+        TextView cap = new TextView(a);
+        cap.setText(a.getString(captionRes));
+        cap.setTextSize(11);
+        cap.setTextColor(0x8AFFFFFF);
+        col.addView(p);
+        col.addView(cap);
+        col.setPadding(dp(a, 12), 0, dp(a, 12), 0);
+        return col;
+    }
+
     /** A caption, the time, and ‹ › steppers that move one frame. */
     private static View stepper(final Activity a, int captionRes, final TextView time,
                                 final TrimBar bar, final boolean isStart) {
@@ -242,6 +300,11 @@ final class VideoTrimSheet {
         });
         fwd.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { bar.nudge(isStart, +1); }
+        });
+        // The time itself opens the picker: it is the thing the user wants to set,
+        // so it is the thing that answers a tap.
+        time.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openPicker(a, bar, isStart); }
         });
         line.addView(back);
         line.addView(time);
@@ -385,6 +448,26 @@ final class VideoTrimSheet {
 
         int startFrame() { return Math.round(start); }
         int endFrame() { return Math.round(end); }
+
+        /**
+         * Jump a handle to an exact time, the picker's Set.
+         *
+         * <p>Clamped to the trim's own bounds and the clip's, so a Set that lands
+         * past the other handle moves the handle to the nearest legal frame rather
+         * than swapping the two or leaving the range inverted.
+         */
+        void seek(boolean isStart, float seconds) {
+            float frame = clamp(seconds * fps, 0, totalFrames);
+            if (isStart) {
+                start = clamp(frame, 0, Math.max(0, end - 1));
+                ensureVisible(start);
+            } else {
+                end = clamp(frame, start + 1, totalFrames);
+                ensureVisible(end);
+            }
+            invalidate();
+            if (onChange != null) onChange.run();
+        }
 
         /** One frame, clamped to the trim's own bounds and to the clip. */
         void nudge(boolean isStart, int delta) {

@@ -251,6 +251,9 @@
     <string name="trim_job_start">Start</string>
     <string name="trim_job_note">This runs as a job on the server. You can leave — it keeps going.</string>
     <string name="trim_reading">Reading the clip…</string>
+    <string name="trim_min">min</string>
+    <string name="trim_sec">sec</string>
+    <string name="trim_set">Set</string>
     <string name="gallery_is_clip">A clip — plays as a video</string>
 
     <!--

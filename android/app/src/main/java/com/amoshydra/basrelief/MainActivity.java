@@ -5628,6 +5628,15 @@ public class MainActivity extends Activity {
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
+        // A VIDEO from Add media is the same import as a shared one -- same sheet,
+        // same range question. The mockup's entry-point table: the screen depends on
+        // WHAT was imported, not HOW. Without this the image path would try to decode
+        // a video as a photo and fail with a message about a picture.
+        if (requestCode == REQ_IMAGE && isVideoUri(data, data.getData())) {
+            importSharedVideo(data.getData(), displayNameOf(data.getData()));
+            return;
+        }
+
         final boolean isImage = requestCode == REQ_IMAGE;
         // A picked IMAGE starts a new gallery item, so its filename has to be
         // derived from an id that does not exist yet; a picked DEPTH belongs to
