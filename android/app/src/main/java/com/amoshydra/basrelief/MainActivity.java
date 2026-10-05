@@ -17,8 +17,6 @@ import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import android.app.Activity;
-import android.app.WallpaperInfo;
-import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -525,6 +523,31 @@ public class MainActivity extends Activity {
      * control for one truth.
      */
     private TextView surfaceNote;
+
+    /**
+     * What is bound to each screen, read from the platform once per refresh.
+     *
+     * <p>A field rather than a call at each use because three things need the same
+     * answer — the photo line's "which screen", the status line under Set as
+     * wallpaper, and the reminder — and each of them asking is each of them being
+     * a binder call that can come back with something else. Null until the first
+     * refresh, and every reader runs after one: {@link #refreshSurfaceSegment} is
+     * the only writer and it is the first thing {@code onCreate} and
+     * {@code onResume} reach.
+     */
+    private ApplyChooser.Status binding;
+
+    /**
+     * The line under the sheet's "Set as wallpaper" button saying whether this app
+     * is actually bound, and to what.
+     *
+     * <p>Permanent rather than a one-off toast, because the fact the toast
+     * announces is not a moment: the binding is whatever the platform says it is
+     * now, and it changes behind the app's back. See
+     * {@link ApplyChooser#statusText} for the sentence and
+     * {@link ApplyChooser#reminderDue} for when it is worth saying out loud.
+     */
+    private TextView applyNote;
 
     /**
      * The container the gallery overlay is added to.
@@ -1068,6 +1091,13 @@ public class MainActivity extends Activity {
                 }, 0, 1f));
         sheetContent.addView(footRow);
 
+        // What the binding actually is, under the button that changes it. Below the
+        // row rather than above it, because above is the debug line's space and two
+        // dim lines stacked there read as one cramped block; here it is the foot's
+        // own footnote and nothing competes with it.
+        applyNote = buildApplyNote();
+        sheetContent.addView(applyNote);
+
         panelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1400,6 +1430,13 @@ public class MainActivity extends Activity {
         // The switch can become real between launches: applying puts the photo on a
         // second surface, and onCreate -- where it used to be decided -- does not run
         // again. This is the one line that makes it appear without a cold start.
+        //
+        // Also where the binding is re-read, and therefore where the reminder is
+        // offered. This is the moment the user's question lands: the system picker
+        // is what they were just sent back from, and their report on it was that
+        // they are brought to this sheet and asked nothing about the second screen
+        // they still have to set. Both halves ride one refresh because the binding
+        // cannot be read twice consistently, and one read of it answers both.
         refreshSurfaceSegment();
         // Collect a run that finished while the app was closed. Not optional: the
         // run is process-static and its prompt id is in prefs, so nothing else in the
@@ -4521,7 +4558,12 @@ public class MainActivity extends Activity {
         // is on both), and Home otherwise. Reading it from editSurface rather
         // than picking a label in advance is what makes the line and the segment
         // agree by construction.
-        Surface named = state.library.isOnBothSurfaces() && editSurface == Surface.LOCK
+        //
+        // <p>"On both" is the LIVE binding, not the index's applied-surfaces record,
+        // which no longer exists as anything the app writes: only two separate
+        // bindings give the lock screen its own engine, so two OURS readings are the
+        // condition, and the platform is the only thing that knows them.
+        Surface named = boundToBoth() && editSurface == Surface.LOCK
                 ? Surface.LOCK : Surface.HOME;
         setPhotoLine(name, getString(R.string.photo_line_surface, name,
                 getString(named == Surface.LOCK
@@ -4546,36 +4588,35 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Whether this app's own live wallpaper is the one currently bound.
+     * Whether this app's own live wallpaper is the one bound to a screen.
      *
-     * <p>The platform is the authority on what is actually on a screen — the
-     * app's own record is a statement of intent (see the class note on
-     * {@code Library.appliedSurfaces}). Compared against this service's
-     * component so a different live wallpaper cannot make this photo claim a
-     * screen it is not on. The lock query is API 34+, where a lock-only binding
-     * becomes expressible; below that the home query is the whole answer.
-     *
-     * <p>Never throws: {@code getWallpaperInfo} rethrows a dead system server's
-     * {@code DeadSystemException} as an unchecked exception, and a line that took
-     * the studio down with it would be worse than a line that says the
-     * pessimistic thing.
+     * <p>Asks {@link #binding}, read once per refresh pass by
+     * {@link #refreshSurfaceSegment}. That is not a caching convenience: the photo
+     * line, the apply status line and this predicate are three readers of one live
+     * platform, and asking separately is how two of them end up describing different
+     * screens within one frame. Null — a call that somehow ran before the read —
+     * answers false, the same pessimistic reading a failed read gives.
      */
     private boolean ourWallpaperIsBound() {
-        WallpaperManager wm = WallpaperManager.getInstance(this);
-        if (wm == null) return false;
-        android.content.ComponentName ours = DepthWallpaperService.wallpaperComponent(this);
-        try {
-            WallpaperInfo home = wm.getWallpaperInfo();
-            if (home != null && ours.equals(home.getComponent())) return true;
-            if (Build.VERSION.SDK_INT >= 34) {
-                WallpaperInfo lock = wm.getWallpaperInfo(WallpaperManager.FLAG_LOCK);
-                return lock != null && ours.equals(lock.getComponent());
-            }
-        } catch (Exception e) {
-            // No wallpaper service, or no visibility of whatever is bound. The
-            // honest reading of "cannot tell" is the state that claims nothing.
-        }
-        return false;
+        if (binding == null) return false;
+        return binding.home == ApplyChooser.Bound.OURS
+                || binding.lock == ApplyChooser.Bound.OURS;
+    }
+
+    /**
+     * Whether BOTH screens are bound to this app's wallpaper.
+     *
+     * <p>Two separate bindings, and the second half of that is load-bearing: a single
+     * "Home and lock" application is one engine in {@code flags=0x3} that the lock
+     * screen composites, so per-surface settings are rendered by nothing. The
+     * readout cannot tell those two arrangements apart — {@code getWallpaperInfo}
+     * answers per screen and reports ours either way — which is why this is the
+     * condition for a label and never a claim that lock has its own engine.
+     */
+    private boolean boundToBoth() {
+        return binding != null
+                && binding.home == ApplyChooser.Bound.OURS
+                && binding.lock == ApplyChooser.Bound.OURS;
     }
 
     // ----------------------------------------------------- same as home / revert
@@ -4593,6 +4634,57 @@ public class MainActivity extends Activity {
         t.setPadding(0, 0, 0, dp(8));
         t.setVisibility(View.GONE);
         return t;
+    }
+
+    /**
+     * The status line under "Set as wallpaper". See {@link #refreshApplyStatus}.
+     *
+     * <p>Built hidden like every other note here, and refreshed on the same pass —
+     * AGENTS.md's "an invisible view still occupies space" is why a line that is
+     * sometimes absent changes its height rather than its opacity.
+     */
+    private TextView buildApplyNote() {
+        TextView t = new TextView(this);
+        t.setTextSize(11);
+        t.setTextColor(0x8CFFFFFF);
+        // Top padding rather than bottom: this is the last thing in the sheet, so
+        // the space above it is what separates it from the button it describes.
+        t.setPadding(0, dp(9), 0, dp(2));
+        t.setVisibility(View.GONE);
+        return t;
+    }
+
+    /**
+     * Say what is bound, and offer the reminder once per change.
+     *
+     * <p>The line is permanent and the toast is not, and that is the whole design:
+     * the binding is a fact about the phone rather than a moment, so it belongs on
+     * the row that changes it, while the <i>interruption</i> is worth spending only
+     * when something moved. {@link ApplyChooser#reminderDue} holds that rule, and
+     * the user asked for no persisted do not ask again — so a fresh process is
+     * allowed to say it once and nothing is stored.
+     *
+     * <p>Called from {@link #refreshSurfaceSegment}, which runs in {@code onCreate}
+     * and {@code onResume} and already owns the one read of the binding, rather
+     * than being a second pass of its own. The {@code onCreate} pass runs before
+     * this view is built — the surface segment is added near the top of the sheet
+     * and the foot is its last child — so it sets {@link #binding} and returns;
+     * the first toast is therefore on the first resume, which is the moment the
+     * user is actually looking at the studio.
+     */
+    private void refreshApplyStatus() {
+        if (applyNote == null || binding == null) return;
+        applyNote.setVisibility(View.VISIBLE);
+        applyNote.setText(ApplyChooser.statusText(this, binding));
+        if (ApplyChooser.reminderDue(binding)) {
+            // The same sentence as the line above, and LENGTH_LONG because it is
+            // read once and names two things: which screen is missing and where the
+            // control for it is. No action on it — the row this toast is about
+            // carries the same words, and an actionable notification would be a
+            // fourth copy of one fact rather than a shorter route to the first.
+            Toast.makeText(this, ApplyChooser.statusText(this, binding),
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     /**
@@ -4841,6 +4933,12 @@ public class MainActivity extends Activity {
      */
     private void refreshSurfaceSegment() {
         if (surfaceSegment == null) return;
+        // ONE read of the platform, first, because everything below answers from it:
+        // the photo line's "which screen", the status line under the apply button and
+        // the reminder are three answers to the same question, and three binder calls
+        // are three chances to return three different ones. It is also the only
+        // writer of `binding`, which is why every reader below can assume it is set.
+        binding = ApplyChooser.read(this);
         boolean show = surfaceForSegment() != null;
         // GONE, never INVISIBLE and never disabled-with-opacity: the design's rule is
         // that a control which cannot change anything is absent. GONE is absent.
@@ -4852,63 +4950,27 @@ public class MainActivity extends Activity {
         AppState state = state();
         refreshPhotoLine(state);
         refreshSurfaceNote(state);
+        refreshApplyStatus();
     }
 
     /**
-     * The index says this photo is now on a second screen.
+     * The system picker is about to open, so put a still frame on the lock screen if
+     * this platform is going to need one.
      *
-     * <p>Called by the apply chooser after it records an intent, so the user is told
-     * what was recorded rather than inferring it from a segment that has not appeared
-     * yet.
-     *
-     * <p><b>The segment does NOT appear in response.</b> The sheet is built inline in
-     * {@code onCreate}, so bringing it back means rebuilding the panel, the fix line
-     * and every slider's captured initial value -- a large change to the largest
-     * method in the app for one event. It appears the next time the studio opens,
-     * which is immediately after the system picker the user is being sent to anyway.
-     * Said plainly rather than left to be discovered: the alternative was a
-     * {@code buildSheet()} that does not exist.
-     */
-    void onAppliedTo(Surface surface) {
-        // Both branches are int resource ids, so the ternary cannot pick a String
-        // overload -- hence two calls rather than one with a ternary.
-        if (surface == Surface.LOCK) {
-            Toast.makeText(this, R.string.applied_to_lock, Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, R.string.applied_to_home, Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    /**
-     * The index says the photo is now on both screens, so the switch can exist.
-     *
-     * <p>The segment is built with the rest of the sheet and there is no
-     * {@code buildSheet()} to re-run, so it still appears next time the studio opens
-     * -- which is straight after the system picker this hands you back from. The toast
-     * is what tells you in the meantime, and it names the outcome rather than saying
-     * "done", because the system dialog may bind one screen and not the other and
-     * this app cannot observe which.
-     */
-    void onAppliedToBoth() {
-        Toast.makeText(this, R.string.applied_to_both, Toast.LENGTH_SHORT).show();
-        // The switch becomes real this moment, and the sheet is already on screen --
-        // so this is where it appears, not on the next launch.
-        refreshSurfaceSegment();
-    }
-
-    /**
-     * The photo was chosen for the lock screen on a platform with no live lock engine.
-     *
-     * <p>So the lock screen gets the frame it is about to be sent, captured from the
-     * render currently on screen. The chooser already promises this — "the lock screen
-     * keeps a still frame" — and until now nothing put one there, so the sentence
-     * described something that did not happen.
+     * <p><b>Called on every picker launch, which is a change of when.</b> It used to
+     * be fired by the apply chooser recording that the user had picked Lock — the one
+     * place that knew, because the app cannot observe what was chosen inside the
+     * system dialog. The chooser no longer exists (it asked a question whose answer
+     * was discarded), so the frame is captured whenever the dialog is opened instead,
+     * which covers every route to it and none of them is better informed than this
+     * one. {@link StaticLockFrame#isNeeded()} makes the whole thing a no-op on 35+,
+     * where the lock screen is a second live engine and not this app's to draw.
      *
      * <p>Asks the GLSurfaceView for a frame because the capture has to happen on the GL
      * thread, after a draw and before the buffer is recycled. The renderer holds the
      * flag; the view owns when a frame happens.
      */
-    void onLockSurfaceChosen() {
+    void onPickerLaunched() {
         if (!StaticLockFrame.isNeeded()) return;
         renderer.captureLockFrame();
         glView.requestRender();

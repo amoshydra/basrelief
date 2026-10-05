@@ -159,25 +159,47 @@
     <string name="group_picture_surface">Picture — %1$s</string>
     <string name="group_light_surface">Light — %1$s</string>
 
-    <!-- Apply: the surface chooser, shown only at apply time -->
+    <!-- Apply: a READOUT of what is bound where, read from getWallpaperInfo. It used
+         to be a chooser whose answer was discarded — see ApplyChooser. -->
     <string name="apply_title">Set as wallpaper</string>
     <string name="apply_subtitle">Android will ask you to confirm.</string>
     <string name="apply_home">Home screen</string>
-    <string name="apply_home_sub">live, with tilt</string>
     <string name="apply_lock">Lock screen</string>
-    <string name="apply_lock_sub">live, its own settings</string>
+    <!-- One live state per row. "Still image, not live" is its own answer rather
+         than a flavour of "Set": nothing that app can draw does not tilt. -->
+    <string name="apply_bound_ours">Set</string>
+    <string name="apply_bound_other">Set to another app</string>
+    <string name="apply_bound_still">Still image, not live</string>
+    <string name="apply_bound_none">Not set</string>
+    <!-- The instruction that has to live ON the row, because the picker has no
+         surface parameter: the app cannot open a dialog about one screen, so it can
+         only say what to choose in the next one. -->
+    <string name="apply_pick_home">Tap to set it — choose “Home screen only” next</string>
+    <string name="apply_pick_lock">Tap to set it — choose “Lock screen only” next</string>
+    <string name="apply_lock_after_home">Set the home screen first</string>
     <string name="apply_lock_unavailable">needs Android 15 or newer</string>
     <!-- The one thing the user must do in the dialog that follows, and the reason.
          "Home and lock" is one window, so the lock screen would composite the home
-         engine and the per-surface settings would never render. -->
+         engine and the per-surface settings would never render. The home-first
+         mirror is the same sentence with the other destination named. -->
     <string name="apply_lock_note_separate">Choose “Lock screen only” in the next dialog. “Home and lock” is one window, so the lock screen would show your home settings.</string>
+    <string name="apply_home_note_separate">Choose “Home screen only” in the next dialog. “Home and lock” is one window, so the lock screen would show your home settings.</string>
+    <!-- Said on the correct state, because the platform reports each screen's
+         binding separately and cannot tell two bindings from one "Home and lock"
+         application that covers both — so the caveat is named rather than assumed
+         away. -->
+    <string name="apply_note_both">Set on both screens. Picked as “Home and lock” in one dialog? Do it as two, and the lock screen gets its own settings.</string>
     <string name="apply_lock_note">Lock-screen wallpaper needs Android 15+. On older versions the lock screen keeps a still frame.</string>
-    <string name="apply_continue">Continue</string>
+    <!-- The studio's own row's status line, and the reminder toast: the same
+         sentence, because it is the same fact. The missing one names itself and
+         points at the button, so the sheet is one tap away rather than required. -->
+    <string name="apply_status_both">Set on both screens</string>
+    <string name="apply_status_home">Set on the home screen</string>
+    <string name="apply_reminder_home">Home screen not set — tap Set as wallpaper</string>
+    <string name="apply_reminder_lock">Lock screen not set — tap Set as wallpaper</string>
+    <string name="apply_reminder_both">Not set on either screen — tap Set as wallpaper</string>
     <!-- Says where to go rather than blaming the device: the picker is the only
          route, so if the system will not open it the user has to do this by hand. -->
-    <string name="applied_to_home">Applied to the home screen</string>
-    <string name="applied_to_both">Home and lock · open the sheet to adjust each</string>
-    <string name="applied_to_lock">Applied to the home and lock screens</string>
     <string name="apply_manual_hint">Open System Settings › Wallpaper to set the live wallpaper</string>
 
     <!-- The gallery. Add photo is the only way in; Image is retired into it. -->
