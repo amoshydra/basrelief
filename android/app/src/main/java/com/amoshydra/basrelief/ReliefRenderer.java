@@ -662,7 +662,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     "precision highp float;\n" +
                     "uniform sampler2D uTex; uniform int uLayer; in vec2 vUv; out vec4 o;\n" +
                     "void main(){\n" +
-                    "  vec4 c = texture(uTex, vUv);\n" +
+                    "  // The DEPTH field is stored row 0 = image top (the mesh reads it" +
+                    " with gy = (1 - aUV.y) * grid), while this quad puts v=1 at screen" +
+                    " top -- so the depth layer is viewed through the same flip the mesh" +
+                    " applies, or it shows mirrored, which it did." +
+                    "  vec2 uv = uLayer == 2 ? vec2(vUv.x, 1.0 - vUv.y) : vUv;\n" +
+                    "  vec4 c = texture(uTex, uv);\n" +
                     "  if (uLayer == 2) c = vec4(vec3(c.r), 1.0);\n" +
                     "  o = vec4(c.rgb, 1.0);\n" +
                     "}\n";
@@ -683,9 +688,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
             dbgQuad.put(q).position(0);
         }
-        int tex = debugLayer == 1 ? r.textureColor
+        // The CLIP-AWARE textures, not the render's still fields: the relief plays
+        // because the draw swaps in the clip's textures through these helpers, and a
+        // debug view sampling the still fields instead shows the frozen poster's
+        // colour and normal -- which is exactly how it shipped, the debug colour and normal views did not play. The debug view must show what the draw SHOWS.
+        int tex = debugLayer == 1 ? clipColour(r)
                 : debugLayer == 2 ? clipDepthField(r)
-                : r.textureNormal;
+                : clipNormal(r);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(dbgProgram);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
