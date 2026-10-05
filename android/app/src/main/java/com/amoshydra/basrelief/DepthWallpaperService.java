@@ -846,6 +846,16 @@ public class DepthWallpaperService extends WallpaperService {
                         // freezes for seconds.
                         renderer.loadPairAsync(img, dep, nrm);
                     }
+
+                    // The medium, handed over EVERY resolve and not only on a pair
+                    // change. That is the asymmetry worth noting: the still pair has
+                    // a cheap "is this what is on screen" test, and the clip does not
+                    // -- so asking only when the pair changes would leave a clip
+                    // playing over a photograph that had just been selected, which is
+                    // the wallpaper showing the wrong medium. Null for a photograph,
+                    // which is every row without tracks, and it is explicit for the
+                    // reason requestClip documents.
+                    renderer.requestClip(active.video, getFilesDir());
                 }
             });
         }
