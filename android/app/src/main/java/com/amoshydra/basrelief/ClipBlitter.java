@@ -171,6 +171,16 @@ final class ClipBlitter {
                 // the sampler has converted. Reading .r and not a channel average is
                 // the measurement that settled it: the depth encode is a luma encode.
                 "  vec2 uv = (uST * vec4(vUv, 0.0, 1.0)).xy;\n" +
+            // UN-FLIP the field's vertical axis. The mesh reads this texture with
+            // gy = (1 - aUV.y) * grid -- the STILL path's convention, where the field's
+            // row 0 is the image's TOP row (ReliefMesh: "top row = gy 0", uploaded
+            // without a flip). The SurfaceTexture's transform includes Android's
+            // bottom-up flip, so sampling the OES straight through uST writes the
+            // image's BOTTOM row at field row 0 -- the depth vertically mirrored
+            // against the video, protrusions appearing where the scene recedes. The
+            // colour is unaffected because the still path flips the colour bitmap at
+            // upload: colour and clip colour agree; only the field needed the inverse.
+            "  uv.y = 1.0 - uv.y;\n" +
                 "  float sum = 0.0;\n" +
                 "  for (int j = -" + blurRadius + "; j <= " + blurRadius + "; j++) {\n" +
                 "    for (int i = -" + blurRadius + "; i <= " + blurRadius + "; i++) {\n" +

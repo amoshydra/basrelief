@@ -1065,6 +1065,10 @@ public class MainActivity extends Activity {
         footRule.setLayoutParams(ruleLp);
         sheetContent.addView(footRule);
 
+        // Long-press cycles the debug layer: relief, colour, depth field, normal.
+        // The raw textures drawn full-screen answer alignment questions -- flipped,
+        // offset, stale, the wrong clip's -- by inspection, and the depth field's
+        // content is the one thing no log line can show.
         statusView = new TextView(this);
         statusView.setTextColor(0x57FFFFFF);
         statusView.setTextSize(10);
@@ -1074,6 +1078,15 @@ public class MainActivity extends Activity {
         // from reading as one cramped block at the very foot of the sheet.
         statusView.setPadding(0, dp(9), 0, dp(9));
         sheetContent.addView(statusView);
+        statusView.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                String layer = renderer == null ? "off" : renderer.cycleDebugLayer();
+                Toast.makeText(MainActivity.this, "debug: " + layer,
+                        Toast.LENGTH_SHORT).show();
+                return true;
+            }
+        });
 
         // The sheet's foot: a gear icon button and the primary action, side by side.
         //

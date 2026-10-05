@@ -633,6 +633,72 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * work until it does not.
      */
     private volatile ClipPlayer clip;
+
+    /**
+     * Debug layer drawn over the relief: 0 off, 1 colour, 2 depth field, 3 normal.
+     *
+     * <p>A debug view, because alignment questions -- is the depth field flipped,
+     * offset, stale, or the other clip's -- are answered by LOOKING at the texture
+     * the draw actually samples, not by reasoning about the pipeline that produced
+     * it. Long-press the status line cycles; the layer name comes back as a toast.
+     */
+    private volatile int debugLayer;
+    private int dbgProgram, dbgULayer, dbgUTex, dbgAPos;
+    private java.nio.FloatBuffer dbgQuad;
+
+    /** Cycle the debug layer; returns the name of the new one, for the toast. */
+    public String cycleDebugLayer() {
+        debugLayer = (debugLayer + 1) % 4;
+        if (renderRequester != null) renderRequester.run();
+        return new String[] {"relief", "colour", "depth", "normal"}[debugLayer];
+    }
+
+    private void drawDebugQuad(Render r) {
+        if (dbgProgram == 0) {
+            String v = "#version 300 es\n" +
+                    "in vec2 aPos; out vec2 vUv;\n" +
+                    "void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+            String f = "#version 300 es\n" +
+                    "precision highp float;\n" +
+                    "uniform sampler2D uTex; uniform int uLayer; in vec2 vUv; out vec4 o;\n" +
+                    "void main(){\n" +
+                    "  vec4 c = texture(uTex, vUv);\n" +
+                    "  if (uLayer == 2) c = vec4(vec3(c.r), 1.0);\n" +
+                    "  o = vec4(c.rgb, 1.0);\n" +
+                    "}\n";
+            int vsh = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER);
+            GLES20.glShaderSource(vsh, v); GLES20.glCompileShader(vsh);
+            int fsh = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER);
+            GLES20.glShaderSource(fsh, f); GLES20.glCompileShader(fsh);
+            dbgProgram = GLES20.glCreateProgram();
+            GLES20.glAttachShader(dbgProgram, vsh);
+            GLES20.glAttachShader(dbgProgram, fsh);
+            GLES20.glLinkProgram(dbgProgram);
+            GLES20.glDeleteShader(vsh); GLES20.glDeleteShader(fsh);
+            dbgULayer = GLES20.glGetUniformLocation(dbgProgram, "uLayer");
+            dbgUTex = GLES20.glGetUniformLocation(dbgProgram, "uTex");
+            dbgAPos = GLES20.glGetAttribLocation(dbgProgram, "aPos");
+            float[] q = {-1, -1, 1, -1, -1, 1, 1, 1};
+            dbgQuad = java.nio.ByteBuffer.allocateDirect(32)
+                    .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+            dbgQuad.put(q).position(0);
+        }
+        int tex = debugLayer == 1 ? r.textureColor
+                : debugLayer == 2 ? clipDepthField(r)
+                : r.textureNormal;
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glUseProgram(dbgProgram);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glUniform1i(dbgUTex, 0);
+        GLES20.glUniform1i(dbgULayer, debugLayer);
+        GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+        GLES20.glEnableVertexAttribArray(dbgAPos);
+        GLES20.glVertexAttribPointer(dbgAPos, 2, GLES20.GL_FLOAT, false, 0, dbgQuad);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        GLES20.glDisableVertexAttribArray(dbgAPos);
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+    }
     private long lastClipStatNanos;
     /** Draws since the previous stats window; the pump's report card. */
     private long lastClipDraws, clipDraws;
@@ -2356,6 +2422,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             if (!pairChangePending) captureFraming(displayed);
             CameraModel.Frame f = drawRender(displayed, 1f);
             if (showOrbitMarker) drawOrbitMarker(displayed, f);
+            if (debugLayer != 0) drawDebugQuad(displayed);
         } else {
             float t = (now - fadeStartNanos) / 1_000_000f / CROSS_FADE_MS;
             if (t >= 1f) {
