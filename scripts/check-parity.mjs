@@ -152,6 +152,7 @@ function checkTestCounts() {
     }
     return String(n);
   };
+  const before = failures.length;
   if (+claimed[1] !== methods) {
     failures.push(
       `AGENTS.md says ${claimed[1]} tests but the tree has ${methods} @Test methods`
@@ -162,8 +163,17 @@ function checkTestCounts() {
       `AGENTS.md says ${claimed[2]} test classes but the tree has ${classes.length}: ` +
         classes.sort().join(', ')
     );
-  } else {
+  }
+  // "matches AGENTS.md" only when BOTH counts agree, and never from inside one
+  // check's else-branch. It was: the line was printed by the CLASS check's happy
+  // path while the TEST check had already pushed a failure, so a stale count printed
+  // "matches AGENTS.md" and exited 1. That is a guard congratulating itself while
+  // failing, and it is how a guard gets ignored -- which is the whole reason this
+  // check exists. It was read twice as green, by me, grepping for "OK".
+  if (failures.length === before) {
     console.log(`test counts: ${methods} tests across ${classes.length} classes — matches AGENTS.md`);
+  } else {
+    console.log(`test counts: tree has ${methods} tests across ${classes.length} classes — AGENTS.md disagrees`);
   }
 }
 
