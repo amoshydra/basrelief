@@ -140,13 +140,21 @@ public final class DepthSource {
          * Whether to offer <b>Regenerate</b>.
          *
          * <p>False for {@link Kind#EMBEDDED} — the user's decision, generating is
-         * out of scope for that case — false for {@link Kind#TRACK}, where
-         * generating means §3's offline pass over every frame and is not a write of
-         * one file — and false while unknown, because offering a control before
-         * knowing the state is how a control ends up able to do nothing.
+         * out of scope for that case — and false while unknown, because offering a
+         * control before knowing the state is how a control ends up able to do
+         * nothing.
+         *
+         * <p><b>{@link Kind#TRACK} now offers it, and that is a change the code
+         * earned.</b> It was false because generating meant §3's offline pass over
+         * every frame, which nothing implemented — offering the button would have
+         * been a control that could not act. The video graph IS that pass now: one
+         * MoGe inference over the whole batch, three clips written by one decode, so
+         * regenerating a track is a real action with a real output. It regenerates
+         * the WHOLE track set rather than one file, which is the difference from the
+         * still path, not a lesser version of it.
          */
         public boolean canRegenerate() {
-            return kind == Kind.NONE || kind == Kind.FILE;
+            return kind == Kind.NONE || kind == Kind.FILE || kind == Kind.TRACK;
         }
 
         /**

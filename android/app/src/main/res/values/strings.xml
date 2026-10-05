@@ -692,4 +692,10 @@
     <!-- Video import. Shown while the chain runs and if it cannot start at all. -->
     <string name="video_import_no_server">Set your depth server first</string>
     <string name="video_import_failed">That video could not be imported</string>
+    <string name="video_phase_copying">Copying the clip</string>
+    <string name="video_phase_uploading">Uploading</string>
+    <string name="video_phase_generating">Generating depth for the clip</string>
+    <string name="video_phase_fetching">Fetching</string>
+    <string name="video_phase_poster">Writing the poster frame</string>
+    <string name="video_phase_adding">Adding to the gallery</string>
 </resources>

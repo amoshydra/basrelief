@@ -4234,24 +4234,42 @@ public class MainActivity extends Activity {
     private View buildMapActions() {
         LinearLayout mapRow = new LinearLayout(this);
         mapRow.setOrientation(LinearLayout.HORIZONTAL);
+        // Resolved at CLICK time, not build time, for the reason on the class: the
+        // row is rebuilt per selection but a click can land after another change.
+        final boolean isClip = state().activeItem() != null
+                && state().activeItem().video != null;
         mapRow.addView(makeButton(getString(R.string.action_regenerate),
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        openDepthGen();
+                        // A clip regenerates its TRACK SET through the video graph --
+                        // the image graph would write a one-frame depth over a playing
+                        // clip's depth track, which is what the button did and why it
+                        // had to be routed. DepthSource.canRegenerate says TRACK may
+                        // ask for this; the routing is the half the renderer cannot
+                        // know.
+                        LibraryItem item = state().activeItem();
+                        if (item == null) return;
+                        if (item.video != null) {
+                            regenerateClip(item);
+                        } else {
+                            openDepthGen();
+                        }
                     }
                 }), new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        mapRow.addView(makeButton(getString(R.string.action_replace),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // Reuses the active item's id, so it overwrites this
-                        // photo's map rather than starting a new gallery row.
-                        pickFile(REQ_DEPTH);
-                    }
-                }), new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        if (!isClip) {
+            mapRow.addView(makeButton(getString(R.string.action_replace),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            // Reuses the active item's id, so it overwrites this
+                            // photo's map rather than starting a new gallery row.
+                            pickFile(REQ_DEPTH);
+                        }
+                    }), new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
         // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
         // one control with a doubled border; the gap is what makes them two, and
         // it is set on the surviving child rather than passed to addView because
@@ -5325,6 +5343,71 @@ public class MainActivity extends Activity {
      * with one without the other -- colour without depth renders flat, with no error
      * anywhere. A half-imported row would be exactly that.
      */
+    /**
+     * Regenerate depth and normal for the active CLIP row, through the video graph.
+     *
+     * <p>The same phases and the same worker as an import, because it IS an import
+     * whose colour source is the clip already in the gallery.
+     */
+    private void regenerateClip(final LibraryItem item) {
+        String host = prefs.getString("comfy_url", "");
+        if (host == null || host.trim().isEmpty()) {
+            Toast.makeText(MainActivity.this, R.string.video_import_no_server,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ComfyApi api = new ComfyApi(host.trim());
+        Io.run(this, new Callable<LibraryItem>() {
+            @Override
+            public LibraryItem call() throws Exception {
+                final LibraryItem[] holder = new LibraryItem[1];
+                final String[] problem = new String[1];
+                VideoImport.regenerate(MainActivity.this, prefs, item, api,
+                        new VideoImport.Listener() {
+                            @Override
+                            public void phase(final String message) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        Toast.makeText(MainActivity.this, message,
+                                                Toast.LENGTH_SHORT).show();
+                                    }
+                                });
+                            }
+
+                            @Override
+                            public void done(LibraryItem updated) {
+                                holder[0] = updated;
+                            }
+
+                            @Override
+                            public void failed(final String message) {
+                                problem[0] = message;
+                            }
+                        });
+                if (problem[0] != null) throw new Exception(problem[0]);
+                return holder[0];
+            }
+        }, new Io.Callback<LibraryItem>() {
+            @Override
+            public void onDone(LibraryItem item, Exception error) {
+                if (item == null) {
+                    String why = (error == null || error.getMessage() == null)
+                            ? getString(R.string.video_import_failed)
+                            : error.getMessage();
+                    Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                // Same row, new files behind it: the poster changed, so the strip's
+                // thumbnail is stale, and the pair identity changed, so the renderer
+                // must reload rather than answer "already showing".
+                gallery.reindex();
+                applyFiles();
+                refreshSliders();
+            }
+        });
+    }
+
     private void importSharedVideo(final Uri uri, final String label) {
         // The host the user already configured for depth generation, read from the
         // same pref that panel writes. NOT a second host setting: a clip import that

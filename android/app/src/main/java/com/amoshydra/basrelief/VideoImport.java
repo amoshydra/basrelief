@@ -78,49 +78,101 @@ final class VideoImport {
     }
 
     /**
-     * Run the whole import on the calling (Io) thread.
+     * Regenerate depth and normal for a clip that is already in the gallery.
      *
-     * @param uri    the shared video
-     * @param label  the name the sending app showed
+     * <p>The still path's Regenerate wrote ONE frame, because it ran the image graph
+     * on the poster PNG -- which is what the button did before the video graph
+     * existed, and on a clip row it was worse than nothing: it replaced the poster's
+     * still depth with a single-frame map while the depth CLIP kept playing. This is
+     * the clip's own version of the same action, and it regenerates the WHOLE set:
+     * the existing colour clip is re-uploaded and re-run through the video graph, and
+     * all three clips plus the three stills come back aligned, because they are
+     * written by one decode.
+     *
+     * <p><b>New stamped filenames, not the id-derived ones.</b> The renderer decides
+     * "already showing" by PATH, and a regenerate that overwrote the same paths would
+     * be told the pair is current while the decoders held the OLD file open -- the new
+     * clip would never load. New names make the pair identity change, which is the
+     * same mechanism the still path's {@code ai_depth_<stamp>.png} naming uses. The
+     * superseded files are left on disk, exactly as the still path's superseded maps
+     * are.
+     *
+     * @param item the clip row to regenerate. Must carry clips.
      */
-    static void run(final Context app, final SharedPreferences prefs, final Uri uri,
-                    final String label, final ComfyApi api, final Listener listener) {
-        final String id = LibraryItem.newId();
-        listener.phase("Copying the clip");
-        final File colorFile = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
-        try {
-            copyTo(app, uri, colorFile);
-        } catch (Exception e) {
-            listener.failed("Could not read that video: " + e.getMessage());
+    static void regenerate(final Context app, final SharedPreferences prefs,
+                           final LibraryItem item, final ComfyApi api,
+                           final Listener listener) {
+        if (item == null || item.video == null) {
+            listener.failed(app.getString(R.string.video_import_failed));
             return;
         }
-        if (colorFile.length() == 0) {
-            listener.failed("That video was empty.");
+        // The colour clip is already here; regeneration re-runs the graph over IT.
+        final File colour = item.video.colorFile(app.getFilesDir());
+        if (colour == null || !colour.exists()) {
+            listener.failed(app.getString(R.string.video_import_failed));
             return;
         }
+        long stamp = System.currentTimeMillis();
+        String[] names = {
+                "ai_clip_" + stamp + ".mp4",        // colour clip
+                "ai_clipdepth_" + stamp + ".mp4",   // depth clip
+                "ai_clipnormal_" + stamp + ".mp4",  // normal clip
+                "ai_clip_" + stamp + ".png",        // poster (image)
+                "ai_depth_" + stamp + ".png",       // depth still -- the still path's convention
+                "ai_normal_" + stamp + ".png",      // normal still
+        };
+        LibraryItem updated = generate(app, prefs, api, colour, names, listener,
+                new Finisher() {
+                    @Override
+                    public LibraryItem finish(LibraryItem built) {
+                        // Same id, same framing, same playlist membership: only the
+                        // files behind it change. editItem is the in-place editor,
+                        // and it keeps everything withFilesAndVideo does not name.
+                        LibraryStore.editItem(prefs, item.id, new LibraryStore.Editor() {
+                            @Override
+                            public LibraryItem edit(LibraryItem it) {
+                                return it.withFilesAndVideo(built.imageName,
+                                        built.depthName, built.normalName, built.video);
+                            }
+                        });
+                        return LibraryStore.load(prefs).activeItem();
+                    }
+                });
+        if (updated != null) listener.done(updated);
+    }
 
-        // The source rate, read rather than assumed. It is the number the loader and
-        // both output combiners must agree on, and a wrong one slides the depth
-        // against the colour by exactly that factor for the whole clip -- which reads
-        // as a sync bug and is a rate bug.
-        float fps = frameRateOf(colorFile);
-        Log.i(TAG, "video import id=" + id + " bytes=" + colorFile.length()
+    /** The last step of a generate, split so regenerate can edit in place instead. */
+    private interface Finisher {
+        LibraryItem finish(LibraryItem built);
+    }
+
+    /**
+     * The shared pipeline: upload the colour, run the video graph, fetch all three
+     * clips, write the stills, and hand the built row to a finisher.
+     *
+     * @param names colour clip, depth clip, normal clip, poster, depth still, normal still
+     * @return the built-but-unstored item, or null after reporting a failure
+     */
+    private static LibraryItem generate(final Context app, final SharedPreferences prefs,
+                                        final ComfyApi api, final File colourSource,
+                                        final String[] names, final Listener listener,
+                                        final Finisher finisher) {
+        final String id = LibraryItem.newId();
+        float fps = frameRateOf(colourSource);
+        Log.i(TAG, "video generate id=" + id + " source=" + colourSource.getName()
                 + " fps=" + fps);
 
-        // ---- 1. upload the clip
-        listener.phase("Uploading");
+        listener.phase(app.getString(R.string.video_phase_uploading));
         String uploadedName;
         try {
-            JSONObject up = new JSONObject(api.uploadImage(colorFile, colorFile.getName()));
+            JSONObject up = new JSONObject(api.uploadImage(colourSource, colourSource.getName()));
             uploadedName = up.getString("name");
         } catch (Exception e) {
-            listener.failed("The depth server took the clip but refused the upload: "
-                    + e.getMessage());
-            return;
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return null;
         }
 
-        // ---- 2. run the video graph
-        listener.phase("Generating depth for the clip");
+        listener.phase(app.getString(R.string.video_phase_generating));
         JSONObject outputs;
         try {
             String info = api.getObjectInfo();
@@ -131,19 +183,15 @@ final class VideoImport {
             String promptId = submitted.getString("prompt_id");
             outputs = pollOutputs(app, api, promptId);
         } catch (Exception e) {
-            listener.failed("Depth generation failed: " + e.getMessage());
-            return;
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return null;
         }
 
-        // ---- 3. fetch both clips, told apart by their prefixes
         JSONObject depthOut = null, normalOut = null, colourOut = null;
         java.util.Iterator<String> nodes = outputs.keys();
         while (nodes.hasNext()) {
             JSONObject node = outputs.optJSONObject(nodes.next());
             if (node == null) continue;
-            // VHS writes its file under "gifs" for every container, which is a
-            // misnomer in its own schema. Reading only "images" is how the still
-            // path found its PNGs and would find NOTHING here.
             JSONArray files = node.optJSONArray("gifs");
             if (files == null) files = node.optJSONArray("images");
             if (files == null) continue;
@@ -158,86 +206,105 @@ final class VideoImport {
                     normalOut = f;
                 } else if (colourOut == null
                         && name.startsWith(ComfyWorkflow.COLOUR_CLIP_PREFIX)) {
-                    // The COLOUR the combiner writes back -- the same frames the depth
-                    // was made from, not the original upload. Taking the original
-                    // instead is the comeback of the exact bug the third combine
-                    // exists to remove: a colour track longer than the depth track,
-                    // two loop clocks, and a seam where one rewinds and the other
-                    // does not.
                     colourOut = f;
                 }
             }
         }
         if (depthOut == null || colourOut == null) {
-            listener.failed("The run produced no depth clip.");
-            return;
+            listener.failed(app.getString(R.string.video_import_failed));
+            return null;
         }
 
-        listener.phase("Fetching");
-        File depthClip, normalClip = null, colourClip;
+        listener.phase(app.getString(R.string.video_phase_fetching));
         try {
-            // The aligned colour REPLACEs the upload: one decode, three outputs.
-            // Keeping the original over it would keep the longer file in the way.
-            colourClip = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
             write(api.view(colourOut.getString("filename"),
                     colourOut.optString("subfolder", ""),
-                    colourOut.optString("type", "output")), colourClip);
-            depthClip = new File(app.getFilesDir(), LibraryItem.videoDepthFileName(id));
+                    colourOut.optString("type", "output")), new File(app.getFilesDir(), names[0]));
             write(api.view(depthOut.getString("filename"),
                     depthOut.optString("subfolder", ""),
-                    depthOut.optString("type", "output")), depthClip);
+                    depthOut.optString("type", "output")), new File(app.getFilesDir(), names[1]));
             if (normalOut != null) {
-                normalClip = new File(app.getFilesDir(), LibraryItem.videoNormalFileName(id));
                 write(api.view(normalOut.getString("filename"),
                         normalOut.optString("subfolder", ""),
-                        normalOut.optString("type", "output")), normalClip);
+                        normalOut.optString("type", "output")), new File(app.getFilesDir(), names[2]));
             }
         } catch (Exception e) {
-            listener.failed("Could not download the depth clip: " + e.getMessage());
-            return;
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return null;
         }
 
-        // ---- 4. the still pair, as frame 0 of the clips
-        listener.phase("Writing the poster frame");
-        File poster, depthStill = null, normalStill = null;
+        listener.phase(app.getString(R.string.video_phase_poster));
+        File poster, depthStill, normalStill = null;
         try {
-            poster = firstFrameAsPng(app, colorFile, LibraryItem.imageFileName(id));
-            depthStill = firstFrameAsPng(app, depthClip, LibraryItem.depthFileName(id));
-            if (normalClip != null) {
-                normalStill = firstFrameAsPng(app, normalClip, LibraryItem.normalFileName(id));
+            poster = firstFrameAsPng(app, new File(app.getFilesDir(), names[0]), names[3]);
+            depthStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[1]), names[4]);
+            if (normalOut != null) {
+                normalStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[2]), names[5]);
             }
         } catch (Exception e) {
-            listener.failed("Could not read a frame back from the clips: " + e.getMessage());
-            return;
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return null;
         }
 
-        // ---- 5. ONE row, with everything
-        listener.phase("Adding to the gallery");
-        VideoTracks tracks = null;
+        listener.phase(app.getString(R.string.video_phase_adding));
+        VideoTracks tracks;
         try {
-            tracks = VideoTracks.of(
-                    LibraryItem.videoFileName(id),
-                    LibraryItem.videoDepthFileName(id),
-                    normalClip == null ? null : LibraryItem.videoNormalFileName(id));
+            tracks = VideoTracks.of(names[0], names[1],
+                    normalOut == null ? null : names[2]);
         } catch (Exception e) {
-            // VideoTracks refuses a half pair, which is the point. Reaching here means
-            // a depth clip we just wrote is not where we said it was, and saying so is
-            // better than storing a row that renders flat.
-            listener.failed("The clip pair is incomplete: " + e.getMessage());
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            return null;
+        }
+        LibraryItem built = LibraryItem.of(id, poster.getName(),
+                        depthStill.getName(), System.currentTimeMillis())
+                .withFilesAndVideo(poster.getName(), depthStill.getName(),
+                        normalStill == null ? null : normalStill.getName(), tracks);
+        return finisher.finish(built);
+    }
+
+    /**
+     * Run the whole import on the calling (Io) thread.
+     *
+     * @param uri    the shared video
+     * @param label  the name the sending app showed
+     */
+    static void run(final Context app, final SharedPreferences prefs, final Uri uri,
+                    final String label, final ComfyApi api, final Listener listener) {
+        final String id = LibraryItem.newId();
+        listener.phase(app.getString(R.string.video_phase_copying));
+        final File colourSource = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
+        try {
+            copyTo(app, uri, colourSource);
+        } catch (Exception e) {
+            listener.failed(app.getString(R.string.video_import_failed));
             return;
         }
-        LibraryItem item = LibraryItem.of(id,
-                        poster.getName(),
-                        depthStill == null ? null : depthStill.getName(),
-                        System.currentTimeMillis())
-                .withLabel(label)
-                .withFilesAndVideo(poster.getName(),
-                        depthStill == null ? null : depthStill.getName(),
-                        normalStill == null ? null : normalStill.getName(),
-                        tracks);
-        Library next = LibraryStore.load(prefs).withItem(item).withSelection(item.id);
-        LibraryStore.saveNow(prefs, next);
-        listener.done(item);
+        if (colourSource.length() == 0) {
+            listener.failed(app.getString(R.string.video_import_failed));
+            return;
+        }
+        // Id-derived names, so a re-import of the same video is a new row with its
+        // own files; regenerate uses stamped names for the same row.
+        String[] names = {
+                LibraryItem.videoFileName(id),
+                LibraryItem.videoDepthFileName(id),
+                LibraryItem.videoNormalFileName(id),
+                LibraryItem.imageFileName(id),
+                LibraryItem.depthFileName(id),
+                LibraryItem.normalFileName(id),
+        };
+        LibraryItem item = generate(app, prefs, api, colourSource, names, listener,
+                new Finisher() {
+                    @Override
+                    public LibraryItem finish(LibraryItem built) {
+                        built = built.withLabel(label);
+                        Library next = LibraryStore.load(prefs)
+                                .withItem(built).withSelection(built.id);
+                        LibraryStore.saveNow(prefs, next);
+                        return built;
+                    }
+                });
+        if (item != null) listener.done(item);
     }
 
     /** Wait for the run, then hand back its outputs. Blocking; the Io thread only. */

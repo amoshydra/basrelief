@@ -294,21 +294,24 @@ public class DepthSourceTest {
     }
 
     /**
-     * A track offers <b>neither</b> action, and the reasons are different from the
-     * embedded case.
+     * A track offers <b>Regenerate but not Replace</b>, and the asymmetry is the
+     * point.
      *
-     * <p>Regenerating is §3's offline pass over every frame, not a write of one map
-     * file; and replacing the depth clip alone would leave it locked to a colour clip
-     * it no longer matches (§3 step 7: same frame count, same rate, same GOP). A
-     * control that could only half-apply is the {@code withDepth} trap with a
-     * button on it.
+     * <p>Regenerate was false here when regenerating meant §3's offline pass over
+     * every frame and nothing implemented it -- a button that could not act. The
+     * video graph IS that pass now: one inference over the whole batch, three clips
+     * from one decode, so the action exists and the answer follows the capability.
+     * Replace stays false, and must: the depth clip is frame-locked to the colour
+     * clip (§3 step 7: same frame count, same rate, same GOP), so replacing it alone
+     * is the {@code withDepth} trap with a button on it.
      */
     @Test
-    public void aTrackOffersNeitherRegenerateNorReplace() {
+    public void aTrackOffersRegenerateButNotReplace() {
         DepthSource.Answer a = DepthSource.forItem(clip("a"), null,
                 VideoSource.forItem(clip("a"), Boolean.TRUE));
-        assertFalse(a.canRegenerate());
-        assertFalse(a.canReplace());
+        assertTrue("the video graph is the offline pass; the action exists",
+                a.canRegenerate());
+        assertFalse("the depth clip is frame-locked to the colour clip", a.canReplace());
     }
 
     /**
@@ -401,10 +404,14 @@ public class DepthSourceTest {
                             a.kind() == DepthSource.Kind.FILE
                                     || a.kind() == DepthSource.Kind.EMBEDDED
                                     || a.kind() == DepthSource.Kind.TRACK, a.hasDepth());
-                    assertEquals("actions must be NONE or FILE, got " + a,
+                    assertEquals("regenerate is NONE, FILE or TRACK, got " + a,
                             a.kind() == DepthSource.Kind.NONE
-                                    || a.kind() == DepthSource.Kind.FILE, a.canRegenerate());
-                    assertEquals(a.canRegenerate(), a.canReplace());
+                                    || a.kind() == DepthSource.Kind.FILE
+                                    || a.kind() == DepthSource.Kind.TRACK, a.canRegenerate());
+                    assertEquals("replace is NONE or FILE -- a track's depth clip is "
+                                    + "frame-locked to its colour clip",
+                            a.kind() == DepthSource.Kind.NONE
+                                    || a.kind() == DepthSource.Kind.FILE, a.canReplace());
                     assertEquals("reportsNoDepth is NONE alone, got " + a,
                             a.kind() == DepthSource.Kind.NONE, a.reportsNoDepth());
                     assertEquals("isUnknown is UNKNOWN alone, got " + a,
