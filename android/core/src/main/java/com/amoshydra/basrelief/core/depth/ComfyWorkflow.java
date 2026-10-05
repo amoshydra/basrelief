@@ -343,7 +343,7 @@ public final class ComfyWorkflow {
      * @param frameCap   how many frames to read, so a long video does not become an
      *                   unbounded graph. {@code 0} means the server's own default.
      */
-    static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
+    public static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
                                      long timestampMs, float fps, int frameCap,
                                      int width, int height) throws JSONException {
         JSONObject vloadInfo = info.getJSONObject(VIDEO_LOADER);

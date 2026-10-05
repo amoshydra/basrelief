@@ -688,4 +688,8 @@
     <string name="gallery_playlist_new_close">Close the new-playlist sheet</string>
     <string name="apply_close">Close the set-as-wallpaper sheet</string>
     <string name="depth_close">Close the depth sheet</string>
+
+    <!-- Video import. Shown while the chain runs and if it cannot start at all. -->
+    <string name="video_import_no_server">Set your depth server first</string>
+    <string name="video_import_failed">That video could not be imported</string>
 </resources>

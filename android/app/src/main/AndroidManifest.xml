@@ -95,6 +95,17 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+            <!-- A shared VIDEO is a clip import: uploaded, given depth, and added as
+                 a row that plays. Without this the app is simply not offered when the
+                 user shares the very thing this feature is for, and the failure is
+                 silent from inside — "Share" simply omits Basrelief from the list.
+                 Kept as a SECOND filter rather than widening the first, so an image
+                 share cannot arrive with a video's type and reach the wrong branch. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

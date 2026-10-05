@@ -1284,6 +1284,15 @@ public class MainActivity extends Activity {
         if (uri == null) return;
         // The name the sending app showed, so the gallery row is recognisable.
         final String pickedName = displayNameOf(uri);
+
+        // A shared VIDEO is a clip import, and it is a different job from a shared
+        // photo: it has to be uploaded, have depth generated for it and be fetched
+        // back before there is anything to store. Handled on the same Io worker and
+        // for the same reason -- a share of a large video read inline is an ANR.
+        if (isVideoUri(intent, uri)) {
+            importSharedVideo(uri, pickedName);
+            return;
+        }
         // The selection the strip is showing before the IO thread can select a
         // matching row. A re-share of the photo already on screen writes the same
         // id back, so nothing the strip draws has moved and reindex() would drop
@@ -5270,10 +5279,114 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ picking
 
+    /**
+     * Import a shared or picked video, all the way to a row that plays.
+     *
+     * <p>One gesture end to end, deliberately: the alternative -- import the clip,
+     * then make the user open a panel, pick a model and press Generate -- is a video
+     * editor wearing an import form, and a one-hour clip is not reachable in three
+     * taps that way. {@link VideoImport} does the whole chain off the UI thread and
+     * reports phases, so the sheet shows what is happening rather than a spinner that
+     * might be a hang.
+     *
+     * <p><b>The row is written once, at the end.</b> Nothing is stored until the
+     * depth and normal clips exist, because a clip is colour AND depth and
+     * {@link com.amoshydra.basrelief.core.store.VideoTracks} refuses to be built
+     * with one without the other -- colour without depth renders flat, with no error
+     * anywhere. A half-imported row would be exactly that.
+     */
+    private void importSharedVideo(final Uri uri, final String label) {
+        // The host the user already configured for depth generation, read from the
+        // same pref that panel writes. NOT a second host setting: a clip import that
+        // talked to a different server than the Generate button is the kind of thing
+        // that works until the day the two disagree.
+        String host = prefs.getString("comfy_url", "");
+        if (host == null || host.trim().isEmpty()) {
+            Toast.makeText(MainActivity.this, R.string.video_import_no_server,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ComfyApi api = new ComfyApi(host.trim());
+        Io.run(this, new Callable<LibraryItem>() {
+            @Override
+            public LibraryItem call() throws Exception {
+                final LibraryItem[] holder = new LibraryItem[1];
+                final String[] problem = new String[1];
+                // Synchronous inside the worker rather than through a callback: the
+                // phases are for the USER, so they go to the UI thread from here and
+                // the worker simply blocks on the import.
+                VideoImport.run(MainActivity.this, prefs, uri, label, api,
+                        new VideoImport.Listener() {
+                            @Override
+                            public void phase(final String message) {
+                                // Posted, because phase() is called FROM the Io thread
+                                // and touching a view from there is the crash this
+                                // comment exists to prevent. A toast rather than a
+                                // panel: an import the user did not start from a
+                                // dialog must not be able to vanish behind one.
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        Toast.makeText(MainActivity.this, message,
+                                                Toast.LENGTH_SHORT).show();
+                                    }
+                                });
+                            }
+
+                            @Override
+                            public void done(LibraryItem item) {
+                                holder[0] = item;
+                            }
+
+                            @Override
+                            public void failed(final String message) {
+                                problem[0] = message;
+                            }
+                        });
+                if (problem[0] != null) throw new Exception(problem[0]);
+                return holder[0];
+            }
+        }, new Io.Callback<LibraryItem>() {
+            @Override
+            public void onDone(LibraryItem item, Exception error) {
+                if (item == null) {
+                    // The server's own message when there is one. "Depth generation
+                    // failed: <why>" is the whole diagnostic, and replacing it with a
+                    // generic string is how a user ends up looking for a network fault
+                    // that is really a refused prompt.
+                    String why = (error == null || error.getMessage() == null)
+                            ? getString(R.string.video_import_failed)
+                            : error.getMessage();
+                    Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                // The import selected the row in the index, so both surfaces pick it
+                // up through the ordinary write path -- applyFiles resolves the pair
+                // and hands the renderer its medium, which is where the clip starts.
+                gallery.reindex();
+                applyFiles();
+                refreshSliders();
+            }
+        });
+    }
+
+    /** Whether this URI is a video, by the type the sender declared or the resolver's. */
+    private boolean isVideoUri(Intent intent, Uri uri) {
+        String type = intent.getType();
+        if (type == null && uri != null) type = getContentResolver().getType(uri);
+        return type != null && type.startsWith("video/");
+    }
+
     private void pickFile(int requestCode) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
+        // Both types, not image/* and not a second dialog: a living photo is a
+        // photo or a clip, and making the user pick which they meant is a decision
+        // about our internals rather than about their intent. video/* is handled by
+        // the same row it returns to -- see onActivityResult.
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES,
+                new String[]{"image/*", "video/*"});
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         startActivityForResult(intent, requestCode);
     }
