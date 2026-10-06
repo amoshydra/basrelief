@@ -623,6 +623,8 @@ final class Gallery {
 
     /** Re-read the index and put the strip back, in the seat the studio gave. */
     private void refreshStrip() {
+        android.util.Log.i("Basrelief", "refreshStrip strip=" + (strip != null)
+                + " host=" + (stripHost != null));
         if (strip == null || stripHost == null) return;
         stripHost.removeView(strip);
         strip = null;
@@ -667,6 +669,8 @@ final class Gallery {
         // refreshStrip/dismiss, so it can never address a detached row.
         stripRow = row;
 
+        android.util.Log.i("Basrelief", "buildStrip: " + lib.sortedLive().size()
+                + " live items");
         for (LibraryItem item : lib.sortedLive()) {
             row.addView(stripThumb(item, item.id.equals(activeId)));
         }
