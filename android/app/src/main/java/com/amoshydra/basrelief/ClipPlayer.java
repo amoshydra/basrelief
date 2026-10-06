@@ -251,6 +251,23 @@ final class ClipPlayer {
      * frame rotated by a stale matrix, which looks exactly like a texture orientation
      * bug and is not one.
      */
+    /**
+     * Frames released since start, across all three tracks: the WATCHDOG's signal.
+     *
+     * <p>A codec can wedge -- measured on two devices, both decoders frozen with the
+     * pump still drawing, loops diverged and skew at 183 SECONDS -- and nothing in
+     * the gate, the buffer handling or the decoder callbacks reports it. The only
+     * observable is that this number stops growing while the clip still claims to be
+     * running, so that is what the watchdog watches.
+     */
+    int producedTotal() {
+        int t = 0;
+        if (color != null) t += color.produced();
+        if (depth != null) t += depth.produced();
+        if (normal != null) t += normal.produced();
+        return t;
+    }
+
     /** Frames newly latched since start. */
     int latches() {
         return latches;

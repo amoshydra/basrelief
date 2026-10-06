@@ -761,6 +761,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     private long dbgFrames;
     private long lastClipStatNanos;
+
+    /**
+     * How long a clip may produce nothing before the renderer restarts it.
+     *
+     * <p><b>A watchdog, because a wedged codec never recovers and nothing reports
+     * it.</b> Measured twice: both decoders frozen with the pump still drawing
+     * (produced constant, latch/s 0, draws/s 33), the two loop counts diverged and
+     * the skew line at 183 SECONDS -- the wallpaper showing one frame for twenty
+     * minutes. A living photo is a loop that runs for hours, so a media pipeline that
+     * can wedge needs a way back that does not involve the user noticing.
+     *
+     * <p>Three seconds: a clip at 0.25x still produces a frame every 133ms, and the
+     * seam's keyframe hold is a handful of frames, so nothing legitimate is quiet for
+     * three seconds while the decoders are alive.
+     */
+    private static final long CLIP_STALL_MS = 3000L;
+    private long watchdogProduced = -1L;
+    private long watchdogChangedAtMs;
     /** Draws since the previous stats window; the pump's report card. */
     private long lastClipDraws, clipDraws;
     /** Frames the tick newly latched, last window. 0 means the draw ate nothing. */
@@ -2482,6 +2500,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             if (lastClipStatNanos == 0) lastClipStatNanos = nowClip;
             if (nowClip - lastClipStatNanos >= 1_000_000_000L) {
                 lastClipStatNanos = nowClip;
+                // THE WATCHDOG, once a second, where the stats already are.
+                int total = clip.producedTotal();
+                long nowMs = System.currentTimeMillis();
+                if (total != watchdogProduced) {
+                    watchdogProduced = total;
+                    watchdogChangedAtMs = nowMs;
+                } else if (nowMs - watchdogChangedAtMs > CLIP_STALL_MS) {
+                    android.util.Log.w("Basrelief", "clip produced nothing for "
+                            + (nowMs - watchdogChangedAtMs) + "ms -- restarting it");
+                    // The tracks BEFORE stopClip, which clears them. A forced restart,
+                    // because startClip is idempotent by identity and would decline
+                    // the very restart this needs.
+                    com.amoshydra.basrelief.core.store.VideoTracks t = pendingTracks;
+                    java.io.File dir = pendingFilesDir;
+                    stopClip();
+                    if (t != null && dir != null) startClip(t, dir);
+                    watchdogProduced = -1L;
+                }
                 // Rolling counters for the next window, so the line reports per
                 // second rather than per process.
                 latchDelta = clip.latches() - lastLatch;
