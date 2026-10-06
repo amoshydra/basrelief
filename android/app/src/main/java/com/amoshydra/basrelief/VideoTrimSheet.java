@@ -296,6 +296,7 @@ final class VideoTrimSheet {
      * carried would move the other wheel while the user is still turning this one.
      */
     private static void openPicker(final Activity a, final TrimBar bar, final boolean isStart) {
+        android.util.Log.i("Basrelief", "trim picker opened isStart=" + isStart);
         final ModalSheet sheet = new ModalSheet(a, 0.5f);
         LinearLayout row = new LinearLayout(a);
         row.setOrientation(LinearLayout.HORIZONTAL);

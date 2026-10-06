@@ -575,7 +575,17 @@ final class VideoImport {
         return staged;
     }
 
-    /** The clip's frame count at the given rate, or 0 when the duration is unknown. */
+    /**
+     * The clip's frame count at the given rate, or 0 when the duration is unknown.
+     *
+     * <p>Duration from {@link MediaMetadataRetriever}, NOT from MediaExtractor's
+     * track format: measured, the extractor's {@code durationUs} is absent for the
+     * files this app stages, so the count came back 0, the trim bar was built with a
+     * one-frame clip, and the sheet sat at 0:00 with handles that could not move --
+     * reported as "trim sheet stuck at 0.0". The retriever is the same source the
+     * filmstrip already reads successfully, so the sheet cannot disagree with its own
+     * thumbnails about how long the clip is.
+     */
     static int frameCountOf(File clip, float fps) {
         long us = durationUsOf(clip);
         if (us <= 0 || fps <= 0) return 0;
@@ -583,21 +593,14 @@ final class VideoImport {
     }
 
     private static long durationUsOf(File f) {
-        android.media.MediaExtractor ex = null;
+        android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
         try {
-            ex = new android.media.MediaExtractor();
-            ex.setDataSource(f.getPath());
-            for (int i = 0; i < ex.getTrackCount(); i++) {
-                android.media.MediaFormat fmt = ex.getTrackFormat(i);
-                String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("video/")
-                        && fmt.containsKey("durationUs")) {
-                    return fmt.getLong("durationUs");
-                }
-            }
+            r.setDataSource(f.getPath());
+            String ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (ms != null) return Long.parseLong(ms) * 1000L;
         } catch (Throwable ignored) {
         } finally {
-            if (ex != null) { try { ex.release(); } catch (Throwable ignored) { } }
+            try { r.release(); } catch (Throwable ignored) { }
         }
         return 0L;
     }

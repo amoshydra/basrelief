@@ -882,8 +882,15 @@ public class DepthWallpaperService extends WallpaperService {
                     // measured, the engine's requestClip armed twice 50s apart with
                     // running=false both times. clipMatches asks the question the still
                     // comparison cannot.
+                    // `active` is NULL when nothing is selected -- an emptied
+                    // gallery, or the moment a delete of the active row lands. Both
+                    // this and the requestClip below used to read `active.video`
+                    // bare, and the delete crashed the engine with an NPE on every
+                    // resolve: a wallpaper that crash-loops the app the moment the
+                    // last photo is deleted. Null means "no clip wanted", which is
+                    // exactly what clipMatches and requestClip already document.
                     if (!renderer.showingSamePair(img, dep, nrm)
-                            || !renderer.clipMatches(active.video)) {
+                            || !renderer.clipMatches(active == null ? null : active.video)) {
                         // Async: the read/decode/mesh-build must not happen
                         // between two frames of the wallpaper, or it visibly
                         // freezes for seconds.
@@ -898,7 +905,7 @@ public class DepthWallpaperService extends WallpaperService {
                     // the wallpaper showing the wrong medium. Null for a photograph,
                     // which is every row without tracks, and it is explicit for the
                     // reason requestClip documents.
-                    renderer.requestClip(active.video, getFilesDir());
+                    renderer.requestClip(active == null ? null : active.video, getFilesDir());
                     // The same pump the studio runs, because the wallpaper surface is
                     // WHEN_DIRTY too and a motionless phone raises no sensor events.
                     // Without it a clip plays only while you tilt the phone.
