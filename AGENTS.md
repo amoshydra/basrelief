@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 519 tests across twenty-eight classes:
+it**. 520 tests across twenty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -662,6 +662,28 @@ has run.**
     clip.** Nothing in the shipping path eases it, which is exactly why that would
     have survived review — and `== SOURCE_VIDEO` is also what survives a third medium,
     since `!= STILL` would call a future `SOURCE_DEPTH_ONLY` a video.
+  - **A clip's SPEED is a render value on the item, and the gate is where it
+    applies.** Playback rate is per photo and per surface, on `SurfaceSettings`
+    beside `motion`, edited by a row in the "How it moves" group shown only for a
+    row with tracks -- and NOT in a pref. Prefs hold the index, device settings, UI
+    state and diagnostics, and exactly one render value: `config.motion`, which
+    survives only as the migration source for the version that moved Motion onto the
+    items. A global speed would reintroduce that one version later. The mechanism is
+    the DECODER'S GATE, never dropped frames: the gate compares a frame's clip time
+    against the wall clock, so dividing that comparison by the rate plays the clip at
+    the rate and nothing is skipped or repeated -- the clip's own timeline is
+    untouched, so `loops`, the seam arithmetic and the skew line keep their meaning.
+    Both decoders of a clip get the same rate for the same reason they get the same
+    lead: two rates are two frame indices by construction.
+  - **`Framing` has THIRTEEN float fields and the count is asserted, so a new one
+    cannot be added silently.** `SurfaceSettings.with` takes twelve arguments and
+    `Framing.ofValues` thirteen; every writer and every test call site fails to
+    compile when a field is added, which is the only mechanical guard there is. The
+    writers carry the new field through rather than resetting it -- the `withDepth`
+    scar one field over -- and `FramingTest` drives one varied vector per field so a
+    fourteenth cannot be forgotten. `speed` IS compared by `sameAs`, unlike
+    `bundled`: a frame at 0.5x is a different picture from the same frame at 1x, and
+    the no-op-paint guard has to see the difference or a speed change snaps.
   - **Two shader families, two unit systems, and the uniform that goes to
     location -1 is dropped in silence.** The clip's depth shader works in **0..255**
     (it scales the blurred mean by 255 in-shader) and its range offset is
