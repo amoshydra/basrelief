@@ -51,6 +51,23 @@ public final class SurfaceSettings {
      * wallpaper does not silently change speed on the way.
      */
     public static final int MOTION_MIN = 0, MOTION_MAX = 100, DEFAULT_MOTION = 33;
+
+    /**
+     * Playback speed, in percent: 25 is 0.25x and 200 is 2x.
+     *
+     * <p><b>A CLIP's own rate, and a render value like Motion.</b> It is on the
+     * settings rather than in a pref for the reason Motion is: it changes what is
+     * drawn, per photo and per surface, and a global would be the {@code config.motion}
+     * mistake one version after the migration that removed it. A photograph ignores
+     * it entirely -- there is nothing to play -- which is why the row that edits it
+     * is shown for clips alone.
+     *
+     * <p>The range is asymmetric on purpose: 1x is the default and the useful
+     * correction is usually SLOWER (a loop that reads as frantic), with faster
+     * available for a clip that drags. 0.25x is slow enough to read as slow motion
+     * rather than as broken; 2x is fast enough to feel hurried.
+     */
+    public static final int SPEED_MIN = 25, SPEED_MAX = 200, DEFAULT_SPEED = 100;
     /**
      * Origin is a FRACTION of the plane, so it has a real bound: half the plane
      * is the far stop, because that is as far as the view goes before the photo
@@ -82,6 +99,8 @@ public final class SurfaceSettings {
     public final int depth;
     public final int zoom;
     public final int motion;
+    /** Playback speed in percent; see {@link #SPEED_MIN}. Clips only. */
+    public final int speed;
     public final float originX;
     public final float originY;
     public final float panX;
@@ -98,13 +117,13 @@ public final class SurfaceSettings {
         return new SurfaceSettings(DEFAULT_DEPTH, DEFAULT_ZOOM, DEFAULT_MOTION,
                 DEFAULT_ORIGIN, DEFAULT_ORIGIN, DEFAULT_PAN, DEFAULT_PAN,
                 DEFAULT_ADJUST, DEFAULT_ADJUST,
-                DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION);
+                DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION, DEFAULT_SPEED);
     }
 
     public SurfaceSettings(int depth, int zoom, int motion,
                            float originX, float originY, float panX, float panY,
                            int brightness, int shadow,
-                           float lightAzimuth, float lightElevation) {
+                           float lightAzimuth, float lightElevation, int speed) {
         this.depth = clamp(depth, DEPTH_MIN, DEPTH_MAX);
         this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
@@ -119,6 +138,7 @@ public final class SurfaceSettings {
         // reader and the shader cannot each decide 370° for themselves.
         this.lightAzimuth = LightDirection.normaliseAzimuth(lightAzimuth);
         this.lightElevation = LightDirection.normaliseElevation(lightElevation);
+        this.speed = clamp(speed, SPEED_MIN, SPEED_MAX);
     }
 
     // ------------------------------------------------------------- accessors
@@ -131,6 +151,9 @@ public final class SurfaceSettings {
 
     /** Motion as the 0..3 scale the renderer tilts by. */
     public float motionScale() { return motion / 100f * 3f; }
+
+    /** Playback speed as a multiplier: 25 is 0.25x, 100 is 1.0x, 200 is 2.0x. */
+    public float speedScale() { return speed / 100f; }
 
     /**
      * This surface's settings, with the given overrides applied. A copy, never a
@@ -150,15 +173,15 @@ public final class SurfaceSettings {
                                 float originX, float originY,
                                 float panX, float panY,
                                 int brightness, int shadow,
-                                float lightAzimuth, float lightElevation) {
+                                float lightAzimuth, float lightElevation, int speed) {
         return new SurfaceSettings(depth, zoom, motion, originX, originY,
-                panX, panY, brightness, shadow, lightAzimuth, lightElevation);
+                panX, panY, brightness, shadow, lightAzimuth, lightElevation, speed);
     }
 
     /** The light angles, with every other value read from this instance. */
     public SurfaceSettings withLight(float azimuthDegrees, float elevationDegrees) {
         return with(depth, zoom, motion, originX, originY, panX, panY,
-                brightness, shadow, azimuthDegrees, elevationDegrees);
+                brightness, shadow, azimuthDegrees, elevationDegrees, speed);
     }
 
     // ------------------------------------------------------------- serialise
@@ -180,6 +203,7 @@ public final class SurfaceSettings {
             // written is already the canonical value the renderer will use.
             o.put("light_azimuth", (double) lightAzimuth);
             o.put("light_elevation", (double) lightElevation);
+            o.put("speed", speed);
         } catch (Exception ignored) {
             // A JSONObject put cannot fail on these types. If it somehow does, the
             // value is lost rather than the write: an item with default settings
@@ -208,7 +232,11 @@ public final class SurfaceSettings {
                 o.optInt("brightness", DEFAULT_ADJUST),
                 o.optInt("shadow", DEFAULT_ADJUST),
                 (float) o.optDouble("light_azimuth", DEFAULT_LIGHT_AZIMUTH),
-                (float) o.optDouble("light_elevation", DEFAULT_LIGHT_ELEVATION));
+                (float) o.optDouble("light_elevation", DEFAULT_LIGHT_ELEVATION),
+                // Absent means 1x: every settings blob written before this field
+                // existed plays exactly as it did, which is the only honest default
+                // for a value that changes motion.
+                o.optInt("speed", DEFAULT_SPEED));
     }
 
     // ----------------------------------------------------------------- utils

@@ -204,7 +204,8 @@ public final class LibraryItem {
                         orbitX, orbitY, panX, panY,
                         SurfaceSettings.DEFAULT_ADJUST, SurfaceSettings.DEFAULT_ADJUST,
                         SurfaceSettings.DEFAULT_LIGHT_AZIMUTH,
-                        SurfaceSettings.DEFAULT_LIGHT_ELEVATION),
+                        SurfaceSettings.DEFAULT_LIGHT_ELEVATION,
+                        SurfaceSettings.DEFAULT_SPEED),
                 null);
     }
 
@@ -633,14 +634,14 @@ public final class LibraryItem {
     public LibraryItem withIntensity(Surface surface, int v) {
         return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
     }
 
     /** The Zoom slider, 25..200, on one surface. */
     public LibraryItem withZoom(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
     }
 
     /**
@@ -650,28 +651,40 @@ public final class LibraryItem {
     public LibraryItem withMotion(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
+    }
+
+    /**
+     * The Speed slider, 25..200, on one surface. <b>Clips only</b> -- a photograph
+     * has no rate, so the row that edits this is shown for clips alone, but the
+     * value is stored on every item the same way Motion is, because a row that gains
+     * clips later must not also gain a second storage rule.
+     */
+    public LibraryItem withSpeed(Surface surface, int v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, v));
     }
 
     /** Origin, a fraction of the plane, on one surface. */
     public LibraryItem withOrigin(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
                 s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
     }
 
     /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
     public LibraryItem withPan(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, x, y, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
     }
 
     /** Brightness and shadow, -100..100, on one surface. Render-time only. */
     public LibraryItem withAdjust(Surface surface, int brightness, int shadow) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, s.panX, s.panY, brightness, shadow,
-                s.lightAzimuth, s.lightElevation));
+                s.lightAzimuth, s.lightElevation, s.speed));
     }
 
     /**
@@ -945,7 +958,11 @@ public final class LibraryItem {
                     o.optInt("brightness", SurfaceSettings.DEFAULT_ADJUST),
                     o.optInt("shadow", SurfaceSettings.DEFAULT_ADJUST),
                     (float) o.optDouble("light_azimuth", SurfaceSettings.DEFAULT_LIGHT_AZIMUTH),
-                    (float) o.optDouble("light_elevation", SurfaceSettings.DEFAULT_LIGHT_ELEVATION));
+                    (float) o.optDouble("light_elevation", SurfaceSettings.DEFAULT_LIGHT_ELEVATION),
+                    // A flat blob predates the field, so absent is 1x -- and this
+                    // legacy shape is read once and rewritten into the settings form,
+                    // so the default lands on disk rather than being re-derived.
+                    o.optInt("speed", SurfaceSettings.DEFAULT_SPEED));
         }
         return SurfaceSettings.defaults();
     }

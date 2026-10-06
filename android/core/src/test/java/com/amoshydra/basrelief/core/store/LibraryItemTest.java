@@ -447,7 +447,8 @@ public class LibraryItemTest {
                 .withMotion(Surface.HOME, 55)
                 .withAdjust(Surface.HOME, -12, 18)
                 .withSettings(Surface.LOCK, sample().settings(Surface.LOCK)
-                        .with(30, 120, 20, 0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f));
+                        .with(30, 120, 20, 0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
+                                SurfaceSettings.DEFAULT_SPEED));
 
         LibraryItem hidden = full.withArchived(true);
         assertTrue(hidden.hasOwnLockSettings());

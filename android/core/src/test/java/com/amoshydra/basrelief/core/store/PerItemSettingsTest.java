@@ -216,7 +216,7 @@ public class PerItemSettingsTest {
         LibraryItem it = item("a")
                 .withIntensity(Surface.HOME, 80)
                 .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0,
-                        s.lightAzimuth, s.lightElevation));
+                        s.lightAzimuth, s.lightElevation, s.speed));
 
         LibraryItem r = Library.parse(libraryOf(it)).activeItem();
         assertTrue(r.hasOwnLockSettings());
@@ -899,5 +899,45 @@ public class PerItemSettingsTest {
 
     private static String libraryOf(LibraryItem active) {
         return Library.empty().withItem(active).withSelection(active.id).toJson();
+    }
+
+    /**
+     * Speed round-trips, defaults to 1x, and survives an edit that does not name it.
+     *
+     * <p>The three halves are the three ways this field can be wrong. A round trip
+     * that fails loses the user's rate on the next read. A default that is not 1x
+     * changes every clip that predates the field. And the third is the
+     * {@code withDepth} scar one field over: a single-field writer that forgets
+     * {@code speed} resets it silently, which is exactly how Motion, brightness and
+     * shadow were reset by an edit that had been written before they existed.
+     */
+    @Test
+    public void speedRoundTripsAndIsNotResetByOtherEdits() {
+        LibraryItem item = LibraryItem.of("a", "a.png", "a-depth.png", 1L);
+        assertEquals("a photo that has never been adjusted plays at 1x",
+                SurfaceSettings.DEFAULT_SPEED, item.settings(Surface.HOME).speed);
+
+        LibraryItem slow = item.withSpeed(Surface.HOME, 50);
+        assertEquals(50, slow.settings(Surface.HOME).speed);
+        assertEquals("0.5x", 0.5f, slow.settings(Surface.HOME).speedScale(), 1e-6f);
+
+        // Through the blob, because that is where a lost field goes.
+        LibraryItem parsed = Library.parse(
+                Library.empty().withItem(slow).toJson()).find("a");
+        assertEquals("the rate survives the round trip", 50,
+                parsed.settings(Surface.HOME).speed);
+
+        // And an edit that names something else leaves it alone.
+        LibraryItem nudged = parsed.withIntensity(Surface.HOME, 42);
+        assertEquals("a depth edit must not reset the rate", 50,
+                nudged.settings(Surface.HOME).speed);
+        LibraryItem zoomed = parsed.withZoom(Surface.HOME, 150);
+        assertEquals("nor a zoom edit", 50, zoomed.settings(Surface.HOME).speed);
+
+        // The bounds, clamped on read like every other value here.
+        assertEquals(SurfaceSettings.SPEED_MIN,
+                item.withSpeed(Surface.HOME, 1).settings(Surface.HOME).speed);
+        assertEquals(SurfaceSettings.SPEED_MAX,
+                item.withSpeed(Surface.HOME, 9000).settings(Surface.HOME).speed);
     }
 }

@@ -605,6 +605,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float sourceKind = Framing.SOURCE_STILL;
 
     /**
+     * The clip's playback rate, 1 = normal. A render value like {@code motion}:
+     * it changes what is drawn, so it is a volatile here and a field on the item,
+     * and the snapshot above must carry it.
+     *
+     * <p>Applied at the DECODER's gate rather than by dropping frames: the gate
+     * compares a frame's clip time against the wall clock, so dividing that
+     * comparison by the rate makes the clip play at the rate -- at 0.5x every frame
+     * waits twice as long, and no frame is skipped or repeated. The clip's own
+     * timeline is untouched, so loops, the seam arithmetic and the skew line all
+     * keep their meaning.
+     */
+    private volatile float speed = Framing.DEFAULT_SPEED;
+
+    /**
      * Set by a host before it asks for a pair, and cleared by nothing: it says what
      * the NEXT decode is for, not what is on screen.
      *
@@ -843,6 +857,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             return false;
         }
         clip = new ClipPlayer();
+        // The rate BEFORE the start, so the clip's first frame is already at the
+        // user's speed rather than at 1x for one frame.
+        clip.setRate(speed);
         if (!clip.start(tracks, filesDir, GRID)) {
             android.util.Log.w("Basrelief", "clip not playable: " + clip.error());
             clip = null;
@@ -987,6 +1004,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /** Wire this to GLSurfaceView.requestRender(). */
+    /**
+     * The Speed slider, on the UI thread. A volatile write and nothing else, like
+     * {@link #setDepth}: the decoders read it through {@link #clip}.
+     */
+    public void setSpeed(float v) {
+        this.speed = v <= 0f ? Framing.DEFAULT_SPEED : v;
+        // Live, not only at start: the slider leads the finger, and a rate that
+        // only applied to the NEXT clip would read as a control that does nothing.
+        ClipPlayer c = clip;
+        if (c != null) c.setRate(this.speed);
+    }
+
     public void setRenderRequester(Runnable r) {
         this.renderRequester = r;
     }
@@ -2159,7 +2188,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // The light goes back as angles so the glide interpolates the way the
         // stored value does; setLight's vector is derived, not the source.
         //
-        // TWELVE arguments, and the twelfth is the medium. This was the last caller
+        // THIRTEEN arguments now, and the thirteenth is the SPEED -- added for the
+        // same reason the twelfth was: a snapshot that cannot reproduce a field
+        // compares unequal to the frame on screen, and the no-op-paint guard then
+        // repaints on every resolve. A speed change is a different picture, so it
+        // must be in here or changing the Speed slider snaps. This was the last caller
         // of the eleven-argument form, which cannot name it — so a snapshot of a
         // playing clip came back saying "still", compared unequal to the frame on
         // screen, and apply(RESOLVE)'s no-op guard repainted on every resolve. That
@@ -2170,7 +2203,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
                 pendingBrightnessGain, pendingShadowLift,
                 lightAzimuth, lightElevation,
-                sourceKind);
+                sourceKind, speed);
     }
 
     /**
@@ -2326,6 +2359,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
         Framing mine = Framing.of(state.activeItem(), editSurface);
+        // The rate with it. reloadFromPrefs is the one path both surfaces converge
+        // on, so a cold engine starts a clip at the speed the item stores -- the
+        // studio and the wallpaper cannot disagree about it.
+        setSpeed(mine.speed);
         // THE FIRST FRAME OF AN UNLOCK IS THE LOCK SCREEN, NOT THIS SCREEN.
         //
         // This line is the `1x` the user sees before the snap: the cold load paints

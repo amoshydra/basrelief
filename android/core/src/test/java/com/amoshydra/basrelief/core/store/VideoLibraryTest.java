@@ -164,7 +164,8 @@ public class VideoLibraryTest {
                 .withAdjust(Surface.HOME, 12, -9)
                 .withLight(Surface.HOME, 200f, 40f)
                 .editSettings(Surface.LOCK, s -> s.with(30, 120, 20,
-                        0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f));
+                        0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
+                        SurfaceSettings.DEFAULT_SPEED));
 
         String color = base.video.color;
         String depth = base.video.depth;

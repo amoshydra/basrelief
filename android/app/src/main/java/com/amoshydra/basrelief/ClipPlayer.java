@@ -229,6 +229,9 @@ final class ClipPlayer {
             normal.setLeadUs(LEAD_US);
         }
 
+        // The rate the renderer has resolved, applied to all three before any of
+        // them releases a frame -- a clip must not start at 1x and then jump.
+        setRate(playingRate);
         color.start();
         depth.start();
         if (normal != null) normal.start();
@@ -251,6 +254,28 @@ final class ClipPlayer {
     /** Frames newly latched since start. */
     int latches() {
         return latches;
+    }
+
+    /**
+     * The clip's playback rate, 1 = normal.
+     *
+     * <p>Handed to EVERY decoder, for the same reason the lead is: the two are
+     * gated on one clock, and two rates would be two frame indices by
+     * construction -- the depth would slide against the colour by exactly the ratio.
+     * Safe to call while playing: the decoders read it per frame.
+     */
+    void setRate(float r) {
+        if (color != null) color.setRate(r);
+        if (depth != null) depth.setRate(r);
+        if (normal != null) normal.setRate(r);
+        playingRate = r;
+    }
+
+    private float playingRate = 1f;
+
+    /** The rate a restart should use; see {@link #setRate}. */
+    float rate() {
+        return playingRate;
     }
 
     int tick() {

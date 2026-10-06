@@ -80,6 +80,27 @@ final class ClipDecoder {
     private volatile Clock clock;
     private volatile long leadUs = LEAD_US;
 
+    /**
+     * Playback rate: 1 is normal, 2 is twice as fast. The clip's own timeline is
+     * untouched -- the rate only changes WHEN a frame's turn comes.
+     *
+     * <p><b>Applied at the gate, and that is the whole mechanism.</b> The gate
+     * compares a frame's clip time against the wall clock, so dividing that
+     * comparison by the rate makes the clip play at the rate: at 0.5x every frame
+     * waits twice as long, and NOTHING is skipped or repeated. Scaling the clock
+     * instead would work too and would be a second clock to keep in step with the
+     * one the two decoders already share; dropping frames would lose the clip's
+     * content rather than its speed.
+     *
+     * <p>Both decoders of a clip must be given the same rate, exactly as they are
+     * given the same lead: two rates are two frame indices by construction.
+     */
+    private volatile float rate = 1f;
+
+    void setRate(float r) {
+        this.rate = r <= 0f ? 1f : r;
+    }
+
     private volatile boolean loop = true;
     private volatile boolean running;
     private volatile boolean waiting;
@@ -243,7 +264,8 @@ final class ClipDecoder {
     private void awaitSpace(long ptsUs) {
         while (running) {
             Clock c = clock;
-            boolean tooEarly = c != null && ptsUs > c.nowUs() + leadUs;
+            // The rate divides the comparison, not the timestamps: see setRate.
+            boolean tooEarly = c != null && ptsUs > (c.nowUs() + leadUs) * rate;
             if (!tooEarly) {
                 waiting = false;
                 return;

@@ -905,6 +905,9 @@ public class DepthWallpaperService extends WallpaperService {
                     // the wallpaper showing the wrong medium. Null for a photograph,
                     // which is every row without tracks, and it is explicit for the
                     // reason requestClip documents.
+                    // The rate, on every resolve like the medium: a pref change can be
+                    // the Speed slider, and the engine must follow it live.
+                    renderer.setSpeed(framing.speed);
                     renderer.requestClip(active == null ? null : active.video, getFilesDir());
                     // The same pump the studio runs, because the wallpaper surface is
                     // WHEN_DIRTY too and a motionless phone raises no sensor events.

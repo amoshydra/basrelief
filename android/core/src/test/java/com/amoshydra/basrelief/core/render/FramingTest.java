@@ -93,9 +93,9 @@ public class FramingTest {
     @Test
     public void sameAsComparesEveryValueAndCountsThemAll() throws Exception {
         Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
-                Framing.SOURCE_STILL);
+                Framing.SOURCE_STILL, 1f);
         Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
-                Framing.SOURCE_STILL);
+                Framing.SOURCE_STILL, 1f);
         assertTrue("equal values must compare equal", a.sameAs(b));
         assertTrue(a.sameAs(a));
         assertFalse("a different item must not", a.sameAs(null));
@@ -121,27 +121,31 @@ public class FramingTest {
             }
         }
         assertEquals("sameAs must compare every float field, and there are this many",
-                12, numeric.size());
+                13, numeric.size());
 
         // One call per field: the same vector with exactly one component moved.
         float[][] varied = {
-                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // depth
-                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // zoom
-                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // motion
-                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // orbitX
-                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f},   // orbitY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f},   // panX
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f},   // panY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f},   // brightness
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f},   // shadow
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f},   // azimuth
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f},   // elevation
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f},   // sourceKind
+                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // depth
+                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // zoom
+                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // motion
+                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // orbitX
+                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // orbitY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // panX
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 1f},   // panY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 1f},   // brightness
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 1f},   // shadow
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 1f},   // azimuth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 1f},   // elevation
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 1f},   // sourceKind
+                // The thirteenth: a CLIP's rate. It is compared where `bundled` is
+                // not, because it changes what is drawn -- a frame at 0.5x is a
+                // different picture from the same frame at 1x.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0.5f}, // speed
         };
         assertEquals("one varied vector per float field", numeric.size(), varied.length);
         for (float[] v : varied) {
             Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
-                    v[7], v[8], v[9], v[10], v[11]);
+                    v[7], v[8], v[9], v[10], v[11], v[12]);
             assertFalse("a moving value must make sameAs false", a.sameAs(moved));
         }
     }
@@ -159,17 +163,17 @@ public class FramingTest {
     public void aRoundingWhiskerIsNotADifferenceButARealStepIs() {
         // panY 0, from the log: the residue was against a target of exactly 0.
         Framing target = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
-                0f, 0f, 209f, 46f, Framing.SOURCE_STILL);
+                0f, 0f, 209f, 46f, Framing.SOURCE_STILL, 1f);
         // What a glide actually lands on.
         Framing landed = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0.00486f,
-                0f, 0f, 209.00562f, 46.000908f, Framing.SOURCE_STILL);
+                0f, 0f, 209.00562f, 46.000908f, Framing.SOURCE_STILL, 1f);
         assertTrue("a whisker from the glide must read as the same picture",
                 target.sameAs(landed));
 
         // The real transition from the same log: lock framing to home framing.
         assertFalse("azimuth 209 -> 239 and the rest is a real change",
                 target.sameAs(Framing.ofValues(29f, 2.0f, 33f, 0.1f, 0.2f, 14f, 26f,
-                        0f, 0f, 239f, 50.862324f, Framing.SOURCE_STILL)));
+                        0f, 0f, 239f, 50.862324f, Framing.SOURCE_STILL, 1f)));
 
         // EVERY residue measured on the device must read as the same picture. These are
         // the real numbers from three logs, not invented ones: the first attempt at this
@@ -186,14 +190,14 @@ public class FramingTest {
                     target.sameAs(Framing.ofValues(withResidue[0], withResidue[1],
                             withResidue[2], withResidue[3], withResidue[4], withResidue[5],
                             withResidue[6], withResidue[7], withResidue[8], withResidue[9],
-                            withResidue[10], withResidue[11])));
+                            withResidue[10], withResidue[11], 1f)));
         }
 
         // And the OTHER side of the margin: the smallest real step in those logs must NOT
         // read as the same, or a genuine change would stop painting.
         assertFalse("depth 0.9 -> 0.29 is a real change",
                 target.sameAs(Framing.ofValues(29f, 1.4f, 33f, 0.1f, 0.2f, 14f, 0f,
-                        0f, 0f, 209f, 46f, Framing.SOURCE_STILL)));
+                        0f, 0f, 209f, 46f, Framing.SOURCE_STILL, 1f)));
     }
 
     /**
@@ -218,7 +222,7 @@ public class FramingTest {
         Framing asNumbers = Framing.ofValues(fromRow.depth, fromRow.zoom, fromRow.motion,
                 fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
                 fromRow.brightnessGain, fromRow.shadowLift,
-                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind);
+                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind, 1f);
         assertFalse("a snapshot never carries the flag", asNumbers.bundled);
         assertTrue("so the demo must still compare equal to its own numbers",
                 fromRow.sameAs(asNumbers));
@@ -226,7 +230,7 @@ public class FramingTest {
         assertFalse(fromRow.sameAs(Framing.ofValues(fromRow.depth - 1f, fromRow.zoom,
                 fromRow.motion, fromRow.orbitX, fromRow.orbitY, fromRow.panX, fromRow.panY,
                 fromRow.brightnessGain, fromRow.shadowLift,
-                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind)));
+                fromRow.lightAzimuth, fromRow.lightElevation, fromRow.sourceKind, 1f)));
     }
 
     /**
@@ -288,13 +292,13 @@ public class FramingTest {
     @Test
     public void anInterpolatedMediumIsNeitherPicture() {
         Framing still = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
-                0f, 0f, 125f, 51f, Framing.SOURCE_STILL);
+                0f, 0f, 125f, 51f, Framing.SOURCE_STILL, 1f);
         Framing clip = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
-                0f, 0f, 125f, 51f, Framing.SOURCE_VIDEO);
+                0f, 0f, 125f, 51f, Framing.SOURCE_VIDEO, 1f);
         // Exactly what lerp(SOURCE_STILL, SOURCE_VIDEO, t) would produce at t = 0.5.
         Framing half = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
                 0f, 0f, 125f, 51f,
-                Framing.SOURCE_STILL + (Framing.SOURCE_VIDEO - Framing.SOURCE_STILL) * 0.5f);
+                Framing.SOURCE_STILL + (Framing.SOURCE_VIDEO - Framing.SOURCE_STILL) * 0.5f, 1f);
 
         assertFalse("a half-eased medium is not the frame already showing",
                 half.sameAs(still));
@@ -349,7 +353,7 @@ public class FramingTest {
         Framing snapshot = Framing.ofValues(clip.depth, clip.zoom, clip.motion,
                 clip.orbitX, clip.orbitY, clip.panX, clip.panY,
                 clip.brightnessGain, clip.shadowLift,
-                clip.lightAzimuth, clip.lightElevation, clip.sourceKind);
+                clip.lightAzimuth, clip.lightElevation, clip.sourceKind, 1f);
         assertTrue("what is showing must compare equal to itself",
                 clip.sameAs(snapshot));
         assertTrue("including the medium", snapshot.isVideo());
@@ -482,7 +486,7 @@ public class FramingTest {
                 .withAdjust(Surface.HOME, 100, 0)
                 .editSettings(Surface.LOCK, s -> s.with(s.depth, s.zoom, s.motion,
                         s.originX, s.originY, s.panX, s.panY, 0, -100,
-                        s.lightAzimuth, s.lightElevation));
+                        s.lightAzimuth, s.lightElevation, s.speed));
         assertEquals(2f, home(item).brightnessGain, 1e-6f);
         assertEquals(0f, home(item).shadowLift, 1e-6f);
         assertEquals(1f, Framing.of(item, Surface.LOCK).brightnessGain, 1e-6f);
@@ -527,7 +531,7 @@ public class FramingTest {
     public void aLockOverrideIsUsedAndLeavesHomeAlone() {
         LibraryItem item = photo("a", 90, 100, 0f, 0f, 0f, 0f)
                 .editSettings(Surface.LOCK, s -> s.with(30, 140, 80, 0.1f, -0.2f,
-                        -40f, 15f, -20, 35, 200f, 15f));
+                        -40f, 15f, -20, 35, 200f, 15f, SurfaceSettings.DEFAULT_SPEED));
 
         assertTrue(item.hasOwnLockSettings());
         Framing onLock = Framing.of(item, Surface.LOCK);
@@ -729,7 +733,7 @@ public class FramingTest {
         Framing f =
                 Framing.ofValues(
                         0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f,
-                        330f, 12f, Framing.SOURCE_VIDEO);
+                        330f, 12f, Framing.SOURCE_VIDEO, 1f);
         assertEquals(0.9f, f.depth, 0f);
         assertEquals(1.2f, f.zoom, 0f);
         assertEquals(0.3f, f.motion, 0f);

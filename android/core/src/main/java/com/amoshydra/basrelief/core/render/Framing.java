@@ -67,6 +67,15 @@ public final class Framing {
     public static final float SOURCE_STILL = 0f;
 
     /**
+     * The speed a snapshot or a photograph carries: normal.
+     *
+     * <p>A constant rather than a literal because three places must agree on it --
+     * the deprecated ofValues, the item-based constructor's fallback, and the
+     * renderer's field -- and a literal repeated three times is a value that drifts.
+     */
+    public static final float DEFAULT_SPEED = 1f;
+
+    /**
      * A clip: colour, depth and shading all arrive per frame, decoded off the GL
      * thread and paired by a shared clock.
      *
@@ -96,6 +105,16 @@ public final class Framing {
      * one on screen while the state said otherwise.
      */
     public final float sourceKind;
+
+    /**
+     * Playback speed, 1 = normal; a clip's own rate, and a render value like Motion.
+     *
+     * <p><b>Compared by {@code sameAs}, unlike {@code bundled}.</b> It changes what
+     * is DRAWN -- a frame at 0.5x is a different picture from the same frame at 1x,
+     * and the renderer's no-op-paint guard has to be able to tell them apart, or a
+     * speed change would be dropped as "already showing".
+     */
+    public final float speed;
 
     /**
      * Whether this row will be drawn from a clip, as far as the index knows.
@@ -156,7 +175,8 @@ public final class Framing {
                 && near(shadowLift, other.shadowLift)
                 && near(lightAzimuth, other.lightAzimuth)
                 && near(lightElevation, other.lightElevation)
-                && near(sourceKind, other.sourceKind);
+                && near(sourceKind, other.sourceKind)
+                && near(speed, other.speed);
         // `bundled` is deliberately NOT compared, and the reason is structural rather
         // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
         // it to false, so a sameAs that required it could NEVER no-op for the bundled
@@ -257,6 +277,7 @@ public final class Framing {
             this.shadowLift = 0f;
             this.lightAzimuth = LightDirection.DEFAULT_AZIMUTH_DEG;
             this.lightElevation = LightDirection.DEFAULT_ELEVATION_DEG;
+            this.speed = DEFAULT_SPEED;
             return;
         }
         this.depth = s.depthFraction();
@@ -266,6 +287,10 @@ public final class Framing {
         this.panX = s.panX;
         this.panY = s.panY;
         this.motion = s.motionScale();
+        // The clip's own rate. 1 for a photograph, which is what the default
+        // settings carry -- a photograph ignores it entirely, and there is nothing
+        // to play.
+        this.speed = s.speedScale();
         this.brightnessGain = Picture.brightnessGain(s.brightness);
         this.shadowLift = Picture.shadowLift(s.shadow);
         this.lightAzimuth = s.lightAzimuth;
@@ -322,13 +347,18 @@ public final class Framing {
                                    float orbitX, float orbitY, float panX, float panY,
                                    float brightnessGain, float shadowLift,
                                    float lightAzimuth, float lightElevation,
-                                   float sourceKind) {
+                                   float sourceKind, float speed) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
-                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind);
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
+                speed);
     }
 
     /**
-     * @deprecated The form that <b>cannot say whether the picture is a clip</b>, so it
+     * @deprecated The form that <b>cannot say the speed either</b> — it always says
+     * 1x — for the same reason it cannot say the medium: a snapshot that cannot
+     * reproduce a field compares unequal to the frame on screen and repaints.
+     *
+     * <p>And the form that <b>cannot say whether the picture is a clip</b>, so it
      * always says still. A renderer that hands back what it is currently drawing
      * must use the twelve-argument form above, because a snapshot taken through this
      * one loses the medium and then compares unequal to the frame on screen — an
@@ -343,13 +373,15 @@ public final class Framing {
                                    float brightnessGain, float shadowLift,
                                    float lightAzimuth, float lightElevation) {
         return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
-                brightnessGain, shadowLift, lightAzimuth, lightElevation, SOURCE_STILL);
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, SOURCE_STILL,
+                DEFAULT_SPEED);
     }
 
     private Framing(float depth, float zoom, float motion,
                     float orbitX, float orbitY, float panX, float panY,
                     float brightnessGain, float shadowLift,
-                    float lightAzimuth, float lightElevation, float sourceKind) {
+                    float lightAzimuth, float lightElevation, float sourceKind,
+                    float speed) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -362,6 +394,7 @@ public final class Framing {
         this.lightAzimuth = lightAzimuth;
         this.lightElevation = lightElevation;
         this.sourceKind = sourceKind;
+        this.speed = speed;
         this.bundled = false;
     }
 }

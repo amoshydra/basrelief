@@ -418,7 +418,31 @@ public class MainActivity extends Activity {
     private int stripDrawnPercent = -1;
     private StripState stripState = StripState.IDLE;
     /** The Depth slider row, which does not exist for a photo with no map. */
+    /**
+     * Where the Speed row goes: immediately after Zoom.
+     *
+     * <p>Derived from the Zoom row's own position rather than saved, for the reason
+     * {@link #depthInsertIndex} is derived: a saved index is a number that can go
+     * stale the moment another row appears or disappears.
+     */
+    private int speedInsertIndex() {
+        // After the Zoom row, found by its own view: the rows are not tagged, and a
+        // saved index is the mistake depthInsertIndex documents.
+        View zoomRow = sliders.get("zoom") == null ? null : sliders.get("zoom").view();
+        int at = zoomRow == null ? -1 : sheetContent.indexOfChild(zoomRow);
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
+    }
+
     private View depthBarRow;
+    /**
+     * The Speed row, present only while the selected row is a CLIP.
+     *
+     * <p>The same conditional shape as {@link #depthBarRow}: a photograph has no
+     * rate, so the row is added when the selection has tracks and removed when it
+     * does not, rather than being greyed out. A control that cannot act plus a second
+     * place explaining why is what the Depth row was fixed away from.
+     */
+    private View speedBarRow;
 
     /**
      * Whether each item's image carries an embedded depth chunk, by item id.
@@ -1024,6 +1048,15 @@ public class MainActivity extends Activity {
                 s == null ? SurfaceSettings.DEFAULT_MOTION : s.motion, 0, 100));
         sheetContent.addView(addSlider("zoom",
                 s == null ? SurfaceSettings.DEFAULT_ZOOM : s.zoom, 25, 200));
+        // Under Motion and Zoom, because it answers the same question they do: how
+        // does this picture move. Only for a clip.
+        if (initial != null && initial.activeItem() != null
+                && initial.activeItem().video != null) {
+            speedBarRow = addSlider("speed",
+                    s == null ? SurfaceSettings.DEFAULT_SPEED : s.speed,
+                    SurfaceSettings.SPEED_MIN, SurfaceSettings.SPEED_MAX);
+            sheetContent.addView(speedBarRow);
+        }
 
         // Picture is its own group because these two answer a different question
         // from Depth and Zoom: they change how the photograph renders, not where it
@@ -3750,6 +3783,7 @@ public class MainActivity extends Activity {
      */
     private void applyStoredSlider(String key, int value) {
         if ("zoom".equals(key)) renderer.setZoom(value / 100f);
+        else if ("speed".equals(key)) renderer.setSpeed(value / 100f);
         else if ("motion".equals(key)) renderer.setMotion(value / 100f * 3f);
         else if ("brightness".equals(key) || "shadow".equals(key)) {
             renderer.setAdjust(
@@ -3806,6 +3840,10 @@ public class MainActivity extends Activity {
 
     private String formatValue(String key, int value) {
         if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
+        // Two decimals, unlike Zoom's one: the slider's step is a percent, so 0.75
+        // and 0.8 are both reachable and a rate that rounds to the same string for
+        // two different values is a control that lies about what it stored.
+        if (key.equals("speed")) return String.format(Locale.US, "%.2f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
         if (key.equals("motion")) return value + "%";
         // The light's two rows print their own unit, and only their own unit: the
@@ -4081,6 +4119,7 @@ public class MainActivity extends Activity {
                 // would be re-read from Home on the next resolve.
                 if (isDepth) return item.withIntensity(editSurface, value);
                 if (isZoom) return item.withZoom(editSurface, value);
+                if ("speed".equals(key)) return item.withSpeed(editSurface, value);
                 if ("brightness".equals(key) || "shadow".equals(key)) {
                     // The other adjustment is read from the SAME surface, or moving
                     // one of them would silently reset the other to its home value.
@@ -4219,6 +4258,22 @@ public class MainActivity extends Activity {
             // caption and must take the 2px gap instead of the 16px inter-group one.
             layOutCaption(motionCaption, !want);
         }
+        // Speed follows the same rule for the same reason: a row that cannot act
+        // must not be on screen. Added under Zoom when the selection has tracks,
+        // removed when it does not.
+        LibraryItem sel = state.activeItem();
+        boolean wantsSpeed = sel != null && sel.video != null;
+        if (wantsSpeed && speedBarRow == null) {
+            SurfaceSettings ss = sel.settings(editSurface);
+            speedBarRow = addSlider("speed", ss.speed,
+                    SurfaceSettings.SPEED_MIN, SurfaceSettings.SPEED_MAX);
+            sheetContent.addView(speedBarRow, speedInsertIndex());
+        } else if (!wantsSpeed && speedBarRow != null) {
+            sheetContent.removeView(speedBarRow);
+            sliders.remove("speed");
+            speedBarRow = null;
+        }
+
         if (want && depthBarRow == null) {
             LibraryItem item = state.activeItem();
             SurfaceSettings s = item == null ? null : item.settings(editSurface);
@@ -5888,6 +5943,10 @@ public class MainActivity extends Activity {
         // on a pair change would leave a clip playing over a photograph just selected.
         // Null for a photograph, explicit because a request never made is
         // indistinguishable from a request for no clip.
+        // The rate, with the framing it came from. One place sets it for a
+        // selection: the slider writes it live, and this makes a NEWLY selected clip
+        // start at its own stored speed rather than at whatever the last one used.
+        renderer.setSpeed(framing.speed);
         renderer.requestClip(active == null ? null : active.video, getFilesDir());
         if (!renderer.showingSamePair(img, dep, nrm) || !sameMedia) {
             // The medium changed, so the pair load has to happen even when the stills
