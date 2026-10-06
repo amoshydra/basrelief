@@ -5453,7 +5453,8 @@ public class MainActivity extends Activity {
             return;
         }
         final ComfyApi api = new ComfyApi(host.trim());
-        Io.run(this, new Callable<LibraryItem>() {
+        // runLong, for the same reason as the import: this is a server round.
+        Io.runLong(this, new Callable<LibraryItem>() {
             @Override
             public LibraryItem call() throws Exception {
                 final LibraryItem[] holder = new LibraryItem[1];
@@ -5557,7 +5558,10 @@ public class MainActivity extends Activity {
     private void runImport(final ComfyApi api, final File staged, final String label,
                            final int startFrame, final int frames, final int outHeight) {
         final Uri uri = Uri.fromFile(staged);
-        Io.run(this, new Callable<LibraryItem>() {
+        // runLong: the whole server round must not hold the shared Io worker, or
+        // every thumbnail re-decode queues behind it and the filmstrip goes blank
+        // for the length of the import -- the reported defect.
+        Io.runLong(this, new Callable<LibraryItem>() {
             @Override
             public LibraryItem call() throws Exception {
                 final LibraryItem[] holder = new LibraryItem[1];

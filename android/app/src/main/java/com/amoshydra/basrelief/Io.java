@@ -49,6 +49,18 @@ final class Io {
         return exec;
     }
 
+    /**
+     * The long-job worker; see {@link #runLong}. Separate from {@link #exec} on
+     * purpose: one thread each, so neither can starve the other.
+     */
+    private static ExecutorService longExec;
+    private static synchronized ExecutorService longExec() {
+        if (longExec == null) {
+            longExec = Executors.newSingleThreadExecutor();
+        }
+        return exec;
+    }
+
     private Io() {
     }
 
@@ -243,7 +255,35 @@ final class Io {
 
     static <T> void run(final Activity activity, final Callable<T> work,
                         final Callback<T> callback) {
-        exec().execute(new Runnable() {
+        exec().execute(deliverTo(activity, work, callback));
+    }
+
+    /**
+     * A job that may take MINUTES -- a server round -- on its own worker.
+     *
+     * <p><b>Io is a single thread, and that is deliberate for everything short:</b>
+     * order matters for a thumbnail decode and an index read, and one worker makes
+     * that ordering free. But a video import holds its worker for the whole server
+     * round -- copy, upload, poll, download -- and while it does, every short job
+     * queues behind it. Measured: reindex() throws the filmstrip's thumbnails away
+     * and queues their re-decodes, which cannot run until the import ends, so the
+     * strip sits blank for minutes. That is the reported "while media is being added
+     * the strip items all blank out".
+     *
+     * <p>A SECOND worker rather than a bigger pool: the long job must not be able to
+     * starve the short ones, and the short ones must not be able to delay the long
+     * one's polling. Same delivery as {@link #run}, so a caller moves by changing one
+     * word.
+     */
+    static <T> void runLong(final Activity activity, final Callable<T> work,
+                            final Callback<T> callback) {
+        longExec().execute(deliverTo(activity, work, callback));
+    }
+
+    /** The shared delivery: run, then hand the result to the UI thread. */
+    private static <T> Runnable deliverTo(final Activity activity, final Callable<T> work,
+                                          final Callback<T> callback) {
+        return new Runnable() {
             @Override
             public void run() {
                 T result = null;
@@ -262,7 +302,7 @@ final class Io {
                     }
                 });
             }
-        });
+        };
     }
 
     /**
