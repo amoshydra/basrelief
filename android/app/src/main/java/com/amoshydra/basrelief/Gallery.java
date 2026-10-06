@@ -2111,6 +2111,7 @@ final class Gallery {
      * and missing from the gallery, which looks like the import failed.
      */
     void reindex() {
+        android.util.Log.i("Basrelief", "gallery reindex: rebuilding tiles");
         rebuildGrid();
         refreshStrip();
     }

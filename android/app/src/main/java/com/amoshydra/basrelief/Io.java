@@ -96,11 +96,20 @@ final class Io {
         run(activity, new Callable<Preview>() {
             @Override
             public Preview call() {
+                // Logged in the WORKER, not on delivery: a preview that decodes at
+                // once and is DELIVERED a minute later is a blocked UI thread, and
+                // one that decodes a minute late is a blocked worker. The two need
+                // different fixes, and only this line tells them apart.
+                android.util.Log.i("Basrelief", "preview start "
+                        + (file == null ? "?" : file.getName()));
                 return preview(file, sizePx);
             }
         }, new Callback<Preview>() {
             @Override
             public void onDone(Preview p, Exception error) {
+                android.util.Log.i("Basrelief", "preview done "
+                        + (file == null ? "?" : file.getName())
+                        + (p == null ? " FAILED" : ""));
                 if (p == null) return;
                 if (p.bitmap != null) into.setImageBitmap(p.bitmap);
                 if (onEmbedded != null) onEmbedded.onFound(p.embeddedDepth);
