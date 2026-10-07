@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 520 tests across twenty-eight classes:
+it**. 526 tests across twenty-nine classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -662,6 +662,25 @@ has run.**
     clip.** Nothing in the shipping path eases it, which is exactly why that would
     have survived review — and `== SOURCE_VIDEO` is also what survives a third medium,
     since `!= STILL` would call a future `SOURCE_DEPTH_ONLY` a video.
+  - **An import that a restart interrupts leaves a photograph AND a record.** Two
+    halves, and both are load-bearing. The poster is written from the LOCAL file
+    before anything reaches the server, at the RANGE's first frame so the picture does
+    not change when the import lands -- so a process death (an install, an OOM kill, a
+    swipe away) leaves a row the user can see and retry, where measured it left an
+    orphaned clip file and no row at all. And the job is a record on disk (`Jobs` +
+    `JobsStore`, key `jobs`) holding the item, the prompt id and the HOST that issued
+    it, written the moment the server takes the work and cleared when the outputs are
+    fetched or the attempt fails -- because the prompt id otherwise lives in a worker
+    thread's memory, and a FINISHED server batch sat unreachable in its output folder
+    with no handle to fetch it: paid for, and lost. `JobsStore` commits rather than
+    applies, deliberately. The record is keyed by ITEM, so a second submission
+    supersedes the first instead of leaving two fetches racing for the same filenames.
+    The resume pass at studio start treats four states as states rather than errors:
+    photo gone → clear; server unreachable → KEEP (a sleeping laptop is not a lost
+    import); server has never heard of the prompt → clear and let the photo be
+    Regenerated; finished → fetch, attach, clear. `jobs` is in the studio's
+    index-transport key set, and `attach()` is the ONE implementation of an import's
+    fetch tail, shared with the resume so the two cannot drift.
   - **A clip's SPEED is a render value on the item, and the gate is where it
     applies.** Playback rate is per photo and per surface, on `SurfaceSettings`
     beside `motion`, edited by a row in the "How it moves" group shown only for a

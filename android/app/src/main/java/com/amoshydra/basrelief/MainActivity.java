@@ -772,6 +772,10 @@ public class MainActivity extends Activity {
         // that asks for frames while a clip plays, and a clip that starts before any
         // applyFiles -- a wake onto an already-running row -- must be noticed too.
         startClipPump();
+        // And the imports a restart interrupted. Here rather than in onResume so the
+        // first frame and the fetch happen together, and the sheet's rows are already
+        // built when the refresh lands.
+        resumePendingJobs();
         root.addView(glView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -5961,6 +5965,56 @@ public class MainActivity extends Activity {
         }
         glView.requestRender();
         refreshStatus();
+    }
+
+    /**
+     * Finish any import a restart interrupted, from the job record.
+     *
+     * <p>Called on every foreground, which is safe by design: a job that is still
+     * running keeps its record and is asked again, a finished one is fetched, and one
+     * the server has forgotten is cleared. The four states are in
+     * {@link VideoImport#resume}; this only supplies the worker and the refresh.
+     *
+     * <p>On the LONG worker, because it is a server round -- the same reason the
+     * import itself is there, and the same reason the filmstrip must not wait behind
+     * it.
+     */
+    private void resumePendingJobs() {
+        for (final Jobs.Job job : JobsStore.load(prefs).pending()) {
+            Io.runLong(this, new Callable<LibraryItem>() {
+                @Override
+                public LibraryItem call() {
+                    final LibraryItem[] out = new LibraryItem[1];
+                    VideoImport.resume(MainActivity.this, prefs, job,
+                            new VideoImport.Listener() {
+                                @Override
+                                public void phase(String message) {
+                                }
+
+                                @Override
+                                public void done(LibraryItem item) {
+                                    out[0] = item;
+                                }
+
+                                @Override
+                                public void failed(String message) {
+                                }
+                            });
+                    return out[0];
+                }
+            }, new Io.Callback<LibraryItem>() {
+                @Override
+                public void onDone(LibraryItem item, Exception error) {
+                    if (item == null) return;
+                    // Only when something actually arrived: a still-running job
+                    // returns null, and reindexing for it would drop every thumbnail
+                    // for nothing -- which is the defect the strip already taught us.
+                    gallery.reindex();
+                    applyFiles();
+                    refreshSliders();
+                }
+            });
+        }
     }
 
     void refreshStatus() {

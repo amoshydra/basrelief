@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.util.Log;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.VideoTracks;
@@ -179,6 +180,80 @@ final class VideoImport {
         if (updated != null) listener.done(updated);
     }
 
+    /**
+     * Finish an import a restart interrupted, from its job record.
+     *
+     * <p>The other half of "you can leave — it keeps going": the record is written
+     * when the server takes the work, and this is what reads it. Called at studio
+     * start for each pending job, and it does one of four things, each of which is a
+     * state rather than an error:
+     *
+     * <ul>
+     *   <li><b>The photo is gone</b> (deleted while the job ran) — clear the record;
+     *       there is nothing to fetch into.</li>
+     *   <li><b>The server is unreachable</b> — KEEP the record. A sleeping laptop is
+     *       not a lost import, and this is the case the record exists for.</li>
+     *   <li><b>The server has never heard of the prompt</b> — clear it. Asking for
+     *       ever about a prompt that is not there is a record that never clears, and
+     *       the photograph the early write left is still on screen to Regenerate.</li>
+     *   <li><b>Finished</b> — fetch, attach, clear, exactly as an import would.</li>
+     * </ul>
+     *
+     * <p>A job still running keeps its record and is asked again next time, which is
+     * why this is safe to call on every foreground.
+     */
+    static void resume(final Context app, final SharedPreferences prefs,
+                       final Jobs.Job job, final Listener listener) {
+        final LibraryItem item = LibraryStore.load(prefs).find(job.itemId);
+        if (item == null) {
+            JobsStore.clear(prefs, job.promptId);
+            return;
+        }
+        final ComfyApi api = new ComfyApi(job.host);
+        JSONObject entry;
+        try {
+            JSONObject history = new JSONObject(api.getHistory(job.promptId));
+            entry = history.optJSONObject(job.promptId);
+        } catch (Exception e) {
+            Log.w(TAG, "resume: " + job.promptId + " unreachable: " + e);
+            return;
+        }
+        if (entry == null) {
+            Log.w(TAG, "resume: the server has no " + job.promptId);
+            JobsStore.clear(prefs, job.promptId);
+            return;
+        }
+        JSONObject outputs = entry.optJSONObject("outputs");
+        if (outputs == null || outputs.length() == 0) return;   // still running
+
+        // The row's OWN names: the import wrote the colour under the id-derived name,
+        // and the resume must land on the same files or the row would point at nothing.
+        String[] names = {
+                LibraryItem.videoFileName(job.itemId),
+                LibraryItem.videoDepthFileName(job.itemId),
+                LibraryItem.videoNormalFileName(job.itemId),
+                LibraryItem.imageFileName(job.itemId),
+                LibraryItem.depthFileName(job.itemId),
+                LibraryItem.normalFileName(job.itemId),
+        };
+        attach(app, prefs, api, job.itemId, job.promptId, names, outputs, listener,
+                new Finisher() {
+                    @Override
+                    public LibraryItem finish(final LibraryItem built) {
+                        // The SAME row: it exists from the early write, so this is an
+                        // edit and not an add. Same finisher shape as regenerate.
+                        LibraryStore.editItem(prefs, job.itemId, new LibraryStore.Editor() {
+                            @Override
+                            public LibraryItem edit(LibraryItem it) {
+                                return it.withFilesAndVideo(built.imageName, built.depthName,
+                                        built.normalName, built.video);
+                            }
+                        });
+                        return LibraryStore.load(prefs).find(job.itemId);
+                    }
+                });
+    }
+
     /** The last step of a generate, split so regenerate can edit in place instead. */
     private interface Finisher {
         LibraryItem finish(LibraryItem built);
@@ -260,6 +335,22 @@ final class VideoImport {
             return null;
         }
 
+        return attach(app, prefs, api, id, promptId, names, outputs, listener, finisher);
+    }
+
+    /**
+     * Take a finished prompt's outputs, put them on disk and hand the built row to a
+     * finisher. THE ONE IMPLEMENTATION of the tail of an import, shared with the
+     * resume pass so the two cannot drift -- a resume that fetched slightly
+     * differently from an import would be a second way for a clip to be wrong.
+     *
+     * @param promptId the job record to clear, or null when there is none to clear
+     */
+    private static LibraryItem attach(final Context app, final SharedPreferences prefs,
+                                      final ComfyApi api, final String rowId,
+                                      final String promptId, final String[] names,
+                                      final JSONObject outputs, final Listener listener,
+                                      final Finisher finisher) {
         JSONObject depthOut = null, normalOut = null, colourOut = null;
         java.util.Iterator<String> nodes = outputs.keys();
         while (nodes.hasNext()) {
@@ -342,7 +433,7 @@ final class VideoImport {
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
-        LibraryItem built = LibraryItem.of(id, poster.getName(),
+        LibraryItem built = LibraryItem.of(rowId, poster.getName(),
                         depthStill.getName(), System.currentTimeMillis())
                 .withFilesAndVideo(poster.getName(), depthStill.getName(),
                         normalStill == null ? null : normalStill.getName(), tracks);
