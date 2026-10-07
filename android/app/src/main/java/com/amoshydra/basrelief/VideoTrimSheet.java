@@ -116,6 +116,11 @@ final class VideoTrimSheet {
      */
     static void show(final Activity activity, final File video, final String label,
                      final float fps, final int totalFrames, final Chosen onChosen) {
+        // Guarded here as well as at the call site: the check there and the show here
+        // are not one atomic step, and a Dialog with a dead token throws rather than
+        // declining. A sheet nobody can see is the right outcome for an activity that
+        // has gone.
+        if (activity.isFinishing() || activity.isDestroyed()) return;
         final ModalSheet sheet = new ModalSheet(activity, 0.62f);
         final LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);

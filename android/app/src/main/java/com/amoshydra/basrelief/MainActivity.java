@@ -5593,6 +5593,13 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
+                // THE ACTIVITY MAY BE GONE by now: staging runs on a worker and this
+                // callback lands later, so a backgrounded, finished or recreated
+                // activity reaches here with a dead window token and Dialog.show()
+                // throws BadTokenException -- measured as a crash from this exact
+                // line. A sheet is not worth crashing for; the import is simply not
+                // asked about, and the user can share again.
+                if (isFinishing() || isDestroyed()) return;
                 float fps = VideoImport.frameRateOf(staged);
                 int frames = VideoImport.frameCountOf(staged, fps);
                 VideoTrimSheet.show(MainActivity.this, staged, label, fps, frames,
