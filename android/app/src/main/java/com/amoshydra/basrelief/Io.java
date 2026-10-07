@@ -58,7 +58,14 @@ final class Io {
         if (longExec == null) {
             longExec = Executors.newSingleThreadExecutor();
         }
-        return exec;
+        // longExec, NOT exec. This returned `exec` -- so runLong queued on the SHARED
+        // worker and the second thread was created and never used: every video import
+        // (minutes) blocked every thumbnail decode, index read and embedded-depth read
+        // behind it, which is exactly the "while media is being added the strip items
+        // all blank out" defect the second worker was written to prevent. Two separate
+        // reports of that defect were "fixed" while this line was live, and the fix
+        // could not work. One word, and it is the whole of the strip bug.
+        return longExec;
     }
 
     private Io() {
