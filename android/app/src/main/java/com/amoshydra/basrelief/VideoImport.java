@@ -133,7 +133,7 @@ final class VideoImport {
                            final LibraryItem item, final ComfyApi api,
                            final Listener listener) {
         if (item == null) {
-            listener.failed(app.getString(R.string.video_import_failed));
+            fail(prefs, null, listener, "regenerate: no item", null);
             return;
         }
         // The colour clip is already here; regeneration re-runs the graph over IT.
@@ -146,7 +146,7 @@ final class VideoImport {
                 ? item.video.colorFile(app.getFilesDir())
                 : new File(app.getFilesDir(), LibraryItem.videoFileName(item.id));
         if (colour == null || !colour.exists()) {
-            listener.failed(app.getString(R.string.video_import_failed));
+            fail(prefs, null, listener, "regenerate: the colour clip is gone", null);
             return;
         }
         long stamp = System.currentTimeMillis();
@@ -254,6 +254,26 @@ final class VideoImport {
                 });
     }
 
+    /**
+     * Report a failure: the toast for the user AND a line in the log for the diagnosis.
+     *
+     * <p><b>The log line is not a nicety, it is the difference between a bug we can
+     * find and one we cannot.</b> Measured: an import failed before it reached the
+     * server, the user saw a toast, and by the time it was reported there was nothing
+     * in the log at all -- no jobs record (the failure was before the submit), no
+     * exception, no phase -- so the only evidence was gone and the report could not be
+     * acted on. A failure that is displayed and not recorded is a failure that has to
+     * be reproduced from scratch.
+     */
+    private static void fail(SharedPreferences prefs, String promptId, Listener listener,
+                             String detail, Throwable e) {
+        Log.w(TAG, "import failed" + (promptId == null ? "" : " after " + promptId)
+                + ": " + detail + (e == null ? "" : " -- " + e), e == null ? null : e);
+        JobsStore.clear(prefs, promptId);
+        listener.failed(detail + (e == null || e.getMessage() == null
+                ? "" : ": " + e.getMessage()));
+    }
+
     /** The last step of a generate, split so regenerate can edit in place instead. */
     private interface Finisher {
         LibraryItem finish(LibraryItem built);
@@ -330,8 +350,8 @@ final class VideoImport {
             JobsStore.record(prefs, id, promptId, api.host());
             outputs = pollOutputs(app, api, promptId);
         } catch (Exception e) {
-            JobsStore.clear(prefs, promptId);
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            fail(prefs, promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
             return null;
         }
 
@@ -401,8 +421,8 @@ final class VideoImport {
                         normalOut.optString("type", "output")), new File(app.getFilesDir(), names[2]));
             }
         } catch (Exception e) {
-            JobsStore.clear(prefs, promptId);
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            fail(prefs, promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
             return null;
         }
 
@@ -415,8 +435,8 @@ final class VideoImport {
                 normalStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[2]), names[5]);
             }
         } catch (Exception e) {
-            JobsStore.clear(prefs, promptId);
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            fail(prefs, promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
             return null;
         }
 
@@ -429,8 +449,8 @@ final class VideoImport {
             tracks = VideoTracks.of(names[0], names[1],
                     normalOut == null ? null : names[2]);
         } catch (Exception e) {
-            JobsStore.clear(prefs, promptId);
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
+            fail(prefs, promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
             return null;
         }
         LibraryItem built = LibraryItem.of(rowId, poster.getName(),
@@ -469,11 +489,11 @@ final class VideoImport {
         try {
             copyTo(app, uri, colourSource);
         } catch (Exception e) {
-            listener.failed(app.getString(R.string.video_import_failed));
+            fail(prefs, null, listener, "the shared video could not be copied", e);
             return;
         }
         if (colourSource.length() == 0) {
-            listener.failed(app.getString(R.string.video_import_failed));
+            fail(prefs, null, listener, "the shared video was empty", null);
             return;
         }
         // THE PHOTO LANDS FIRST, from the LOCAL file, before anything reaches the
