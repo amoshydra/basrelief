@@ -1413,6 +1413,9 @@ public class MainActivity extends Activity {
         }, new Io.Callback<File>() {
             @Override
             public void onDone(File target, Exception error) {
+                // The world may have moved: this lands after work on a worker, and the
+                // views below belong to an Activity that may be gone.
+                if (isFinishing() || isDestroyed()) return;
                 if (error != null) {
                     Toast.makeText(MainActivity.this,
                             "Failed to load shared image: " + error.getMessage(),
@@ -1638,6 +1641,14 @@ public class MainActivity extends Activity {
         // it drops the strip and the grid with the hierarchy they live in.
         if (gallery != null) gallery.dismiss();
         if (sensorPolicy != null) sensorPolicy.stop();
+        // The clip pump never stops itself -- that is its whole design, so a clip
+        // cannot freeze for want of a request -- so it must be stopped HERE. Left
+        // posted it keeps a 10 Hz main-thread wakeup and holds this Activity and its
+        // view tree after every studio visit.
+        glidePump.removeCallbacks(clipTick);
+        glidePump.removeCallbacks(glideTick);
+        // And the ring, which spins at 60 Hz while a depth run outlives the studio.
+        if (stripRing != null) stripRing.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
         prefs.unregisterOnSharedPreferenceChangeListener(indexListener);
         Io.shutdown();
@@ -5548,6 +5559,12 @@ public class MainActivity extends Activity {
         }, new Io.Callback<LibraryItem>() {
             @Override
             public void onDone(LibraryItem item, Exception error) {
+                // The world may have moved: this lands on the UI thread after work that
+                // can take MINUTES, and every view touched below belongs to an Activity
+                // that may be gone. The dialog-shaped version of this crash was measured
+                // tonight; these paths are the same shape without a Dialog, which is the
+                // only reason they have not crashed yet.
+                if (isFinishing() || isDestroyed()) return;
                 if (item == null) {
                     String why = (error == null || error.getMessage() == null)
                             ? getString(R.string.video_import_failed)
@@ -5690,6 +5707,9 @@ public class MainActivity extends Activity {
         }, new Io.Callback<LibraryItem>() {
             @Override
             public void onDone(LibraryItem item, Exception error) {
+                // The world may have moved: this lands after work on a worker, and the
+                // views below belong to an Activity that may be gone.
+                if (isFinishing() || isDestroyed()) return;
                 if (item == null) {
                     // The server's own message when there is one. "Depth generation
                     // failed: <why>" is the whole diagnostic, and replacing it with a
@@ -5793,6 +5813,9 @@ public class MainActivity extends Activity {
         }, new Io.Callback<File>() {
             @Override
             public void onDone(File done, Exception error) {
+                // The world may have moved: this lands after work on a worker, and the
+                // views below belong to an Activity that may be gone.
+                if (isFinishing() || isDestroyed()) return;
                 if (error != null || done == null) {
                     Toast.makeText(MainActivity.this,
                             "Failed to read file: "
@@ -6012,6 +6035,7 @@ public class MainActivity extends Activity {
             }, new Io.Callback<LibraryItem>() {
                 @Override
                 public void onDone(LibraryItem item, Exception error) {
+                    if (isFinishing() || isDestroyed()) return;
                     if (item == null) return;
                     // Only when something actually arrived: a still-running job
                     // returns null, and reindexing for it would drop every thumbnail

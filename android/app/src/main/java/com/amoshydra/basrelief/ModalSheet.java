@@ -623,6 +623,14 @@ final class ModalSheet {
 
     /** Present. */
     void show(Activity activity) {
+        // A Dialog added over a finished or destroyed activity THROWS
+        // (BadTokenException, "token is not valid") rather than declining, and this
+        // is the one choke point every sheet goes through. The image-share path was
+        // still reaching it from a worker callback with no check -- the video path had
+        // been guarded at both ends and the image path was missed -- so the guard
+        // lives here now, where a caller cannot forget it. Every other caller is a
+        // synchronous click handler, for which this is a no-op.
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         // The root is built once, in the constructor, and kept in a field so the
         // card's children — the title, the rows, the fields a settings screen
         // rebuilds around — survive a dismiss. That only works if the window

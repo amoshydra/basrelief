@@ -1429,8 +1429,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
         final int pct = FramingRowValue.zoomPercent(zoom);
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        final String id = AppState.load(context, p, context.getFilesDir()).activeId();
+        AppState st = AppState.load(context, p, context.getFilesDir());
+        final String id = st.activeId();
         if (id == null) return; // nothing is selected, so there is nothing to write
+        // AND THE SCREEN MUST STILL BE SHOWING IT. The values above are this
+        // renderer's live volatiles; the id is the index's current selection, and the
+        // two can disagree for one GL-hop after a selection change: a tap's unproject
+        // posts the save, the user picks another photo, applyFiles queues the new
+        // framing, and the save runs BEFORE that queued apply -- writing the previous
+        // photo's origin, pan and zoom onto the newly selected one. Comparing the pair
+        // on screen against the item being written is the same value-comparison remedy
+        // the rest of this path uses.
+        LibraryItem target = st.activeItem();
+        java.io.File img = target == null ? null
+                : com.amoshydra.basrelief.core.store.PrefFiles.resolve(
+                        context.getFilesDir(), target.imageName);
+        String want = img == null ? null : img.getPath();
+        if (loadedImagePath == null || !loadedImagePath.equals(want)) return;
         LibraryStore.editItem(p, id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem item) {

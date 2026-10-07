@@ -1208,6 +1208,13 @@ public class DepthWallpaperService extends WallpaperService {
 
         @Override
         public void onDestroy() {
+            // The engine's clip pump is self-chaining and NEVER stops itself, so a
+            // destroyed engine must stop it: otherwise every engine that ever started
+            // a clip leaves a permanent 10 Hz chain and a leaked renderer, accumulating
+            // across lock/unlock cycles for the life of the wallpaper process. The
+            // comment on clipTick claimed a destroyed engine leaves none -- it did not,
+            // and that claim is why nobody looked.
+            clipHandler.removeCallbacks(clipTick);
             // First, so an unlock arriving during teardown cannot ask a dead
             // engine for its surface.
             engines.remove(this);

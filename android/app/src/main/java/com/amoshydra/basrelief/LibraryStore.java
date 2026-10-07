@@ -38,7 +38,7 @@ final class LibraryStore {
      * the ones on the GL thread at cold start. Nothing writes Motion to the config
      * any more; this value only ever moves a user's photos onto the per-item one.
      */
-    static Library load(SharedPreferences prefs, int legacyMotion) {
+    static synchronized Library load(SharedPreferences prefs, int legacyMotion) {
         return Library.parse(prefs.getString(Library.KEY, null), legacyMotion);
     }
 
@@ -49,11 +49,11 @@ final class LibraryStore {
      * That is why {@link AppState} uses the two-argument form instead: it is on the
      * GL thread at cold start, where a wallpaper depends on this returning fast.
      */
-    static Library load(SharedPreferences prefs) {
+    static synchronized Library load(SharedPreferences prefs) {
         return load(prefs, ConfigStore.load(prefs).motion);
     }
 
-    static void save(SharedPreferences prefs, Library library) {
+    static synchronized void save(SharedPreferences prefs, Library library) {
         prefs.edit().putString(Library.KEY, library.toJson()).apply();
     }
 
@@ -61,7 +61,7 @@ final class LibraryStore {
      * Synchronous, because the index and the config are written together and an
      * {@code apply()} on either could be reordered against the other.
      */
-    static void saveNow(SharedPreferences prefs, Library library) {
+    static synchronized void saveNow(SharedPreferences prefs, Library library) {
         prefs.edit().putString(Library.KEY, library.toJson()).commit();
     }
 
@@ -87,14 +87,14 @@ final class LibraryStore {
      * meantime, and the row is never lost — so the repair needs no flag, no
      * ordering guarantee and no second writer.
      */
-    private static Library loadForWrite(SharedPreferences prefs) {
+    private static synchronized Library loadForWrite(SharedPreferences prefs) {
         Library lib = load(prefs);
         String stored = prefs.getString(Library.KEY, null);
         return stored == null || stored.trim().isEmpty() ? lib.withBundled(null, null) : lib;
     }
 
     /** Select an item, or pass null to select nothing. */
-    static Library select(SharedPreferences prefs, String id) {
+    static synchronized Library select(SharedPreferences prefs, String id) {
         Library next = loadForWrite(prefs).withSelection(id);
         if (id != null) next = next.markUsed(id, System.currentTimeMillis());
         saveNow(prefs, next);
@@ -115,7 +115,7 @@ final class LibraryStore {
      *              useless as something to show in a list. Null falls back to that
      *              filename, which is a last resort and not a label.
      */
-    static LibraryItem add(SharedPreferences prefs, String imageName, String depthName,
+    static synchronized LibraryItem add(SharedPreferences prefs, String imageName, String depthName,
                            String label) {
         LibraryItem item = LibraryItem.of(LibraryItem.newId(), imageName, depthName,
                 System.currentTimeMillis()).withLabel(label);
@@ -139,7 +139,7 @@ final class LibraryStore {
      * which are invisible, rather than an index that points at files that are
      * gone.
      */
-    static Library remove(SharedPreferences prefs, String id) {
+    static synchronized Library remove(SharedPreferences prefs, String id) {
         Library next = loadForWrite(prefs).remove(id);
         saveNow(prefs, next);
         return next;
@@ -164,7 +164,7 @@ final class LibraryStore {
      *
      * @return the labels of the dropped rows, for a message the user can read
      */
-    static List<String> repairDuplicateImages(SharedPreferences prefs) {
+    static synchronized List<String> repairDuplicateImages(SharedPreferences prefs) {
         Library lib = loadForWrite(prefs);
         List<String> doomed = lib.itemsSharingAnImageName();
         if (doomed.isEmpty()) return Collections.emptyList();
@@ -182,7 +182,7 @@ final class LibraryStore {
     }
 
     /** Apply a per-item edit to the item with this id, leaving the rest alone. */
-    static Library editItem(SharedPreferences prefs, String id, Editor editor) {
+    static synchronized Library editItem(SharedPreferences prefs, String id, Editor editor) {
         Library lib = load(prefs);
         LibraryItem item = lib.find(id);
         if (item == null) return lib;
@@ -199,19 +199,19 @@ final class LibraryStore {
         return next;
     }
 
-    static Library setSort(SharedPreferences prefs, SortOrder order) {
+    static synchronized Library setSort(SharedPreferences prefs, SortOrder order) {
         Library next = loadForWrite(prefs).withSort(order);
         saveNow(prefs, next);
         return next;
     }
 
     /** The live rows to show, in the stored order. Never null. */
-    static List<LibraryItem> rows(SharedPreferences prefs) {
+    static synchronized List<LibraryItem> rows(SharedPreferences prefs) {
         return load(prefs).sortedLive();
     }
 
     /** The archived rows, for the disclosure's section. Never null. */
-    static List<LibraryItem> archivedRows(SharedPreferences prefs) {
+    static synchronized List<LibraryItem> archivedRows(SharedPreferences prefs) {
         return load(prefs).sortedArchived();
     }
 
@@ -224,14 +224,14 @@ final class LibraryStore {
      * removes the id everywhere in the same derivation — and this is the
      * deliberate contrast, so this write is the index and nothing else.
      */
-    static Library setArchived(SharedPreferences prefs, String id, boolean archived) {
+    static synchronized Library setArchived(SharedPreferences prefs, String id, boolean archived) {
         Library next = loadForWrite(prefs).withArchived(id, archived);
         saveNow(prefs, next);
         return next;
     }
 
     /** Archive or restore a whole set in one write. See {@link Library#withArchived(java.util.Set, boolean)}. */
-    static Library setArchived(SharedPreferences prefs, java.util.Set<String> ids, boolean archived) {
+    static synchronized Library setArchived(SharedPreferences prefs, java.util.Set<String> ids, boolean archived) {
         Library next = loadForWrite(prefs).withArchived(ids, archived);
         saveNow(prefs, next);
         return next;

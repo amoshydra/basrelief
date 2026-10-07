@@ -326,6 +326,9 @@ public final class DepthGenDialog {
      */
     private String targetItemId;
 
+    /** See {@code testConnection}: the newest test owns the panel, not the last to arrive. */
+    private int testSeq;
+
     /** The image the depth is generated for, or null when nothing is selected. */
     private File targetImage;
 
@@ -1051,6 +1054,12 @@ public final class DepthGenDialog {
         nodes.clear();
         displayNames.clear();
         final String host = comfyBase;
+        // A monotonic tag, for the reason ReliefRenderer.loadSeq has one: a second
+        // Test (or a Test followed by an edited host) issues a second fetch, and the
+        // slower first one can land last -- leaving the model list, the chosen
+        // checkpoint and the note describing a server that is not the one in the
+        // field. The newest request wins by SEQUENCE, not by arrival.
+        final int seq = ++testSeq;
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -1070,6 +1079,7 @@ public final class DepthGenDialog {
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
+                            if (seq != testSeq) return;   // a newer test owns the panel
                             modelsFetched = true;
                             modelsUnusable = filteredToEmpty;
                             // Most-recently-used first, then discovery order. The
@@ -1095,6 +1105,7 @@ public final class DepthGenDialog {
                     ui.post(new Runnable() {
                         @Override
                         public void run() {
+                            if (seq != testSeq) return;   // a newer test owns the panel
                             modelsFetched = false;
                             modelsUnusable = false;
                             nodes.clear();
@@ -1598,7 +1609,12 @@ public final class DepthGenDialog {
                 // run is over and this has not happened. Ordered before
                 // applyMap so nothing can observe APPLIED with a stale map.
                 DepthGenDialog panel = openPanel();
-                if (panel != null) panel.sheet.dismiss();
+                // Only the panel showing THIS photo. A run for photo A can complete
+                // while the user has reopened the panel for photo B, and dismissing B's
+                // panel because A finished is a panel closing under a tap.
+                if (panel != null && r.itemId != null && r.itemId.equals(panel.targetItemId)) {
+                    panel.sheet.dismiss();
+                }
                 // Depth and normal in ONE edit: a half-applied pair would shade the
                 // new geometry with the old normal, which is worse than flat.
                 applyMap(r.app, r.itemId, name, normalName);
