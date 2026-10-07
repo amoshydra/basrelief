@@ -683,7 +683,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     // mesh applies, or it shows mirrored, which it did.
                     "  vec2 uv = uLayer == 2 ? vec2(vUv.x, 1.0 - vUv.y) : vUv;\n" +
                     "  vec4 c = texture(uTex, uv);\n" +
-                    "  if (uLayer == 2) c = vec4(vec3(c.r), 1.0);\n" +
+                    // /255.0, because the FIELD is 0..255 and this draws into the
+                    // default framebuffer, which is 0..1: without the divide every
+                    // non-zero texel clamps to white and a good depth map reads as a
+                    // black-and-white mask. The field's own numbers said so --
+                    // fieldCentre spread 58..138 with err=0 -- while the layer looked
+                    // binary, which is a VIEW bug and not a data one.
+                    "  if (uLayer == 2) c = vec4(vec3(c.r / 255.0), 1.0);\n" +
                     "  o = vec4(c.rgb, 1.0);\n" +
                     "}\n";
             int vsh = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER);
