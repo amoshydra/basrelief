@@ -213,6 +213,8 @@ final class VideoImport {
             JSONObject up = new JSONObject(api.uploadImage(colourSource, colourSource.getName()));
             uploadedName = up.getString("name");
         } catch (Exception e) {
+            // No clear here: this is the UPLOAD, before the server has the work, so
+            // there is no record yet -- and promptId is not even in scope.
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
@@ -245,8 +247,15 @@ final class VideoImport {
             }
             JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-" + id));
             promptId = submitted.getString("prompt_id");
+            // THE RECORD, written the moment the server has the work. From here the
+            // result is reachable again after a restart, which is what the sheet's Job
+            // copy promises and what a process death used to destroy: the prompt id
+            // lived in this thread's memory, so a finished batch sat unreachable in
+            // the server's output folder with no handle to fetch it.
+            JobsStore.record(prefs, id, promptId, api.host());
             outputs = pollOutputs(app, api, promptId);
         } catch (Exception e) {
+            JobsStore.clear(prefs, promptId);
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
@@ -301,6 +310,7 @@ final class VideoImport {
                         normalOut.optString("type", "output")), new File(app.getFilesDir(), names[2]));
             }
         } catch (Exception e) {
+            JobsStore.clear(prefs, promptId);
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
@@ -314,16 +324,21 @@ final class VideoImport {
                 normalStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[2]), names[5]);
             }
         } catch (Exception e) {
+            JobsStore.clear(prefs, promptId);
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
 
+        // The job is DONE and its outputs are on disk: the record has served its
+        // purpose and must not make the next start ask about a finished prompt.
+        JobsStore.clear(prefs, promptId);
         listener.phase(app.getString(R.string.video_phase_adding));
         VideoTracks tracks;
         try {
             tracks = VideoTracks.of(names[0], names[1],
                     normalOut == null ? null : names[2]);
         } catch (Exception e) {
+            JobsStore.clear(prefs, promptId);
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
@@ -370,6 +385,31 @@ final class VideoImport {
             listener.failed(app.getString(R.string.video_import_failed));
             return;
         }
+        // THE PHOTO LANDS FIRST, from the LOCAL file, before anything reaches the
+        // server. The row exists from here on, so an import killed mid-flight -- an
+        // install, an OOM kill, a swipe away -- leaves a photograph the user can see
+        // and retry rather than an orphaned clip file and no row at all. Measured:
+        // exactly that loss cost a finished server job and its only handle.
+        //
+        // The poster is the RANGE's first frame, so it is the same picture the
+        // finished import writes and does not visibly change when the import lands.
+        final float earlyFps = frameRateOf(colourSource);
+        final long posterAtUs = (long) (startFrame / Math.max(1f, earlyFps) * 1_000_000f);
+        try {
+            File poster = firstFrameAsPng(app, colourSource, LibraryItem.imageFileName(id),
+                    posterAtUs);
+            LibraryItem early = LibraryItem.of(id, poster.getName(), null,
+                    System.currentTimeMillis()).withLabel(label);
+            // Selected as well as added: the user just asked for this photo, and a row
+            // that arrives without being shown is a photo they have to go looking for.
+            LibraryStore.saveNow(prefs,
+                    LibraryStore.load(prefs).withItem(early).withSelection(id));
+        } catch (Exception e) {
+            // A poster that cannot be read is not fatal: the import still writes its
+            // own at the end. Failing here would refuse an import over a preview.
+            Log.w(TAG, "early poster failed: " + e);
+        }
+
         // Id-derived names, so a re-import of the same video is a new row with its
         // own files; regenerate uses stamped names for the same row.
         String[] names = {
@@ -530,10 +570,23 @@ final class VideoImport {
      * poster the gallery shows and the photograph the clip falls back to.
      */
     private static File firstFrameAsPng(Context app, File clip, String name) throws Exception {
+        return firstFrameAsPng(app, clip, name, 0L);
+    }
+
+    /**
+     * Frame 0 of a clip as a PNG, or the frame at {@code atUs}.
+     *
+     * <p>The time matters for the EARLY poster: a trimmed import's first frame is the
+     * range's first frame, not the source's, so the poster written before the server
+     * round is the same picture the finished import would write -- otherwise the
+     * photograph would visibly change when the import completed.
+     */
+    private static File firstFrameAsPng(Context app, File clip, String name, long atUs)
+            throws Exception {
         MediaMetadataRetriever mmr = new MediaMetadataRetriever();
         try {
             mmr.setDataSource(clip.getPath());
-            Bitmap frame = mmr.getFrameAtTime(0,
+            Bitmap frame = mmr.getFrameAtTime(atUs,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             if (frame == null) throw new Exception("no frame could be read from " + name);
             File out = new File(app.getFilesDir(), name);

@@ -25,6 +25,18 @@ public final class ComfyApi {
         this.base = b;
     }
 
+    /**
+     * The server this instance talks to, for the job record.
+     *
+     * <p>A resume pass after a restart has to know WHERE to ask about a prompt id --
+     * the id alone is meaningless without the host that issued it -- and the user can
+     * change the host between sessions, so the record carries the one that was used
+     * rather than the one configured now.
+     */
+    public String host() {
+        return base;
+    }
+
     private HttpURLConnection open(String path, String method) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(base + path).openConnection();
         c.setRequestMethod(method);

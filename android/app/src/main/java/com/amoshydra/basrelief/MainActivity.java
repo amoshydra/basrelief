@@ -7,6 +7,7 @@ import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.NormalSource;
@@ -680,7 +681,7 @@ public class MainActivity extends Activity {
                     // because they ARE the index transport: Library, Config and
                     // Playlists each own one, and a new one must be added here.
                     if (Library.KEY.equals(key) || Config.KEY.equals(key)
-                            || Playlists.KEY.equals(key)) {
+                            || Playlists.KEY.equals(key) || Jobs.KEY.equals(key)) {
                         cachedState = null;
                     }
                 }
