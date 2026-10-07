@@ -255,6 +255,84 @@ final class VideoImport {
     }
 
     /**
+     * Copy just the chosen range out of a video, WITHOUT re-encoding.
+     *
+     * <p><b>The upload is the range, not the file.</b> Measured: a 126 MB source
+     * shared in was refused by the proxy with HTTP 413 (100 MB passes, 126 MB does
+     * not), and even when it fits, uploading two minutes of video to generate a four
+     * second loop is the wrong shape -- minutes of transfer for a loop that tiles.
+     * MediaExtractor and MediaMuxer copy the encoded samples of the range into a new
+     * container, so nothing is decoded, nothing is re-encoded, and no quality is lost:
+     * a 4s range of a 126 MB file lands at a few megabytes.
+     *
+     * <p><b>Keyframe-aligned, and that is a trade rather than a detail.</b> The seek
+     * lands on the nearest sync sample at or before the requested start, because a
+     * decoder cannot begin mid-GOP: the range may therefore begin a second or so
+     * early. The alternative -- re-encoding from the exact frame -- costs the whole
+     * video pipeline on the device for a trim the server can refine, so the caller
+     * passes startFrame 0 for a remuxed upload and lets the range be what was copied.
+     *
+     * @return the new file, or null when the range could not be copied (the caller
+     *         falls back to uploading the source, which is the old behaviour)
+     */
+    private static File remuxRange(Context app, File source, File out,
+                                   long startUs, long durUs) {
+        android.media.MediaExtractor ex = new android.media.MediaExtractor();
+        android.media.MediaMuxer mux = null;
+        try {
+            ex.setDataSource(source.getPath());
+            int track = -1;
+            android.media.MediaFormat fmt = null;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat f = ex.getTrackFormat(i);
+                String mime = f.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    track = i;
+                    fmt = f;
+                    break;
+                }
+            }
+            if (track < 0 || fmt == null) return null;
+            ex.selectTrack(track);
+            ex.seekTo(startUs, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+
+            mux = new android.media.MediaMuxer(out.getPath(),
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int dst = mux.addTrack(fmt);
+            mux.start();
+
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(1 << 20);
+            android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+            // The first sample's own pts is the base, so the copy starts at zero
+            // whatever the seek rounded back to -- the range's length is what was
+            // asked for, and its start is the keyframe.
+            long baseUs = -1L;
+            long endUs = startUs + durUs;
+            while (true) {
+                long pts = ex.getSampleTime();
+                if (pts < 0 || pts > endUs) break;
+                int size = ex.readSampleData(buf, 0);
+                if (size < 0) break;
+                if (baseUs < 0) baseUs = pts;
+                info.offset = 0;
+                info.size = size;
+                info.presentationTimeUs = pts - baseUs;
+                info.flags = ex.getSampleFlags();
+                mux.writeSampleData(dst, buf, info);
+                ex.advance();
+            }
+            mux.stop();
+            return out.length() > 0 ? out : null;
+        } catch (Throwable t) {
+            Log.w(TAG, "remux failed, uploading the source instead: " + t);
+            return null;
+        } finally {
+            try { ex.release(); } catch (Throwable ignored) { }
+            if (mux != null) { try { mux.release(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /**
      * Report a failure: the toast for the user AND a line in the log for the diagnosis.
      *
      * <p><b>The log line is not a nicety, it is the difference between a bug we can
@@ -521,6 +599,29 @@ final class VideoImport {
             Log.w(TAG, "early poster failed: " + e);
         }
 
+        // THE RANGE IS THE UPLOAD. A whole file is only sent when the whole file IS
+        // the range ("Use the whole clip"): otherwise the samples of the chosen range
+        // are copied into their own container, so a 126 MB source uploads a few
+        // megabytes -- which is what makes an import work at all behind a body limit,
+        // and what makes it quick anywhere else. The graph's skip/limit is then 0
+        // frames in, because the trim has already happened; a failed remux falls back
+        // to the source with the original range, which is exactly the old behaviour.
+        File upload = colourSource;
+        int graphStart = startFrame;
+        if (frames > 0) {
+            final float rfps = frameRateOf(colourSource);
+            final long startUs = (long) (startFrame / Math.max(1f, rfps) * 1_000_000f);
+            final long durUs = (long) (frames / Math.max(1f, rfps) * 1_000_000f);
+            File trimmed = new File(app.getFilesDir(), "stage-trim.mp4");
+            File made = remuxRange(app, colourSource, trimmed, startUs, durUs);
+            if (made != null) {
+                Log.i(TAG, "remux: " + colourSource.length() + " -> " + made.length()
+                        + " bytes for " + frames + " frames");
+                upload = made;
+                graphStart = 0;
+            }
+        }
+
         // Id-derived names, so a re-import of the same video is a new row with its
         // own files; regenerate uses stamped names for the same row.
         String[] names = {
@@ -557,8 +658,8 @@ final class VideoImport {
         LibraryStore.saveNow(prefs, added);
         listener.added(placed);
 
-        LibraryItem item = generate(app, prefs, api, id, colourSource, names,
-                startFrame, frames, outHeight, listener,
+        LibraryItem item = generate(app, prefs, api, id, upload, names,
+                graphStart, frames, outHeight, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
