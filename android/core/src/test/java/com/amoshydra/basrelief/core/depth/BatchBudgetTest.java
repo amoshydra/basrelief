@@ -116,4 +116,74 @@ public class BatchBudgetTest {
         assertTrue(BatchBudget.estimateMb(600, 720) > BatchBudget.BUDGET_MB);
         assertTrue(BatchBudget.estimateMb(240, 1080) > BatchBudget.BUDGET_MB);
     }
+
+    /**
+     * The chunk rule: the largest batch the budget allows with headroom, capped at
+     * a measured-successful batch. 1080p is budget-bound (174 frames, ~11.5 GiB --
+     * the line itself allows 232, and a chunk is a whole job, so the margin is the
+     * point); 720p is cap-bound at 240 (~6.1 GiB), because the fit would allow ~443
+     * and nothing measured supports a batch that size.
+     */
+    @Test
+    public void chunksAreSizedFromTheBudgetWithHeadroomAndACap() {
+        assertEquals(240, BatchBudget.chunkFrames(720));
+        assertEquals(174, BatchBudget.chunkFrames(1080));
+        assertTrue("a chunk must never exceed the measured-safe batch",
+                BatchBudget.chunkFrames(480) <= BatchBudget.MAX_CHUNK_FRAMES);
+        // Every height the budget can answer for stays inside the headroom line and
+        // inside the absolute line: the chunk is what a prompt will ask the card for.
+        for (int h : new int[] {480, 720, 1080, 2160}) {
+            int n = BatchBudget.chunkFrames(h);
+            assertTrue("chunk at " + h + "p must be positive", n > 0);
+            assertTrue("chunk at " + h + "p must leave the headroom",
+                    BatchBudget.estimateMb(n, h)
+                            <= BatchBudget.BUDGET_MB * BatchBudget.CHUNK_HEADROOM + 1e-9);
+            assertTrue("chunk at " + h + "p must fit the absolute line",
+                    BatchBudget.fits(n, h));
+        }
+    }
+
+    /**
+     * The plan tiles the range exactly: no gap, no overlap, the last chunk takes the
+     * remainder. A plan that skipped or repeated a frame would make the concatenated
+     * clip play wrongly without failing anywhere, which is why this is arithmetic
+     * worth a test rather than a loop worth trusting.
+     */
+    @Test
+    public void thePlanTilesTheRangeExactly() {
+        java.util.List<int[]> plan = BatchBudget.chunkPlan(601, 720);
+        assertEquals(3, plan.size());
+        assertEquals(3, BatchBudget.chunkCount(601, 720));
+        assertEquals(0, plan.get(0)[0]);
+        assertEquals(240, plan.get(0)[1]);
+        assertEquals(240, plan.get(1)[0]);
+        assertEquals(240, plan.get(1)[1]);
+        assertEquals(480, plan.get(2)[0]);
+        assertEquals(121, plan.get(2)[1]);
+
+        int covered = 0;
+        int next = 0;
+        for (int[] c : plan) {
+            assertEquals("each chunk starts where the last stopped", next, c[0]);
+            next = c[0] + c[1];
+            covered += c[1];
+        }
+        assertEquals("every frame is covered exactly once", 601, covered);
+        // A range no larger than one chunk is a one-prompt plan, not no plan.
+        assertEquals(1, BatchBudget.chunkPlan(120, 720).size());
+        assertEquals(1, BatchBudget.chunkCount(120, 720));
+    }
+
+    /**
+     * An unknown height cannot be chunked -- the window-claims-nothing rule applied
+     * to a plan -- and a length nothing has read yet (0) yields no plan either.
+     */
+    @Test
+    public void anUnknownHeightOrLengthHasNoChunkPlan() {
+        assertEquals(0, BatchBudget.chunkFrames(0));
+        assertTrue(BatchBudget.chunkPlan(100, 0).isEmpty());
+        assertTrue(BatchBudget.chunkPlan(0, 720).isEmpty());
+        assertEquals(0, BatchBudget.chunkCount(100, 0));
+        assertEquals(0, BatchBudget.chunkCount(0, 720));
+    }
 }

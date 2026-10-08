@@ -254,6 +254,10 @@
          batch, so "about N of server time" alone was hiding the number that decides
          whether the run can happen at all. -->
     <string name="trim_estimate">about %1$s of server time · ~%2$s GiB</string>
+    <!-- A chunked range states its per-prompt memory and how many prompts it takes:
+         the range's total is no longer asked of the card in one go, so the largest
+         chunk is the number that decides whether the run can happen. -->
+    <string name="trim_estimate_chunked">about %1$s of server time · %2$d chunks · ~%3$s GiB each</string>
     <string name="trim_estimate_over">about %1$s of server time · ~%2$s GiB — this range cannot be generated</string>
     <string name="trim_job_caption">Job</string>
     <string name="trim_job_start">Start</string>
@@ -726,6 +730,9 @@
     <string name="video_phase_copying">Copying the clip</string>
     <string name="video_phase_uploading">Uploading</string>
     <string name="video_phase_generating">Generating depth for the clip</string>
+    <!-- The chunked run's honest progress: a long import has no percentage, but it
+         has a denominator (the prompts the server actually runs). -->
+    <string name="video_phase_generating_chunk">Generating %1$d of %2$d</string>
     <string name="video_phase_fetching">Fetching</string>
     <string name="video_phase_poster">Writing the poster frame</string>
     <string name="video_phase_adding">Adding to the gallery</string>

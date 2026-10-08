@@ -569,6 +569,45 @@ public class ComfyWorkflowTest {
         return n;
     }
 
+    /**
+     * The chunked shape writes no colour clip, and DROPS the node that would.
+     *
+     * <p>The colour of a chunked run is the app's own remuxed range, so a
+     * server-side re-encode of frames the app already holds is work and a download
+     * for nothing — and one colour for N chunks is only possible if the app owns
+     * it. The shape is the same graph with the third combiner absent, not disabled:
+     * a combiner reading a node that is not in the graph is a prompt the server
+     * refuses.
+     */
+    @Test
+    public void theChunkedShapeWritesNoColourClip() throws JSONException {
+        JSONObject wf = new JSONObject(ComfyWorkflow.buildVideoWorkflow(
+                videoServerInfo(), "moge_3_vitg_fp16.safetensors",
+                "/tmp/up.mp4", TS, 24f, 240, 480, 0, 720, false));
+
+        assertFalse("no colour writer at all",
+                wf.toString().contains(ComfyWorkflow.COLOUR_CLIP_PREFIX));
+        assertEquals("depth and normal still come back", 2,
+                countOf(wf.toString(), ComfyWorkflow.VIDEO_COMBINE));
+        assertTrue(wf.toString().contains(ComfyWorkflow.DEPTH_CLIP_PREFIX));
+        assertTrue(wf.toString().contains(ComfyWorkflow.NORMAL_CLIP_PREFIX));
+        assertEquals("and the shared middle is untouched", 1,
+                countOf(wf.toString(), ComfyWorkflow.MOGE_INFERENCE));
+        assertFalse("the colour combine's node id is absent",
+                wf.has("17"));
+
+        // The chunk window is IN FRAMES and travels exactly as given: chunk k starts
+        // where chunk k-1 stopped, which is what makes the joined clip continuous.
+        JSONObject in = wf.getJSONObject("10").getJSONObject("inputs");
+        assertEquals("skip_first_frames", 480, in.getInt("skip_first_frames"));
+        assertEquals("frame_load_cap", 240, in.getInt("frame_load_cap"));
+        // The two renders still read the one inference (node 12), not each other.
+        assertLink("depth render reads the video inference",
+                "13", "12", 0, wf, "moge_geometry");
+        assertLink("normal render reads the video inference",
+                "15", "12", 0, wf, "moge_geometry");
+    }
+
     @Test
     public void moGeGraphHasSevenNodesAndWiresEachStage() throws Exception {
         JSONObject g = moGeWf("moge_3_vitg_fp16.safetensors");

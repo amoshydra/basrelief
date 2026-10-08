@@ -6,6 +6,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+
 /**
  * The pending-import record: what survives a restart, and what must not be invented.
  *
@@ -14,6 +16,11 @@ import org.junit.Test;
  * worse than a lost record, because it is read on the path to drawing. And a record
  * naming a photo that is gone must not be resurrected here -- this class cannot see
  * the library, so it must not pretend to.
+ *
+ * <p><b>The chunk list is the second half of all of that.</b> A chunked import
+ * submits several prompts for one item, so a record that kept only the first would
+ * strand every finished chunk behind it -- and a v1 record is a legitimate in-flight
+ * single-prompt job, so it migrates to a one-chunk job rather than being dropped.
  */
 public class JobsTest {
 
@@ -28,9 +35,65 @@ public class JobsTest {
         assertEquals(1, parsed.pending().size());
         Jobs.Job j = parsed.pending().get(0);
         assertEquals("a", j.itemId);
-        assertEquals("p1", j.promptId);
+        // A single-prompt job is a one-chunk job, and that is the whole v1 shape.
+        assertEquals(1, j.chunks.size());
+        assertEquals("p1", j.chunks.get(0).promptId);
         assertEquals("http://host:8188", j.host);
         assertEquals(1000L, j.startedAtMs);
+    }
+
+    /**
+     * A chunked job keeps every prompt, in order, with the range each one covers.
+     *
+     * <p>The ORDER is load-bearing: the fetch tail concatenates the chunks by
+     * position, so a list that parsed back shuffled -- or dropped the last chunk --
+     * would write a clip that plays short without failing anywhere.
+     */
+    @Test
+    public void aChunkedJobSurvivesTheRoundTrip() {
+        Jobs.Job chunked = new Jobs.Job("a", Arrays.asList(
+                new Jobs.Chunk("p0", 0, 240),
+                new Jobs.Chunk("p1", 240, 240),
+                new Jobs.Chunk("p2", 480, 121)),
+                "http://host:8188", 2000L);
+        Jobs parsed = Jobs.parse(Jobs.empty().with(chunked).toJson());
+        assertEquals(1, parsed.pending().size());
+        Jobs.Job j = parsed.pending().get(0);
+        assertEquals(3, j.chunks.size());
+        assertEquals("p0", j.chunks.get(0).promptId);
+        assertEquals(0, j.chunks.get(0).startFrame);
+        assertEquals(240, j.chunks.get(0).frames);
+        assertEquals("p2", j.chunks.get(2).promptId);
+        assertEquals(480, j.chunks.get(2).startFrame);
+        assertEquals("the last chunk takes the remainder", 121, j.chunks.get(2).frames);
+        assertEquals(Arrays.asList("p0", "p1", "p2"), j.prompts());
+    }
+
+    /**
+     * A version 1 record MIGRATES to a one-chunk job.
+     *
+     * <p>Not dropped, and that is the decision the schema bump had to make: a v1
+     * blob is a legitimate in-flight single-prompt run -- the server still has it --
+     * so forgetting it would strand a finished result in the output folder, which is
+     * the exact loss this class exists to end. Its one prompt becomes one chunk with
+     * no frame range, because the old schema never recorded one and inventing a
+     * range would be pretending to know something nothing wrote down.
+     */
+    @Test
+    public void aVersionOneRecordMigratesToOneChunk() {
+        String v1 = "{\"version\":1,\"jobs\":[{\"item\":\"a\",\"prompt\":\"p1\","
+                + "\"host\":\"h\",\"started\":7}]}";
+        Jobs jobs = Jobs.parse(v1);
+        assertEquals("a v1 job is migrated, not dropped", 1, jobs.pending().size());
+        Jobs.Job j = jobs.pending().get(0);
+        assertEquals("a", j.itemId);
+        assertEquals("h", j.host);
+        assertEquals(7L, j.startedAtMs);
+        assertEquals(1, j.chunks.size());
+        assertEquals("p1", j.chunks.get(0).promptId);
+        assertEquals(0, j.chunks.get(0).startFrame);
+        assertEquals(0, j.chunks.get(0).frames);
+        assertTrue(j.isUsable());
     }
 
     /**
@@ -43,7 +106,7 @@ public class JobsTest {
     public void aSecondJobForOneItemReplacesTheFirst() {
         Jobs jobs = Jobs.empty().with(job("a", "p1")).with(job("a", "p2"));
         assertEquals("one row, one job", 1, jobs.pending().size());
-        assertEquals("p2", jobs.pending().get(0).promptId);
+        assertEquals("p2", jobs.pending().get(0).chunks.get(0).promptId);
     }
 
     @Test
@@ -56,6 +119,22 @@ public class JobsTest {
         assertEquals("and a delete of the photo takes its job",
                 1, jobs.afterRemovingItem("a").pending().size());
         assertEquals("b", jobs.afterRemovingItem("a").pending().get(0).itemId);
+    }
+
+    /**
+     * Naming ANY chunk clears the whole job, because a chunked job's prompts are one
+     * unit: they were submitted together and the range is fetched together.
+     */
+    @Test
+    public void anyChunkNamesTheWholeJob() {
+        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
+                new Jobs.Chunk("p0", 0, 240),
+                new Jobs.Chunk("p1", 240, 240)),
+                "h", 1000L));
+        assertEquals("the tail holds the first prompt and still clears all of it",
+                0, jobs.afterRemoving("p0").pending().size());
+        assertEquals("and so does any other chunk",
+                0, jobs.afterRemoving("p1").pending().size());
     }
 
     /**
@@ -73,6 +152,9 @@ public class JobsTest {
         assertEquals(0, Jobs.parse("{\"version\":99,\"jobs\":[{\"item\":\"a\","
                 + "\"prompt\":\"p\",\"host\":\"h\"}]}").pending().size());
         assertEquals(0, Jobs.parse("{\"version\":1}").pending().size());
+        assertEquals("a v2 job with no chunk list is not a job",
+                0, Jobs.parse("{\"version\":2,\"jobs\":[{\"item\":\"a\",\"host\":\"h\"}]}")
+                        .pending().size());
     }
 
     /**

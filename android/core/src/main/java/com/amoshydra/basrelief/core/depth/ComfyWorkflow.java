@@ -328,6 +328,8 @@ public final class ComfyWorkflow {
      *   MoGeInference(moge_model, image) ──▶ geometry for the WHOLE batch
      *       ├→ MoGeRender(output=depth)        → VHS_VideoCombine(depthmap_…)
      *       └→ MoGeRender(output=normal_opengl)→ VHS_VideoCombine(normal_…)
+     *   └─(only when the app has no colour of its own)
+     *     ──────────────────────────────────→ VHS_VideoCombine(colourclip_…)
      * </pre>
      *
      * <p><b>One inference for every frame, because an IMAGE is a batch.</b> This is
@@ -337,6 +339,13 @@ public final class ComfyWorkflow {
      * implementation detail of the batch size. The alternative — extracting frames
      * and running the existing still graph once per frame — costs one round trip,
      * one prompt and one model load per frame, and a clip is dozens of frames.
+     *
+     * <p><b>The batch is why a long range is submitted CHUNKED.</b> {@code
+     * skip_first_frames} and {@code frame_load_cap} can be asked for any window of
+     * the upload, so the caller can run this exact graph once per window and
+     * concatenate the results — see {@code BatchBudget.chunkPlan} — instead of
+     * materialising a whole long clip as one tensor. The graph itself does not
+     * know the difference; the window is what makes a chunk a chunk.
      *
      * <p><b>Out[0] of the loader is the IMAGE.</b> The loader has four outputs and
      * two of them are typed {@code IMAGE}: the frames and the mask. Guessing wrong is
@@ -369,6 +378,29 @@ public final class ComfyWorkflow {
                                      long timestampMs, float fps, int frameCap,
                                      int skipFirstFrames, int width, int height)
             throws JSONException {
+        return buildVideoWorkflow(info, model, videoPath, timestampMs, fps, frameCap,
+                skipFirstFrames, width, height, true);
+    }
+
+    /**
+     * The same video graph, with or without the colour write-back.
+     *
+     * @param includeColour whether to add the third combiner that re-encodes the
+     *        loader's frames as the colour clip. <b>False for a run the app will
+     *        supply its own colour for</b>: a chunked import already holds the
+     *        exact range as a local file (the upload it sent is that range), so a
+     *        server-side re-encode of the same frames is work and a download for
+     *        nothing -- and for a chunk it is also the only way to have one
+     *        colour clip rather than N. True for the one shape that has no local
+     *        range to use: a failed remux, or a v1 job migrated from the build
+     *        that always asked for it, where the run must produce its own colour
+     *        or the clip has none.
+     */
+    public static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
+                                     long timestampMs, float fps, int frameCap,
+                                     int skipFirstFrames, int width, int height,
+                                     boolean includeColour)
+            throws JSONException {
         JSONObject vloadInfo = info.getJSONObject(VIDEO_LOADER);
         JSONObject combineInfo = info.getJSONObject(VIDEO_COMBINE);
         JSONObject loaderInfo = info.getJSONObject(MOGE_LOADER);
@@ -386,13 +418,15 @@ public final class ComfyWorkflow {
         // have to be the same number or the depth slides against the colour.
         vloadIn.put("force_rate", (double) fps);
         // THE TRIM, expressed as the loader's own window: skip_first_frames and
-        // frame_load_cap are the range the user chose in the trim sheet, and because
-        // the colour clip is written from the same batch (the third combiner), all
-        // three clips come back trimmed to it and aligned -- the device never
-        // re-encodes anything, and there is no second trimming path to disagree with
-        // this one. 0 frames = the whole clip, which is the sheet's "Use the whole
-        // clip" and also what a regenerate passes, since the stored colour clip is
-        // already trimmed.
+        // frame_load_cap are the range the user chose in the trim sheet. When the
+        // colour combine is included all three clips come back trimmed to it and
+        // aligned, from one decode -- the device never re-encodes anything, and
+        // there is no second trimming path to disagree with this one. On the
+        // chunked shape the pair of numbers is one chunk's window instead: the
+        // chunks tile the app's own remuxed range, so the trim is the chunk plan.
+        // 0 frames = the whole clip, which is the sheet's "Use the whole clip" and
+        // also what a regenerate passes, since the stored colour clip is already
+        // trimmed.
         if (frameCap > 0) vloadIn.put("frame_load_cap", frameCap);
         if (skipFirstFrames > 0) vloadIn.put("skip_first_frames", skipFirstFrames);
         if (width > 0) vloadIn.put("custom_width", width);
@@ -423,10 +457,6 @@ public final class ComfyWorkflow {
                 FIRST_OUTPUT, DEPTH_CLIP_PREFIX, timestampMs, fps);
         JSONObject normalCombine = videoCombineNode(combineInfo, V_MOGE_NORMAL_RENDER_ID,
                 FIRST_OUTPUT, NORMAL_CLIP_PREFIX, timestampMs, fps);
-        // The colour, straight off the loader. Three clips, one decode: this is what
-        // makes the loop a loop, rather than three clocks that agree until the seam.
-        JSONObject colourCombine = videoCombineNode(combineInfo, VLOAD_ID,
-                FIRST_OUTPUT, COLOUR_CLIP_PREFIX, timestampMs, fps);
 
         JSONObject wf = new JSONObject();
         wf.put(VLOAD_ID, vload);
@@ -436,7 +466,14 @@ public final class ComfyWorkflow {
         wf.put(V_DEPTH_COMBINE_ID, depthCombine);
         wf.put(V_MOGE_NORMAL_RENDER_ID, normalRender);
         wf.put(V_NORMAL_COMBINE_ID, normalCombine);
-        wf.put(V_COLOUR_COMBINE_ID, colourCombine);
+        if (includeColour) {
+            // The colour, straight off the loader. Three clips, one decode: this is
+            // what makes the loop a loop, rather than three clocks that agree until
+            // the seam. Only a run with no local range of its own asks for it.
+            JSONObject colourCombine = videoCombineNode(combineInfo, VLOAD_ID,
+                    FIRST_OUTPUT, COLOUR_CLIP_PREFIX, timestampMs, fps);
+            wf.put(V_COLOUR_COMBINE_ID, colourCombine);
+        }
         return wf.toString();
     }
 

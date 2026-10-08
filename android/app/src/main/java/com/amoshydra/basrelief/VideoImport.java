@@ -3,11 +3,15 @@ package com.amoshydra.basrelief;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.media.MediaCodec;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaMuxer;
 import android.net.Uri;
 import android.util.Log;
 
+import com.amoshydra.basrelief.core.depth.BatchBudget;
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
 import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
@@ -17,9 +21,14 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * A video, in one gesture, all the way to a row that plays.
@@ -30,6 +39,26 @@ import java.io.OutputStream;
  * colour. So the share is read where it is, the row goes into the gallery as a
  * PHOTOGRAPH -- the poster frame, no depth, no clips -- and then the depth and normal
  * clips are generated and attached to that row.
+ *
+ * <p><b>A long range is submitted as CHUNKS, and the app joins the results.</b> The
+ * server graph holds a whole batch in one tensor and runs one inference over it —
+ * measured, 600 frames at 1080p died with 17.10 GiB allocated on a 23.59 GiB card,
+ * and 600 at 720p with 15.63 GiB — so cost is O(frames) twice over and nothing is
+ * streamed. The fix is shape, not estimation: the app divides the range it holds
+ * into prompts of at most {@link BatchBudget#chunkFrames} frames at the chosen
+ * height, submits them to the same video graph with the loader's own
+ * {@code skip_first_frames}/{@code frame_load_cap} window, and concatenates the
+ * per-chunk clips here without re-encoding. Length stops being the thing that
+ * decides whether an import can run at all.
+ *
+ * <p><b>The colour clip is the app's own remux, not a third server output.</b> For
+ * every run that has the range locally (which is every run whose remux succeeded),
+ * the graph is asked for depth and normal only: the app already holds the exact
+ * frames as an ordinary MP4 — it is the file it uploaded — so a server-side
+ * re-encode of the same frames is work and a download for nothing, and for a chunked
+ * run it is also the only way to end with ONE colour rather than N. The one shape
+ * that still asks the server for a colour is the run with no local range at all: a
+ * failed remux, and a v1 job from the build that always requested one.
  *
  * <p><b>The row goes in first, and it is a photograph rather than a pending clip.</b>
  * The old shape wrote the row only on success, so a failed generation lost the
@@ -54,9 +83,11 @@ import java.io.OutputStream;
  * the sheet could ask cost 10-15 seconds on a 126 MB share and left 126 MB of the
  * user's storage behind per import. {@code MediaMetadataRetriever} and
  * {@code MediaExtractor} both read content URIs, so the filmstrip, the rate, the
- * frame count and the poster come from the share itself; only the UPLOAD is
- * materialised locally, and it is the remuxed range (a few megabytes) except for
- * "Use the whole clip", where the source is copied and sent whole. The share grants
+ * frame count and the poster come from the share itself; only the RANGE is
+ * materialised locally, and it is the remuxed range (a few megabytes) -- for a
+ * trim and for the whole clip alike, because that file is also the colour clip the
+ * renderer ends up playing. When the remux itself fails the source is copied and
+ * sent whole instead, with the server writing the colour. The share grants
  * read access for the activity's lifetime, which covers the sheet and the local
  * work; the resume path after a restart never touches the URI -- it fetches the
  * server's own outputs from the job record.
@@ -68,28 +99,26 @@ import java.io.OutputStream;
  *
  * <p>Everything here is disk and network, so it runs on the {@code Io} worker. It
  * reports progress by PHASE rather than by percentage, because there is no honest
- * percentage to report across an upload, a server-side inference and two downloads.
+ * percentage to report across an upload, a server-side inference and two downloads —
+ * and for a chunked run the honest denominator is the chunk: "Generating 3 of 8" is
+ * a fact the user can read, where "37%" would be a number nothing measured.
  */
 final class VideoImport {
 
     private static final String TAG = "Basrelief";
 
     /**
-     * How many frames of the source to generate depth for.
+     * Poll interval and ceiling for ONE server-side prompt.
      *
-     * <p><b>A living photo is a loop, not a video.</b> One MoGe inference runs per
-     * clip -- the frames are a batch -- so the cost scales with frames, and a
-     * one-hour clip at 24 fps is 86,400 of them. The cap is what makes the feature
-     * reachable in one gesture: a loop that tiles, rather than an unbounded server
-     * job the user waits on for an hour. 120 frames is 4 seconds at 30 fps, and it
-     * is a TRADE, not a limit: server time and file size scale with it, so a longer
-     * loop costs both, and the resolution is the other side of the same trade.
+     * <p>Per prompt, not per import: a chunked run waits this long for each chunk in
+     * turn, and the chunk is the unit the server actually runs.
      */
-    static final int FRAME_CAP = 0; // 0 = the whole clip; see the note above
-
-    /** Poll interval and ceiling for the server-side run. */
     private static final long POLL_MS = 3000L;
     private static final long TIMEOUT_MS = 30 * 60 * 1000L;
+
+    /** The temp names a chunk's downloads land under before they are joined. */
+    private static final String DEPTH_PART = "part-depth-";
+    private static final String NORMAL_PART = "part-normal-";
 
     /** What the caller is told, so a sheet can show something honest. */
     interface Listener {
@@ -113,6 +142,24 @@ final class VideoImport {
         }
     }
 
+    /**
+     * One submitted prompt and, once the server has finished it, its outputs.
+     *
+     * <p>The chunk list the job record holds and this list are the same ORDER by
+     * construction: submission walks the plan and appends, so position k here is
+     * position k there, which is what makes the concatenation in {@link #attach}
+     * cover the range in the right order.
+     */
+    private static final class Part {
+        final String promptId;
+        JSONObject outputs;
+
+        Part(String promptId, JSONObject outputs) {
+            this.promptId = promptId == null ? "" : promptId;
+            this.outputs = outputs;
+        }
+    }
+
     private VideoImport() {
     }
 
@@ -124,9 +171,8 @@ final class VideoImport {
      * existed, and on a clip row it was worse than nothing: it replaced the poster's
      * still depth with a single-frame map while the depth CLIP kept playing. This is
      * the clip's own version of the same action, and it regenerates the WHOLE set:
-     * the existing colour clip is re-uploaded and re-run through the video graph, and
-     * all three clips plus the three stills come back aligned, because they are
-     * written by one decode.
+     * the existing colour clip is re-run through the video graph, and the depth and
+     * normal clips plus the three stills come back aligned.
      *
      * <p><b>New stamped filenames, not the id-derived ones.</b> The renderer decides
      * "already showing" by PATH, and a regenerate that overwrote the same paths would
@@ -135,6 +181,11 @@ final class VideoImport {
      * same mechanism the still path's {@code ai_depth_<stamp>.png} naming uses. The
      * superseded files are left on disk, exactly as the still path's superseded maps
      * are.
+     *
+     * <p><b>The colour is a local copy, made before the server is asked anything.</b>
+     * Its content is already here -- it is the clip being regenerated -- so the server
+     * is never asked to re-encode it, and the new generation owns a file under its
+     * own name from the start.
      *
      * @param item the clip row to regenerate. Must carry clips.
      */
@@ -149,10 +200,9 @@ final class VideoImport {
         // TWO WAYS IT IS HERE: attached to the row as a clip, or fetched by an
         // import whose attach() wrote the colour clip and then failed before the
         // depth landed -- a partial fetch, and the case this fallback still serves.
-        // The import no longer stages a copy under this name before the server
-        // round (the upload is a separate staging file), so a row whose generation
-        // never ran has no colour clip here at all; its retry is the job record,
-        // and after a restart the resume pass fetches it.
+        // The import writes the remuxed range under this name before the server
+        // round, so a row whose generation never ran still has its range here and
+        // this is its retry.
         final File colour = item.video != null
                 ? item.video.colorFile(app.getFilesDir())
                 : new File(app.getFilesDir(), LibraryItem.videoFileName(item.id));
@@ -169,9 +219,18 @@ final class VideoImport {
                 "ai_depth_" + stamp + ".png",       // depth still -- the still path's convention
                 "ai_normal_" + stamp + ".png",      // normal still
         };
+        File colourCopy = new File(app.getFilesDir(), names[0]);
+        try {
+            copyFile(colour, colourCopy);
+        } catch (Exception e) {
+            fail(prefs, null, listener,
+                    app.getString(R.string.video_import_failed), e);
+            return;
+        }
         // A regenerate passes 0, 0: the stored colour clip is ALREADY the trimmed
-        // range, so regenerating its depth means running the whole of it.
-        LibraryItem updated = generate(app, prefs, api, item.id, colour, names, 0, 0, 0, listener,
+        // range, so regenerating its depth means running the whole of the copy.
+        LibraryItem updated = generate(app, prefs, api, item.id, colourCopy, colourCopy,
+                names, 0, 0, 0, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(LibraryItem built) {
@@ -213,72 +272,89 @@ final class VideoImport {
      *   <li><b>Finished</b> — fetch, attach, clear, exactly as an import would.</li>
      * </ul>
      *
-     * <p>A job still running keeps its record and is asked again next time, which is
-     * why this is safe to call on every foreground.
+     * <p><b>A chunked job is all-or-nothing.</b> Every chunk is asked, and nothing is
+     * fetched until every one of them reports {@code completed}: a partial fetch would
+     * concatenate two of eight chunks and write a clip that plays short, which is a
+     * worse lie than "still working". One chunk errored, or is missing from the
+     * server, fails the whole job with that chunk's own reason.
      *
      * <p><b>{@code outputs.length() > 0} is NOT "finished", and this is the bug the
-     * status read fixes.</b> The video graph writes the COLOUR clip (the third
-     * {@code VHS_VideoCombine}) before MoGe runs, so a running job already has
-     * outputs; the old test called {@code attach()}, which found no depth clip,
-     * failed, and CLEARED a record for a job that might still complete. The history
-     * entry's own {@code status} is the only thing that knows the difference between
-     * running, finished and errored.
+     * status read fixes.</b> A running job can already have outputs, so the old test
+     * called {@code attach()}, which found no depth clip, failed, and CLEARED a record
+     * for a job that might still complete. The history entry's own {@code status} is
+     * the only thing that knows the difference between running, finished and errored.
      */
     static void resume(final Context app, final SharedPreferences prefs,
                        final Jobs.Job job, final Listener listener) {
         final LibraryItem item = LibraryStore.load(prefs).find(job.itemId);
         if (item == null) {
-            JobsStore.clear(prefs, job.promptId);
+            JobsStore.clearItem(prefs, job.itemId);
             return;
         }
         final ComfyApi api = new ComfyApi(job.host);
-        JSONObject entry;
-        try {
-            JSONObject history = new JSONObject(api.getHistory(job.promptId));
-            entry = history.optJSONObject(job.promptId);
-        } catch (Exception e) {
-            Log.w(TAG, "resume: " + job.promptId + " unreachable: " + e);
-            return;
-        }
-        if (entry == null) {
-            Log.w(TAG, "resume: the server has no " + job.promptId);
-            JobsStore.clear(prefs, job.promptId);
-            return;
-        }
-        JSONObject status = entry.optJSONObject("status");
-        // An error is a RESULT, and it is not one to fetch. The server's own words
-        // are the useful part -- a CUDA out-of-memory message says what the range
-        // asked for and what the card had, which is the one thing the user can act
-        // on -- so it is reported, the record is cleared, and the row is left as the
-        // photograph it already is. status_str is checked as well as the message
-        // because a server that reports the error without a readable message still
-        // must not be treated as finished.
-        String why = executionError(entry);
-        if (why != null || (status != null
-                && "error".equals(status.optString("status_str", "")))) {
-            if (why == null) {
-                why = status == null ? "the server reported an error"
-                        : ComfyWorkflow.extractExecutionError(status);
+        // The record's plan must still describe a range: chunks in frame order, each
+        // starting where the last stopped. The concatenation is by ORDER, so a plan
+        // that overlapped or gapped would not merely describe the work wrongly -- it
+        // would let the joined clip be built against a range that never existed. The
+        // FIRST chunk is allowed any start: a fallback run is one window into the
+        // source at the trim's own start, and only the joins have to be exact. A
+        // migrated v1 chunk records no range (frames 0), which is not a fault.
+        int expectedStart = -1;
+        for (Jobs.Chunk chunk : job.chunks) {
+            if (chunk.frames <= 0) continue;
+            if (expectedStart >= 0 && chunk.startFrame != expectedStart) {
+                Log.w(TAG, "resume: " + job.itemId + " chunk plan is not contiguous at "
+                        + chunk.promptId);
+                JobsStore.clear(prefs, chunk.promptId);
+                return;
             }
-            Log.w(TAG, "resume: " + job.promptId + " failed on the server: " + why);
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + why);
-            JobsStore.clear(prefs, job.promptId);
-            return;
+            expectedStart = chunk.startFrame + chunk.frames;
         }
-        // Neither finished nor failed: still running. The record is KEPT and asked
-        // again on the next foreground, which is the whole contract of the record.
-        if (status == null || !status.optBoolean("completed", false)) return;
+        Log.i(TAG, "resume: " + job.itemId + " has " + job.chunks.size() + " chunk(s), "
+                + (expectedStart < 0 ? "an unrecorded range"
+                        : expectedStart + " frames planned"));
 
-        // Completed with no execution error, so the outputs are the run's whole
-        // result. A null object here (a completed run the server recorded without
-        // outputs) is passed to attach as empty rather than dropped: attach is the
-        // one place that reports incomplete outputs, and a second report here would
-        // be a second wording for one failure.
-        JSONObject outputs = entry.optJSONObject("outputs");
-        if (outputs == null) outputs = new JSONObject();
+        final List<Part> parts = new ArrayList<Part>();
+        for (final Jobs.Chunk chunk : job.chunks) {
+            JSONObject entry;
+            try {
+                JSONObject history = new JSONObject(api.getHistory(chunk.promptId));
+                entry = history.optJSONObject(chunk.promptId);
+            } catch (Exception e) {
+                Log.w(TAG, "resume: " + chunk.promptId + " unreachable: " + e);
+                return;   // server unreachable: KEEP the record and ask again
+            }
+            if (entry == null) {
+                // One chunk the server has never heard of is the whole job gone:
+                // the range cannot be fetched in part, and asking for ever about a
+                // prompt that is not there is a record that never clears.
+                Log.w(TAG, "resume: the server has no " + chunk.promptId);
+                JobsStore.clear(prefs, chunk.promptId);
+                return;
+            }
+            // An error is a RESULT, and it is not one to fetch. The server's own
+            // words are the useful part -- a CUDA out-of-memory message says what
+            // the range asked for and what the card had, which is the one thing the
+            // user can act on -- so it is reported, the record is cleared, and the
+            // row is left as the photograph it already is.
+            String why = failedReason(entry);
+            if (why != null) {
+                Log.w(TAG, "resume: " + chunk.promptId + " failed on the server: " + why);
+                listener.failed(app.getString(R.string.video_import_failed) + ": " + why);
+                JobsStore.clear(prefs, chunk.promptId);
+                return;
+            }
+            // Neither finished nor failed: this chunk is still running. The record
+            // is KEPT and asked again on the next foreground, which is the whole
+            // contract of the record -- and nothing is attached while it is true.
+            JSONObject status = entry.optJSONObject("status");
+            if (status == null || !status.optBoolean("completed", false)) return;
+            JSONObject outputs = entry.optJSONObject("outputs");
+            parts.add(new Part(chunk.promptId, outputs == null ? new JSONObject() : outputs));
+        }
 
-        // The row's OWN names: attach() writes the fetched colour under the
-        // id-derived name, and the resume must land on the same files or the row
+        // The row's OWN names: attach() writes the fetched clips under the
+        // id-derived names, and the resume must land on the same files or the row
         // would point at nothing.
         String[] names = {
                 LibraryItem.videoFileName(job.itemId),
@@ -288,7 +364,23 @@ final class VideoImport {
                 LibraryItem.depthFileName(job.itemId),
                 LibraryItem.normalFileName(job.itemId),
         };
-        attach(app, prefs, api, job.itemId, job.promptId, names, outputs, listener,
+
+        // WHERE THE COLOUR IS, and it is not always names[0]. A share import writes
+        // its remuxed range under the row's own colour name before it submits, so
+        // that is the file. A REGENERATE submits a copy under a STAMPED name that
+        // this record does not carry -- the record is keyed by item, and the stamped
+        // name belongs to the in-flight generation -- so the source is the colour the
+        // row is already showing, which is exactly the file that generation copied.
+        // A v1 job has neither, and its server run wrote one; attach fetches that.
+        File localColour = null;
+        if (item.video != null) {
+            localColour = item.video.colorFile(app.getFilesDir());
+        }
+        if (localColour == null || !localColour.exists()) {
+            File early = new File(app.getFilesDir(), names[0]);
+            localColour = early.exists() ? early : null;
+        }
+        attach(app, prefs, api, job.itemId, names, parts, localColour, listener,
                 new Finisher() {
                     @Override
                     public LibraryItem finish(final LibraryItem built) {
@@ -321,11 +413,15 @@ final class VideoImport {
      * lands on the nearest sync sample at or before the requested start, because a
      * decoder cannot begin mid-GOP: the range may therefore begin a second or so
      * early. The alternative -- re-encoding from the exact frame -- costs the whole
-     * video pipeline on the device for a trim the server can refine, so the caller
-     * passes startFrame 0 for a remuxed upload and lets the range be what was copied.
+     * video pipeline on the device for a trim the server can refine.
+     *
+     * <p><b>The range is also the colour clip, and it is what a chunk plan
+     * partitions.</b> Every frame the server is asked about is a frame of this file,
+     * and the file stays under the row's own colour name, so a run that dies before
+     * the depth lands leaves something Regenerate can use rather than nothing.
      *
      * @return the new file, or null when the range could not be copied (the caller
-     *         falls back to uploading the source, which is the old behaviour)
+     *         falls back to the old single-prompt shape over the source)
      */
     private static File remuxRange(Context app, Uri source, File out,
                                    long startUs, long durUs) {
@@ -378,7 +474,7 @@ final class VideoImport {
             mux.stop();
             return out.length() > 0 ? out : null;
         } catch (Throwable t) {
-            Log.w(TAG, "remux failed, uploading the source instead: " + t);
+            Log.w(TAG, "remux failed, falling back to the source: " + t);
             return null;
         } finally {
             try { ex.release(); } catch (Throwable ignored) { }
@@ -412,15 +508,25 @@ final class VideoImport {
     }
 
     /**
-     * The shared pipeline: upload the colour, run the video graph, fetch all three
-     * clips, write the stills, and hand the built row to a finisher.
+     * The shared pipeline: upload the range, submit one prompt per chunk, wait for
+     * them all, fetch and join the clips, and hand the built row to a finisher.
      *
-     * @param names colour clip, depth clip, normal clip, poster, depth still, normal still
+     * <p><b>Every prompt is submitted before the first is waited on.</b> The queue
+     * then belongs to the server, so an app restart (or a swipe away) cannot strand
+     * a chunk that was never sent -- the record lists them all the moment they all
+     * exist, and the resume pass fetches whatever finished. Submitting lazily would
+     * make "you can leave — it keeps going" true only for the chunks luck reached.
+     *
+     * @param upload      the file to upload (the remuxed range, or a staged source)
+     * @param localColour the app's own colour clip for this run, or null when the
+     *                    run has no local range and must ask the server to write one
+     * @param names       colour clip, depth clip, normal clip, poster, depth still,
+     *                    normal still
      * @return the built-but-unstored item, or null after reporting a failure
      */
     private static LibraryItem generate(final Context app, final SharedPreferences prefs,
                                         final ComfyApi api, final String rowId,
-                                        final File colourSource,
+                                        final File upload, final File localColour,
                                         final String[] names,
                                         final int startFrame, final int frames,
                                         final int outHeight,
@@ -430,130 +536,249 @@ final class VideoImport {
         // up holding files named after a DIFFERENT id -- harmless until something
         // derived a filename from the row id and silently missed.
         final String id = rowId;
-        float fps = frameRateOf(app, Uri.fromFile(colourSource));
-        Log.i(TAG, "video generate id=" + id + " source=" + colourSource.getName()
-                + " fps=" + fps);
+        final float fps = frameRateOf(app, Uri.fromFile(upload));
+
+        // THE CHUNK PLAN, and the one number it hangs on. A range is chunked by
+        // FRAMES at the height the server will actually load it at, because that is
+        // what the loader's skip/cap count and what MoGe's memory follows. The plan
+        // is derived from the UPLOAD file's own length -- the colour the app keeps
+        // for the same frames -- so chunk k continues where k-1 stopped by
+        // construction rather than by a second reading of the sheet's range.
+        final int sourceHeight = sourceHeightOf(app, Uri.fromFile(upload));
+        final int loadHeight = BatchBudget.heightOf(outHeight, sourceHeight);
+        final int totalFrames = localColour != null
+                ? frameCountOf(app, Uri.fromFile(upload), fps)
+                : 0;
+        final List<int[]> plan = new ArrayList<int[]>();
+        final boolean includeColour;
+        if (localColour != null) {
+            plan.addAll(BatchBudget.chunkPlan(totalFrames, loadHeight));
+            if (plan.isEmpty()) {
+                // No length could be read (or no chunk size): ONE prompt over
+                // everything the file holds, which is the pre-chunking shape and
+                // honest about it -- the graph's own cap of 0 reads to the end.
+                plan.add(new int[] {0, 0});
+                Log.w(TAG, "video generate: no frame count for " + upload.getName()
+                        + ", submitting one uncapped prompt");
+            }
+            includeColour = false;
+        } else {
+            // The fallback: no local range, so the one prompt spans the source's
+            // own window and must write its own colour or the clip has none.
+            plan.add(new int[] {Math.max(0, startFrame), Math.max(0, frames)});
+            includeColour = true;
+        }
+        final int promptCount = plan.size();
+        Log.i(TAG, "video generate id=" + id + " source=" + upload.getName()
+                + " fps=" + fps + " frames=" + totalFrames + " height=" + loadHeight
+                + " prompts=" + promptCount + " colour=" + (includeColour ? "server" : "local"));
 
         listener.phase(app.getString(R.string.video_phase_uploading));
         String uploadedName;
         try {
-            JSONObject up = new JSONObject(api.uploadImage(colourSource, colourSource.getName()));
+            JSONObject up = new JSONObject(api.uploadImage(upload, upload.getName()));
             uploadedName = up.getString("name");
         } catch (Exception e) {
             // No clear here: this is the UPLOAD, before the server has the work, so
-            // there is no record yet -- and promptId is not even in scope.
+            // there is no record yet -- and no prompt id is in scope.
             listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
             return null;
         }
 
-        listener.phase(app.getString(R.string.video_phase_generating));
-        JSONObject outputs;
-        // Declared OUTSIDE the try: the incomplete-outputs branch below needs it to
-        // ask the server WHY, and a local inside the try is out of scope there.
-        String promptId = null;
+        final List<Part> parts = new ArrayList<Part>();
         try {
             String info = api.getObjectInfo();
-            String graph = ComfyWorkflow.buildVideoWorkflow(
-                    new JSONObject(info), "MoGeInference", uploadedName,
-                    System.currentTimeMillis(), fps,
-                    // custom_height, and the reason it is here rather than a client-side
-                    // resize: VHS_LoadVideo scales the batch as it loads, so a 720p
-                    // choice shrinks the IMAGE BATCH, MoGe's working set and all three
-                    // output clips at once. A 1380x2156 x 120-frame batch is ~4 GiB of
-                    // image plus the inference's own memory and dies on a 24 GiB card;
-                    // the same clip at 720p height is under half a gigabyte. Width stays
-                    // 0, which VHS reads as "keep the aspect".
-                    frames > 0 ? frames : FRAME_CAP, startFrame, 0, outHeight);
-            // Free the server's cached models first. A video batch is close to the
-            // card's ceiling by itself, so whatever ran before it decides whether it
-            // fits -- best effort, because a server without the route must not stop
-            // an import.
+            // Free the server's cached models ONCE, before the first prompt: every
+            // chunk loads the same model, so repeating this per chunk would free the
+            // thing the next prompt is about to need. Best effort, because a server
+            // without the route must not stop an import.
             try {
                 api.freeMemory();
             } catch (Exception ignored) {
             }
-            JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-" + id));
-            promptId = submitted.getString("prompt_id");
-            // THE RECORD, written the moment the server has the work. From here the
-            // result is reachable again after a restart, which is what the sheet's Job
-            // copy promises and what a process death used to destroy: the prompt id
-            // lived in this thread's memory, so a finished batch sat unreachable in
-            // the server's output folder with no handle to fetch it.
-            JobsStore.record(prefs, id, promptId, api.host());
-            outputs = pollOutputs(app, api, promptId);
+            long startedAtMs = System.currentTimeMillis();
+            for (int i = 0; i < promptCount; i++) {
+                int[] chunk = plan.get(i);
+                // Each prompt is the SAME graph with a different window: the loader
+                // takes skip_first_frames and frame_load_cap in FRAMES, so the chunks
+                // tile the upload without a frame of arithmetic on the device.
+                //
+                // The stamp is offset per chunk because it IS part of the output
+                // filename: two prompts built in the same millisecond would write
+                // `depthmap_<same>_00001.mp4` and the second would overwrite the
+                // first, which for a chunked run means silently losing a chunk's
+                // depth -- the fetch would find one file where it expected two.
+                String graph = ComfyWorkflow.buildVideoWorkflow(
+                        new JSONObject(info), "MoGeInference", uploadedName,
+                        startedAtMs + i, fps,
+                        // custom_height, and the reason it is here rather than a
+                        // client-side resize: VHS_LoadVideo scales the batch as it
+                        // loads, so a 720p choice shrinks the IMAGE BATCH, MoGe's
+                        // working set and the output clips at once. Width stays 0,
+                        // which VHS reads as "keep the aspect".
+                        chunk[1], chunk[0], 0, outHeight, includeColour);
+                JSONObject submitted = new JSONObject(api.submitPrompt(
+                        graph, "basrelief-" + id + "-" + i));
+                parts.add(new Part(submitted.getString("prompt_id"), null));
+            }
+            // THE RECORD, written once the LAST prompt has been accepted. A record
+            // holding only the chunks submitted so far would describe a range the
+            // resume cannot fetch in part (it is all-or-nothing by design), so the
+            // one useful moment to write it is when the list is complete.
+            List<Jobs.Chunk> jobChunks = new ArrayList<Jobs.Chunk>();
+            for (int i = 0; i < promptCount; i++) {
+                int[] chunk = plan.get(i);
+                jobChunks.add(new Jobs.Chunk(parts.get(i).promptId, chunk[0], chunk[1]));
+            }
+            JobsStore.record(prefs, new Jobs.Job(id, jobChunks, api.host(), startedAtMs));
         } catch (Exception e) {
-            fail(prefs, promptId, listener,
+            fail(prefs, parts.isEmpty() ? null : parts.get(0).promptId, listener,
                     app.getString(R.string.video_import_failed), e);
             return null;
         }
 
-        return attach(app, prefs, api, id, promptId, names, outputs, listener, finisher);
-    }
-
-    /**
-     * Take a finished prompt's outputs, put them on disk and hand the built row to a
-     * finisher. THE ONE IMPLEMENTATION of the tail of an import, shared with the
-     * resume pass so the two cannot drift -- a resume that fetched slightly
-     * differently from an import would be a second way for a clip to be wrong.
-     *
-     * @param promptId the job record to clear, or null when there is none to clear
-     */
-    private static LibraryItem attach(final Context app, final SharedPreferences prefs,
-                                      final ComfyApi api, final String rowId,
-                                      final String promptId, final String[] names,
-                                      final JSONObject outputs, final Listener listener,
-                                      final Finisher finisher) {
-        JSONObject depthOut = null, normalOut = null, colourOut = null;
-        java.util.Iterator<String> nodes = outputs.keys();
-        while (nodes.hasNext()) {
-            JSONObject node = outputs.optJSONObject(nodes.next());
-            if (node == null) continue;
-            JSONArray files = node.optJSONArray("gifs");
-            if (files == null) files = node.optJSONArray("images");
-            if (files == null) continue;
-            for (int i = 0; i < files.length(); i++) {
-                JSONObject f = files.optJSONObject(i);
-                if (f == null) continue;
-                String name = f.optString("filename", "");
-                if (depthOut == null && name.startsWith(ComfyWorkflow.DEPTH_CLIP_PREFIX)) {
-                    depthOut = f;
-                } else if (normalOut == null
-                        && name.startsWith(ComfyWorkflow.NORMAL_CLIP_PREFIX)) {
-                    normalOut = f;
-                } else if (colourOut == null
-                        && name.startsWith(ComfyWorkflow.COLOUR_CLIP_PREFIX)) {
-                    colourOut = f;
-                }
+        // WAIT FOR EVERY CHUNK, reporting progress per chunk. The phase is a fact
+        // with a denominator -- "Generating 3 of 8" -- because a long import has no
+        // honest percentage and the chunk is the unit the server actually runs.
+        try {
+            for (int i = 0; i < promptCount; i++) {
+                listener.phase(promptCount > 1
+                        ? app.getString(R.string.video_phase_generating_chunk,
+                                i + 1, promptCount)
+                        : app.getString(R.string.video_phase_generating));
+                parts.get(i).outputs = pollOutputs(api, parts.get(i).promptId);
             }
-        }
-        if (depthOut == null || colourOut == null) {
-            // The outputs came back but not all of them, and the reason is on the
-            // SERVER -- the history entry carries the exception, and a bare "could not
-            // be imported" is what the user got for a CUDA out-of-memory, which says
-            // nothing about what to do next. The history is read again here because
-            // this is the one path that knows the outputs are incomplete, and the
-            // server's own words are worth more than any guess of ours.
-            String why = serverReason(api, promptId);
-            listener.failed(app.getString(R.string.video_import_failed)
-                    + (why == null ? " (the run produced no depth clip)" : ": " + why));
+        } catch (Exception e) {
+            fail(prefs, parts.get(0).promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
             return null;
         }
 
+        return attach(app, prefs, api, id, names, parts, localColour, listener, finisher);
+    }
+
+    /**
+     * Take finished prompts' outputs, put the clips on disk and hand the built row to
+     * a finisher. THE ONE IMPLEMENTATION of the tail of an import, shared with the
+     * resume pass so the two cannot drift -- a resume that fetched slightly
+     * differently from an import would be a second way for a clip to be wrong.
+     *
+     * <p><b>Chunks are joined by SAMPLE COPY, never by re-encode.</b> The parts come
+     * from the same graph settings, so their codec configuration is the same; each
+     * part's samples are appended to one muxer timeline at the sample rate the parts
+     * themselves carry. The codec configuration is VERIFIED first, because appending
+     * a stream whose SPS/PPS differ produces a file that plays wrongly rather than
+     * failing, and "plays wrongly" is the failure this project keeps paying for.
+     *
+     * @param parts       one per chunk, in range order, each with its outputs
+     * @param localColour the app's own colour clip, or null to take the colour the
+     *                    server wrote (a failed-remux run, or a migrated v1 job)
+     */
+    private static LibraryItem attach(final Context app, final SharedPreferences prefs,
+                                      final ComfyApi api, final String rowId,
+                                      final String[] names, final List<Part> parts,
+                                      final File localColour, final Listener listener,
+                                      final Finisher finisher) {
+        if (parts.isEmpty()) {
+            fail(prefs, null, listener,
+                    app.getString(R.string.video_import_failed) + " (no prompts were recorded)",
+                    null);
+            return null;
+        }
         listener.phase(app.getString(R.string.video_phase_fetching));
+        final File dir = app.getFilesDir();
+
+        // Fetch the depth and normal parts. A chunk that came back without its depth
+        // is reported with the SERVER's own reason: the history entry carries the
+        // exception, and a bare "could not be imported" is what the user got for a
+        // CUDA out-of-memory, which says nothing about what to do next. The record is
+        // deliberately NOT cleared here -- a completed run with incomplete outputs is
+        // the one state a retry can still resolve.
+        final int k = parts.size();
+        File[] depthParts = new File[k];
+        File[] normalParts = new File[k];
+        boolean haveNormal = true;
+        for (int i = 0; i < k; i++) {
+            Part part = parts.get(i);
+            JSONObject depthOut = findOutput(part.outputs, ComfyWorkflow.DEPTH_CLIP_PREFIX);
+            JSONObject normalOut = findOutput(part.outputs, ComfyWorkflow.NORMAL_CLIP_PREFIX);
+            if (depthOut == null) {
+                String why = serverReason(api, part.promptId);
+                Log.w(TAG, "attach: " + part.promptId + " produced no depth clip: " + why);
+                listener.failed(app.getString(R.string.video_import_failed)
+                        + (why == null ? " (the run produced no depth clip)" : ": " + why));
+                return null;
+            }
+            try {
+                depthParts[i] = new File(dir, DEPTH_PART + i + ".mp4");
+                write(api.view(depthOut.getString("filename"),
+                        depthOut.optString("subfolder", ""),
+                        depthOut.optString("type", "output")), depthParts[i]);
+                if (normalOut != null) {
+                    normalParts[i] = new File(dir, NORMAL_PART + i + ".mp4");
+                    write(api.view(normalOut.getString("filename"),
+                            normalOut.optString("subfolder", ""),
+                            normalOut.optString("type", "output")), normalParts[i]);
+                } else {
+                    // One chunk with no normal is a flat-lit yes or no for the WHOLE
+                    // clip, not a mixed state: a partial normal track would shade
+                    // some frames and not others. The state is reported, not worked
+                    // around.
+                    haveNormal = false;
+                }
+            } catch (Exception e) {
+                fail(prefs, parts.get(0).promptId, listener,
+                        app.getString(R.string.video_import_failed), e);
+                return null;
+            }
+        }
+
+        File depth;
+        File normal = null;
         try {
-            write(api.view(colourOut.getString("filename"),
-                    colourOut.optString("subfolder", ""),
-                    colourOut.optString("type", "output")), new File(app.getFilesDir(), names[0]));
-            write(api.view(depthOut.getString("filename"),
-                    depthOut.optString("subfolder", ""),
-                    depthOut.optString("type", "output")), new File(app.getFilesDir(), names[1]));
-            if (normalOut != null) {
-                write(api.view(normalOut.getString("filename"),
-                        normalOut.optString("subfolder", ""),
-                        normalOut.optString("type", "output")), new File(app.getFilesDir(), names[2]));
+            depth = joinClips(depthParts, new File(dir, names[1]), "depth");
+            if (haveNormal) {
+                normal = joinClips(normalParts, new File(dir, names[2]), "normal");
             }
         } catch (Exception e) {
-            fail(prefs, promptId, listener,
+            fail(prefs, parts.get(0).promptId, listener,
+                    app.getString(R.string.video_import_failed), e);
+            return null;
+        }
+        // The part files are transient by construction -- their frames are in the
+        // joined clip now -- and leaving one per chunk per import is garbage that
+        // grows with the feature. The single-part case renamed its part away, so
+        // those deletes are no-ops.
+        for (int i = 0; i < k; i++) {
+            deleteQuietly(depthParts[i]);
+            deleteQuietly(normalParts[i]);
+        }
+
+        // The colour: the app's own file, already at names[0] for an import; a copy
+        // for a regenerate; fetched from the prompt for the one shape whose graph
+        // wrote it (a failed remux, or a v1 record). Never re-encoded on the device.
+        File colourTarget = new File(dir, names[0]);
+        try {
+            if (localColour == null) {
+                JSONObject colourOut = findOutput(parts.get(0).outputs,
+                        ComfyWorkflow.COLOUR_CLIP_PREFIX);
+                if (colourOut == null) {
+                    String why = serverReason(api, parts.get(0).promptId);
+                    Log.w(TAG, "attach: " + parts.get(0).promptId
+                            + " produced no colour clip: " + why);
+                    listener.failed(app.getString(R.string.video_import_failed)
+                            + (why == null ? " (the run produced no colour clip)"
+                                    : ": " + why));
+                    return null;
+                }
+                write(api.view(colourOut.getString("filename"),
+                        colourOut.optString("subfolder", ""),
+                        colourOut.optString("type", "output")), colourTarget);
+            } else if (!samePath(localColour, colourTarget)) {
+                copyFile(localColour, colourTarget);
+            }
+        } catch (Exception e) {
+            fail(prefs, parts.get(0).promptId, listener,
                     app.getString(R.string.video_import_failed), e);
             return null;
         }
@@ -561,27 +786,29 @@ final class VideoImport {
         listener.phase(app.getString(R.string.video_phase_poster));
         File poster, depthStill, normalStill = null;
         try {
-            poster = firstFrameAsPng(app, new File(app.getFilesDir(), names[0]), names[3]);
-            depthStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[1]), names[4]);
-            if (normalOut != null) {
-                normalStill = firstFrameAsPng(app, new File(app.getFilesDir(), names[2]), names[5]);
+            poster = firstFrameAsPng(app, colourTarget, names[3]);
+            depthStill = firstFrameAsPng(app, depth, names[4]);
+            if (normal != null) {
+                normalStill = firstFrameAsPng(app, normal, names[5]);
             }
         } catch (Exception e) {
-            fail(prefs, promptId, listener,
+            fail(prefs, parts.get(0).promptId, listener,
                     app.getString(R.string.video_import_failed), e);
             return null;
         }
 
         // The job is DONE and its outputs are on disk: the record has served its
-        // purpose and must not make the next start ask about a finished prompt.
-        JobsStore.clear(prefs, promptId);
+        // purpose and must not make the next start ask about a finished prompt. Any
+        // one of the job's prompts clears the whole job (Jobs.afterRemoving), and a
+        // record superseded by a newer submission for the same row names different
+        // prompts, so it survives.
+        JobsStore.clear(prefs, parts.get(0).promptId);
         listener.phase(app.getString(R.string.video_phase_adding));
         VideoTracks tracks;
         try {
-            tracks = VideoTracks.of(names[0], names[1],
-                    normalOut == null ? null : names[2]);
+            tracks = VideoTracks.of(names[0], names[1], normal == null ? null : names[2]);
         } catch (Exception e) {
-            fail(prefs, promptId, listener,
+            fail(prefs, parts.get(0).promptId, listener,
                     app.getString(R.string.video_import_failed), e);
             return null;
         }
@@ -632,10 +859,7 @@ final class VideoImport {
         // It is also why a poster failure now REFUSES the import instead of being
         // logged and skipped: without a poster there is no row, and the finisher
         // edits the row in place -- a finished server job would have nowhere to
-        // land. The old shape could afford to ignore the failure because it wrote
-        // the row a second time below; that write was at frame 0, so the row's
-        // picture flipped to the source's first frame the moment the import started,
-        // and it is the write this consolidation removes.
+        // land.
         final long posterAtUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
         listener.phase(app.getString(R.string.video_phase_poster));
         File poster;
@@ -653,33 +877,48 @@ final class VideoImport {
                 LibraryStore.load(prefs).withItem(placed).withSelection(placed.id));
         listener.added(placed);
 
-        // THE RANGE IS THE UPLOAD. A whole file is only sent when the whole file IS
-        // the range ("Use the whole clip"): otherwise the samples of the chosen range
-        // are copied into their own container, so a 126 MB source uploads a few
-        // megabytes -- which is what makes an import work at all behind a body limit,
-        // and what makes it quick anywhere else. The graph's skip/limit is then 0
-        // frames in, because the trim has already happened; a failed remux falls back
-        // to the source with the original range, which is exactly the old behaviour.
+        // Id-derived names, so a re-import of the same video is a new row with its
+        // own files; regenerate uses stamped names for the same row.
+        final String[] names = {
+                LibraryItem.videoFileName(id),
+                LibraryItem.videoDepthFileName(id),
+                LibraryItem.videoNormalFileName(id),
+                LibraryItem.imageFileName(id),
+                LibraryItem.depthFileName(id),
+                LibraryItem.normalFileName(id),
+        };
+
+        // THE RANGE IS THE UPLOAD, AND IT IS THE COLOUR. The samples of the chosen
+        // range are copied into their own container, so a 126 MB source uploads a
+        // few megabytes -- and the copy is kept under the row's colour name, which
+        // is both what the renderer plays and what a chunk plan partitions. A failed
+        // remux falls back to the old single-prompt shape over the source, with the
+        // server writing the colour, because that is the one shape with no local
+        // range to use.
         listener.phase(app.getString(R.string.video_phase_copying));
-        File upload = null;
-        int graphStart = startFrame;
-        if (frames > 0) {
-            final long startUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
-            final long durUs = (long) (frames / Math.max(1f, fps) * 1_000_000f);
-            File trimmed = new File(app.getFilesDir(), "stage-trim.mp4");
-            File made = remuxRange(app, uri, trimmed, startUs, durUs);
-            if (made != null) {
-                Log.i(TAG, "remux: " + made.length() + " bytes for " + frames + " frames");
-                upload = made;
-                graphStart = 0;
-            }
-        }
-        if (upload == null) {
-            // "Use the whole clip" (frames == 0), or a remux that failed and falls
-            // back to the source with the original range. A URI has no File to
-            // upload, so the source is copied to a STAGING name -- never
-            // item-<id>.mp4, which is where attach() writes the FETCHED colour clip
-            // and which therefore must not exist before the fetch does.
+        final long startUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
+        // frames 0 = the whole clip, and then there is no end time to cap: the
+        // copy runs until the samples do.
+        final long durUs = frames > 0
+                ? (long) (frames / Math.max(1f, fps) * 1_000_000f)
+                : Long.MAX_VALUE / 2;
+        final File colour = new File(app.getFilesDir(), names[0]);
+        File made = remuxRange(app, uri, colour, startUs, durUs);
+        final File upload;
+        final File localColour;
+        final int graphStart;
+        if (made != null) {
+            Log.i(TAG, "remux: " + made.length() + " bytes for " + frames + " frames");
+            upload = made;
+            localColour = made;
+            graphStart = 0;
+        } else {
+            // A zero-length file under the colour name would make Regenerate treat
+            // this row as having a colour clip when it does not.
+            colour.delete();
+            // "Use the whole clip" or a remux that failed: a URI has no File to
+            // upload, so the source is copied to a STAGING name -- never the row's
+            // colour name, which must not hold the untrimmed source.
             File staged = new File(app.getFilesDir(), "stage-import.mp4");
             try {
                 copyTo(app, uri, staged);
@@ -692,20 +931,11 @@ final class VideoImport {
                 return;
             }
             upload = staged;
+            localColour = null;
+            graphStart = startFrame;
         }
 
-        // Id-derived names, so a re-import of the same video is a new row with its
-        // own files; regenerate uses stamped names for the same row.
-        String[] names = {
-                LibraryItem.videoFileName(id),
-                LibraryItem.videoDepthFileName(id),
-                LibraryItem.videoNormalFileName(id),
-                LibraryItem.imageFileName(id),
-                LibraryItem.depthFileName(id),
-                LibraryItem.normalFileName(id),
-        };
-
-        LibraryItem item = generate(app, prefs, api, id, upload, names,
+        LibraryItem item = generate(app, prefs, api, id, upload, localColour, names,
                 graphStart, frames, outHeight, listener,
                 new Finisher() {
                     @Override
@@ -779,27 +1009,275 @@ final class VideoImport {
         return null;
     }
 
-    /** Wait for the run, then hand back its outputs. Blocking; the Io thread only. */
-    private static JSONObject pollOutputs(Context app, ComfyApi api, String promptId)
-            throws Exception {
+    /**
+     * The server's own words for a run that has FAILED, or null while it has not.
+     *
+     * <p><b>One shape, every reader.</b> A run that reports {@code status_str: error}
+     * without a readable message must not be treated as finished by one reader and as
+     * failed by another, so both the poll and the resume ask this one question --
+     * which delegates to {@link #executionError} for the message rather than parsing
+     * the status a second way.
+     */
+    private static String failedReason(JSONObject entry) {
+        String why = executionError(entry);
+        JSONObject status = entry.optJSONObject("status");
+        if (status != null && "error".equals(status.optString("status_str", ""))) {
+            return why != null ? why : ComfyWorkflow.extractExecutionError(status);
+        }
+        return why;
+    }
+
+    /**
+     * Wait for one prompt, then hand back its outputs.
+     *
+     * <p><b>The run must be FINISHED, not merely producing.</b> The history entry can
+     * carry outputs before the run is over -- observed with the colour combine, which
+     * finishes before MoGe -- and the old test returned on the first output it saw.
+     * That let the in-flight poll call {@code attach()} mid-run, find no depth clip,
+     * and tell the user the import had failed while it was still working. The status
+     * is the only thing that knows the difference between running and finished; an
+     * error is asked for FIRST, because an errored run reports {@code completed:
+     * false} and would otherwise spin to the timeout.
+     */
+    private static JSONObject pollOutputs(ComfyApi api, String promptId) throws Exception {
         long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(POLL_MS);
             JSONObject history = new JSONObject(api.getHistory(promptId));
             if (!history.has(promptId)) continue;
             JSONObject entry = history.getJSONObject(promptId);
-            // A run that ended in an ERROR is not a run that produced nothing: without
-            // this the loop would spin to the timeout and report "no depth clip" for a
-            // graph the server had already refused, which sends the user looking at the
-            // wrong thing. The check no longer requires `completed`: an errored run is
-            // exactly the case that reports completed=false, and the status read is the
-            // one place that knows the difference.
-            String why = executionError(entry);
+            String why = failedReason(entry);
             if (why != null) throw new Exception("the server reported: " + why);
-            JSONObject outputs = entry.optJSONObject("outputs");
-            if (outputs != null && outputs.length() > 0) return outputs;
+            JSONObject status = entry.optJSONObject("status");
+            if (status != null && status.optBoolean("completed", false)) {
+                JSONObject outputs = entry.optJSONObject("outputs");
+                return outputs == null ? new JSONObject() : outputs;
+            }
         }
         throw new Exception("the run did not finish in time");
+    }
+
+    /** The first output whose filename starts with {@code prefix}, or null. */
+    private static JSONObject findOutput(JSONObject outputs, String prefix) {
+        if (outputs == null) return null;
+        Iterator<String> nodes = outputs.keys();
+        while (nodes.hasNext()) {
+            JSONObject node = outputs.optJSONObject(nodes.next());
+            if (node == null) continue;
+            JSONArray files = node.optJSONArray("gifs");
+            if (files == null) files = node.optJSONArray("images");
+            if (files == null) continue;
+            for (int i = 0; i < files.length(); i++) {
+                JSONObject f = files.optJSONObject(i);
+                if (f == null) continue;
+                String name = f.optString("filename", "");
+                if (name.startsWith(prefix)) return f;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Join chunk clips into one, by copying their samples — never re-encoding.
+     *
+     * <p>The parts are outputs of the same graph with the same settings, so the
+     * expected case is that their codec configuration is byte-identical; that is
+     * VERIFIED per part rather than assumed, because appending samples whose
+     * SPS/PPS differ produces a file that plays wrongly instead of failing, and a
+     * wrongly-playing depth clip is invisible until something is very wrong on the
+     * screen. A mismatch is an error with the part's name in it.
+     *
+     * <p><b>The offset between parts is one frame of the parts' own spacing.</b> Each
+     * part restarts its timestamps at whatever its own first sample was, so each is
+     * rebased to zero and shifted to start after the previous part's highest
+     * presentation time. <b>Highest, not last-written, and the gap is the SMALLEST
+     * positive difference between the part's own timestamps.</b> Both are deliberate:
+     * H.264 from the combiner may carry B-frames, so a part's samples are in decode
+     * order and neither the last one written nor the delta between consecutive ones is
+     * the frame duration — the smallest positive difference between any two of its
+     * timestamps is, because every frame of a chunk shares one grid. A part with a
+     * single frame (a legal remainder at a height where a chunk is a few frames) falls
+     * back to the spacing the run has already shown; if no part can show one, the
+     * declared frame rate; if the container declares neither, this fails loudly rather
+     * than muxing frames on top of each other.
+     */
+    private static File joinClips(File[] parts, File out, String what) throws Exception {
+        if (parts.length == 1) {
+            // One chunk is already the clip: moved, not copied, when the filesystem
+            // allows it.
+            if (parts[0].renameTo(out)) return out;
+            copyFile(parts[0], out);
+            return out;
+        }
+        MediaExtractor probe = null;
+        MediaMuxer mux = null;
+        try {
+            probe = new MediaExtractor();
+            probe.setDataSource(parts[0].getPath());
+            int firstTrack = videoTrackOf(probe);
+            MediaFormat firstFormat = probe.getTrackFormat(firstTrack);
+
+            // VERIFY, do not assume: every part must be the same stream.
+            for (int i = 1; i < parts.length; i++) {
+                MediaExtractor other = new MediaExtractor();
+                try {
+                    other.setDataSource(parts[i].getPath());
+                    requireSameStream(firstFormat, other.getTrackFormat(videoTrackOf(other)),
+                            parts[i]);
+                } finally {
+                    other.release();
+                }
+            }
+            long declaredGapUs = declaredFrameUs(firstFormat);
+
+            mux = new MediaMuxer(out.getPath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int dst = mux.addTrack(firstFormat);
+            mux.start();
+
+            ByteBuffer buf = ByteBuffer.allocate(1 << 20);
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            long offsetUs = 0;
+            long carriedGapUs = -1;
+            for (int p = 0; p < parts.length; p++) {
+                MediaExtractor ex = new MediaExtractor();
+                List<Long> times = new ArrayList<Long>();
+                try {
+                    ex.setDataSource(parts[p].getPath());
+                    ex.selectTrack(videoTrackOf(ex));
+                    long baseUs = -1, maxWriteUs = -1;
+                    while (true) {
+                        long pts = ex.getSampleTime();
+                        if (pts < 0) break;
+                        int size = ex.readSampleData(buf, 0);
+                        if (size < 0) break;
+                        if (baseUs < 0) baseUs = pts;
+                        times.add(pts - baseUs);
+                        info.offset = 0;
+                        info.size = size;
+                        info.presentationTimeUs = pts - baseUs + offsetUs;
+                        info.flags = ex.getSampleFlags();
+                        mux.writeSampleData(dst, buf, info);
+                        maxWriteUs = Math.max(maxWriteUs, info.presentationTimeUs);
+                        ex.advance();
+                    }
+                    if (maxWriteUs < 0) {
+                        throw new Exception("a " + what + " chunk held no frames: "
+                                + parts[p].getName());
+                    }
+                    long gapUs = smallestGapUs(times);
+                    if (gapUs <= 0) gapUs = carriedGapUs;
+                    if (gapUs <= 0) gapUs = declaredGapUs;
+                    if (p < parts.length - 1 && gapUs <= 0) {
+                        throw new Exception("the " + what + " chunks' frame spacing could "
+                                + "not be read, so their timestamps cannot be joined");
+                    }
+                    if (gapUs > 0) carriedGapUs = gapUs;
+                    offsetUs = maxWriteUs + Math.max(0, gapUs);
+                } finally {
+                    ex.release();
+                }
+            }
+            mux.stop();
+            return out;
+        } finally {
+            if (probe != null) {
+                try { probe.release(); } catch (Throwable ignored) { }
+            }
+            if (mux != null) {
+                try { mux.release(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    /**
+     * The smallest positive difference between any two timestamps, or -1.
+     *
+     * <p>That is the frame duration for frames on one grid, regardless of the order
+     * the container hands them out: with B-frames the samples arrive in decode order,
+     * so consecutive deltas jump around, while the sorted set still has every step as
+     * a multiple of the frame duration.
+     */
+    private static long smallestGapUs(List<Long> times) {
+        if (times.size() < 2) return -1;
+        List<Long> sorted = new ArrayList<Long>(times);
+        java.util.Collections.sort(sorted);
+        long smallest = -1;
+        for (int i = 1; i < sorted.size(); i++) {
+            long d = sorted.get(i) - sorted.get(i - 1);
+            if (d > 0 && (smallest < 0 || d < smallest)) smallest = d;
+        }
+        return smallest;
+    }
+
+    /**
+     * Fail loudly when a part is not the same stream as the first.
+     *
+     * <p>The codec configuration ({@code csd-0}/{@code csd-1}) is what the samples
+     * are decoded against; appending samples from a stream whose configuration
+     * differs does not throw anywhere — the muxer only sees bytes — it produces a
+     * file whose later frames decode wrongly. The file names are checked because
+     * the message has to say WHICH chunk disagreed.
+     */
+    private static void requireSameStream(MediaFormat first, MediaFormat next, File part)
+            throws Exception {
+        boolean same = equalString(first.getString(MediaFormat.KEY_MIME),
+                        next.getString(MediaFormat.KEY_MIME))
+                && sameBytes(first.getByteBuffer("csd-0"), next.getByteBuffer("csd-0"))
+                && sameBytes(first.getByteBuffer("csd-1"), next.getByteBuffer("csd-1"))
+                && equalInt(first, next, MediaFormat.KEY_WIDTH)
+                && equalInt(first, next, MediaFormat.KEY_HEIGHT);
+        if (!same) {
+            throw new Exception("the clips are not one stream: " + part.getName()
+                    + " has a different codec configuration from the first chunk");
+        }
+    }
+
+    /** The gap between two consecutive frames, from the format's declared rate, or -1. */
+    private static long declaredFrameUs(MediaFormat fmt) {
+        if (fmt == null || !fmt.containsKey(MediaFormat.KEY_FRAME_RATE)) return -1;
+        int fps = fmt.getInteger(MediaFormat.KEY_FRAME_RATE);
+        return fps > 0 ? 1_000_000L / fps : -1;
+    }
+
+    private static int videoTrackOf(MediaExtractor ex) throws Exception {
+        for (int i = 0; i < ex.getTrackCount(); i++) {
+            String mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME);
+            if (mime != null && mime.startsWith("video/")) return i;
+        }
+        throw new Exception("no video track in " + ex);
+    }
+
+    private static boolean equalString(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
+
+    private static boolean equalInt(MediaFormat a, MediaFormat b, String key) {
+        boolean ha = a.containsKey(key), hb = b.containsKey(key);
+        return ha && hb ? a.getInteger(key) == b.getInteger(key) : ha == hb;
+    }
+
+    /**
+     * Byte-equality of two format buffers, treating "absent" as equal to "absent".
+     *
+     * <p>Absolute indexing rather than {@code equals}, because the buffers the
+     * extractor hands out are views whose positions are not part of the value.
+     */
+    private static boolean sameBytes(ByteBuffer a, ByteBuffer b) {
+        if (a == null || b == null) return a == b;
+        if (a.remaining() != b.remaining()) return false;
+        for (int i = a.position(); i < a.limit(); i++) {
+            if (a.get(i) != b.get(i)) return false;
+        }
+        return true;
+    }
+
+    /** Whether two files are the same path, so a copy would be onto itself. */
+    private static boolean samePath(File a, File b) {
+        try {
+            return a.getCanonicalPath().equals(b.getCanonicalPath());
+        } catch (Exception e) {
+            return a.getAbsolutePath().equals(b.getAbsolutePath());
+        }
     }
 
     private static void copyTo(Context app, Uri uri, File target) throws Exception {
@@ -814,6 +1292,30 @@ final class VideoImport {
         } finally {
             try { in.close(); } catch (Exception ignored) { }
             out.close();
+        }
+    }
+
+    /** A file-to-file copy, for the colour a regenerate re-uses. */
+    private static void copyFile(File from, File to) throws Exception {
+        InputStream in = new FileInputStream(from);
+        OutputStream out = new FileOutputStream(to);
+        try {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+        } finally {
+            try { in.close(); } catch (Exception ignored) { }
+            out.close();
+        }
+    }
+
+    /** Delete a transient file whose absence is equally fine. */
+    private static void deleteQuietly(File f) {
+        if (f == null) return;
+        try {
+            f.delete();
+        } catch (Throwable ignored) {
         }
     }
 

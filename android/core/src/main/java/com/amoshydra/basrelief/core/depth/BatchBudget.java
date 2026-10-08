@@ -61,6 +61,33 @@ public final class BatchBudget {
      */
     public static final int[] LADDER = {0, 1080, 720};
 
+    /**
+     * The largest chunk, in frames, that this project has evidence for: 240 at
+     * 720p is 6.1 GiB by the fit and is the number {@code BatchBudgetTest}
+     * records as never having OOMed.
+     *
+     * <p><b>A chunk is a prompt, so the ceiling is time and blast radius, not
+     * memory.</b> The budget below says a 720p batch of ~440 frames would fit,
+     * and nothing measured supports that shape; a chunk is one prompt whose
+     * result is fetched whole, so a 7-minute chunk also means 7 minutes with no
+     * progress line and a whole chunk to redo if the server is interrupted.
+     * 240 keeps every chunk at or below a measured-successful batch.
+     */
+    public static final int MAX_CHUNK_FRAMES = 240;
+
+    /**
+     * The fraction of {@link #BUDGET_MB} one chunk may use.
+     *
+     * <p>The budget is what a single batch may ask for, and it stands at 15 GiB
+     * with the class doc's own reasons; a chunk is a whole job, so it also needs
+     * the model, the CUDA context and the fragmentation room that doc describes
+     * beyond the batch. 0.75 is the deliberate margin — a 1080p chunk lands at
+     * ~11.5 GiB instead of touching the line — and it is one number because the
+     * difference between a chunk that fits and one that OOMs is exactly the
+     * thing no screenshot can check.
+     */
+    public static final double CHUNK_HEADROOM = 0.75;
+
     private BatchBudget() {
     }
 
@@ -120,5 +147,63 @@ public final class BatchBudget {
             }
         }
         return best;
+    }
+
+    // ------------------------------------------------------------ chunked runs
+
+    /**
+     * The largest number of frames one prompt may hold at {@code height}.
+     *
+     * <p><b>The rule, stated once:</b> the largest batch the budget allows with
+     * {@link #CHUNK_HEADROOM} to spare, capped at {@link #MAX_CHUNK_FRAMES}. The
+     * budget is what makes a chunk fit at all; the cap is what keeps a run of
+     * cheap frames (a 480p source can afford over a thousand per batch by the
+     * fit) from becoming one enormous prompt. The two bounds are the two failure
+     * modes named on the constant: too large OOMs, and a chunk is a prompt, so
+     * one that spans too many frames costs the user progress and the project a
+     * batch it may have to run twice.
+     *
+     * <p>Returns {@code 0} for an unknown height, like {@link #fits}: a window
+     * claims nothing, so it cannot be answered with a chunk size.
+     */
+    public static int chunkFrames(int height) {
+        if (height <= 0) return 0;
+        int byBudget = (int) Math.floor(BUDGET_MB * CHUNK_HEADROOM / perFrameMb(height));
+        return Math.min(MAX_CHUNK_FRAMES, byBudget);
+    }
+
+    /**
+     * How many prompts a range of {@code frames} costs at {@code height}, or 0
+     * when the range cannot be chunked at all (an unknown height).
+     */
+    public static int chunkCount(int frames, int height) {
+        int n = chunkFrames(height);
+        if (n <= 0 || frames <= 0) return 0;
+        return (frames + n - 1) / n;
+    }
+
+    /**
+     * The chunk boundaries of a range, in order: each row is
+     * {@code {startFrame, frameCount}} and the rows tile {@code [0, frames)}
+     * exactly — no gap, no overlap, the last one taking the remainder.
+     *
+     * <p><b>In frames, never in times.</b> The loader's {@code skip_first_frames}
+     * and {@code frame_load_cap} count decoded frames, so the plan is what makes
+     * the concatenation line up: chunk k continues where chunk k-1 stopped by
+     * construction, and no second division of the same range can disagree with
+     * this one.
+     *
+     * <p>Empty when {@code frames <= 0} (a length nothing has read yet) or the
+     * height is unknown — the caller then has one prompt over whatever it can
+     * read, which is the pre-chunking behaviour rather than a guess.
+     */
+    public static java.util.List<int[]> chunkPlan(int frames, int height) {
+        java.util.List<int[]> plan = new java.util.ArrayList<int[]>();
+        int n = chunkFrames(height);
+        if (n <= 0 || frames <= 0) return plan;
+        for (int start = 0; start < frames; start += n) {
+            plan.add(new int[] {start, Math.min(n, frames - start)});
+        }
+        return plan;
     }
 }

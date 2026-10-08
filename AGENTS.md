@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 533 tests across thirty classes:
+it**. 540 tests across thirty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -668,19 +668,48 @@ has run.**
     not change when the import lands -- so a process death (an install, an OOM kill, a
     swipe away) leaves a row the user can see and retry, where measured it left an
     orphaned clip file and no row at all. And the job is a record on disk (`Jobs` +
-    `JobsStore`, key `jobs`) holding the item, the prompt id and the HOST that issued
-    it, written the moment the server takes the work and cleared when the outputs are
-    fetched or the attempt fails -- because the prompt id otherwise lives in a worker
-    thread's memory, and a FINISHED server batch sat unreachable in its output folder
-    with no handle to fetch it: paid for, and lost. `JobsStore` commits rather than
-    applies, deliberately. The record is keyed by ITEM, so a second submission
-    supersedes the first instead of leaving two fetches racing for the same filenames.
-    The resume pass at studio start treats four states as states rather than errors:
-    photo gone → clear; server unreachable → KEEP (a sleeping laptop is not a lost
-    import); server has never heard of the prompt → clear and let the photo be
-    Regenerated; finished → fetch, attach, clear. `jobs` is in the studio's
-    index-transport key set, and `attach()` is the ONE implementation of an import's
-    fetch tail, shared with the resume so the two cannot drift.
+    `JobsStore`, key `jobs`) holding the item, its **CHUNKS** -- `[{prompt, start,
+    frames}]` in frame order -- and the HOST that issued them, written the moment the
+    server has all of them and cleared when the outputs are fetched or the attempt
+    fails. `JobsStore` commits rather than applies, deliberately. The record is keyed
+    by ITEM, so a second submission supersedes the first instead of leaving two fetches
+    racing for the same filenames, and clearing names ANY one chunk because a chunked
+    job's prompts are one unit. The schema is **v2** and a v1 record **MIGRATES to a
+    one-chunk job** rather than being dropped -- a v1 blob is a legitimate in-flight
+    run and dropping it would strand a finished result, the exact loss this class
+    exists to end. The resume pass at studio start treats the states as states rather
+    than errors: photo gone → clear; server unreachable → KEEP (a sleeping laptop is
+    not a lost import); the server has never heard of a chunk → clear and let the
+    photo be Regenerated; a chunk ERRORED → report the server's own words and clear;
+    a chunk still running → KEEP and ask again next foreground; every chunk completed
+    → fetch, attach, clear. **A chunked job is all-or-nothing**: nothing is fetched
+    until EVERY chunk reports `completed`, because a partial fetch would concatenate
+    two of eight chunks into a clip that plays short. And **`outputs.length() > 0` is
+    not "finished"**: the in-flight poll used to return on the first output it saw
+    (the colour combine finishes before MoGe), so a running import hit `attach()`,
+    found no depth clip, and was reported as failed while it was still working -- the
+    poll and the resume now both require `status.completed` and both ask the one
+    `failedReason()` for the server's words. `jobs` is in the studio's index-transport
+    key set, and `attach()` is the ONE implementation of an import's fetch tail,
+    shared with the resume so the two cannot drift.
+  - **A long range is CHUNKED, and the app joins the results; the server never holds
+    the whole thing as one batch.** Measured: 600 frames at 1080p died with 17.10 GiB
+    allocated on a 23.59 GiB card, and 600 at 720p with 15.63 GiB, because
+    `VHS_LoadVideo` materialises the range as ONE IMAGE batch and `MoGeInference`
+    holds several float tensors per frame for the whole batch -- `batch_size` chunks
+    the forward passes and bounds neither. The app remuxes the range and keeps it as
+    the COLOUR clip, then submits one prompt per `BatchBudget.chunkPlan(total, height)`
+    window -- `skip_first_frames = k*N` and `frame_load_cap = N`, **in frames**, which
+    is what makes the alignment exact -- and `MediaExtractor`+`MediaMuxer` append the
+    per-chunk samples into one depth clip and one normal clip, no re-encode. **The
+    colour combine is DROPPED for every run that has a local range** (every run whose
+    remux succeeded): the server re-encoding frames the app already holds is work and
+    a download for nothing, and one colour for N chunks is only possible if the app
+    owns it. The one shape that still asks the server for a colour is the run with no
+    local range at all -- a failed remux, or a migrated v1 job -- and `attach()` serves
+    both by taking a nullable local colour. Codec configuration is VERIFIED per part
+    (`csd-0`/`csd-1`) before joining: appending streams whose SPS/PPS differ plays
+    wrongly rather than failing, so a mismatch is an error, never a silent file.
   - **A clip's SPEED is a render value on the item, and the gate is where it
     applies.** Playback rate is per photo and per surface, on `SurfaceSettings`
     beside `motion`, edited by a row in the "How it moves" group shown only for a
@@ -831,11 +860,16 @@ has run.**
     that congratulates itself. Both counts must now agree before it says so.
   - **A count is only a discriminator when the shapes genuinely differ.** The test
     asserting the video graph has a different node count from the MoGe still shape
-    was wrong: both are seven nodes, because the video graph swaps one loader and
-    turns two `SaveImage`s into two `VHS_VideoCombine`. It held for the wrong reason,
-    and a guard that holds for the wrong reason is one that cannot fail. It pins the
-    CLASSES instead — no `LoadImage`, no `SaveImage`, two combines, exactly one
-    inference.
+    was wrong: with the colour combine the video graph is **eight** nodes and the MoGe
+    still shape seven, because the video graph swaps one loader and turns two
+    `SaveImage`s into three `VHS_VideoCombine` nodes -- but size alone distinguishes
+    nothing, which is why the test pins the CLASSES: no `LoadImage`, no `SaveImage`,
+    exactly one inference, and a combine count that matches the shape that was asked
+    for. The third combine (the colour) is now **opt-in**, and the chunked shape is
+    pinned as its absence: `theChunkedShapeWritesNoColourClip` holds
+    `buildVideoWorkflow(..., includeColour=false)` to two combines, no colour prefix,
+    no colour node id, and the exact `skip_first_frames`/`frame_load_cap` window it was
+    given.
 - `BatchBudgetTest` — the video batch's memory guard, and the three measured OOMs
   it exists to refuse: 600 frames at 1080p (17.10 GiB allocated), 600 at 720p
   (15.63 GiB) and 240 at 1080p (13.46 + 5.56 refused). The fit is 26 MB per frame
@@ -848,7 +882,13 @@ has run.**
   rung of the ladder that fits and **never upscales above the source**, because an
   upscale costs more memory and adds no detail; an unknown height fits nothing —
   the `DepthSource`/`VideoSource` "a window claims nothing" rule applied to a
-  number.
+  number. Its second theme is the **chunk rule** the chunked pipeline sizes prompts
+  with: `chunkFrames(height)` is the largest batch the budget allows with 0.75 of it
+  as headroom, capped at the measured-safe 240 — 1080p is budget-bound (174 frames,
+  ~11.5 GiB) and 720p is cap-bound (240, ~6.1 GiB) — and `chunkPlan` must tile the
+  range exactly, no gap and no overlap, with the last chunk taking the remainder,
+  because the join is by order and a non-tiling plan would build a clip that plays
+  wrongly without failing anywhere.
 
 - `ModelRankingTest` — the model chooser's ordering: the most recently used
   models first, then discovery order. It exists because the dialog preferred the

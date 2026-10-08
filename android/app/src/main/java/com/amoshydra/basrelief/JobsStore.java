@@ -27,11 +27,25 @@ final class JobsStore {
         prefs.edit().putString(Jobs.KEY, jobs.toJson()).commit();
     }
 
-    static void record(SharedPreferences prefs, String itemId, String promptId, String host) {
-        saveNow(prefs, load(prefs).with(new Jobs.Job(itemId, promptId, host,
-                System.currentTimeMillis())));
+    /**
+     * Write one job, replacing any earlier job for the same item.
+     *
+     * <p>The caller builds the whole {@link Jobs.Job}, chunks and all, because
+     * only the caller knows the range it planned; this class owns the write and
+     * nothing else.
+     */
+    static void record(SharedPreferences prefs, Jobs.Job job) {
+        if (job == null || !job.isUsable()) return;
+        saveNow(prefs, load(prefs).with(job));
     }
 
+    /**
+     * Clear the job one of whose chunks names {@code promptId}.
+     *
+     * <p>One prompt id is enough for the whole job — {@link Jobs#afterRemoving}
+     * removes by any chunk — which is what lets the tail clear an N-chunk import
+     * with the one prompt id it happens to hold.
+     */
     static void clear(SharedPreferences prefs, String promptId) {
         if (promptId == null) return;
         saveNow(prefs, load(prefs).afterRemoving(promptId));

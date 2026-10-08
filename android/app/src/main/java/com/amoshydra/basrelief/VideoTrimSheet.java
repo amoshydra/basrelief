@@ -32,11 +32,19 @@ import com.amoshydra.basrelief.core.depth.BatchBudget;
  *
  * <p><b>The range is in FRAMES and travels to the server as frames.</b>
  * {@code skip_first_frames} and {@code frame_load_cap} are the loader's own window
- * (see {@code ComfyWorkflow}), and because the colour clip is written from the same
- * batch, all three clips come back trimmed and aligned. The device never re-encodes
- * anything, which is why there is no second trimming path to disagree with this one
- * -- the mockup's "the seek is the missing feature" is answered by the same
- * mechanism as the trim.
+ * (see {@code ComfyWorkflow}), so all three clips come back trimmed and aligned. The
+ * device never re-encodes anything, which is why there is no second trimming path to
+ * disagree with this one -- the mockup's "the seek is the missing feature" is
+ * answered by the same mechanism as the trim.
+ *
+ * <p><b>A range too big for one batch is no longer refused -- it is chunked.</b>
+ * The memory guard below still finds the resolution and states the number, but
+ * "the whole range must fit one batch" stopped being a condition of importing:
+ * the run is split into prompts of {@code BatchBudget.chunkFrames(height)} frames
+ * and joined on the device, so the line that used to say "this range cannot be
+ * generated" now says how many chunks it takes. The one thing that still refuses
+ * is a height no chunk fits at, which is the unknown-reading case rather than a
+ * length.
  *
  * <p><b>Zoom stops, not a free pinch.</b> The deepest useful zoom is set by the
  * binding loop: a 2s range must be wider than a 44dp handle, which is what makes
@@ -218,42 +226,60 @@ final class VideoTrimSheet {
                 startText.setText(hms(bar.startFrame() / fps));
                 endText.setText(hms(bar.endFrame() / fps));
 
-                // THE MEMORY GUARD. The frames are a batch, not a stream: VHS_LoadVideo
-                // materialises all of them and MoGe holds several float tensors per
-                // frame for the whole run. Measured on the user's server: 600 frames
-                // at 720p and 240 at 1080p both OOMed. So the choice lands on
-                // something that fits -- the user's chip when it does, otherwise the
-                // tallest of the ladder that does -- and when nothing fits the sheet
-                // says so and refuses both actions rather than uploading a guaranteed
-                // failure.
+                // THE MEMORY GUARD, and what chunking changed about it. A SINGLE
+                // batch is still the shape the budget describes, so when the whole
+                // range fits one the guard behaves exactly as before -- the user's
+                // chip when it can, otherwise the tallest that can. When it does not
+                // fit ANYWHERE, length is no longer what refuses the import: the run
+                // is split into prompts of BatchBudget.chunkFrames(height) and joined
+                // on the device, so the guard's remaining job is the CHUNK size and
+                // the number the line states. The user's chip is kept for a chunked
+                // run rather than moved: every chip can be chunked, and the count of
+                // chunks the user sees is the honest cost of the one they picked.
                 final int pick = BatchBudget.pick(frames, sourceHeight, outHeight[0]);
-                final boolean fits = pick >= 0;
-                if (fits) outHeight[0] = pick;
+                final boolean single = pick >= 0;
+                if (single) outHeight[0] = pick;
                 for (int j = 0; j < chips.length; j++) {
                     paintChip(chips[j], heights[j] == outHeight[0]);
                 }
 
                 final int height = BatchBudget.heightOf(outHeight[0], sourceHeight);
-                final double gb = BatchBudget.estimateMb(frames, height) / 1024.0;
+                final int chunk = BatchBudget.chunkFrames(height);
+                final boolean canChunk = chunk > 0;
+                final int chunks = single ? 1 : BatchBudget.chunkCount(frames, height);
+                // THE NUMBER IS THE BATCH'S, not the range's. For a single batch that
+                // is every frame it holds; for a chunked run it is the largest chunk,
+                // because per-chunk memory is the thing that decides whether the run
+                // can happen at all -- the whole range's total is no longer asked of
+                // the card in one go, and stating it would be the old lie in a new
+                // place.
+                final int perBatch = single ? frames : Math.min(frames, chunk);
+                final double gb = BatchBudget.estimateMb(perBatch, height) / 1024.0;
                 final float secs = frames * SECONDS_PER_FRAME;
                 final boolean job = secs >= JOB_SECONDS;
-                String line = activity.getString(fits ? R.string.trim_estimate
-                        : R.string.trim_estimate_over, fmtWait(secs), fmtGb(gb));
+                String line;
+                if (single) {
+                    line = activity.getString(R.string.trim_estimate,
+                            fmtWait(secs), fmtGb(gb));
+                } else if (canChunk) {
+                    line = activity.getString(R.string.trim_estimate_chunked,
+                            fmtWait(secs), chunks, fmtGb(gb));
+                } else {
+                    line = activity.getString(R.string.trim_estimate_over,
+                            fmtWait(secs), fmtGb(gb));
+                }
                 if (job) line = line + "\n" + activity.getString(R.string.trim_job_note);
                 estimate.setText(line);
                 caption.setText(job ? activity.getString(R.string.trim_job_caption) : "");
                 caption.setVisibility(job ? View.VISIBLE : View.GONE);
                 living.setText(job ? activity.getString(R.string.trim_job_start)
                         : activity.getString(R.string.trim_living_photo));
-                living.setEnabled(fits);
-                // THE WHOLE CLIP IS A SUPERSET OF THE RANGE. If the range cannot fit
-                // at any offered height, neither can it; if it does not fit at the
-                // chosen height, the button must not offer a batch that can only
-                // OOM. A guaranteed failure is not a fact to state -- it is a job
-                // that cannot run -- so this button is gated by MEMORY, and never by
-                // the time the clip costs, which the mockup's whole-clip panel
-                // deliberately leaves uncapped and unjudged.
-                whole.setEnabled(BatchBudget.fits(totalFrames, height));
+                living.setEnabled(single || canChunk);
+                // THE WHOLE CLIP IS A SUPERSET OF THE RANGE. It needs a length to
+                // chunk by, so an unreadable frame count still refuses it -- the
+                // "a window claims nothing" rule -- and otherwise it is bounded the
+                // same way the range is, by the chunk.
+                whole.setEnabled(totalFrames > 0 && canChunk);
             }
         };
         bar.onChange = refresh;

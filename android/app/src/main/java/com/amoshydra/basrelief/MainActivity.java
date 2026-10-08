@@ -6007,7 +6007,7 @@ public class MainActivity extends Activity {
      *
      * <p>Called on every foreground, which is safe by design: a job that is still
      * running keeps its record and is asked again, a finished one is fetched, and one
-     * the server has forgotten is cleared. The four states are in
+     * the server has forgotten is cleared. The states are in
      * {@link VideoImport#resume}; this only supplies the worker and the refresh.
      *
      * <p>On the LONG worker, because it is a server round -- the same reason the
