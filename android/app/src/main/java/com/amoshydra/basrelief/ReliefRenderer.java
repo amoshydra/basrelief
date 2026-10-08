@@ -822,7 +822,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * </ul>
      */
     public boolean clipWantsFrames() {
-        return startingClip || pendingTracks != null || (clip != null && clip.isRunning());
+        return startingClip || pendingTracks != null || pendingPreview != null
+                || (clip != null && clip.isRunning());
     }
 
     /**
@@ -832,13 +833,32 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * pair, and a row's still files do not change when its clips are what changed.
      * So "already showing that pair" is true for a re-selected clip row whose clip
      * never started, and without this test the load is skipped and nothing ever
-     * swaps the medium in. Null means "no clip wanted": true only when nothing is
-     * running, so a photograph re-selected keeps its cheap no-op and a clip still
-     * playing behind a photograph forces the load that stops it.
+     * swaps the medium in.
+     *
+     * <p><b>Three requests, three matches, and the precedence between them is the
+     * whole no-restart rule.</b>
+     *
+     * <ul>
+     *   <li><b>Full tracks</b> match only the exact three-file identity. A PREVIEW is
+     *       running? It matches, and the load proceeds so {@code applyPending} can
+     *       GROW it in place — that is the point of asking.</li>
+     *   <li><b>A preview colour</b> matches a running clip playing that colour,
+     *       whether it is still a colour-only preview OR has already grown: a grown
+     *       clip must not be torn back down to a preview by a lingering request, and
+     *       the file is the identity both share (a preview has no tracks to compare,
+     *       and must not store any).</li>
+     *   <li><b>Null</b> means "no clip wanted": true only when nothing is running, so
+     *       a photograph re-selected keeps its cheap no-op and a clip still playing
+     *       behind a photograph forces the load that stops it.</li>
+     * </ul>
      */
-    public boolean clipMatches(com.amoshydra.basrelief.core.store.VideoTracks t) {
-        if (t == null) return clip == null || !clip.isRunning();
-        return clip != null && clip.isRunning() && clip.isSameClips(t);
+    public boolean clipMatches(com.amoshydra.basrelief.core.store.VideoTracks t,
+                               java.io.File previewColour) {
+        if (t != null) return clip != null && clip.isRunning() && clip.isSameClips(t);
+        if (previewColour != null) {
+            return clip != null && clip.isRunning() && clip.playsColour(previewColour);
+        }
+        return clip == null || !clip.isRunning();
     }
 
     /**
@@ -871,6 +891,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         if (clip != null && clip.isRunning() && clip.isSameClips(tracks)) {
             return true;
         }
+        // A GROW, not a stop-then-start. The colour currently playing is the file these
+        // tracks name -- which is what an import looks like the moment its depth lands,
+        // because the remuxed range is BOTH the preview's colour and the finished clip's
+        // colour. GrowTo adds the depth (and normal) decoders to the running player and
+        // leaves the colour decoder, its clock and its frame untouched; stopClip would
+        // restart the picture at frame 0, and "a video that rewinds is a photograph" is
+        // the reported defect this path exists to prevent. Only when the depth is
+        // actually resolvable: a grow that cannot get depth would leave the row naming
+        // tracks nothing can play, where the ordinary path degrades to the poster and
+        // retries on the next resolve.
+        if (clip != null && clip.isRunning() && tracks != null && filesDir != null) {
+            java.io.File cf = tracks.colorFile(filesDir);
+            java.io.File df = tracks.depthFile(filesDir);
+            if (clip.playsColour(cf) && df != null && df.exists()) {
+                clip.growTo(tracks, filesDir);
+                return true;
+            }
+        }
         stopClip();
         if (tracks == null || filesDir == null) return false;
         // GLES3 only, and said out loud rather than half-attempted: the GLES2 path
@@ -893,6 +931,47 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
+     * Play a colour-only preview of a row whose depth import is still running. GL
+     * thread (queue it).
+     *
+     * <p>The sibling of {@link #startClip}, and the same lifecycle rules: armed
+     * before the load, started in the same GL event as the pair it belongs to, and
+     * idempotent by the one identity a preview has — its colour file. That last test
+     * is what makes a re-resolve during a long import cheap: a request for the colour
+     * already playing does nothing, and a request for a colour that has GROWN into a
+     * full clip (the same file) does nothing either, rather than tearing the grown
+     * clip back down to a preview. See {@code clipMatches}.
+     *
+     * <p>A failed preview start is a poster state, like a failed clip start: the
+     * still pair stays on screen and the status line reports what actually happened.
+     */
+    private void startPreview(java.io.File colour, java.io.File filesDir) {
+        if (clip != null && clip.isRunning() && clip.playsColour(colour)) return;
+        // The same pump window startClip has: this tears a player down before the new
+        // one is running, and a poll landing inside it would end the frame chain.
+        startingClip = true;
+        try {
+            stopClip();
+            if (colour == null || filesDir == null) return;
+            // GLES3 only, for the same reason startClip is: the per-frame depth FIELD
+            // is sampled by the vertex shader, which GLES2 cannot do. A preview is
+            // colour-only, but it still draws through that shader.
+            if (!GLES3) {
+                android.util.Log.w("Basrelief", "clip preview needs GLES3; drawing its poster instead");
+                return;
+            }
+            clip = new ClipPlayer();
+            clip.setRate(speed);
+            if (!clip.startPreview(colour, GRID)) {
+                android.util.Log.w("Basrelief", "clip preview not playable: " + clip.error());
+                clip = null;
+            }
+        } finally {
+            startingClip = false;
+        }
+    }
+
+    /**
      * True while {@link #startClip} is mid-flight on the GL thread.
      *
      * <p>Starting a clip takes roughly half a second to a second -- three
@@ -907,30 +986,47 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile boolean startingClip;
 
     private volatile com.amoshydra.basrelief.core.store.VideoTracks pendingTracks;
+    /**
+     * The armed colour-only preview, or null. Exclusive with {@link #pendingTracks}:
+     * a row either has its clips (the full medium) or it does not and is eligible for
+     * a preview, and a request that carried both would be a host deriving the medium
+     * twice. See {@link #requestClip}.
+     */
+    private volatile java.io.File pendingPreview;
     private volatile java.io.File pendingFilesDir;
 
     /**
-     * Ask for this clip to play on top of the pair. Any thread.
+     * Ask for this clip — or this colour-only preview — to play on top of the pair.
+     * Any thread.
      *
      * <p><b>Armed, not started</b>, for the same reason {@code loadSeq} exists: a
      * request that has not been satisfied must not name a fact about the screen. The
-     * tracks sit here until the pair lands and {@link #applyPending} swaps it in, in
+     * medium sits here until the pair lands and {@link #applyPending} swaps it in, in
      * the same GL event as everything else -- so a request for a clip whose files are
      * missing leaves the poster frame on screen rather than a claimed-to-be-playing
      * clip with nothing behind it.
      *
-     * <p>{@code null} means "a photograph, not a clip", and it is what a host passes
-     * for every row that has no tracks. That is the common case and it has to be
+     * <p><b>Three requests, one arm:</b> {@code tracks != null} is the full clip;
+     * {@code tracks == null && previewColour != null} is the colour-only preview a
+     * running import is eligible for; both null is "a photograph, not a clip", which
+     * is what a host passes for every row that has neither. That last case has to be
      * explicit: a request never made would leave the previous clip playing over the
      * newly selected photograph, which is the wallpaper showing the wrong medium.
+     *
+     * <p>Preview wins nothing over tracks: a caller passing both is asking for the
+     * full clip, and building the "both" state would be building a state no host
+     * derives.
      */
     public void requestClip(com.amoshydra.basrelief.core.store.VideoTracks tracks,
+                            java.io.File previewColour,
                             java.io.File filesDir) {
         this.pendingTracks = tracks;
+        this.pendingPreview = tracks == null ? previewColour : null;
         this.pendingFilesDir = filesDir;
-        this.clipRequested = tracks != null;
+        this.clipRequested = tracks != null || previewColour != null;
         android.util.Log.i("Basrelief", "requestClip tracks="
                 + (tracks == null ? "null" : tracks.toJson())
+                + " preview=" + (pendingPreview == null ? "-" : pendingPreview.getName())
                 + " running=" + (clip != null && clip.isRunning())
                 + " playingJson=" + (clip == null ? "-" : String.valueOf(clip.playingJsonForLog())));
     }
@@ -944,6 +1040,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     void stopClip() {
         pendingTracks = null;
+        pendingPreview = null;
         pendingFilesDir = null;
         clipRequested = false;
         if (clip != null) {
@@ -1491,6 +1588,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // install() to work it out again from the paths would be a second derivation
         // of a value that has exactly one owner.
         final boolean clip = clipRequested;
+        // And so does WHICH clip-request it is. A preview is CLIP too -- its pixels are
+        // video and install must swap the medium in -- but the status line has to say
+        // "depth pending" rather than "clip + depth", and that answer belongs to the
+        // request that produced the decode, exactly like the medium. Read here, not at
+        // install: a Preview flag re-derived at applyPending from whatever the fields
+        // hold could name a different state than the one this decode ran for.
+        final boolean preview = clip && pendingPreview != null;
         // Already decoded by the other surface in this process? Then uploading it
         // is the only work left, which is what makes the wallpaper's very first
         // frame correct: the system snapshots the surface ~100ms after it appears
@@ -1508,12 +1612,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // why the clip did not "automatically" play. A cache hit must answer the
         // medium it was asked about; a mismatch is a miss, and the fresh decode
         // below replaces the entry.
+        //
+        // PREVIEW IS PART OF THE QUESTION, not just clip-ness. A preview decode and a
+        // full-clip decode of the same still pair are both "clip", but their status
+        // lines differ ("depth pending" vs "clip + depth"), and the entry a preview
+        // leaves must not answer a full-clip request with the preview's own words.
         Object warm = PairCache.get(imagePath, depthPath, normalPath);
         if (warm instanceof Pending) {
             Pending w = (Pending) warm;
-            if (w.isClip() == clip) return w;
+            if (w.isClip() == clip && w.isPreview() == preview) return w;
             android.util.Log.i("Basrelief", "pairCache: medium mismatch (cached clip="
-                    + w.isClip() + ", want clip=" + clip + ") -- decoding fresh");
+                    + w.isClip() + "/preview=" + w.isPreview()
+                    + ", want clip=" + clip + "/preview=" + preview + ") -- decoding fresh");
         }
 
         byte[] imageBytes = null;
@@ -1597,7 +1707,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
         Pending result = new Pending(colorBmp, grayOut, dims[0], dims[1],
                 customImage, customDepth, embedded, flat, normalBmp,
-                imagePath, depthPath, normalPath, clip);
+                imagePath, depthPath, normalPath, clip, preview);
         // Offer it to the other surface. Only the selected pair is worth keeping,
         // and the studio is always the one that decodes first.
         PairCache.put(imagePath, depthPath, normalPath, result);
@@ -1647,12 +1757,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
          * answer rather than a value and a re-derivation that could disagree.
          */
         private final boolean clip;
+        /**
+         * Whether the clip request was the colour-only PREVIEW, which is a distinct
+         * state from a full clip even though both are {@link #isClip()}: the still
+         * pair behind it is the poster and the status line has to say the depth is
+         * still coming. Carried with the decode for the same reason the medium is.
+         */
+        private final boolean preview;
 
         Pending(Bitmap colorBmp, byte[] gray, int w, int h,
                 boolean customImage, boolean customDepth, boolean embedded, boolean flat,
                 Bitmap normalBmp,
                 String requestedImage, String requestedDepth, String requestedNormal,
-                boolean clip) {
+                boolean clip, boolean preview) {
             this.colorBmp = colorBmp;
             this.gray = gray;
             this.w = w;
@@ -1665,6 +1782,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             this.requestedDepth = requestedDepth;
             this.requestedNormal = requestedNormal;
             this.clip = clip;
+            this.preview = preview;
             this.flat = flat;
         }
 
@@ -1676,6 +1794,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         /** Whether this pair is a clip's. See {@link #clip}. */
         boolean isClip() {
             return clip;
+        }
+
+        /** Whether this pair answers a colour-only preview. See {@link #preview}. */
+        boolean isPreview() {
+            return preview;
         }
     }
 
@@ -1743,9 +1866,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and shows a photograph, or the reverse. A request that cannot be satisfied
         // leaves sourceKind as it is written and keeps the poster on screen, which is
         // the honest degradation rather than a claim.
+        //
+        // Tracks first, preview second: the arm made them exclusive (see requestClip),
+        // so this order only states which one the "both" state would mean.
         if (sourceKind == Framing.SOURCE_VIDEO) {
             if (pendingTracks != null && pendingFilesDir != null) {
                 startClip(pendingTracks, pendingFilesDir);
+            } else if (pendingPreview != null && pendingFilesDir != null) {
+                startPreview(pendingPreview, pendingFilesDir);
             }
         } else if (clip != null) {
             // A photograph was selected while a clip was playing. Stopping it is not
@@ -1904,6 +2032,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // as "custom image + depth map", which is exactly the failure this status
         // line exists for: an asset or a medium nothing is reading, invisible in a
         // build log.
+        //
+        // A PREVIEW is said out loud rather than reported as a clip with depth: the
+        // colour plays, the depth does not exist yet, and a line reading "clip +
+        // depth (flat lit)" over a picture whose relief is deliberately flat would
+        // be the status line lying about the one thing it is for. The record is what
+        // says this state is expected; this line says which state it is.
+        if (p.isPreview()) {
+            return "video preview, depth pending";
+        }
         if (p.isClip()) {
             return "clip + depth" + shade;
         }
@@ -2409,12 +2546,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // rendered and stayed there: a video that never started, with a perfectly good
         // clip on disk and nothing anywhere saying so.
         //
+        // And the PREVIEW is resolved through the same one derivation, for the same
+        // reason: a launch (or a wallpaper engine rebuild) while an import is running
+        // must show the moving colour immediately, not the poster -- the record is on
+        // disk, and a cold resolve is exactly the moment the user notices it was
+        // ignored. JobsStore owns the file half; Jobs owns the precedence rule.
+        //
         // Arming rather than starting, because the medium belongs to the install that
         // is about to happen and not to the request -- see requestClip.
-        requestClip(active == null ? null : active.video, context.getFilesDir());
+        final java.io.File preview =
+                JobsStore.previewColour(p, context.getFilesDir(), active);
+        requestClip(active == null ? null : active.video, preview, context.getFilesDir());
         // One resolution, shared with the wallpaper: they used to disagree about
         // the bundled item, and the studio was the one that got it wrong.
-        Framing mine = Framing.of(state.activeItem(), editSurface);
+        // The preview goes in as the medium, because that is what the renderer will
+        // report once the install lands -- see Framing.of's three-argument form.
+        Framing mine = Framing.of(state.activeItem(), editSurface, preview != null);
         // The rate with it. reloadFromPrefs is the one path both surfaces converge
         // on, so a cold engine starts a clip at the speed the item stores -- the
         // studio and the wallpaper cannot disagree about it.

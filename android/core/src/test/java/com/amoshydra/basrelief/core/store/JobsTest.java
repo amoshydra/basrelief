@@ -2,6 +2,7 @@ package com.amoshydra.basrelief.core.store;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -262,5 +263,57 @@ public class JobsTest {
         assertEquals(0, j.completed);
         assertEquals(0, j.height);
         assertEquals(240, j.chunks.get(0).frames);
+    }
+
+    /**
+     * A row with a record and no tracks names its colour preview, and ONLY that row.
+     *
+     * <p>The name is the import's own remux — written before anything reaches the
+     * server, which is what makes a preview possible at all — and it is answered for
+     * the item the record names, never for another row. No record and no item are
+     * the same answer: nothing to preview.
+     */
+    @Test
+    public void aRecordWithoutTracksNamesTheRowsColourPreview() {
+        Jobs jobs = Jobs.empty().with(job("a", "p1"));
+        LibraryItem row = LibraryItem.of("a", "poster.png", null, 1L);
+        assertEquals(LibraryItem.videoFileName("a"), jobs.previewColourName(row));
+        assertNull("another row's record is not this row's preview",
+                jobs.previewColourName(LibraryItem.of("b", "b.png", null, 1L)));
+        assertNull("no record, no preview",
+                Jobs.empty().previewColourName(row));
+        assertNull("no row, no preview", jobs.previewColourName(null));
+    }
+
+    /**
+     * <b>The precedence window, pinned.</b> Tracks WIN over a lingering record: a row
+     * whose clips have been written is the full clip even if the record has not been
+     * cleared yet, and a preview there would restart a real clip at frame 0. This is
+     * the window every resolve between the two writes lands in, and it is also the
+     * whole state a REGENERATE runs in — record and tracks together for minutes.
+     */
+    @Test
+    public void tracksWinOverALingeringRecord() {
+        Jobs jobs = Jobs.empty().with(job("a", "p1"));
+        LibraryItem grown = LibraryItem.of("a", "poster.png", null, 1L)
+                .withVideo(VideoTracks.of(
+                        LibraryItem.videoFileName("a"),
+                        LibraryItem.videoDepthFileName("a")));
+        assertNull("a row with clips must never preview",
+                jobs.previewColourName(grown));
+    }
+
+    /**
+     * A FAILED record still previews: the failure is kept for the sheet and the
+     * tile's corner, and the user's colour clip keeps playing while it is read —
+     * stopping the picture at the one moment there is nothing else to look at is
+     * not what "kept" means.
+     */
+    @Test
+    public void aFailedRecordStillNamesThePreview() {
+        Jobs jobs = Jobs.empty().with(job("a", "p1"))
+                .withError("p1", "the run needed ~19 GiB; the server has ~24");
+        LibraryItem row = LibraryItem.of("a", "poster.png", null, 1L);
+        assertEquals(LibraryItem.videoFileName("a"), jobs.previewColourName(row));
     }
 }

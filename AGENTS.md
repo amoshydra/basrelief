@@ -196,6 +196,24 @@ already cost real time.
     without both. `playable(filesDir)` asks the same pair one layer out, and a
     half-written clip object in a blob parses as **no clip at all** rather than as a
     row claiming a track that is not there.
+  - **A running import is the pair invariant's one TRANSIENT exception, and the
+    record is what keeps it from being silent.** `VideoImport` remuxes the range to
+    the row's colour file *before* anything is submitted, so while a `Jobs` record
+    exists the colour can play with a deliberately flat field — colour moving, flat
+    relief — without the index ever holding half a clip: `item.video` stays null and
+    the preview is a request passed to the renderer, never stored. What makes that not
+    §2's silent flat clip is the record (the only thing that says the depth is
+    expected) and the status line, which says "video preview, depth pending". The
+    precedence lives in exactly one place, `Jobs.previewColourName`: **`item.video !=
+    null` wins over a lingering record**, because at finish the tracks and the record
+    coexist for a moment — and for a regenerate's whole run — and a preview there would
+    restart a real clip; a row with no tracks and a record (FAILED included) is
+    preview-eligible, and the app layer adds only the file check
+    (`JobsStore.previewColour`). A preview must **grow in place, never restart**:
+    `ClipPlayer.growTo` adds the depth/normal decoders to the SAME player on the SAME
+    clock, seeded at the colour's current clip time (`ClipDecoder.startAt`), and
+    `startClip`'s identity check grows instead of stopping when the running colour file
+    is the one the tracks name — "a video that rewinds is a photograph".
   - **Filenames, never absolute paths — the same rule as an image.** §7 says so
     explicitly ("a video pair is two more filenames and the same rule"), and the
     consequence is sharper than for a still: a restored absolute path does not give a
@@ -220,7 +238,12 @@ already cost real time.
     `ofValues` is deprecated** because it cannot, and `ReliefRenderer.snapshot()` is
     the one caller that has to move before any clip can be imported. Do not add a
     medium flag to `Framing` as a boolean — that is the `bundled` trap one level
-    worse.
+    worse. It is still read off the row by default, and a row running a colour-only
+    preview has no `video` on it, so the hosts pass the third argument of
+    `Framing.of(item, surface, previewing)` — an **overload**, not a field — because
+    the preview's pixels are video too and a framing that called them STILL would
+    differ from the renderer's own snapshot on every resolve, defeating the
+    no-op-paint guard and letting a glide stamp STILL onto a moving clip.
 - **Shading is supplied, never derived, and flat lit is a deliberate state.**
   The old path derived a normal from the depth gradient
   (`normalize(-dzdx, -dzdy, 1)`); it is gone from both backends, as is the
@@ -602,7 +625,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 552 tests across thirty-two classes:
+it**. 556 tests across thirty-two classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -647,6 +670,15 @@ has run.**
   still and a clip at identical depth, zoom and light are two pictures. It is a float rather
   than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
   `ofValues` cannot reproduce is a field the no-op-paint guard cannot see.
+  - **`aPreviewRowNamesTheMediumOfItsPixels` — the preview's medium is video, and the
+    ROW cannot say so.** An import's preview row is deliberately a photograph (nothing
+    half a clip is ever stored), while the pixels on screen are the colour clip's — so
+    the hosts pass `Framing.of(item, surface, previewing)` and this pins that it
+    answers `SOURCE_VIDEO`, that the flag only ADDS video (tracks are video with or
+    without it, and a plain photograph stays still), and therefore that the host
+    framing cannot differ from the renderer's own snapshot on every preview resolve.
+    Without it the no-op-paint guard never fires while a preview plays and a glide
+    landing over one stamps STILL onto a moving clip.
   - **The medium is SWITCHED, never eased — and `isVideo()` matches it EXACTLY.**
     `ReliefRenderer.snapshot()` is the twelve-argument `ofValues` and was the last
     caller of the deprecated eleven-argument form. Through that one a snapshot of a
@@ -968,7 +1000,12 @@ has run.**
   the tile's corner carry it until Regenerate or a delete), the count of
   completed chunks the job line states, and the load height its memory figure is
   stated at. A v2 blob reads with none of them, which is what it is, and a
-  progress count past the chunk list is clamped rather than invented.
+  progress count past the chunk list is clamped rather than invented. Its
+  preview theme pins the precedence window: a record with no tracks on the row
+  names the row's colour preview, another row's record names nothing, **tracks
+  win over a lingering record** (the resolve that lands between the finish's
+  writes, and every resolve during a regenerate), and a FAILED record still
+  previews because the colour is still the user's video.
 - `ModelRankingTest` — the model chooser's ordering: the most recently used
   models first, then discovery order. It exists because the dialog preferred the
   first MoGe entry it found, so the default checkpoint followed the server's

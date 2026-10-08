@@ -231,7 +231,7 @@ public final class Framing {
         return Math.abs(a - b) <= SAME_EPSILON;
     }
 
-    private Framing(LibraryItem item, Surface surface) {
+    private Framing(LibraryItem item, Surface surface, boolean previewing) {
         this.bundled = item == null || item.isBundled();
         // Null only when there is no item at all -- not when there is a bundled one,
         // which resolves like anything else from here.
@@ -241,7 +241,23 @@ public final class Framing {
         // that could name the medium would be a second source for a value the index
         // already owns, which is how the two surfaces came to disagree about the
         // bundled item in the first place.
-        this.sourceKind = (item != null && item.video != null)
+        //
+        // EXCEPT FOR THE PREVIEW, and that exception proves the rule: the row is a
+        // photograph for the whole server round -- a preview is deliberately never
+        // stored on it -- so the row cannot answer, and the one thing that can is the
+        // job record, through the ONE derivation (Jobs.previewColourName). `previewing`
+        // is that answer, already resolved by the caller (it needs filesDir to stat,
+        // which this class does not have); reading it here as a second, independent
+        // fact would be the disagreement this comment warns about.
+        //
+        // Why it matters at all: the renderer's snapshot reports VIDEO while a preview
+        // plays, and `sameAs` compares sourceKind. A host framing that called the
+        // preview STILL would differ from the frame on screen on EVERY resolve, so
+        // apply(RESOLVE)'s no-op guard could never fire -- and a surface glide landing
+        // over a preview would ease from a video snapshot to a "still" destination and
+        // stamp STILL onto a picture that is still moving. The medium is a fact about
+        // the PIXELS, and the pixels are video either way.
+        this.sourceKind = (item != null && (item.video != null || previewing))
                 ? SOURCE_VIDEO : SOURCE_STILL;
 
         // Everything comes from the item for one surface, INCLUDING THE BUNDLED
@@ -315,12 +331,31 @@ public final class Framing {
      *                home settings when the lock screen has none of its own
      */
     public static Framing of(LibraryItem item, Surface surface) {
-        return new Framing(item, surface);
+        return new Framing(item, surface, false);
+    }
+
+    /**
+     * The same framing, for a row whose clip is playing as a COLOUR-ONLY PREVIEW.
+     *
+     * <p>The one difference is the medium: a preview's pixels are video, and the
+     * renderer reports {@code SOURCE_VIDEO} while one plays. A host framing that said
+     * still would be a different picture from the frame on screen for {@code sameAs}
+     * on every resolve — defeating the no-op-paint guard and letting a glide stamp
+     * the wrong medium over a moving clip. See the constructor.
+     *
+     * <p>{@code previewing} is the caller's app-layer answer to "a job record for this
+     * row exists AND its colour file is on disk" — the one derivation, with the file
+     * half applied where files can be stat'ed. It is a parameter rather than a read
+     * here because {@code :core} cannot stat, and because the caller has already
+     * resolved it to decide the renderer request.
+     */
+    public static Framing of(LibraryItem item, Surface surface, boolean previewing) {
+        return new Framing(item, surface, previewing);
     }
 
     /** The home surface, which is what the studio previews. */
     public static Framing of(LibraryItem item) {
-        return new Framing(item, Surface.HOME);
+        return new Framing(item, Surface.HOME, false);
     }
 
     /**

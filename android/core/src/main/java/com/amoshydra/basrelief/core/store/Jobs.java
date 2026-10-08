@@ -221,6 +221,57 @@ public final class Jobs {
     }
 
     /**
+     * The record for one row, or null. "The" record is well defined because
+     * {@link #with} keeps one entry per item — see its own note on why a second
+     * submission supersedes rather than accompanies.
+     */
+    public Job forItem(String itemId) {
+        if (itemId == null) return null;
+        for (Job j : jobs) {
+            if (itemId.equals(j.itemId)) return j;
+        }
+        return null;
+    }
+
+    /**
+     * The colour file name a row may PREVIEW while its depth import runs, or null.
+     *
+     * <p><b>The one derivation of "is this row a preview right now", and the
+     * precedence rule lives here rather than at the two call sites.</b> A preview
+     * is exactly: the row has no clips of its own, and a job record for it exists.
+     * A recorded run whose colour clip is not on disk is not a preview, but that
+     * half is a FILE question — {@code :core} cannot stat, so the app layer resolves
+     * the name and checks existence ({@code JobsStore.previewColour}), and the rule
+     * here stays pure arithmetic over the index and the record.
+     *
+     * <p><b>{@code item.video != null} WINS over a lingering record, and it is a
+     * rule rather than an artifact of statement order.</b> The record is cleared at
+     * the END of an import and the row's tracks are written around the same moment;
+     * any resolve that lands in that window would, under the other precedence,
+     * restart a clip that has real depth and real shading back at frame 0 as a
+     * colour-only preview — and "a video that rewinds is a photograph" is the
+     * reported defect this whole feature cannot afford to reintroduce. The window is
+     * also not confined to one function: a REGENERATE runs the graph against a row
+     * that already has tracks, so its record and its clips coexist for the whole
+     * run, and the running clip must simply keep playing.
+     *
+     * <p><b>A FAILED record still previews.</b> The failure is kept on purpose so
+     * the sheet line and the tile's corner can show the server's words until the
+     * user acts; the colour clip is still the user's video and still plays. Stopping
+     * it because the depth run failed would take the moving picture away at the exact
+     * moment there is nothing else to look at.
+     *
+     * <p>The name is {@link LibraryItem#videoFileName} because that is where the
+     * import's local remux is written BEFORE anything is submitted — the range is
+     * the upload, and it is also the colour the finished clip will name.
+     */
+    public String previewColourName(LibraryItem item) {
+        if (item == null || item.video != null) return null;
+        if (forItem(item.id) == null) return null;
+        return LibraryItem.videoFileName(item.id);
+    }
+
+    /**
      * The same set with this job added, replacing any earlier job for the same item.
      *
      * <p><b>Keyed by ITEM, not by prompt.</b> One photo has one import in flight: a

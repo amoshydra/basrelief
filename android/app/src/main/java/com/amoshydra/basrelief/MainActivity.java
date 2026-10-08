@@ -4855,6 +4855,30 @@ public class MainActivity extends Activity {
         refreshSliders();
     }
 
+    /**
+     * A phase moved: repaint the sheet's row and re-resolve the medium.
+     *
+     * <p><b>The medium is re-resolved on every phase because this is the only signal
+     * the studio gets.</b> The job record appears between two phases with no write to
+     * the index: the pre-submission phases run over a row that is still a photograph
+     * (and show it), and the first post-submission phase is what turns that row into
+     * the moving colour preview. The prefs listener invalidates the cached state for
+     * {@code Jobs.KEY} but deliberately does not load files, so without this nudge
+     * the preview would wait for the next selection change — the whole server round.
+     *
+     * <p>{@code applyFiles} is guarded ({@code showingSamePair} + {@code clipMatches}),
+     * so a phase that changes nothing issues no decode: it is a resolve, not a
+     * rebuild of the strip or the pair.
+     */
+    private void refreshImportPhase() {
+        // The same guard refreshImportUi carries, hoisted so applyFiles gets it too:
+        // a phase posted from a worker can land after the activity is gone, and the
+        // resolve touches the GL view.
+        if (isFinishing() || isDestroyed()) return;
+        refreshImportUi();
+        applyFiles();
+    }
+
     /** The active row's job record, or null. */
     private Jobs.Job activeJob(String itemId) {
         if (itemId == null) return null;
@@ -5356,9 +5380,16 @@ public class MainActivity extends Activity {
                         public void run() {
                             AppState st = AppState.load(MainActivity.this,
                                     prefs, getFilesDir());
+                            LibraryItem it = st.activeItem();
+                            // The preview is part of the medium here too: a glide to the
+                            // other surface's framing must land on the medium the
+                            // renderer will still be reporting (see Framing.of), or
+                            // the medium switch at the end of the glide stamps STILL
+                            // onto a preview that is still playing.
                             com.amoshydra.basrelief.core.render.Framing to =
                                     com.amoshydra.basrelief.core.render.Framing.of(
-                                            st.activeItem(), surface);
+                                            it, surface,
+                                            JobsStore.previewColour(prefs, getFilesDir(), it) != null);
                             renderer.glide(null, to, glideSpanMs());
                         }
                     });
@@ -5679,7 +5710,7 @@ public class MainActivity extends Activity {
                                 runOnUiThread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        refreshImportUi();
+                                        refreshImportPhase();
                                     }
                                 });
                             }
@@ -5813,7 +5844,7 @@ public class MainActivity extends Activity {
                                 runOnUiThread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        refreshImportUi();
+                                        refreshImportPhase();
                                     }
                                 });
                             }
@@ -6079,7 +6110,14 @@ public class MainActivity extends Activity {
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
         final String nrm = nrmF == null ? null : nrmF.getAbsolutePath();
-        final Framing framing = Framing.of(state.activeItem(), editSurface);
+        // THE PREVIEW, through the one derivation: the row has no clips of its own and
+        // a job record for it exists, and its remuxed colour file is actually here
+        // (JobsStore owns the file half; Jobs owns the precedence). Resolved ONCE and
+        // used for both the request and the medium below, because two calls could
+        // disagree across a record write and then the arm and the match would name
+        // different pictures.
+        final java.io.File preview = JobsStore.previewColour(prefs, getFilesDir(), active);
+        final Framing framing = Framing.of(state.activeItem(), editSurface, preview != null);
         // Same pair means this resolve only moves the framing: it goes through the
         // apply guard (`RESOLVE`), so a framing already on screen is a no-op and a
         // glide in flight is not cancelled. A DIFFERENT pair is a new picture, and
@@ -6094,7 +6132,7 @@ public class MainActivity extends Activity {
         // so it answered "same" and nothing ever swapped the medium in. The clip
         // stayed paused at its poster for ever -- until a hide/foreground ran a path
         // that did load. The question has one answer and it is the renderer's.
-        boolean sameMedia = renderer.clipMatches(active == null ? null : active.video);
+        boolean sameMedia = renderer.clipMatches(active == null ? null : active.video, preview);
         android.util.Log.i("Basrelief", "applyFiles id=" + (active == null ? "none" : active.id)
                 + " samePair=" + renderer.showingSamePair(img, dep, nrm)
                 + " sameMedia=" + sameMedia);
@@ -6136,7 +6174,7 @@ public class MainActivity extends Activity {
         // selection: the slider writes it live, and this makes a NEWLY selected clip
         // start at its own stored speed rather than at whatever the last one used.
         renderer.setSpeed(framing.speed);
-        renderer.requestClip(active == null ? null : active.video, getFilesDir());
+        renderer.requestClip(active == null ? null : active.video, preview, getFilesDir());
         if (!renderer.showingSamePair(img, dep, nrm) || !sameMedia) {
             // The medium changed, so the pair load has to happen even when the stills
             // are identical: applyPending is what stops/starts the running clip, and
@@ -6183,7 +6221,7 @@ public class MainActivity extends Activity {
                                     runOnUiThread(new Runnable() {
                                         @Override
                                         public void run() {
-                                            refreshImportUi();
+                                            refreshImportPhase();
                                         }
                                     });
                                 }
@@ -6221,17 +6259,20 @@ public class MainActivity extends Activity {
                 public void onDone(LibraryItem item, Exception error) {
                     if (isFinishing() || isDestroyed()) return;
                     if (item != null) {
-                        // Something actually arrived: repaint that one row and hand
-                        // the renderer its files. A still-running job returns null,
-                        // and rebuilding for it would re-decode every thumbnail for
-                        // nothing -- which is the defect the strip already taught us.
+                        // Something actually arrived: repaint that one row. A
+                        // still-running job returns null, and rebuilding the strip for
+                        // it would re-decode every thumbnail for nothing -- which is
+                        // the defect the strip already taught us. The resolve below
+                        // does not rebuild; it is guarded, and it is what hands the
+                        // renderer its files.
                         gallery.itemUpdated(item);
-                        applyFiles();
                     }
-                    // Whatever happened, the record may have changed (a failure
-                    // recorded, a job still running): the line and the corners read
-                    // it again.
-                    refreshImportUi();
+                    // Whatever happened, the record or the live phase may have moved,
+                    // and for a resume that is also a MEDIUM change: a failure KEPT
+                    // keeps the row previewing, a record cleared because the photo is
+                    // gone must stop it, and a finished fetch turns the preview into
+                    // the grown clip. refreshImportPhase re-resolves both.
+                    refreshImportPhase();
                 }
             });
         }

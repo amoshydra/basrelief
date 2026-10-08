@@ -7,6 +7,7 @@ import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.Config;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.Trigger;
 import android.content.Context;
@@ -289,8 +290,15 @@ public class DepthWallpaperService extends WallpaperService {
                         // and the engine is the only thing alive when the screen is
                         // off, which is when a timed trigger is most likely to fall
                         // due.
+                        // AND JOBS, the fourth, because a preview makes the record a
+                        // MEDIUM signal: the write at submission is what turns the
+                        // active photograph into a playing colour clip (and the clear
+                        // at completion is what turns it into the grown one), and
+                        // without watching it the wallpaper would hold the poster for
+                        // the whole server round while the studio played. The engine
+                        // is the surface that cannot be nudged any other way.
                         if (!Config.KEY.equals(key) && !Library.KEY.equals(key)
-                                && !Playlists.KEY.equals(key)) return;
+                                && !Playlists.KEY.equals(key) && !Jobs.KEY.equals(key)) return;
                         advancePlaylistIfDue(p);
                         applyFromPrefs(p);
                     }
@@ -672,9 +680,14 @@ public class DepthWallpaperService extends WallpaperService {
         // term that used to be here could never be true.
         android.util.Log.i("Basrelief", "pre-hold hold=" + (!interactive || locked));
         if (interactive && !locked) return;
-        final Framing lock = Framing.of(
-                AppState.load(DepthWallpaperService.this, prefs, getFilesDir()).activeItem(),
-                Surface.LOCK);
+        final LibraryItem held =
+                AppState.load(DepthWallpaperService.this, prefs, getFilesDir()).activeItem();
+        // The preview is part of the held frame's medium too: the engine holding this
+        // may have a colour preview playing, and a lock framing that called it STILL
+        // would disagree with the frame actually on screen when the unlock compares
+        // them (see Framing.of).
+        final Framing lock = Framing.of(held, Surface.LOCK,
+                JobsStore.previewColour(prefs, getFilesDir(), held) != null);
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -712,6 +725,12 @@ public class DepthWallpaperService extends WallpaperService {
             if (p == null || glView == null || renderer == null) return;
             final AppState state = AppState.load(DepthWallpaperService.this, p, getFilesDir());
             final LibraryItem active = state.activeItem();
+            // THE PREVIEW, through the one derivation both the engine and the studio
+            // use: no clips on the row, a job record for it, and the remuxed colour
+            // file actually on disk. Resolved ONCE and carried into the arm, the match
+            // and the framing, because three calls could straddle a record write and
+            // then the request and the comparison would name different pictures.
+            final java.io.File preview = JobsStore.previewColour(p, getFilesDir(), active);
             // Resolved from the item and from nothing else. There is no branch for
             // "the demo": it is a file in filesDir like any other photograph, named
             // by its own id. A null item -- nothing selected, which is where a
@@ -738,7 +757,7 @@ public class DepthWallpaperService extends WallpaperService {
             // Resolved once, on the calling thread, and applied on the GL thread.
             // queueEvent is the one thread hop the renderer allows (see the
             // threading table in AGENTS.md).
-            final Framing framing = Framing.of(active, resolved.surface());
+            final Framing framing = Framing.of(active, resolved.surface(), preview != null);
             // Whether this resolve is a surface transition that must EASE. The origin
             // is not resolved here: the renderer uses what it is actually showing, so
             // the first frame of a transition is always the frame on screen.
@@ -760,6 +779,11 @@ public class DepthWallpaperService extends WallpaperService {
                     + " which=" + resolved.surface()
                     + " item=" + (active == null ? "none" : active.displayName())
                     + " want=" + (img == null ? "packaged" : new java.io.File(img).getName())
+                    // The medium as well as the pair: during an import the pair is the
+                    // poster (so `onScreen` is true) while the CLIP is what is drawing,
+                    // and a diagnostic that cannot say which file the preview is
+                    // playing sends the next reader to the still path.
+                    + " preview=" + (preview == null ? "-" : preview.getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep, nrm)
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             // Publish what the LOCK engine is showing, so a HOME engine starting on the
@@ -883,7 +907,8 @@ public class DepthWallpaperService extends WallpaperService {
                     // with it: a pref change can be the Speed slider, and the
                     // engine must follow it live.
                     renderer.setSpeed(framing.speed);
-                    renderer.requestClip(active == null ? null : active.video, getFilesDir());
+                    renderer.requestClip(active == null ? null : active.video,
+                            preview, getFilesDir());
 
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own
@@ -911,7 +936,8 @@ public class DepthWallpaperService extends WallpaperService {
                     // last photo is deleted. Null means "no clip wanted", which is
                     // exactly what clipMatches and requestClip already document.
                     if (!renderer.showingSamePair(img, dep, nrm)
-                            || !renderer.clipMatches(active == null ? null : active.video)) {
+                            || !renderer.clipMatches(active == null ? null : active.video,
+                                    preview)) {
                         // Async: the read/decode/mesh-build must not happen
                         // between two frames of the wallpaper, or it visibly
                         // freezes for seconds.

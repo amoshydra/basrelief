@@ -335,6 +335,37 @@ public class FramingTest {
     }
 
     /**
+     * A row running a COLOUR-ONLY PREVIEW is video, because its pixels are.
+     *
+     * <p>The row is deliberately a photograph for the whole server round — a preview
+     * is never stored on it — so the row alone cannot answer "what medium is on
+     * screen". The renderer, which does know, reports VIDEO while a preview plays;
+     * a host framing that said STILL would differ from the frame on screen on every
+     * resolve, so the no-op-paint guard could never fire, and a surface glide landing
+     * over a preview would ease from a video snapshot to a "still" destination,
+     * stamping the wrong medium onto a picture that is still moving.
+     *
+     * <p>The flag only ADDS video: a row with its own tracks is video with or without
+     * it, and a plain photograph is still either way.
+     */
+    @Test
+    public void aPreviewRowNamesTheMediumOfItsPixels() {
+        LibraryItem photograph = photo("a", 90, 100, 0f, 0f, 0f, 0f);
+        assertEquals(Framing.SOURCE_STILL, home(photograph).sourceKind, 0f);
+        assertFalse(home(photograph).isVideo());
+        assertEquals("a preview's pixels are video",
+                Framing.SOURCE_VIDEO,
+                Framing.of(photograph, Surface.HOME, true).sourceKind, 0f);
+        assertTrue(Framing.of(photograph, Surface.HOME, true).isVideo());
+
+        LibraryItem grown = photograph.withVideo(
+                VideoTracks.of("item-a.mp4", "item-a-depth.mp4"));
+        assertEquals("a grown clip is video whether or not the flag is set",
+                Framing.SOURCE_VIDEO, Framing.of(grown, Surface.HOME, false).sourceKind, 0f);
+        assertEquals(Framing.SOURCE_VIDEO, Framing.of(grown, Surface.HOME, true).sourceKind, 0f);
+    }
+
+    /**
      * A snapshot has to be able to say it is a clip, or the no-op-paint guard misses
      * every frame of one.
      *

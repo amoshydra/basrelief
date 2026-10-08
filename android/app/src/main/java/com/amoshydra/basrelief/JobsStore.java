@@ -3,6 +3,10 @@ package com.amoshydra.basrelief;
 import android.content.SharedPreferences;
 
 import com.amoshydra.basrelief.core.store.Jobs;
+import com.amoshydra.basrelief.core.store.LibraryItem;
+import com.amoshydra.basrelief.core.store.PrefFiles;
+
+import java.io.File;
 
 /**
  * The pending-import record, on disk.
@@ -21,6 +25,27 @@ final class JobsStore {
 
     static Jobs load(SharedPreferences prefs) {
         return Jobs.parse(prefs.getString(Jobs.KEY, null));
+    }
+
+    /**
+     * The colour file a row may play as a PREVIEW while its import runs, or null.
+     *
+     * <p>The app-layer half of the one derivation: the precedence rule — no clips of
+     * its own, a record exists — is {@link Jobs#previewColourName} in {@code :core},
+     * which also owns the "tracks win" rule, and this only answers the half the pure
+     * function cannot: whether the file is actually here. A record whose colour is
+     * missing (a failed remux, a migrated v1 job whose colour is on the server) is
+     * not a preview — playing a file that is not there is a decoder error, not a
+     * picture.
+     *
+     * <p>Both hosts and the renderer's cold path call THIS, so a wallpaper and the
+     * studio cannot disagree about whether a row is previewing.
+     */
+    static File previewColour(SharedPreferences prefs, File filesDir, LibraryItem item) {
+        String name = load(prefs).previewColourName(item);
+        if (name == null) return null;
+        File f = PrefFiles.resolve(filesDir, name);
+        return f != null && f.exists() ? f : null;
     }
 
     static void saveNow(SharedPreferences prefs, Jobs jobs) {

@@ -106,6 +106,41 @@ final class ClipDecoder {
     private volatile boolean waiting;
 
     /**
+     * The clip time this decoder should join at, or -1 to start from the beginning.
+     *
+     * <p>Set by {@link ClipPlayer#growTo} when a decoder is created for a clip that
+     * is ALREADY playing: the depth track arrives minutes into a run, and decoding
+     * it from 0 would walk the whole clip before reaching the frame the colour is
+     * showing. See {@link #startAt}.
+     */
+    private volatile long startAtUs = -1L;
+
+    /**
+     * Join the clip at the time the shared clock has already reached.
+     *
+     * <p><b>The gate's arithmetic is the whole reason this works.</b> A frame's
+     * absolute time is {@code file pts + basePtsUs} and the release test is
+     * {@code absPts <= (now + lead) * rate} — so the on-screen clip time at wall
+     * {@code now} is {@code now * rate}. The seek target is exactly that, taken
+     * modulo the clip's own duration with the whole loops moved into
+     * {@code basePtsUs}, which is the same term the loop rewind accumulates. No
+     * per-start offset is added when samples are queued: the file's own pts IS the
+     * timeline, whole loops included.
+     *
+     * <p>The seek lands on the nearest SYNC sample at or before the target, so the
+     * frames between it and the target are released immediately — that is the gate's
+     * normal behaviour for frames whose time has come, and it costs one GOP of
+     * catch-up rather than a walk from zero.
+     *
+     * <p>No {@code awaitingKeyframe} guard here: a decoder that has never decoded
+     * anything starts clean at the sync sample, and the guard exists for a REWIND,
+     * where the codec continues from references it no longer has.
+     */
+    void startAt(long elapsedUs) {
+        this.startAtUs = elapsedUs;
+    }
+
+    /**
      * Set on a rewind, cleared by the first KEY frame.
      *
      * <p>The seam showed a macroblock MOSAIC -- black with scattered coloured
@@ -311,6 +346,22 @@ final class ClipDecoder {
                     + " range=" + rangeName + " clipUs=" + clipUs);
 
             extractor.selectTrack(track);
+            // JOIN AT THE CLIP TIME THE CLOCK IS ALREADY AT, if this decoder was
+            // seeded for a grow. See startAt: the target is the wall clock scaled by
+            // the rate (which is what the gate releases against), taken modulo the
+            // clip so whole loops land in basePtsUs exactly as the rewind's do.
+            long seedUs = startAtUs;
+            if (seedUs > 0) {
+                long targetUs = (long) (seedUs * rate);
+                long wholeLoops = clipUs > 0 ? targetUs / clipUs : 0;
+                basePtsUs = wholeLoops * clipUs;
+                long seekUs = targetUs - basePtsUs;
+                if (seekUs > 0) {
+                    extractor.seekTo(seekUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+                }
+                android.util.Log.i(TAG, "clip " + tag + " joins at " + seekUs + "us"
+                        + " (wall " + seedUs + "us, loop " + wholeLoops + ")");
+            }
             codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME));
             codec.configure(format, surface, null, 0);
             codec.start();

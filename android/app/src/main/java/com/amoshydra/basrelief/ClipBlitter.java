@@ -589,6 +589,36 @@ final class ClipBlitter {
     }
 
     /**
+     * Write one value into a field texture, in the FIELD'S OWN UNITS (0..255).
+     *
+     * <p>This is the deliberate FLAT state a colour-only preview renders with:
+     * {@code 128} is the neutral the vertex shader unpacks as
+     * {@code 128/255 - 0.5 ≈ 0.002}, and it is the exact value the still path's
+     * depthless fallback fills ({@code Arrays.fill(grayOut, (byte) 128)}), so the
+     * preview is the EXISTING flat relief rather than a new one.
+     *
+     * <p><b>Not a clear, and the arithmetic is why.</b> {@code glClearColor} writes
+     * into 0..1, so the most it could put here is 1.0 — which the shader reads as
+     * {@code 1/255 - 0.5 = -0.496}, nearly the whole relief pulled to one extreme,
+     * not flat at all. {@code glClearBufferfv} and its clamping story differ across
+     * drivers and this project has already paid for a driver that silently refuses
+     * things; the upload pair below is the still path's PROVEN one
+     * ({@code ReliefRenderer.uploadField}: GL_RED / GL_FLOAT into R32F), so the flat
+     * field arrives exactly the way a real one does. Float end to end, like every
+     * other field write in this class.
+     */
+    static void fillField(Channel c, float value) {
+        java.nio.FloatBuffer fb = ByteBuffer.allocateDirect(c.w * c.h * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        for (int i = 0; i < c.w * c.h; i++) fb.put(value);
+        fb.position(0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, c.tex2d);
+        GLES30.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, c.w, c.h,
+                GLES30.GL_RED, GLES20.GL_FLOAT, fb);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+    }
+
+    /**
      * Listen for a frame arriving. GL thread.
      *
      * <p><b>Nothing is consumed here.</b> The draw path calls
