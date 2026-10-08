@@ -4377,14 +4377,16 @@ public class MainActivity extends Activity {
      * stale row could only ever describe the wrong photo, never edit it.
      */
     /**
-     * Whether this row has a staged colour clip waiting to be generated.
+     * Whether this row has a colour clip on disk without its depth.
      *
-     * <p>A CONVENTION ON THE ID, not a field: an import copies the video to
-     * {@code item-<id>.mp4} before it asks the server for anything, so a row with no
-     * clips and that file on disk is a row whose generation has not run or has
-     * failed. Keeping it as a convention is what lets the row be an ordinary
-     * photograph -- no schema holds half a clip, because half a clip is the thing
-     * {@code VideoTracks} exists to make unrepresentable.
+     * <p>A CONVENTION ON THE ID, not a field. The import no longer stages a copy
+     * under this name before the server round -- the upload is a separate staging
+     * file, and {@code item-<id>.mp4} is written by {@code attach()} from the
+     * SERVER's fetched colour clip. So the file with no clips on the row is a
+     * partial fetch: the colour arrived and the depth did not. Keeping it as a
+     * convention is what lets the row be an ordinary photograph -- no schema holds
+     * half a clip, because half a clip is the thing {@code VideoTracks} exists to
+     * make unrepresentable.
      */
     private boolean hasStagedClip(LibraryItem item) {
         if (item == null || item.video != null) return false;
@@ -4396,12 +4398,12 @@ public class MainActivity extends Activity {
         mapRow.setOrientation(LinearLayout.HORIZONTAL);
         // Resolved at CLICK time, not build time, for the reason on the class: the
         // row is rebuilt per selection but a click can land after another change.
-        // A CLIP ROW INCLUDES ONE WHOSE CLIPS ARE NOT ATTACHED YET: an import stages
-        // its colour clip under the row's own id and attaches the pair only when the
-        // generation lands, so between those two moments the row is a photograph with
-        // a staged clip behind it. It must still offer Generate -- through the VIDEO
-        // graph, which is the only thing that can produce a depth track -- and it must
-        // not offer Replace, which writes one still map over a clip's track set.
+        // A CLIP ROW INCLUDES ONE WHOSE CLIPS ARE NOT ATTACHED YET: a fetch that
+        // wrote the colour clip and then failed before the depth landed leaves a
+        // photograph with a colour clip behind it. It must still offer Generate --
+        // through the VIDEO graph, which is the only thing that can produce a depth
+        // track -- and it must not offer Replace, which writes one still map over a
+        // clip's track set.
         final LibraryItem activeNow = state().activeItem();
         final boolean isClip = activeNow != null
                 && (activeNow.video != null || hasStagedClip(activeNow));
@@ -5594,44 +5596,48 @@ public class MainActivity extends Activity {
             return;
         }
         final ComfyApi api = new ComfyApi(host.trim());
-        // STAGE FIRST, THEN ASK. The trim sheet needs the file -- a filmstrip is
-        // decoded from it -- and asking before the copy would put a spinner in front
-        // of a question. The copy is also the cheapest thing here, so it costs a beat.
-        Io.run(this, new Callable<File>() {
+        // ASK FIRST, FROM THE SHARE ITSELF. This used to stage the whole clip into
+        // filesDir before the sheet could ask its question: measured, a 126 MB share
+        // left the studio for 10-15 seconds before the trim sheet appeared, and left
+        // 126 MB of the user's storage behind per import. The retriever and the
+        // extractor read content URIs directly, so the three facts the sheet needs
+        // (rate, frame count, height) come from the share and the copy is gone
+        // entirely. The URI's read grant lasts for the activity's lifetime, which
+        // covers the sheet and the local work the import does before the server
+        // round; the resume path after a restart never touches it.
+        Io.run(this, new Callable<VideoImport.Meta>() {
             @Override
-            public File call() throws Exception {
-                return VideoImport.stage(MainActivity.this, uri);
+            public VideoImport.Meta call() throws Exception {
+                return VideoImport.metaOf(MainActivity.this, uri);
             }
-        }, new Io.Callback<File>() {
+        }, new Io.Callback<VideoImport.Meta>() {
             @Override
-            public void onDone(File staged, Exception error) {
-                if (staged == null || !staged.exists()) {
+            public void onDone(VideoImport.Meta meta, Exception error) {
+                if (meta == null) {
                     Toast.makeText(MainActivity.this, R.string.video_import_failed,
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                // THE ACTIVITY MAY BE GONE by now: staging runs on a worker and this
+                // THE ACTIVITY MAY BE GONE by now: the read runs on a worker and this
                 // callback lands later, so a backgrounded, finished or recreated
                 // activity reaches here with a dead window token and Dialog.show()
                 // throws BadTokenException -- measured as a crash from this exact
                 // line. A sheet is not worth crashing for; the import is simply not
                 // asked about, and the user can share again.
                 if (isFinishing() || isDestroyed()) return;
-                float fps = VideoImport.frameRateOf(staged);
-                int frames = VideoImport.frameCountOf(staged, fps);
-                VideoTrimSheet.show(MainActivity.this, staged, label, fps, frames,
+                VideoTrimSheet.show(MainActivity.this, uri, label,
+                        meta.fps, meta.frames, meta.height,
                         new VideoTrimSheet.Chosen() {
                             @Override
                             public void range(int startFrame, int frameCount, boolean whole,
                                               int outHeight) {
-                                runImport(api, staged, label, startFrame, frameCount, outHeight);
+                                runImport(api, uri, label, startFrame, frameCount, outHeight);
                             }
 
                             @Override
                             public void cancelled() {
-                                // Nothing to undo: staging is one file, overwritten by
-                                // the next import. A cancel that cleaned up would be a
-                                // second code path for a file nobody reads.
+                                // Nothing to undo: the sheet only ever read the share,
+                                // and the URI's grant ends with the activity.
                             }
                         });
             }
@@ -5639,9 +5645,8 @@ public class MainActivity extends Activity {
     }
 
     /** The import itself, once the range is known. */
-    private void runImport(final ComfyApi api, final File staged, final String label,
+    private void runImport(final ComfyApi api, final Uri uri, final String label,
                            final int startFrame, final int frames, final int outHeight) {
-        final Uri uri = Uri.fromFile(staged);
         // runLong: the whole server round must not hold the shared Io worker, or
         // every thumbnail re-decode queues behind it and the filmstrip goes blank
         // for the length of the import -- the reported defect.
@@ -6027,7 +6032,21 @@ public class MainActivity extends Activity {
                                 }
 
                                 @Override
-                                public void failed(String message) {
+                                public void failed(final String message) {
+                                    // Posted, because failed() is called from the Io
+                                    // worker and a Toast is UI. The server's own words
+                                    // are the useful part -- a CUDA out-of-memory says
+                                    // what the range asked for and what the card had --
+                                    // and a resume that failed silently is the state
+                                    // this pass exists to end.
+                                    runOnUiThread(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (isFinishing() || isDestroyed()) return;
+                                            Toast.makeText(MainActivity.this, message,
+                                                    Toast.LENGTH_LONG).show();
+                                        }
+                                    });
                                 }
                             });
                     return out[0];

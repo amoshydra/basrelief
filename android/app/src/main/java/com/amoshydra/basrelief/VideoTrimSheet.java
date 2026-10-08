@@ -9,6 +9,7 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.media.MediaMetadataRetriever;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -17,16 +18,17 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.io.File;
+import com.amoshydra.basrelief.core.depth.BatchBudget;
 
 /**
  * The video trim sheet: two 44dp handles, a pinch, and a frame stepper.
  *
- * <p><b>One axis to choose.</b> A living photo needs a RANGE and nothing else --
- * not a mode, not a resolution, not a frame rate. So the sheet is a bar with two
- * handles, and everything else on it exists to make a handle land on the frame you
- * meant: a preview of the frame under each handle, a one-frame stepper beside each
- * time, and a pinch that changes how much time sits under your thumb.
+ * <p><b>The range is the decision.</b> A living photo needs a RANGE, and the sheet
+ * is a bar with two handles: a preview of the frame under each handle, a one-frame
+ * stepper beside each time, and a pinch that changes how much time sits under your
+ * thumb. The resolution row is not a second decision to make -- it is the smallest
+ * control that keeps a source too big for the server importable, and the MEMORY
+ * GUARD moves it by itself when the current choice cannot fit.
  *
  * <p><b>The range is in FRAMES and travels to the server as frames.</b>
  * {@code skip_first_frames} and {@code frame_load_cap} are the loader's own window
@@ -42,9 +44,11 @@ import java.io.File;
  * three stops; the handles never change size, the time beneath them does.
  *
  * <p><b>Past 30 seconds of server time it is a JOB, and the sheet says so without
- * advising.</b> The estimate is a fact -- the frames cost what they cost -- and the
- * copy states where the result lives and that closing the app does not cancel it.
- * Facts, no steering: the mockup is explicit that the sheet does not warn.
+ * advising.</b> The estimate is a fact -- the frames cost what they cost in time
+ * AND in the server's memory -- and the copy states where the result lives and that
+ * closing the app does not cancel it. Facts, no steering: the mockup is explicit
+ * that the sheet does not warn, so an over-budget range states its number and the
+ * guard refuses it rather than advising a smaller one.
  */
 final class VideoTrimSheet {
 
@@ -111,11 +115,13 @@ final class VideoTrimSheet {
     /**
      * Show the sheet for one video.
      *
-     * @param fps         the source rate, so a time becomes a frame
-     * @param totalFrames the source's frame count, or 0 when it could not be read
+     * @param fps          the source rate, so a time becomes a frame
+     * @param totalFrames  the source's frame count, or 0 when it could not be read
+     * @param sourceHeight the video's own height, for the "Original" estimate
      */
-    static void show(final Activity activity, final File video, final String label,
-                     final float fps, final int totalFrames, final Chosen onChosen) {
+    static void show(final Activity activity, final Uri video, final String label,
+                     final float fps, final int totalFrames, final int sourceHeight,
+                     final Chosen onChosen) {
         // Guarded here as well as at the call site: the check there and the show here
         // are not one atomic step, and a Dialog with a dead token throws rather than
         // declining. A sheet nobody can see is the right outcome for an activity that
@@ -154,11 +160,12 @@ final class VideoTrimSheet {
         body.addView(times);
 
         // THE RESOLUTION. It exists because a source can be too big to generate at
-        // all: the depth inference holds the whole batch, and a 1380x2156 clip of 120
-        // frames asks for ~4 GiB of image on top of its own working set. Scaling at
-        // the LOADER fixes batch, job length and file size together, and it costs the
-        // user one tap -- where the alternative was telling them their video cannot
-        // be imported.
+        // all: the depth inference holds the whole batch, and the cost scales with
+        // frames AND with height -- superlinearly in height, because MoGe's own
+        // working resolution follows the input. Scaling at the LOADER fixes batch,
+        // job length and file size together, and it costs the user one tap. The
+        // MEMORY GUARD below makes that tap automatic when the chosen size cannot
+        // fit: the sheet must not let a batch be submitted that can only OOM.
         final int[] outHeight = {0};
         LinearLayout resRow = new LinearLayout(activity);
         resRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -171,21 +178,11 @@ final class VideoTrimSheet {
         final TextView[] chips = new TextView[3];
         final int[] heights = {0, 1080, 720};
         for (int i = 0; i < heights.length; i++) {
-            final int idx = i;
             TextView chip = new TextView(activity);
             chip.setText(activity.getString(i == 0 ? R.string.trim_res_original
                     : i == 1 ? R.string.trim_res_1080 : R.string.trim_res_720));
             chip.setTextSize(11);
             chip.setPadding(dp(activity, 10), dp(activity, 5), dp(activity, 10), dp(activity, 5));
-            chip.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    outHeight[0] = heights[idx];
-                    for (int j = 0; j < chips.length; j++) {
-                        paintChip(chips[j], j == idx);
-                    }
-                }
-            });
             chips[i] = chip;
             resRow.addView(chip);
         }
@@ -210,24 +207,70 @@ final class VideoTrimSheet {
                 activity.getString(R.string.trim_whole_clip), false, true);
 
         // The live readout: times, the estimate, and the Job framing past the line.
-        bar.onChange = new Runnable() {
+        // ONE runnable for all of it, because the memory guard and the number are one
+        // decision: the guard may move the resolution chip, and the line must then
+        // state the number that chip implies. A second derivation of the same fact is
+        // how a sheet ends up showing an estimate for a size it will not submit.
+        final Runnable refresh = new Runnable() {
             @Override
             public void run() {
+                final int frames = bar.endFrame() - bar.startFrame();
                 startText.setText(hms(bar.startFrame() / fps));
                 endText.setText(hms(bar.endFrame() / fps));
-                int frames = bar.endFrame() - bar.startFrame();
-                float secs = frames * SECONDS_PER_FRAME;
-                boolean job = secs >= JOB_SECONDS;
+
+                // THE MEMORY GUARD. The frames are a batch, not a stream: VHS_LoadVideo
+                // materialises all of them and MoGe holds several float tensors per
+                // frame for the whole run. Measured on the user's server: 600 frames
+                // at 720p and 240 at 1080p both OOMed. So the choice lands on
+                // something that fits -- the user's chip when it does, otherwise the
+                // tallest of the ladder that does -- and when nothing fits the sheet
+                // says so and refuses both actions rather than uploading a guaranteed
+                // failure.
+                final int pick = BatchBudget.pick(frames, sourceHeight, outHeight[0]);
+                final boolean fits = pick >= 0;
+                if (fits) outHeight[0] = pick;
+                for (int j = 0; j < chips.length; j++) {
+                    paintChip(chips[j], heights[j] == outHeight[0]);
+                }
+
+                final int height = BatchBudget.heightOf(outHeight[0], sourceHeight);
+                final double gb = BatchBudget.estimateMb(frames, height) / 1024.0;
+                final float secs = frames * SECONDS_PER_FRAME;
+                final boolean job = secs >= JOB_SECONDS;
+                String line = activity.getString(fits ? R.string.trim_estimate
+                        : R.string.trim_estimate_over, fmtWait(secs), fmtGb(gb));
+                if (job) line = line + "\n" + activity.getString(R.string.trim_job_note);
+                estimate.setText(line);
                 caption.setText(job ? activity.getString(R.string.trim_job_caption) : "");
                 caption.setVisibility(job ? View.VISIBLE : View.GONE);
-                estimate.setText(job
-                        ? activity.getString(R.string.trim_estimate_short, fmtWait(secs))
-                                + "\n" + activity.getString(R.string.trim_job_note)
-                        : activity.getString(R.string.trim_estimate_short, fmtWait(secs)));
                 living.setText(job ? activity.getString(R.string.trim_job_start)
                         : activity.getString(R.string.trim_living_photo));
+                living.setEnabled(fits);
+                // THE WHOLE CLIP IS A SUPERSET OF THE RANGE. If the range cannot fit
+                // at any offered height, neither can it; if it does not fit at the
+                // chosen height, the button must not offer a batch that can only
+                // OOM. A guaranteed failure is not a fact to state -- it is a job
+                // that cannot run -- so this button is gated by MEMORY, and never by
+                // the time the clip costs, which the mockup's whole-clip panel
+                // deliberately leaves uncapped and unjudged.
+                whole.setEnabled(BatchBudget.fits(totalFrames, height));
             }
         };
+        bar.onChange = refresh;
+
+        // The chips are wired AFTER refresh exists: a tap only sets the candidate,
+        // and refresh is what decides whether it can stay -- a chip that cannot fit
+        // is moved off by the same guard that moves it when the handles drag.
+        for (int i = 0; i < heights.length; i++) {
+            final int idx = i;
+            chips[i].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    outHeight[0] = heights[idx];
+                    refresh.run();
+                }
+            });
+        }
 
         living.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -256,7 +299,7 @@ final class VideoTrimSheet {
         Io.run(activity, new java.util.concurrent.Callable<Bitmap[]>() {
             @Override
             public Bitmap[] call() {
-                return thumbs(video, THUMBS);
+                return thumbs(activity, video, THUMBS);
             }
         }, new Io.Callback<Bitmap[]>() {
             @Override
@@ -265,7 +308,7 @@ final class VideoTrimSheet {
                 if (bitmaps != null) bar.setThumbs(bitmaps);
             }
         });
-        bar.onChange.run();
+        refresh.run();
     }
 
     /** "0:04" — the sheet's own clock, because times here are small. */
@@ -279,6 +322,15 @@ final class VideoTrimSheet {
         if (sec < 90) return Math.round(sec) + "s";
         if (sec < 5400) return Math.round(sec / 60f) + " min";
         return (Math.round(sec / 360f) / 10f) + " hr";
+    }
+
+    /**
+     * "15.2" — the memory estimate's GiB, one decimal. The unit lives in the
+     * string resource, so the number is all this returns; a value is never
+     * rounded up to a rounder one, because the line is a fact.
+     */
+    private static String fmtGb(double gb) {
+        return String.format("%.1f", gb);
     }
 
     private static TextView timeText(Activity a) {
@@ -392,10 +444,12 @@ final class VideoTrimSheet {
     }
 
     /** Frames across the clip, scaled down for the strip. Never throws. */
-    private static Bitmap[] thumbs(File video, int count) {
+    private static Bitmap[] thumbs(Activity activity, Uri video, int count) {
         MediaMetadataRetriever r = new MediaMetadataRetriever();
         try {
-            r.setDataSource(video.getPath());
+            // The SHARE URI, read where it is: the sheet no longer waits for the
+            // whole clip to be copied into filesDir before it can draw a filmstrip.
+            r.setDataSource(activity, video);
             long us = 0;
             try {
                 us = Long.parseLong(r.extractMetadata(

@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 526 tests across twenty-nine classes:
+it**. 533 tests across thirty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -836,6 +836,19 @@ has run.**
     and a guard that holds for the wrong reason is one that cannot fail. It pins the
     CLASSES instead — no `LoadImage`, no `SaveImage`, two combines, exactly one
     inference.
+- `BatchBudgetTest` — the video batch's memory guard, and the three measured OOMs
+  it exists to refuse: 600 frames at 1080p (17.10 GiB allocated), 600 at 720p
+  (15.63 GiB) and 240 at 1080p (13.46 + 5.56 refused). The fit is 26 MB per frame
+  at 720p scaled by the height ratio to the power 2.3, because the cost is
+  superlinear in height — MoGe's internal working resolution follows the input, and
+  the loader's `custom_height` scales the whole batch at once. **The trap is the budget line**:
+  the brief's 16 GiB is inside the measured 600@720p failure (15.23 GiB by the
+  fit, 15.63 allocated before it died), so the line is 15 GiB, and tests hold both
+  measured batches above it. The second trap is the auto-pick: it takes the tallest
+  rung of the ladder that fits and **never upscales above the source**, because an
+  upscale costs more memory and adds no detail; an unknown height fits nothing —
+  the `DepthSource`/`VideoSource` "a window claims nothing" rule applied to a
+  number.
 
 - `ModelRankingTest` — the model chooser's ordering: the most recently used
   models first, then discovery order. It exists because the dialog preferred the

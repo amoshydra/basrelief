@@ -10,7 +10,6 @@ import android.util.Log;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
 import com.amoshydra.basrelief.core.store.Jobs;
-import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.VideoTracks;
 
@@ -25,20 +24,19 @@ import java.io.OutputStream;
 /**
  * A video, in one gesture, all the way to a row that plays.
  *
- * <p><b>Everything happens before the row exists.</b> A clip is colour AND depth —
+ * <p><b>The row exists before the depth does.</b> A clip is colour AND depth —
  * {@link VideoTracks} refuses to be built with one without the other, because colour
  * without depth renders flat with no error anywhere — and at import we have only the
- * colour. So this copies the clip, puts the row in the gallery as a PHOTOGRAPH --
- * the poster frame, no depth, no clips -- and then generates the depth and normal
- * clips and attaches them to that row.
+ * colour. So the share is read where it is, the row goes into the gallery as a
+ * PHOTOGRAPH -- the poster frame, no depth, no clips -- and then the depth and normal
+ * clips are generated and attached to that row.
  *
  * <p><b>The row goes in first, and it is a photograph rather than a pending clip.</b>
  * The old shape wrote the row only on success, so a failed generation lost the
  * user's video and left them a message; and a successful one left them watching a
  * toast for three minutes with nothing in the strip. A poster frame is a thing the
- * app has always been able to render, and the sheet already offers Generate for a
- * photo with no map -- so the row is that, the staged colour clip sits on disk under
- * the row's own id, and Generate runs the VIDEO graph over it.
+ * app has always been able to render, so the row is exactly that, and the generation
+ * edits it in place when the clips land.
  *
  * <p><b>What has not changed is the pair invariant.</b> No clips are stored until
  * there are colour AND depth, because a stored half-pair is the thing
@@ -46,11 +44,22 @@ import java.io.OutputStream;
  * selection and only the index. The row simply carries no clips until they exist,
  * which is a state the schema has always had: a photograph with no map.
  *
- * <p><b>The poster frame is the first frame of the source, and the still depth and
+ * <p><b>The poster frame is the first frame of the RANGE, and the still depth and
  * normal are the first frames of the generated clips.</b> That is what keeps the
  * photograph and the clip the same picture: the still pair is not an approximation
  * of the clip, it is a frame of it. A clip has to be able to render <i>before</i> its
  * first decoded frame arrives, and that picture is this one.
+ *
+ * <p><b>The source is the share URI, not a copy.</b> Staging the whole clip before
+ * the sheet could ask cost 10-15 seconds on a 126 MB share and left 126 MB of the
+ * user's storage behind per import. {@code MediaMetadataRetriever} and
+ * {@code MediaExtractor} both read content URIs, so the filmstrip, the rate, the
+ * frame count and the poster come from the share itself; only the UPLOAD is
+ * materialised locally, and it is the remuxed range (a few megabytes) except for
+ * "Use the whole clip", where the source is copied and sent whole. The share grants
+ * read access for the activity's lifetime, which covers the sheet and the local
+ * work; the resume path after a restart never touches the URI -- it fetches the
+ * server's own outputs from the job record.
  *
  * <p><b>One {@code withFilesAndVideo} call</b>, because that is the only writer of
  * the clips field and a writer that added the row in two steps is how a row ends up
@@ -137,11 +146,13 @@ final class VideoImport {
             return;
         }
         // The colour clip is already here; regeneration re-runs the graph over IT.
-        // TWO WAYS IT IS HERE: attached to the row as a clip, or STAGED under the
-        // row's own id by an import whose generation has not run or has failed. The
-        // second is what makes Generate work on a freshly added video, and it is a
-        // convention on the id rather than a field, so nothing about a photograph's
-        // schema had to change to hold half a clip.
+        // TWO WAYS IT IS HERE: attached to the row as a clip, or fetched by an
+        // import whose attach() wrote the colour clip and then failed before the
+        // depth landed -- a partial fetch, and the case this fallback still serves.
+        // The import no longer stages a copy under this name before the server
+        // round (the upload is a separate staging file), so a row whose generation
+        // never ran has no colour clip here at all; its retry is the job record,
+        // and after a restart the resume pass fetches it.
         final File colour = item.video != null
                 ? item.video.colorFile(app.getFilesDir())
                 : new File(app.getFilesDir(), LibraryItem.videoFileName(item.id));
@@ -185,7 +196,7 @@ final class VideoImport {
      *
      * <p>The other half of "you can leave — it keeps going": the record is written
      * when the server takes the work, and this is what reads it. Called at studio
-     * start for each pending job, and it does one of four things, each of which is a
+     * start for each pending job, and it does one of five things, each of which is a
      * state rather than an error:
      *
      * <ul>
@@ -196,11 +207,22 @@ final class VideoImport {
      *   <li><b>The server has never heard of the prompt</b> — clear it. Asking for
      *       ever about a prompt that is not there is a record that never clears, and
      *       the photograph the early write left is still on screen to Regenerate.</li>
+     *   <li><b>The run FAILED on the server</b> — report its own message (a CUDA
+     *       out-of-memory's text is the useful part), clear the record, and leave
+     *       the row as the photograph the early write made it.</li>
      *   <li><b>Finished</b> — fetch, attach, clear, exactly as an import would.</li>
      * </ul>
      *
      * <p>A job still running keeps its record and is asked again next time, which is
      * why this is safe to call on every foreground.
+     *
+     * <p><b>{@code outputs.length() > 0} is NOT "finished", and this is the bug the
+     * status read fixes.</b> The video graph writes the COLOUR clip (the third
+     * {@code VHS_VideoCombine}) before MoGe runs, so a running job already has
+     * outputs; the old test called {@code attach()}, which found no depth clip,
+     * failed, and CLEARED a record for a job that might still complete. The history
+     * entry's own {@code status} is the only thing that knows the difference between
+     * running, finished and errored.
      */
     static void resume(final Context app, final SharedPreferences prefs,
                        final Jobs.Job job, final Listener listener) {
@@ -223,11 +245,41 @@ final class VideoImport {
             JobsStore.clear(prefs, job.promptId);
             return;
         }
-        JSONObject outputs = entry.optJSONObject("outputs");
-        if (outputs == null || outputs.length() == 0) return;   // still running
+        JSONObject status = entry.optJSONObject("status");
+        // An error is a RESULT, and it is not one to fetch. The server's own words
+        // are the useful part -- a CUDA out-of-memory message says what the range
+        // asked for and what the card had, which is the one thing the user can act
+        // on -- so it is reported, the record is cleared, and the row is left as the
+        // photograph it already is. status_str is checked as well as the message
+        // because a server that reports the error without a readable message still
+        // must not be treated as finished.
+        String why = executionError(entry);
+        if (why != null || (status != null
+                && "error".equals(status.optString("status_str", "")))) {
+            if (why == null) {
+                why = status == null ? "the server reported an error"
+                        : ComfyWorkflow.extractExecutionError(status);
+            }
+            Log.w(TAG, "resume: " + job.promptId + " failed on the server: " + why);
+            listener.failed(app.getString(R.string.video_import_failed) + ": " + why);
+            JobsStore.clear(prefs, job.promptId);
+            return;
+        }
+        // Neither finished nor failed: still running. The record is KEPT and asked
+        // again on the next foreground, which is the whole contract of the record.
+        if (status == null || !status.optBoolean("completed", false)) return;
 
-        // The row's OWN names: the import wrote the colour under the id-derived name,
-        // and the resume must land on the same files or the row would point at nothing.
+        // Completed with no execution error, so the outputs are the run's whole
+        // result. A null object here (a completed run the server recorded without
+        // outputs) is passed to attach as empty rather than dropped: attach is the
+        // one place that reports incomplete outputs, and a second report here would
+        // be a second wording for one failure.
+        JSONObject outputs = entry.optJSONObject("outputs");
+        if (outputs == null) outputs = new JSONObject();
+
+        // The row's OWN names: attach() writes the fetched colour under the
+        // id-derived name, and the resume must land on the same files or the row
+        // would point at nothing.
         String[] names = {
                 LibraryItem.videoFileName(job.itemId),
                 LibraryItem.videoDepthFileName(job.itemId),
@@ -275,12 +327,14 @@ final class VideoImport {
      * @return the new file, or null when the range could not be copied (the caller
      *         falls back to uploading the source, which is the old behaviour)
      */
-    private static File remuxRange(Context app, File source, File out,
+    private static File remuxRange(Context app, Uri source, File out,
                                    long startUs, long durUs) {
         android.media.MediaExtractor ex = new android.media.MediaExtractor();
         android.media.MediaMuxer mux = null;
         try {
-            ex.setDataSource(source.getPath());
+            // The SHARE URI, read where it is. MediaExtractor accepts a content URI
+            // directly, so the source is never copied into filesDir to be read.
+            ex.setDataSource(app, source, null);
             int track = -1;
             android.media.MediaFormat fmt = null;
             for (int i = 0; i < ex.getTrackCount(); i++) {
@@ -376,7 +430,7 @@ final class VideoImport {
         // up holding files named after a DIFFERENT id -- harmless until something
         // derived a filename from the row id and silently missed.
         final String id = rowId;
-        float fps = frameRateOf(colourSource);
+        float fps = frameRateOf(app, Uri.fromFile(colourSource));
         Log.i(TAG, "video generate id=" + id + " source=" + colourSource.getName()
                 + " fps=" + fps);
 
@@ -562,42 +616,42 @@ final class VideoImport {
                     final int startFrame, final int frames, final int outHeight,
                     final Listener listener) {
         final String id = LibraryItem.newId();
-        listener.phase(app.getString(R.string.video_phase_copying));
-        final File colourSource = new File(app.getFilesDir(), LibraryItem.videoFileName(id));
-        try {
-            copyTo(app, uri, colourSource);
-        } catch (Exception e) {
-            fail(prefs, null, listener, "the shared video could not be copied", e);
-            return;
-        }
-        if (colourSource.length() == 0) {
-            fail(prefs, null, listener, "the shared video was empty", null);
-            return;
-        }
-        // THE PHOTO LANDS FIRST, from the LOCAL file, before anything reaches the
-        // server. The row exists from here on, so an import killed mid-flight -- an
-        // install, an OOM kill, a swipe away -- leaves a photograph the user can see
-        // and retry rather than an orphaned clip file and no row at all. Measured:
-        // exactly that loss cost a finished server job and its only handle.
+        // Read ONCE, from the share itself. The poster's time and the remux's window
+        // are computed from the same rate, or the picture the user lands on and the
+        // range the server generates would come from two clocks.
+        final float fps = frameRateOf(app, uri);
+
+        // THE PHOTO LANDS FIRST, from the SHARE, before anything reaches the server.
+        // The row exists from here on, so an import killed mid-flight -- an install,
+        // an OOM kill, a swipe away -- leaves a photograph the user can see rather
+        // than an orphaned clip file and no row at all. Measured: exactly that loss
+        // cost a finished server job and its only handle.
         //
         // The poster is the RANGE's first frame, so it is the same picture the
         // finished import writes and does not visibly change when the import lands.
-        final float earlyFps = frameRateOf(colourSource);
-        final long posterAtUs = (long) (startFrame / Math.max(1f, earlyFps) * 1_000_000f);
+        // It is also why a poster failure now REFUSES the import instead of being
+        // logged and skipped: without a poster there is no row, and the finisher
+        // edits the row in place -- a finished server job would have nowhere to
+        // land. The old shape could afford to ignore the failure because it wrote
+        // the row a second time below; that write was at frame 0, so the row's
+        // picture flipped to the source's first frame the moment the import started,
+        // and it is the write this consolidation removes.
+        final long posterAtUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
+        listener.phase(app.getString(R.string.video_phase_poster));
+        File poster;
         try {
-            File poster = firstFrameAsPng(app, colourSource, LibraryItem.imageFileName(id),
-                    posterAtUs);
-            LibraryItem early = LibraryItem.of(id, poster.getName(), null,
-                    System.currentTimeMillis()).withLabel(label);
-            // Selected as well as added: the user just asked for this photo, and a row
-            // that arrives without being shown is a photo they have to go looking for.
-            LibraryStore.saveNow(prefs,
-                    LibraryStore.load(prefs).withItem(early).withSelection(id));
+            poster = firstFrameAsPng(app, uri, LibraryItem.imageFileName(id), posterAtUs);
         } catch (Exception e) {
-            // A poster that cannot be read is not fatal: the import still writes its
-            // own at the end. Failing here would refuse an import over a preview.
-            Log.w(TAG, "early poster failed: " + e);
+            fail(prefs, null, listener, "the shared video could not be read for a poster", e);
+            return;
         }
+        LibraryItem placed = LibraryItem.of(id, poster.getName(), null,
+                System.currentTimeMillis()).withLabel(label);
+        // Selected as well as added: the user just asked for this photo, and a row
+        // that arrives without being shown is a photo they have to go looking for.
+        LibraryStore.saveNow(prefs,
+                LibraryStore.load(prefs).withItem(placed).withSelection(placed.id));
+        listener.added(placed);
 
         // THE RANGE IS THE UPLOAD. A whole file is only sent when the whole file IS
         // the range ("Use the whole clip"): otherwise the samples of the chosen range
@@ -606,20 +660,38 @@ final class VideoImport {
         // and what makes it quick anywhere else. The graph's skip/limit is then 0
         // frames in, because the trim has already happened; a failed remux falls back
         // to the source with the original range, which is exactly the old behaviour.
-        File upload = colourSource;
+        listener.phase(app.getString(R.string.video_phase_copying));
+        File upload = null;
         int graphStart = startFrame;
         if (frames > 0) {
-            final float rfps = frameRateOf(colourSource);
-            final long startUs = (long) (startFrame / Math.max(1f, rfps) * 1_000_000f);
-            final long durUs = (long) (frames / Math.max(1f, rfps) * 1_000_000f);
+            final long startUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
+            final long durUs = (long) (frames / Math.max(1f, fps) * 1_000_000f);
             File trimmed = new File(app.getFilesDir(), "stage-trim.mp4");
-            File made = remuxRange(app, colourSource, trimmed, startUs, durUs);
+            File made = remuxRange(app, uri, trimmed, startUs, durUs);
             if (made != null) {
-                Log.i(TAG, "remux: " + colourSource.length() + " -> " + made.length()
-                        + " bytes for " + frames + " frames");
+                Log.i(TAG, "remux: " + made.length() + " bytes for " + frames + " frames");
                 upload = made;
                 graphStart = 0;
             }
+        }
+        if (upload == null) {
+            // "Use the whole clip" (frames == 0), or a remux that failed and falls
+            // back to the source with the original range. A URI has no File to
+            // upload, so the source is copied to a STAGING name -- never
+            // item-<id>.mp4, which is where attach() writes the FETCHED colour clip
+            // and which therefore must not exist before the fetch does.
+            File staged = new File(app.getFilesDir(), "stage-import.mp4");
+            try {
+                copyTo(app, uri, staged);
+            } catch (Exception e) {
+                fail(prefs, null, listener, "the shared video could not be read", e);
+                return;
+            }
+            if (staged.length() == 0) {
+                fail(prefs, null, listener, "the shared video was empty", null);
+                return;
+            }
+            upload = staged;
         }
 
         // Id-derived names, so a re-import of the same video is a new row with its
@@ -632,31 +704,6 @@ final class VideoImport {
                 LibraryItem.depthFileName(id),
                 LibraryItem.normalFileName(id),
         };
-
-        // THE ROW GOES IN FIRST, as a photograph, and that is a deliberate reversal
-        // of "write the row once, at the end". The old shape left the user watching a
-        // toast for three minutes with nothing in the strip, and if the run failed
-        // they got a message and no row at all -- their video, gone. A poster frame is
-        // a photograph: the app has always rendered one, the sheet already offers
-        // Generate for a photo with no map, and the staged colour clip sits on disk
-        // under this row's own id, so Generate has something to run on.
-        //
-        // What has NOT changed is the pair invariant: no clips are stored until there
-        // are colour AND depth, because a stored half-pair is the thing VideoTracks
-        // exists to make unrepresentable. The row simply has none yet.
-        listener.phase(app.getString(R.string.video_phase_poster));
-        File poster;
-        try {
-            poster = firstFrameAsPng(app, colourSource, LibraryItem.imageFileName(id));
-        } catch (Exception e) {
-            listener.failed(app.getString(R.string.video_import_failed) + ": " + e.getMessage());
-            return;
-        }
-        LibraryItem placed = LibraryItem.of(id, poster.getName(), null,
-                System.currentTimeMillis()).withLabel(label);
-        Library added = LibraryStore.load(prefs).withItem(placed).withSelection(placed.id);
-        LibraryStore.saveNow(prefs, added);
-        listener.added(placed);
 
         LibraryItem item = generate(app, prefs, api, id, upload, names,
                 graphStart, frames, outHeight, listener,
@@ -692,22 +739,42 @@ final class VideoImport {
         try {
             JSONObject history = new JSONObject(api.getHistory(promptId));
             if (!history.has(promptId)) return null;
-            JSONObject status = history.getJSONObject(promptId).optJSONObject("status");
-            if (status == null) return null;
-            JSONArray msgs = status.optJSONArray("messages");
-            if (msgs == null) return null;
-            for (int i = 0; i < msgs.length(); i++) {
-                JSONArray pair = msgs.optJSONArray(i);
-                if (pair == null || pair.length() < 2) continue;
-                if (!"execution_error".equals(pair.optString(0))) continue;
-                JSONObject body = pair.optJSONObject(1);
-                if (body == null) continue;
-                String m = body.optString("exception_message", null);
-                if (m == null) continue;
-                int nl = m.indexOf('\n');
-                return nl > 0 ? m.substring(0, nl) : m;
-            }
+            return executionError(history.getJSONObject(promptId));
         } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * The first {@code execution_error} message in a history entry, first line only,
+     * or null when the run has not errored.
+     *
+     * <p><b>One extraction, three readers.</b> The in-flight poll, the incomplete
+     * outputs path and the resume all need the same answer, and the failure this
+     * project keeps paying for is a second implementation that drifts: a resume that
+     * recognised an error the poll did not would treat a running job as finished.
+     * The first line is taken because a CUDA out-of-memory's message runs to several
+     * lines of advice and the first one is the sentence that names the cause.
+     *
+     * <p>Never throws: a reason is a bonus, not something that may replace the
+     * failure it explains.
+     */
+    private static String executionError(JSONObject entry) {
+        if (entry == null) return null;
+        JSONObject status = entry.optJSONObject("status");
+        if (status == null) return null;
+        JSONArray msgs = status.optJSONArray("messages");
+        if (msgs == null) return null;
+        for (int i = 0; i < msgs.length(); i++) {
+            JSONArray pair = msgs.optJSONArray(i);
+            if (pair == null || pair.length() < 2) continue;
+            if (!"execution_error".equals(pair.optString(0))) continue;
+            JSONObject body = pair.optJSONObject(1);
+            if (body == null) continue;
+            String m = body.optString("exception_message", null);
+            if (m == null) continue;
+            int nl = m.indexOf('\n');
+            return nl > 0 ? m.substring(0, nl) : m;
         }
         return null;
     }
@@ -724,25 +791,11 @@ final class VideoImport {
             // A run that ended in an ERROR is not a run that produced nothing: without
             // this the loop would spin to the timeout and report "no depth clip" for a
             // graph the server had already refused, which sends the user looking at the
-            // wrong thing.
-            if (entry.has("status")) {
-                JSONObject status = entry.getJSONObject("status");
-                if (status.optBoolean("completed", false) && status.has("messages")) {
-                    JSONArray msgs = status.optJSONArray("messages");
-                    if (msgs != null && msgs.length() > 0) {
-                        for (int i = 0; i < msgs.length(); i++) {
-                            JSONArray pair = msgs.optJSONArray(i);
-                            if (pair != null && pair.length() > 1
-                                    && "execution_error".equals(pair.optString(0))) {
-                                JSONObject body = pair.optJSONObject(1);
-                                throw new Exception("the server reported: "
-                                        + (body == null ? "an execution error"
-                                            : body.optString("exception_message", "an error")));
-                            }
-                        }
-                    }
-                }
-            }
+            // wrong thing. The check no longer requires `completed`: an errored run is
+            // exactly the case that reports completed=false, and the status read is the
+            // one place that knows the difference.
+            String why = executionError(entry);
+            if (why != null) throw new Exception("the server reported: " + why);
             JSONObject outputs = entry.optJSONObject("outputs");
             if (outputs != null && outputs.length() > 0) return outputs;
         }
@@ -795,9 +848,21 @@ final class VideoImport {
      */
     private static File firstFrameAsPng(Context app, File clip, String name, long atUs)
             throws Exception {
+        return firstFrameAsPng(app, Uri.fromFile(clip), name, atUs);
+    }
+
+    /**
+     * The same frame, read from the share URI.
+     *
+     * <p>{@code MediaMetadataRetriever.setDataSource(Context, Uri)} is what lets the
+     * early poster come from the share itself: the source is never copied into
+     * filesDir, so there is no local file for this to read even if it wanted one.
+     */
+    private static File firstFrameAsPng(Context app, Uri clip, String name, long atUs)
+            throws Exception {
         MediaMetadataRetriever mmr = new MediaMetadataRetriever();
         try {
-            mmr.setDataSource(clip.getPath());
+            mmr.setDataSource(app, clip);
             Bitmap frame = mmr.getFrameAtTime(atUs,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             if (frame == null) throw new Exception("no frame could be read from " + name);
@@ -819,25 +884,26 @@ final class VideoImport {
     }
 
     /**
-     * The source frame rate, in frames per second.
+     * The three facts the trim sheet needs from the source, read from the share.
      *
-     * <p>Read from the container, and defaulted rather than guessed into silence: a
-     * container that will not say gives 24, which is the common phone rate. A wrong
-     * rate here slides the depth against the colour by exactly this factor, so it is
-     * read rather than assumed -- but a container with no declared rate is not a
-     * reason to refuse a clip.
+     * <p>One call rather than three at the call site, so the rate the poster time is
+     * computed from and the rate the sheet displays cannot be read twice and differ.
      */
-    /**
-     * Copy the shared video into the app's storage so the trim sheet can read it.
-     *
-     * <p>A STAGING name, not the item's: the row does not exist yet -- the range is
-     * what the sheet is about to ask for -- and naming the file after an id that has
-     * not been minted would be a name the import then has to work around.
-     */
-    static File stage(Context app, Uri uri) throws Exception {
-        File staged = new File(app.getFilesDir(), "stage-import.mp4");
-        copyTo(app, uri, staged);
-        return staged;
+    static final class Meta {
+        final float fps;
+        final int frames;
+        final int height;
+
+        Meta(float fps, int frames, int height) {
+            this.fps = fps;
+            this.frames = frames;
+            this.height = height;
+        }
+    }
+
+    static Meta metaOf(Context app, Uri uri) {
+        float fps = frameRateOf(app, uri);
+        return new Meta(fps, frameCountOf(app, uri, fps), sourceHeightOf(app, uri));
     }
 
     /**
@@ -845,22 +911,22 @@ final class VideoImport {
      *
      * <p>Duration from {@link MediaMetadataRetriever}, NOT from MediaExtractor's
      * track format: measured, the extractor's {@code durationUs} is absent for the
-     * files this app stages, so the count came back 0, the trim bar was built with a
+     * files this app reads, so the count came back 0, the trim bar was built with a
      * one-frame clip, and the sheet sat at 0:00 with handles that could not move --
      * reported as "trim sheet stuck at 0.0". The retriever is the same source the
      * filmstrip already reads successfully, so the sheet cannot disagree with its own
      * thumbnails about how long the clip is.
      */
-    static int frameCountOf(File clip, float fps) {
-        long us = durationUsOf(clip);
+    static int frameCountOf(Context app, Uri clip, float fps) {
+        long us = durationUsOf(app, clip);
         if (us <= 0 || fps <= 0) return 0;
         return Math.round(us / 1_000_000f * fps);
     }
 
-    private static long durationUsOf(File f) {
+    private static long durationUsOf(Context app, Uri clip) {
         android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
         try {
-            r.setDataSource(f.getPath());
+            r.setDataSource(app, clip);
             String ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
             if (ms != null) return Long.parseLong(ms) * 1000L;
         } catch (Throwable ignored) {
@@ -870,11 +936,55 @@ final class VideoImport {
         return 0L;
     }
 
-    static float frameRateOf(File clip) {
+    /**
+     * The video track's own height, for the "Original" resolution chip and for the
+     * batch-memory estimate.
+     *
+     * <p>The track's declared height is what the loader keeps when
+     * {@code custom_height} is 0. Defaulted to 1080 when the container will not say
+     * -- the common phone video height -- because the alternative is an unknown the
+     * guard must refuse, and refusing an import over a missing metadata field would
+     * be worse than one documented guess. It is a guess only in the "Original" case:
+     * the 1080p and 720p chips name their own height.
+     */
+    static int sourceHeightOf(Context app, Uri clip) {
         android.media.MediaExtractor ex = null;
         try {
             ex = new android.media.MediaExtractor();
-            ex.setDataSource(clip.getPath());
+            ex.setDataSource(app, clip, null);
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat fmt = ex.getTrackFormat(i);
+                String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime == null || !mime.startsWith("video/")) continue;
+                if (fmt.containsKey(android.media.MediaFormat.KEY_HEIGHT)) {
+                    int h = fmt.getInteger(android.media.MediaFormat.KEY_HEIGHT);
+                    if (h > 0) return h;
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "source height unreadable: " + t);
+        } finally {
+            if (ex != null) {
+                try { ex.release(); } catch (Throwable ignored) { }
+            }
+        }
+        return 1080;
+    }
+
+    /**
+     * The source frame rate, in frames per second.
+     *
+     * <p>Read from the container, and defaulted rather than guessed into silence: a
+     * container that will not say gives 24, which is the common phone rate. A wrong
+     * rate here slides the depth against the colour by exactly this factor, so it is
+     * read rather than assumed -- but a container with no declared rate is not a
+     * reason to refuse a clip.
+     */
+    static float frameRateOf(Context app, Uri clip) {
+        android.media.MediaExtractor ex = null;
+        try {
+            ex = new android.media.MediaExtractor();
+            ex.setDataSource(app, clip, null);
             for (int i = 0; i < ex.getTrackCount(); i++) {
                 android.media.MediaFormat fmt = ex.getTrackFormat(i);
                 String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
