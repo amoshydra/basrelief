@@ -23,6 +23,7 @@ import android.widget.Toast;
 
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.VideoSource;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Playlist;
@@ -193,6 +194,13 @@ final class Gallery {
     /** The clip mark's plate, the row menu's size: two corner marks, one size. */
     private static final int CLIP_MARK_DP = 19;
     /**
+     * The strip's corner slot. The ring's own pill diameter (15dp), which is what
+     * the mockup draws on a strip tile; the grid keeps the 19dp clip mark it
+     * already had. The slot is the same in both places — one state, one meaning —
+     * and only its size follows the tile it sits on.
+     */
+    private static final int STRIP_MARK_DP = 15;
+    /**
      * The row menu's touch target.
      *
      * <p>48dp is the platform's minimum and the plate is not it: a 19dp control
@@ -346,12 +354,39 @@ final class Gallery {
     private final Map<String, PickedCell> cellMarks = new HashMap<String, PickedCell>();
 
     /**
-     * Each strip thumbnail's view, by item id, so a selection can move two rings
+     * Each strip thumbnail's views, by item id, so a selection can move two rings
      * without rebuilding the strip — which would drop every thumbnail and decode
      * it again. The entry holds no active flag: the ring is the foreground,
      * drawn on demand by {@link #drawStripRing}.
      */
-    private final Map<String, PhotoTile> stripTiles = new HashMap<String, PhotoTile>();
+    private final Map<String, StripCell> stripTiles = new HashMap<String, StripCell>();
+
+    /**
+     * One strip tile and the corner that says what its row is doing.
+     *
+     * <p>Kept together because they are one visual at one address: the strip and
+     * the grid derive the corner from the same {@link #cornerState}, so a change
+     * to a row's job has to reach both marks, and a map of tiles beside a map of
+     * marks would be two things to keep in step.
+     */
+    private static final class StripCell {
+        final String id;
+        /**
+         * The row as it was last drawn. Mutable because a completion writes new
+         * files behind the same id, and a later corner repaint must ask about the
+         * row that exists now rather than the photograph that was there.
+         */
+        LibraryItem item;
+        final PhotoTile tile;
+        final CornerMark corner;
+
+        StripCell(String id, LibraryItem item, PhotoTile tile, CornerMark corner) {
+            this.id = id;
+            this.item = item;
+            this.tile = tile;
+            this.corner = corner;
+        }
+    }
 
     /**
      * The strip's row: every photograph's tile, then the add and grid tiles.
@@ -385,9 +420,26 @@ final class Gallery {
      * been cleared, which is why {@link PhotoTile#setPicked} is one write.
      */
     private static final class PickedCell {
-        final LibraryItem item;
+        /**
+         * The row as it was last drawn. Mutable for the same reason
+         * {@link StripCell#item} is: a completion replaces the files behind an id,
+         * and a later repaint must not ask the old row's questions.
+         */
+        LibraryItem item;
         final View cell;
         final PhotoTile tile;
+        /**
+         * The depth chip, kept so a completion can turn it on in place: a row that
+         * gains a depth map is the chip's whole question, and rebuilding the cell
+         * to show it would re-decode the thumbnail.
+         */
+        final View chip;
+        /**
+         * The bottom-right corner: the ring while a job runs, {@code ▶} when the
+         * clips play, the warning when it stopped. The same derivation the strip
+         * uses — see {@link #cornerState}.
+         */
+        final CornerMark corner;
         /**
          * Whether this cell is the one on screen. Mutable only because a playlist
          * rotation can move the selection while the gallery is up, and the ring
@@ -397,11 +449,13 @@ final class Gallery {
         /** True when this cell is in the archived section, so its description says so. */
         boolean archived;
 
-        PickedCell(LibraryItem item, View cell, PhotoTile tile, boolean active,
-                   boolean archived) {
+        PickedCell(LibraryItem item, View cell, PhotoTile tile, View chip,
+                   CornerMark corner, boolean active, boolean archived) {
             this.item = item;
             this.cell = cell;
             this.tile = tile;
+            this.chip = chip;
+            this.corner = corner;
             this.active = active;
             this.archived = archived;
         }
@@ -644,6 +698,7 @@ final class Gallery {
             if (stripHost != null) stripHost.removeView(strip);
             strip = null;
         }
+        for (StripCell cell : stripTiles.values()) cell.corner.stop();
         stripTiles.clear();
         stripRow = null;
         dismissGrid();
@@ -651,13 +706,140 @@ final class Gallery {
         copySourceId = null;
     }
 
+    // -------------------------------------------------------------- clip jobs
+
+    /**
+     * The pending-import record, one read, keyed by item id.
+     *
+     * <p>Every corner in a build derives from this map, so the build parses the
+     * blob once rather than once per tile. An update that touches one row reads it
+     * again through {@link #jobFor}; the record is small and this is a user
+     * gesture, not a draw loop.
+     */
+    private Map<String, Jobs.Job> jobsById() {
+        Map<String, Jobs.Job> byId = new HashMap<String, Jobs.Job>();
+        for (Jobs.Job job : JobsStore.load(activity.prefs).pending()) {
+            byId.put(job.itemId, job);
+        }
+        return byId;
+    }
+
+    /** One row's job, or null. See {@link #jobsById} for when each is right. */
+    private Jobs.Job jobFor(String itemId) {
+        if (itemId == null) return null;
+        for (Jobs.Job job : JobsStore.load(activity.prefs).pending()) {
+            if (itemId.equals(job.itemId)) return job;
+        }
+        return null;
+    }
+
+    /**
+     * What one row's corner is doing — THE derivation, read by both surfaces.
+     *
+     * <p>The order is the order of the answers' authority: a recorded failure is a
+     * fact and outranks everything; a live or recorded run is next; only then is
+     * the row's own medium asked. A photograph with no job is empty, and a clip is
+     * the play glyph. The two inputs are the record on disk and the live set of
+     * this process's running imports, and {@link VideoImport#isRunning} exists so
+     * that the first seconds of an import — before the server has any prompt to
+     * record — already have a ring.
+     */
+    private CornerMark.State cornerState(LibraryItem item, Jobs.Job job) {
+        if (item == null) return CornerMark.State.NONE;
+        if (job != null) {
+            return job.isFailed() ? CornerMark.State.FAILED : CornerMark.State.RING;
+        }
+        if (VideoImport.isRunning(item.id)) return CornerMark.State.RING;
+        // Is it a video, the same rule the grid's clip mark has always used. Not
+        // the playable answer: that opens an UNREAD window for every unread row and
+        // would blank the mark on rows nothing has read, while a clip whose files
+        // are missing still falls back to its poster frame and is still a clip.
+        return item.video != null ? CornerMark.State.CLIP : CornerMark.State.NONE;
+    }
+
+    /**
+     * The record or the live set changed: repaint every corner.
+     *
+     * <p>Called by the studio when a job starts, progresses, fails or lands. A
+     * rebuild would decode every thumbnail to change one mark, which is the same
+     * flash the import path exists to avoid.
+     */
+    void jobsChanged() {
+        refreshJobMarks();
+    }
+
+    private void refreshJobMarks() {
+        Map<String, Jobs.Job> jobs = jobsById();
+        for (StripCell cell : stripTiles.values()) {
+            cell.corner.setState(cornerState(cell.item, jobs.get(cell.id)));
+        }
+        for (PickedCell mark : cellMarks.values()) {
+            mark.corner.setState(cornerState(mark.item, jobs.get(mark.item.id)));
+        }
+    }
+
+    /**
+     * One row appeared: insert its tile and its cell, decode exactly one thumbnail.
+     *
+     * <p><b>Not {@link #reindex}.</b> A rebuild throws every tile away and decodes
+     * every thumbnail again, and a decode that has to queue behind the import
+     * worker lands as an empty tile — the blanking the mockup is about. The strip
+     * has had a per-row insert path since the archive work; the grid has had a
+     * per-row relayout. This is the import using both.
+     */
+    void itemAppeared(LibraryItem item) {
+        if (item == null) return;
+        AppState state = AppState.load(activity.prefs, activity.getFilesDir());
+        Library lib = state.library;
+        String activeId = lib.activeId();
+        stripInsert(item, lib.sortedLive(), activeId);
+        syncStripRings(activeId);
+        if (grid != null) relayoutCells();
+        refreshJobMarks();
+    }
+
+    /**
+     * One row's files or medium changed: repaint that row, decode one thumbnail.
+     *
+     * <p>The completion of an import, a regenerate, and the half-landed row the
+     * next foreground finishes all reach here. The thumbnail is re-shown because a
+     * regenerate writes a new poster name — the identity of the pair changed — and
+     * the cell's chip is toggled because a row that gained a depth map is exactly
+     * the chip's question.
+     */
+    void itemUpdated(LibraryItem item) {
+        if (item == null) return;
+        Jobs.Job job = jobFor(item.id);
+        StripCell stripCell = stripTiles.get(item.id);
+        if (stripCell != null) {
+            stripCell.item = item;
+            stripCell.tile.show(item);
+            stripCell.corner.setState(cornerState(item, job));
+        }
+        PickedCell mark = cellMarks.get(item.id);
+        if (mark != null) {
+            mark.item = item;
+            mark.tile.show(item);
+            mark.chip.setVisibility(canStandOut(item) ? View.VISIBLE : View.GONE);
+            mark.corner.setState(cornerState(item, job));
+            mark.cell.setContentDescription(stateDescription(
+                    item, mark.active, picked.contains(item.id), mark.archived));
+        }
+    }
+
     // ------------------------------------------------------------- the filmstrip
 
     private View buildStrip() {
+        // Stop the rings of the tiles this build is about to replace: a detached
+        // drawable whose handler tick is still posted invalidates itself for ever.
+        for (StripCell cell : stripTiles.values()) cell.corner.stop();
         stripTiles.clear();
         AppState state = AppState.load(activity.prefs, activity.getFilesDir());
         Library lib = state.library;
         String activeId = lib.activeId();
+        // ONE read of the record for the whole build: the corner's state is derived
+        // per tile, and a parse per tile would be a parse per thumbnail.
+        Map<String, Jobs.Job> jobs = jobsById();
 
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -672,7 +854,7 @@ final class Gallery {
         android.util.Log.i("Basrelief", "buildStrip: " + lib.sortedLive().size()
                 + " live items");
         for (LibraryItem item : lib.sortedLive()) {
-            row.addView(stripThumb(item, item.id.equals(activeId)));
+            row.addView(stripThumb(item, item.id.equals(activeId), jobs.get(item.id)));
         }
         // The add tile first, then the grid. Add photo is the only way in, and it
         // should not be something a long library pushes off the end of a row that
@@ -719,8 +901,14 @@ final class Gallery {
      * identity. There is deliberately no depth chip at this size — nowhere honest
      * to put one, and a mark that cannot be read is the same stale second control
      * the grid's chip would be.
+     *
+     * <p><b>The corner carries the row's JOB, from the same derivation the grid
+     * uses.</b> A clip import shows its ring here for minutes; the strip is where
+     * the user is watching, and the alternative — a spinner somewhere else — says
+     * something is running without saying which row. The {@code ▶} and the warning
+     * take the same slot, so the corner answers one question at every stage.
      */
-    private View stripThumb(final LibraryItem item, boolean isActive) {
+    private View stripThumb(final LibraryItem item, boolean isActive, Jobs.Job job) {
         final int size = activity.dp(THUMB_DP);
         PhotoTile tile = new PhotoTile(activity, size, activity.dp(TILE_RADIUS_DP));
         // The one ring this size draws. The pick marks exist but are never
@@ -738,10 +926,17 @@ final class Gallery {
                 select(item.id);
             }
         });
+        CornerMark corner = new CornerMark(activity, activity.dp(STRIP_MARK_DP));
+        corner.setState(cornerState(item, job));
+        FrameLayout.LayoutParams markLp = new FrameLayout.LayoutParams(
+                activity.dp(STRIP_MARK_DP), activity.dp(STRIP_MARK_DP),
+                Gravity.BOTTOM | Gravity.END);
+        markLp.setMargins(0, 0, activity.dp(5), activity.dp(5));
+        tile.addView(corner, markLp);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
         lp.setMargins(activity.dp(3), 0, activity.dp(3), 0);
         tile.setLayoutParams(lp);
-        stripTiles.put(item.id, tile);
+        stripTiles.put(item.id, new StripCell(item.id, item, tile, corner));
         return tile;
     }
 
@@ -756,9 +951,24 @@ final class Gallery {
      */
     private void drawStripRing(String id, boolean active) {
         if (id == null) return;
-        PhotoTile tile = stripTiles.get(id);
-        if (tile == null) return;
-        tile.setActive(active);
+        StripCell cell = stripTiles.get(id);
+        if (cell == null) return;
+        cell.tile.setActive(active);
+    }
+
+    /**
+     * Put every ring where the index's selection is, one tile at a time.
+     *
+     * <p>The import path writes the selection itself, through the same index calls
+     * a tap makes, but it has no "old id" to lift the way {@link #select} does —
+     * it arrives with a whole new row. Looking the answer up on each tile is the
+     * cheap half of the rebuild this path exists to avoid, and it cannot disagree
+     * with the index because the index is what it reads.
+     */
+    private void syncStripRings(String activeId) {
+        for (Map.Entry<String, StripCell> e : stripTiles.entrySet()) {
+            e.getValue().tile.setActive(e.getKey().equals(activeId));
+        }
     }
 
     /**
@@ -785,8 +995,9 @@ final class Gallery {
      */
     private void moveStripTile(String id, List<LibraryItem> sorted) {
         if (stripRow == null || id == null) return;
-        PhotoTile tile = stripTiles.get(id);
-        if (tile == null) return;
+        StripCell cell = stripTiles.get(id);
+        if (cell == null) return;
+        View tile = cell.tile;
         int at = -1;
         for (int i = 0; i < sorted.size(); i++) {
             if (sorted.get(i).id.equals(id)) {
@@ -808,10 +1019,13 @@ final class Gallery {
      */
     private void stripRemove(String id) {
         if (id == null) return;
-        PhotoTile tile = stripTiles.remove(id);
-        if (tile == null) return;
-        ViewParent parent = tile.getParent();
-        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(tile);
+        StripCell cell = stripTiles.remove(id);
+        if (cell == null) return;
+        // The corner's ring must stop with the tile: the view is about to be
+        // detached and its handler tick would otherwise keep invalidating it.
+        cell.corner.stop();
+        ViewParent parent = cell.tile.getParent();
+        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(cell.tile);
     }
 
     /**
@@ -826,7 +1040,7 @@ final class Gallery {
      */
     private void stripInsert(LibraryItem item, List<LibraryItem> live, String activeId) {
         if (stripRow == null || item == null || stripTiles.containsKey(item.id)) return;
-        View tile = stripThumb(item, item.id.equals(activeId));
+        View tile = stripThumb(item, item.id.equals(activeId), jobFor(item.id));
         int at = live.size();
         for (int i = 0; i < live.size(); i++) {
             if (live.get(i).id.equals(item.id)) {
@@ -930,6 +1144,9 @@ final class Gallery {
         // outlived its screen would come back with checkmarks nobody remembers
         // making — and a mode the user cannot see is a mode they cannot leave.
         picked.clear();
+        // The marks are about to be dropped with their cells: stop the rings or
+        // their handler ticks keep a detached drawable invalidating itself.
+        for (PickedCell mark : cellMarks.values()) mark.corner.stop();
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;
@@ -959,6 +1176,7 @@ final class Gallery {
         // A targeted relayout (see relayoutCells) deliberately does NOT clear
         // cellMarks: the cells it arranges are these views, and clearing the map
         // would build new ones and decode every thumbnail again.
+        for (PickedCell old : cellMarks.values()) old.corner.stop();
         cellMarks.clear();
         selectionActions.clear();
         selectionLineView = null;
@@ -1081,7 +1299,7 @@ final class Gallery {
         // order the design fixed. The playlists section is ALWAYS present, even at
         // zero: a playlist has no precondition, so hiding it would mean the first
         // one cannot be created.
-        fillPhotoCells(cells, lib, activeId);
+        fillPhotoCells(cells, lib, activeId, jobsById());
         playlistsSection = buildPlaylistsSection(lib);
         cells.addView(playlistsSection, rowSpacing(cells.getChildCount() == 0));
 
@@ -1115,7 +1333,8 @@ final class Gallery {
      * <p>The open state is DERIVED: an archive emptied while the disclosure is
      * open stops producing rows and the row follows them out.
      */
-    private void fillPhotoCells(LinearLayout cells, Library lib, String activeId) {
+    private void fillPhotoCells(LinearLayout cells, Library lib, String activeId,
+                                Map<String, Jobs.Job> jobs) {
         final List<LibraryItem> rows = lib.sortedLive();
         final List<LibraryItem> archived = lib.sortedArchived();
         final boolean archiveOpen = showArchived && !archived.isEmpty();
@@ -1142,13 +1361,14 @@ final class Gallery {
             // at the top of the grid. Now a 3-column grid of the add tile plus
             // eight photos is three rows of three, exactly as the photographs
             // alone would be. See {@link #cellRowReuse} for the arithmetic.
-            cells.addView(cellRowReuse(rows, 0, activeId, false, true), rowSpacing(first));
+            cells.addView(cellRowReuse(rows, 0, activeId, false, true, jobs),
+                    rowSpacing(first));
             first = false;
             // The first row spent its leading column on the add tile, so the
             // photographs start one column in: the next row resumes at
             // GRID_COLUMNS - 1, not at GRID_COLUMNS.
             for (int start = GRID_COLUMNS - 1; start < rows.size(); start += GRID_COLUMNS) {
-                cells.addView(cellRowReuse(rows, start, activeId, false, false),
+                cells.addView(cellRowReuse(rows, start, activeId, false, false, jobs),
                         rowSpacing(first));
                 first = false;
             }
@@ -1164,7 +1384,7 @@ final class Gallery {
             first = false;
             if (archiveOpen) {
                 for (int start = 0; start < archived.size(); start += GRID_COLUMNS) {
-                    cells.addView(cellRowReuse(archived, start, activeId, true, false),
+                    cells.addView(cellRowReuse(archived, start, activeId, true, false, jobs),
                             rowSpacing(first));
                     first = false;
                 }
@@ -1194,7 +1414,7 @@ final class Gallery {
         }
         gridCells.removeAllViews();
         Library lib = AppState.load(activity.prefs, activity.getFilesDir()).library;
-        fillPhotoCells(gridCells, lib, lib.activeId());
+        fillPhotoCells(gridCells, lib, lib.activeId(), jobsById());
         if (playlistsSection != null) {
             ViewParent parent = playlistsSection.getParent();
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(playlistsSection);
@@ -1454,7 +1674,8 @@ final class Gallery {
      * @param withAddTile  true on the one row that leads with the {@code ＋} tile
      */
     private LinearLayout cellRowReuse(List<LibraryItem> rows, int start, String activeId,
-                                      boolean archivedDraw, boolean withAddTile) {
+                                      boolean archivedDraw, boolean withAddTile,
+                                      Map<String, Jobs.Job> jobs) {
         LinearLayout line = new LinearLayout(activity);
         line.setOrientation(LinearLayout.HORIZONTAL);
         final int lead = withAddTile ? 1 : 0;
@@ -1472,10 +1693,23 @@ final class Gallery {
                 PickedCell mark = cellMarks.get(item.id);
                 View c;
                 if (mark == null) {
-                    c = cell(item, item.id.equals(activeId), firstInRow, archivedDraw);
+                    c = cell(item, item.id.equals(activeId), firstInRow, archivedDraw,
+                            jobs.get(item.id));
                 } else {
                     c = mark.cell;
                     c.setLayoutParams(cellLayoutParams(firstInRow));
+                    // A reused cell's selection and its corner can both have moved
+                    // since it was built: the import path writes the selection
+                    // itself and the record changes under every row. Updating both
+                    // here is what makes relayoutCells a faithful repaint rather
+                    // than only a reparenting.
+                    mark.item = item;
+                    boolean nowActive = item.id.equals(activeId);
+                    if (mark.active != nowActive) {
+                        mark.active = nowActive;
+                        mark.tile.setActive(nowActive);
+                    }
+                    mark.corner.setState(cornerState(item, jobs.get(item.id)));
                 }
                 line.addView(c);
             } else {
@@ -1641,7 +1875,7 @@ final class Gallery {
      * @param archivedDraw true when this cell is drawn in the archived section
      */
     private View cell(final LibraryItem item, final boolean isActive,
-                      boolean firstInRow, final boolean archivedDraw) {
+                      boolean firstInRow, final boolean archivedDraw, Jobs.Job job) {
         final boolean isPicked = picked.contains(item.id);
         LinearLayout cell = new LinearLayout(activity);
         cell.setOrientation(LinearLayout.VERTICAL);
@@ -1668,10 +1902,13 @@ final class Gallery {
                 LinearLayout.LayoutParams.MATCH_PARENT, cellPx));
         final View chip = depthChip(item);
         tile.addView(chip, chipParams());
-        // Only for a clip row. The depth chip answers "has relief"; this answers
-        // "is it a video", and the two are independent -- a clip with no depth map
-        // yet still plays.
-        if (item.video != null) tile.addView(clipMark(), clipParams());
+        // The corner is the same slot on every tile: the ring while a job runs,
+        // ▶ when the row is a clip, the warning when the run stopped. It replaced
+        // the clip-only mark so a pending import has somewhere to show itself on
+        // the grid as well as the strip — one derivation for both, see cornerState.
+        final CornerMark corner = new CornerMark(activity, activity.dp(CLIP_MARK_DP));
+        corner.setState(cornerState(item, job));
+        tile.addView(corner, clipParams());
         tile.addView(menuButton(item), menuParams());
         // The embedded-depth answer comes out of the same read that decodes the
         // thumbnail; see PhotoTile.show. Re-derived rather than OR-ed in: the chip
@@ -1697,7 +1934,8 @@ final class Gallery {
 
         // Kept before the listeners, which read the mutable flag rather than the
         // parameter; see the class note on reuse.
-        final PickedCell mark = new PickedCell(item, cell, tile, isActive, archivedDraw);
+        final PickedCell mark = new PickedCell(item, cell, tile, chip, corner,
+                isActive, archivedDraw);
 
         cell.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1859,9 +2097,10 @@ final class Gallery {
     }
 
     /**
-     * Bottom-RIGHT, for the clip mark: the two top corners are taken (the depth
+     * Bottom-RIGHT, for the corner slot: the two top corners are taken (the depth
      * chip top-left, the row menu top-right), and "which mark is this" is a question
-     * a gallery must not ask.
+     * a gallery must not ask. The corner is where the clip mark has always been;
+     * the ring and the warning take the same slot, through {@link CornerMark}.
      */
     private FrameLayout.LayoutParams clipParams() {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
@@ -1869,24 +2108,6 @@ final class Gallery {
                 Gravity.BOTTOM | Gravity.END);
         lp.setMargins(0, 0, activity.dp(6), activity.dp(6));
         return lp;
-    }
-
-    /**
-     * The clip mark: a play glyph on a plate.
-     *
-     * <p><b>A photograph and a clip are both ordinary rows</b> -- that is the whole
-     * design, and it means the tile cannot show the difference by itself: a clip's
-     * poster frame is a still of the video, so the grid looks identical either way.
-     * The mark is the one place that difference is stated. The plate is there for
-     * the same reason the row menu has one: a dark glyph on a dark photograph is a
-     * mark that is present and unreadable.
-     */
-    private View clipMark() {
-        TextView glyph = text(activity.getString(R.string.gallery_clip_glyph), 10);
-        glyph.setGravity(Gravity.CENTER);
-        glyph.setBackground(plain(0x99000000, activity.dp(10)));
-        glyph.setContentDescription(activity.getString(R.string.gallery_is_clip));
-        return glyph;
     }
 
     /** Top-LEFT, clear of the row menu, which is top-right. */
@@ -2578,6 +2799,13 @@ final class Gallery {
         // an OOM much later, on someone else's device.
         PairCache.clear();
         for (LibraryItem item : targets) deleteFiles(item);
+        // A deleted row cannot be resumed or regenerated, so it must not leave a
+        // record behind: the mockup's failure line stays until Regenerate or a
+        // delete, and this is the delete half. Without it the record would wait
+        // for the next foreground's resume pass to notice the row is gone.
+        for (LibraryItem item : targets) {
+            JobsStore.clearItem(activity.prefs, item.id);
+        }
         // Patched, not rebuilt. The deleted ids' cells and strip tiles are dropped
         // and the rows are laid out again around the cells that remain, so the
         // surviving photographs are not decoded again — building the grid to remove

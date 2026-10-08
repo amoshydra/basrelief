@@ -40,6 +40,31 @@ final class JobsStore {
     }
 
     /**
+     * Record how many of a job's chunks the server has finished.
+     *
+     * <p>A commit, on the worker, once per chunk: minutes apart, and the count is
+     * the one number the sheet's job line states — a value that survives the sheet
+     * being rebuilt is the point of it being on disk at all.
+     */
+    static void progress(SharedPreferences prefs, String itemId, int completed) {
+        if (itemId == null || itemId.isEmpty()) return;
+        saveNow(prefs, load(prefs).withProgress(itemId, completed));
+    }
+
+    /**
+     * Mark the job one of whose chunks names {@code promptId} failed, carrying the
+     * message the user must be able to read.
+     *
+     * <p>KEEPS the record, unlike {@link #clear}: a run the server refused is a
+     * state the sheet line and the tile's corner show until the user acts, and a
+     * failure that exists only in a toast is gone before it is read.
+     */
+    static void fail(SharedPreferences prefs, String promptId, String message) {
+        if (promptId == null) return;
+        saveNow(prefs, load(prefs).withError(promptId, message));
+    }
+
+    /**
      * Clear the job one of whose chunks names {@code promptId}.
      *
      * <p>One prompt id is enough for the whole job — {@link Jobs#afterRemoving}

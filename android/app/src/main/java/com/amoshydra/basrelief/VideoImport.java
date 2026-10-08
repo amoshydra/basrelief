@@ -13,6 +13,7 @@ import android.util.Log;
 
 import com.amoshydra.basrelief.core.depth.BatchBudget;
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
+import com.amoshydra.basrelief.core.depth.FrameCount;
 import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.VideoTracks;
@@ -29,6 +30,8 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A video, in one gesture, all the way to a row that plays.
@@ -106,6 +109,95 @@ import java.util.List;
 final class VideoImport {
 
     private static final String TAG = "Basrelief";
+
+    /**
+     * What THIS PROCESS knows about one row's in-flight import.
+     *
+     * <p><b>The record on disk is the durable half; this is the live half, and
+     * the row needs both because they cover different moments.</b> The job record
+     * is written once the server has accepted every prompt — before that, the
+     * upload and submission are still in flight and there is nothing to write
+     * down. The ring and the sheet's line must exist from the FIRST second (that
+     * is the mockup's whole point: the row is the place progress lives), so the
+     * worker registers the row id here before it does anything, and the phase
+     * text it last reported is readable from the UI.
+     *
+     * <p>In memory and deliberately not persisted: if the process dies, the
+     * import it was reporting dies with it, and the record is what the next
+     * launch resumes from. A persisted copy would be a second answer to "is this
+     * running", and the two could disagree.
+     */
+    static final class Live {
+        /** The last phase message, for the line before a chunk count exists. */
+        volatile String phase = "";
+        /** True while a chunk is being generated, so the line can name k of N. */
+        volatile boolean generating;
+        volatile int chunk;
+        volatile int count;
+    }
+
+    private static final Map<String, Live> LIVE = new ConcurrentHashMap<String, Live>();
+
+    /** Whether an import for this row is running in this process. */
+    static boolean isRunning(String itemId) {
+        return itemId != null && LIVE.containsKey(itemId);
+    }
+
+    /** The live phase of this row's import, or null when nothing is running. */
+    static Live live(String itemId) {
+        return itemId == null ? null : LIVE.get(itemId);
+    }
+
+    private static void begin(String itemId) {
+        if (itemId != null && !itemId.isEmpty()) LIVE.put(itemId, new Live());
+    }
+
+    private static void end(String itemId) {
+        if (itemId != null) LIVE.remove(itemId);
+    }
+
+    /**
+     * The one way a phase is both reported to the caller and remembered here.
+     *
+     * <p>The sheet's line is derived from {@link #live}, so a phase that only
+     * reached the listener would be a progress word the UI could not re-read
+     * after a rebuild — the same "stashed somewhere a rebuild clears" trap the
+     * record solves for the count.
+     */
+    private static void phase(String itemId, Listener listener, String message) {
+        Live l = LIVE.get(itemId);
+        if (l != null) {
+            l.phase = message == null ? "" : message;
+            l.generating = false;
+        }
+        listener.phase(message);
+    }
+
+    /** A chunk is being waited on: the line may say k of N. */
+    private static void generating(String itemId, int chunk, int count) {
+        Live l = LIVE.get(itemId);
+        if (l == null) return;
+        l.generating = true;
+        l.chunk = Math.max(1, chunk);
+        l.count = Math.max(1, count);
+    }
+
+    /**
+     * A run the server itself refused, carrying its words.
+     *
+     * <p>Its own type because the failure path records the first kind as the
+     * job's own FAILED state (the sheet and the tile say so until the user
+     * acts), while the second kind is a phone-side failure reported the same way
+     * but without a server reason to quote.
+     */
+    private static final class ServerFailure extends Exception {
+        final String reason;
+
+        ServerFailure(String reason) {
+            super(reason);
+            this.reason = reason;
+        }
+    }
 
     /**
      * Poll interval and ceiling for ONE server-side prompt.
@@ -196,6 +288,18 @@ final class VideoImport {
             fail(prefs, null, listener, "regenerate: no item", null);
             return;
         }
+        begin(item.id);
+        try {
+            regenerateBody(app, prefs, item, api, listener);
+        } finally {
+            end(item.id);
+        }
+    }
+
+    /** The body of {@link #regenerate}, split so the live registration is one try/finally. */
+    private static void regenerateBody(final Context app, final SharedPreferences prefs,
+                                       final LibraryItem item, final ComfyApi api,
+                                       final Listener listener) {
         // The colour clip is already here; regeneration re-runs the graph over IT.
         // TWO WAYS IT IS HERE: attached to the row as a clip, or fetched by an
         // import whose attach() wrote the colour clip and then failed before the
@@ -266,9 +370,12 @@ final class VideoImport {
      *   <li><b>The server has never heard of the prompt</b> — clear it. Asking for
      *       ever about a prompt that is not there is a record that never clears, and
      *       the photograph the early write left is still on screen to Regenerate.</li>
-     *   <li><b>The run FAILED on the server</b> — report its own message (a CUDA
-     *       out-of-memory's text is the useful part), clear the record, and leave
-     *       the row as the photograph the early write made it.</li>
+     *   <li><b>The run FAILED on the server</b> — record its own message (a CUDA
+     *       out-of-memory's text is the useful part) as the job's FAILED state,
+     *       report it, and leave the row as the photograph the early write made
+     *       it. The record is kept, not cleared: the sheet's line and the tile's
+     *       corner carry the failure until the user acts, and a later foreground
+     *       skips it rather than re-asking a run that has already answered.</li>
      *   <li><b>Finished</b> — fetch, attach, clear, exactly as an import would.</li>
      * </ul>
      *
@@ -291,6 +398,22 @@ final class VideoImport {
             JobsStore.clearItem(prefs, job.itemId);
             return;
         }
+        // A failed job is a STATE, not work to re-ask: the server has already
+        // answered, and asking again returns the same refusal. The sheet's line and
+        // the tile's corner say so until the user Regenerates or deletes the row.
+        if (job.isFailed()) return;
+        begin(job.itemId);
+        try {
+            resumeBody(app, prefs, job, item, listener);
+        } finally {
+            end(job.itemId);
+        }
+    }
+
+    /** The body of {@link #resume}, split so the live registration is one try/finally. */
+    private static void resumeBody(final Context app, final SharedPreferences prefs,
+                                   final Jobs.Job job, final LibraryItem item,
+                                   final Listener listener) {
         final ComfyApi api = new ComfyApi(job.host);
         // The record's plan must still describe a range: chunks in frame order, each
         // starting where the last stopped. The concatenation is by ORDER, so a plan
@@ -335,13 +458,15 @@ final class VideoImport {
             // An error is a RESULT, and it is not one to fetch. The server's own
             // words are the useful part -- a CUDA out-of-memory message says what
             // the range asked for and what the card had, which is the one thing the
-            // user can act on -- so it is reported, the record is cleared, and the
-            // row is left as the photograph it already is.
+            // user can act on -- so it is reported AND kept as the job's failed
+            // state, and the row is left as the photograph it already is. Keeping,
+            // not clearing, is what puts the message on the sheet instead of in a
+            // toast that is gone before it is read.
             String why = failedReason(entry);
             if (why != null) {
                 Log.w(TAG, "resume: " + chunk.promptId + " failed on the server: " + why);
+                JobsStore.fail(prefs, chunk.promptId, why);
                 listener.failed(app.getString(R.string.video_import_failed) + ": " + why);
-                JobsStore.clear(prefs, chunk.promptId);
                 return;
             }
             // Neither finished nor failed: this chunk is still running. The record
@@ -483,7 +608,8 @@ final class VideoImport {
     }
 
     /**
-     * Report a failure: the toast for the user AND a line in the log for the diagnosis.
+     * Report a failure: a line in the log for the diagnosis, and the row's own
+     * state when a record exists.
      *
      * <p><b>The log line is not a nicety, it is the difference between a bug we can
      * find and one we cannot.</b> Measured: an import failed before it reached the
@@ -492,14 +618,21 @@ final class VideoImport {
      * exception, no phase -- so the only evidence was gone and the report could not be
      * acted on. A failure that is displayed and not recorded is a failure that has to
      * be reproduced from scratch.
+     *
+     * <p><b>A record that exists is marked FAILED, not cleared.</b> The failure has
+     * to stay on the sheet and on the tile's corner until the user acts; clearing it
+     * leaves the message in a toast. A failure before any record exists has no
+     * prompt id to name and clears nothing — the row is a photograph with no depth,
+     * which the fix line already answers.
      */
     private static void fail(SharedPreferences prefs, String promptId, Listener listener,
                              String detail, Throwable e) {
+        String message = detail + (e == null || e.getMessage() == null
+                ? "" : ": " + e.getMessage());
         Log.w(TAG, "import failed" + (promptId == null ? "" : " after " + promptId)
-                + ": " + detail + (e == null ? "" : " -- " + e), e == null ? null : e);
-        JobsStore.clear(prefs, promptId);
-        listener.failed(detail + (e == null || e.getMessage() == null
-                ? "" : ": " + e.getMessage()));
+                + ": " + message, e == null ? null : e);
+        if (promptId != null) JobsStore.fail(prefs, promptId, message);
+        listener.failed(message);
     }
 
     /** The last step of a generate, split so regenerate can edit in place instead. */
@@ -573,7 +706,7 @@ final class VideoImport {
                 + " fps=" + fps + " frames=" + totalFrames + " height=" + loadHeight
                 + " prompts=" + promptCount + " colour=" + (includeColour ? "server" : "local"));
 
-        listener.phase(app.getString(R.string.video_phase_uploading));
+        phase(id, listener, app.getString(R.string.video_phase_uploading));
         String uploadedName;
         try {
             JSONObject up = new JSONObject(api.uploadImage(upload, upload.getName()));
@@ -630,7 +763,9 @@ final class VideoImport {
                 int[] chunk = plan.get(i);
                 jobChunks.add(new Jobs.Chunk(parts.get(i).promptId, chunk[0], chunk[1]));
             }
-            JobsStore.record(prefs, new Jobs.Job(id, jobChunks, api.host(), startedAtMs));
+            JobsStore.record(prefs,
+                    new Jobs.Job(id, jobChunks, api.host(), startedAtMs)
+                            .withPlan(loadHeight));
         } catch (Exception e) {
             fail(prefs, parts.isEmpty() ? null : parts.get(0).promptId, listener,
                     app.getString(R.string.video_import_failed), e);
@@ -640,17 +775,31 @@ final class VideoImport {
         // WAIT FOR EVERY CHUNK, reporting progress per chunk. The phase is a fact
         // with a denominator -- "Generating 3 of 8" -- because a long import has no
         // honest percentage and the chunk is the unit the server actually runs.
+        // Each completion is also written to the record, so the count survives a
+        // sheet rebuild rather than living only in this loop.
         try {
             for (int i = 0; i < promptCount; i++) {
-                listener.phase(promptCount > 1
+                phase(id, listener, promptCount > 1
                         ? app.getString(R.string.video_phase_generating_chunk,
                                 i + 1, promptCount)
                         : app.getString(R.string.video_phase_generating));
+                generating(id, i + 1, promptCount);
                 parts.get(i).outputs = pollOutputs(api, parts.get(i).promptId);
+                JobsStore.progress(prefs, id, i + 1);
             }
         } catch (Exception e) {
-            fail(prefs, parts.get(0).promptId, listener,
-                    app.getString(R.string.video_import_failed), e);
+            if (e instanceof ServerFailure) {
+                // The server's own words become the row's state: the sheet line and
+                // the tile's corner carry them until the user acts, which is the
+                // whole reason a failed record is kept.
+                String why = ((ServerFailure) e).reason;
+                Log.w(TAG, "generate: the server reported: " + why);
+                JobsStore.fail(prefs, parts.get(0).promptId, why);
+                listener.failed(app.getString(R.string.video_import_failed) + ": " + why);
+            } else {
+                fail(prefs, parts.get(0).promptId, listener,
+                        app.getString(R.string.video_import_failed), e);
+            }
             return null;
         }
 
@@ -685,15 +834,17 @@ final class VideoImport {
                     null);
             return null;
         }
-        listener.phase(app.getString(R.string.video_phase_fetching));
+        phase(rowId, listener, app.getString(R.string.video_phase_fetching));
         final File dir = app.getFilesDir();
 
         // Fetch the depth and normal parts. A chunk that came back without its depth
         // is reported with the SERVER's own reason: the history entry carries the
         // exception, and a bare "could not be imported" is what the user got for a
-        // CUDA out-of-memory, which says nothing about what to do next. The record is
-        // deliberately NOT cleared here -- a completed run with incomplete outputs is
-        // the one state a retry can still resolve.
+        // CUDA out-of-memory, which says nothing about what to do next. The job is
+        // recorded FAILED with that reason rather than left looking live: the sheet
+        // and the tile's corner have to carry the failure until the user acts, and a
+        // completed run with incomplete outputs is exactly the state this record is
+        // for. Regenerate re-runs it.
         final int k = parts.size();
         File[] depthParts = new File[k];
         File[] normalParts = new File[k];
@@ -704,9 +855,11 @@ final class VideoImport {
             JSONObject normalOut = findOutput(part.outputs, ComfyWorkflow.NORMAL_CLIP_PREFIX);
             if (depthOut == null) {
                 String why = serverReason(api, part.promptId);
+                String reason = why != null ? why : "the run produced no depth clip";
                 Log.w(TAG, "attach: " + part.promptId + " produced no depth clip: " + why);
+                JobsStore.fail(prefs, part.promptId, reason);
                 listener.failed(app.getString(R.string.video_import_failed)
-                        + (why == null ? " (the run produced no depth clip)" : ": " + why));
+                        + ": " + reason);
                 return null;
             }
             try {
@@ -764,11 +917,12 @@ final class VideoImport {
                         ComfyWorkflow.COLOUR_CLIP_PREFIX);
                 if (colourOut == null) {
                     String why = serverReason(api, parts.get(0).promptId);
+                    String reason = why != null ? why : "the run produced no colour clip";
                     Log.w(TAG, "attach: " + parts.get(0).promptId
                             + " produced no colour clip: " + why);
+                    JobsStore.fail(prefs, parts.get(0).promptId, reason);
                     listener.failed(app.getString(R.string.video_import_failed)
-                            + (why == null ? " (the run produced no colour clip)"
-                                    : ": " + why));
+                            + ": " + reason);
                     return null;
                 }
                 write(api.view(colourOut.getString("filename"),
@@ -783,7 +937,7 @@ final class VideoImport {
             return null;
         }
 
-        listener.phase(app.getString(R.string.video_phase_poster));
+        phase(rowId, listener, app.getString(R.string.video_phase_poster));
         File poster, depthStill, normalStill = null;
         try {
             poster = firstFrameAsPng(app, colourTarget, names[3]);
@@ -803,7 +957,7 @@ final class VideoImport {
         // record superseded by a newer submission for the same row names different
         // prompts, so it survives.
         JobsStore.clear(prefs, parts.get(0).promptId);
-        listener.phase(app.getString(R.string.video_phase_adding));
+        phase(rowId, listener, app.getString(R.string.video_phase_adding));
         VideoTracks tracks;
         try {
             tracks = VideoTracks.of(names[0], names[1], normal == null ? null : names[2]);
@@ -843,6 +997,23 @@ final class VideoImport {
                     final int startFrame, final int frames, final int outHeight,
                     final Listener listener) {
         final String id = LibraryItem.newId();
+        // Registered BEFORE the first phase and the early write, so the sheet's
+        // ring and line exist from the first second of the import -- the upload and
+        // the submission are exactly the window before a job record can exist.
+        begin(id);
+        try {
+            runBody(app, prefs, uri, label, api, startFrame, frames, outHeight, id,
+                    listener);
+        } finally {
+            end(id);
+        }
+    }
+
+    /** The body of {@link #run}, split so the live registration is one try/finally. */
+    private static void runBody(final Context app, final SharedPreferences prefs,
+                                final Uri uri, final String label, final ComfyApi api,
+                                final int startFrame, final int frames, final int outHeight,
+                                final String id, final Listener listener) {
         // Read ONCE, from the share itself. The poster's time and the remux's window
         // are computed from the same rate, or the picture the user lands on and the
         // range the server generates would come from two clocks.
@@ -861,7 +1032,7 @@ final class VideoImport {
         // edits the row in place -- a finished server job would have nowhere to
         // land.
         final long posterAtUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
-        listener.phase(app.getString(R.string.video_phase_poster));
+        phase(id, listener, app.getString(R.string.video_phase_poster));
         File poster;
         try {
             poster = firstFrameAsPng(app, uri, LibraryItem.imageFileName(id), posterAtUs);
@@ -895,7 +1066,7 @@ final class VideoImport {
         // remux falls back to the old single-prompt shape over the source, with the
         // server writing the colour, because that is the one shape with no local
         // range to use.
-        listener.phase(app.getString(R.string.video_phase_copying));
+        phase(id, listener, app.getString(R.string.video_phase_copying));
         final long startUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
         // frames 0 = the whole clip, and then there is no end time to cap: the
         // copy runs until the samples do.
@@ -1047,7 +1218,7 @@ final class VideoImport {
             if (!history.has(promptId)) continue;
             JSONObject entry = history.getJSONObject(promptId);
             String why = failedReason(entry);
-            if (why != null) throw new Exception("the server reported: " + why);
+            if (why != null) throw new ServerFailure(why);
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
                 JSONObject outputs = entry.optJSONObject("outputs");
@@ -1409,20 +1580,62 @@ final class VideoImport {
     }
 
     /**
-     * The clip's frame count at the given rate, or 0 when the duration is unknown.
+     * How many frames the container holds, exactly when the sample table says.
      *
-     * <p>Duration from {@link MediaMetadataRetriever}, NOT from MediaExtractor's
-     * track format: measured, the extractor's {@code durationUs} is absent for the
-     * files this app reads, so the count came back 0, the trim bar was built with a
+     * <p><b>Exact sample count first, and that is a measured fix rather than
+     * caution.</b> This used to be only {@code round(duration × fps)}, and on the
+     * file this app remuxes itself a 240-frame 24fps range reports a duration of
+     * 9.9586s: the MP4 muxer takes the duration from the last sample it processed,
+     * which is not always the highest presentation time, so the estimate is
+     * <b>239</b>. The chunk plan then asked the server for 239 frames while the
+     * colour clip held 240, and the joined depth clip decoded a frame short --
+     * one frame short, at the end, with no error anywhere. The sample count is one
+     * sample per frame by construction, which is the same unit the server's loader
+     * decodes.
+     *
+     * <p>The duration is only read when the sample table cannot be walked, and it
+     * is read from {@link MediaMetadataRetriever}, NOT from MediaExtractor's track
+     * format: measured, the extractor's {@code durationUs} is absent for the files
+     * this app reads, so the count came back 0, the trim bar was built with a
      * one-frame clip, and the sheet sat at 0:00 with handles that could not move --
      * reported as "trim sheet stuck at 0.0". The retriever is the same source the
      * filmstrip already reads successfully, so the sheet cannot disagree with its own
      * thumbnails about how long the clip is.
      */
     static int frameCountOf(Context app, Uri clip, float fps) {
-        long us = durationUsOf(app, clip);
-        if (us <= 0 || fps <= 0) return 0;
-        return Math.round(us / 1_000_000f * fps);
+        int exact = sampleCountOf(app, clip);
+        // The duration is a second parse of the container; skip it when the exact
+        // answer already exists.
+        long durationUs = exact > 0 ? 0L : durationUsOf(app, clip);
+        return FrameCount.resolve(exact, durationUs, fps);
+    }
+
+    /**
+     * The video track's sample count — the exact number of decodable frames.
+     *
+     * <p>Walks the sample table without reading any sample data, so the cost is
+     * the container's index rather than its bytes. Returns 0 when the container
+     * cannot be read at all, which makes the caller fall back to the duration
+     * estimate — a window that claims nothing rather than a guessed count.
+     */
+    private static int sampleCountOf(Context app, Uri clip) {
+        if (clip == null) return 0;
+        android.media.MediaExtractor ex = new android.media.MediaExtractor();
+        try {
+            ex.setDataSource(app, clip, null);
+            ex.selectTrack(videoTrackOf(ex));
+            int n = 0;
+            while (ex.getSampleTime() >= 0) {
+                n++;
+                ex.advance();
+            }
+            return n;
+        } catch (Throwable t) {
+            Log.w(TAG, "sample count unreadable: " + t);
+            return 0;
+        } finally {
+            try { ex.release(); } catch (Throwable ignored) { }
+        }
     }
 
     private static long durationUsOf(Context app, Uri clip) {

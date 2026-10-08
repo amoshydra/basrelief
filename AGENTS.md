@@ -602,7 +602,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 540 tests across thirty classes:
+it**. 552 tests across thirty-two classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -670,18 +670,24 @@ has run.**
     orphaned clip file and no row at all. And the job is a record on disk (`Jobs` +
     `JobsStore`, key `jobs`) holding the item, its **CHUNKS** -- `[{prompt, start,
     frames}]` in frame order -- and the HOST that issued them, written the moment the
-    server has all of them and cleared when the outputs are fetched or the attempt
-    fails. `JobsStore` commits rather than applies, deliberately. The record is keyed
+    server has all of them, cleared when the outputs are fetched, and **kept as
+    FAILED when the run stops** -- the sheet's job line and the tile's corner carry
+    the server's own words until Regenerate or a delete clears them, because a
+    failure that exists only in a toast is gone before it is read. `JobsStore`
+    commits rather than applies, deliberately. The record is keyed
     by ITEM, so a second submission supersedes the first instead of leaving two fetches
     racing for the same filenames, and clearing names ANY one chunk because a chunked
-    job's prompts are one unit. The schema is **v2** and a v1 record **MIGRATES to a
+    job's prompts are one unit. The schema is **v3** and a v2 record reads with no
+    failure, no progress and no height, which is what it is; a v1 record **MIGRATES to a
     one-chunk job** rather than being dropped -- a v1 blob is a legitimate in-flight
     run and dropping it would strand a finished result, the exact loss this class
     exists to end. The resume pass at studio start treats the states as states rather
     than errors: photo gone → clear; server unreachable → KEEP (a sleeping laptop is
     not a lost import); the server has never heard of a chunk → clear and let the
-    photo be Regenerated; a chunk ERRORED → report the server's own words and clear;
-    a chunk still running → KEEP and ask again next foreground; every chunk completed
+    photo be Regenerated; a chunk ERRORED → record the server's own words as the
+    job's FAILED state and KEEP it (a later foreground skips a failed job rather than
+    re-asking a run that has already answered, and Regenerate is the action that
+    clears it); a chunk still running → KEEP and ask again next foreground; every chunk completed
     → fetch, attach, clear. **A chunked job is all-or-nothing**: nothing is fetched
     until EVERY chunk reports `completed`, because a partial fetch would concatenate
     two of eight chunks into a clip that plays short. And **`outputs.length() > 0` is
@@ -692,6 +698,50 @@ has run.**
     `failedReason()` for the server's words. `jobs` is in the studio's index-transport
     key set, and `attach()` is the ONE implementation of an import's fetch tail,
     shared with the resume so the two cannot drift.
+  - **The frame count a run is planned from is the SAMPLE count, and the duration
+    estimate is one short on the app's own file.** Measured on a two-chunk import:
+    the remuxed colour clip holds 240 frames of 24fps, its container duration is
+    9.9586s, and `round(9.9586 × 24) = 239` — the MP4 muxer derives the duration
+    from the last sample it processed, which is not always the highest
+    presentation time. The plan asked the server for 239 frames while the colour
+    held 240, so the joined depth clip decoded 239 against 240: one frame short,
+    at the END (not at the join — the joined file spans 0..238 with a clean
+    11-frame second GOP), with no error anywhere and a hitch at every loop.
+    `FrameCount.resolve` takes the exact sample count when the table can be
+    walked and the duration estimate only as the fallback; `VideoImport`'s
+    `sampleCountOf` walks it without reading sample data. **A duration-derived
+    count must never plan a run again** — the arithmetic is the trap, not a
+    rounding.
+  - **An import patches the strip and the grid; it does not reindex them.** The
+    early write inserts ONE tile and ONE cell (`Gallery.itemAppeared`), the
+    completion repaints that row (`Gallery.itemUpdated`), and `reindex()` stays
+    for what genuinely rebuilds (a sort change, Settings' reset, a selection the
+    wallpaper moved). A rebuild throws every tile away and re-decodes every
+    thumbnail, and a decode that has to queue lands as an empty tile — the
+    filmstrip blanking that `Io.runLong` is the worker half of. Progress is not
+    allowed to be a rebuild either: a phase callback repaints the line and the
+    corner marks in place (`MainActivity.refreshImportUi`).
+  - **The tile's corner is one slot with one derivation, shared by the strip and
+    the grid.** `Gallery.cornerState(item, job)` decides between a RING while an
+    import is pending (the `Jobs` record, OR `VideoImport.isRunning` for the
+    window before a record can exist), `▶` for a row that names clips, and the
+    amber warning for a failed run; `CornerMark` draws it. The ring uses the
+    same `ProgressRing` the pill does, handed the accent because that is the
+    design's tile colour — the pill asks for white. And the ring is stopped
+    whenever the state leaves RING and whenever a tile is dropped: a detached
+    drawable whose handler tick is still posted invalidates itself for ever,
+    which is a leak per tile per rebuild.
+  - **The running job's line is derived, never stashed.** While a clip job
+    exists it takes the fix line's seat (`MainActivity.showClipJobLine`),
+    because the row is a photograph with no depth for the whole server round and
+    "No depth · Generate a map" under it would invite a second generation of the
+    thing already running. The count comes from the record (`Jobs.completed`,
+    written after each chunk), the words from the live phase, and the time and
+    memory from `BatchBudget`'s one estimate through the trim sheet's own
+    formatter — so "about 40s" before the run and "about 4 min" during it cannot
+    disagree. A failed line shows the SERVER'S OWN WORDS and a Regenerate action
+    that clears the record and re-runs; no new field holds any of it, so a sheet
+    rebuild re-derives exactly the same line.
   - **A long range is CHUNKED, and the app joins the results; the server never holds
     the whole thing as one batch.** Measured: 600 frames at 1080p died with 17.10 GiB
     allocated on a 23.59 GiB card, and 600 at 720p with 15.63 GiB, because
@@ -889,7 +939,36 @@ has run.**
   range exactly, no gap and no overlap, with the last chunk taking the remainder,
   because the join is by order and a non-tiling plan would build a clip that plays
   wrongly without failing anywhere.
-
+- `ClipJoinTest` — the join's arithmetic, moved out of the `MediaExtractor` +
+  `MediaMuxer` loop so a device is not needed to check it: the frame duration is
+  the smallest positive step between a part's timestamps (decode order makes
+  consecutive deltas meaningless when B-frames are present), and the next part
+  starts **strictly after** the previous part's last frame, never on it. The
+  boundary test is the one that matters: two parts whose raw timestamps meet at
+  the seam, where a shift that only reached the previous max would write two
+  samples at one instant — and the merge must hold both parts' frames, one frame
+  apart across the seam. `VideoImport.joinClips` calls this class; the muxing
+  itself stays untestable and is not what the test claims.
+- `FrameCountTest` — which frame count an import is planned from, and the
+  measured file where the answers differ: the app's own remux of a 240-frame
+  24fps range reports a container duration of **9.9586s** (the muxer takes it
+  from the last sample processed, not the highest presentation time), and
+  `round(9.9586 × 24) = 239`. Planning from that estimate asked the server for
+  one frame fewer than the colour clip held, so the joined depth clip decoded
+  **239 against 240** — one frame short, at the end, no error anywhere. The
+  sample count wins whenever the table can be walked; the duration estimate is
+  the fallback for a container that cannot be read, and 0 is the answer for
+  neither, because a window claims nothing.
+- `JobsTest` — the pending-import record. The chunk list is the second half of
+  "a record survives the restart": a chunked import has N prompts for one item,
+  the fetch concatenates by ORDER, and a v1 blob migrates to a one-chunk job
+  rather than being dropped because it is a legitimate in-flight run. Its v3
+  theme is the three facts a run has to show outside the worker that owns it:
+  the failure the server reported (**kept**, not cleared — the sheet line and
+  the tile's corner carry it until Regenerate or a delete), the count of
+  completed chunks the job line states, and the load height its memory figure is
+  stated at. A v2 blob reads with none of them, which is what it is, and a
+  progress count past the chunk list is clamped rather than invented.
 - `ModelRankingTest` — the model chooser's ordering: the most recently used
   models first, then discovery order. It exists because the dialog preferred the
   first MoGe entry it found, so the default checkpoint followed the server's

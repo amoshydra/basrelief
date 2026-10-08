@@ -20,7 +20,11 @@ import java.util.List;
  *
  * <p><b>A record, not a queue.</b> Nothing here schedules anything; a job is a
  * prompt the app has submitted and not yet fetched. The studio reads it at start,
- * asks the server about each one, and either finishes the import or forgets it.
+ * asks the server about each one, and either finishes the import, keeps the
+ * record (still running, or unreachable), or keeps it FAILED — a run the server
+ * refused is reported with the server's own words and stays on the sheet until
+ * the user acts, because a failure that exists only in a toast is a failure that
+ * cannot be read.
  *
  * <p><b>A job is a list of chunks, not one prompt.</b> A long range is submitted
  * as several prompts — one per batch the server can hold, see
@@ -46,9 +50,13 @@ public final class Jobs {
      *
      * <p>v1 was one prompt for the whole range. v2 is a chunk list, because a
      * chunked import submits N prompts for one item and one prompt id can no
-     * longer name the work.
+     * longer name the work. v3 adds the three facts a RUNNING or FAILED run has
+     * to show outside the worker that owns it: the load height its memory figure
+     * is stated at, how many chunks the server has finished, and the server's own
+     * failure message. A v2 blob parses as a run with no height, no progress and
+     * no failure — which is what it is.
      */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /** One submitted prompt: which frames it covers, and the server's handle. */
     public static final class Chunk {
@@ -87,8 +95,41 @@ public final class Jobs {
         public final List<Chunk> chunks;
         public final String host;
         public final long startedAtMs;
+        /**
+         * The height the chunks were planned at, for the job line's memory
+         * figure, or 0 when nothing recorded one (a v2 blob, a migrated v1).
+         *
+         * <p>Stored rather than re-derived because the estimate is a function of
+         * the height the SERVER loaded at, and the source's own height may have
+         * been scaled by the resolution chip.
+         */
+        public final int height;
+        /**
+         * How many chunks the server has reported {@code completed}, in order.
+         *
+         * <p>The one number the job line counts with: "Generating 3 of 8" is
+         * derived from this and the chunk list, so it survives the sheet being
+         * rebuilt and cannot disagree with what was fetched.
+         */
+        public final int completed;
+        /**
+         * The server's own failure message, or null while the job is still viable.
+         *
+         * <p><b>A failure is kept, not cleared.</b> It can arrive minutes after
+         * the share, and the sheet and the tile's corner have to say so until the
+         * user acts — a toast is gone before it is read. The record stays until
+         * Regenerate or a delete removes it, and the resume pass skips a failed
+         * job because re-asking a run that already errored cannot change it.
+         */
+        public final String error;
 
         public Job(String itemId, List<Chunk> chunks, String host, long startedAtMs) {
+            this(itemId, chunks, host, startedAtMs, 0, 0, null);
+        }
+
+        /** The full shape, for a run that has progress or a failure to carry. */
+        public Job(String itemId, List<Chunk> chunks, String host, long startedAtMs,
+                   int height, int completed, String error) {
             this.itemId = itemId == null ? "" : itemId;
             List<Chunk> usable = new ArrayList<Chunk>();
             if (chunks != null) {
@@ -102,6 +143,9 @@ public final class Jobs {
             this.chunks = Collections.unmodifiableList(usable);
             this.host = host == null ? "" : host;
             this.startedAtMs = startedAtMs;
+            this.height = Math.max(0, height);
+            this.completed = Math.max(0, Math.min(completed, usable.size()));
+            this.error = error == null || error.isEmpty() ? null : error;
         }
 
         /** A one-prompt job, the shape v1 records migrate to. */
@@ -109,6 +153,31 @@ public final class Jobs {
             this(itemId,
                     Collections.singletonList(new Chunk(promptId, 0, 0)),
                     host, startedAtMs);
+        }
+
+        /**
+         * The same job with the load height its chunks were planned at.
+         *
+         * <p>Set once, when the record is written; the memory figure the job line
+         * states is this height's, because that is the batch the server holds.
+         */
+        public Job withPlan(int planHeight) {
+            return new Job(itemId, chunks, host, startedAtMs, planHeight, completed, error);
+        }
+
+        /** The same job with {@code done} chunks finished. Monotonic by clamp. */
+        public Job withProgress(int done) {
+            return new Job(itemId, chunks, host, startedAtMs, height, done, error);
+        }
+
+        /** The same job, failed, carrying the server's own words. */
+        public Job withError(String message) {
+            return new Job(itemId, chunks, host, startedAtMs, height, completed, message);
+        }
+
+        /** Whether the run this record names has stopped and needs the user. */
+        public boolean isFailed() {
+            return error != null;
         }
 
         /** Whether this record is worth asking the server about. */
@@ -170,6 +239,42 @@ public final class Jobs {
     }
 
     /**
+     * The same set with one item's job carrying {@code done} completed chunks.
+     *
+     * <p>Keyed by ITEM, like {@link #with}, because progress belongs to the run
+     * and a job the server has not answered yet has no progress to record. The
+     * count is clamped by {@link Job#withProgress}, so a late report cannot run
+     * past the chunk list.
+     */
+    public Jobs withProgress(String itemId, int done) {
+        if (itemId == null) return this;
+        List<Job> next = new ArrayList<Job>();
+        for (Job j : jobs) {
+            next.add(itemId.equals(j.itemId) ? j.withProgress(done) : j);
+        }
+        return new Jobs(next);
+    }
+
+    /**
+     * The same set with the job one of whose chunks names {@code promptId} marked
+     * failed, carrying {@code message}.
+     *
+     * <p>The record is KEPT, not cleared: the failure is a state the sheet and the
+     * tile have to show until the user acts, and a cleared record is a failure
+     * that exists only in a toast. Naming any chunk is enough, for the same reason
+     * {@link #afterRemoving} takes any chunk — a chunked job's prompts are one
+     * unit.
+     */
+    public Jobs withError(String promptId, String message) {
+        if (promptId == null) return this;
+        List<Job> next = new ArrayList<Job>();
+        for (Job j : jobs) {
+            next.add(j.prompts().contains(promptId) ? j.withError(message) : j);
+        }
+        return new Jobs(next);
+    }
+
+    /**
      * The same set without any job one of whose chunks names {@code promptId}.
      *
      * <p><b>Any chunk, because the prompts are one unit.</b> A chunked job's
@@ -208,6 +313,12 @@ public final class Jobs {
                 e.put("item", j.itemId);
                 e.put("host", j.host);
                 e.put("started", j.startedAtMs);
+                // The three v3 facts. Written unconditionally except the error:
+                // an absent error IS "still running", which is the honest default
+                // for a reader that does not know this version.
+                e.put("height", j.height);
+                e.put("done", j.completed);
+                if (j.error != null) e.put("error", j.error);
                 JSONArray cs = new JSONArray();
                 for (Chunk c : j.chunks) {
                     JSONObject co = new JSONObject();
@@ -258,6 +369,11 @@ public final class Jobs {
                 String item = e.optString("item", "");
                 String host = e.optString("host", "");
                 long started = e.optLong("started", 0L);
+                // The v3 facts, absent in a v2 blob and therefore the defaults a
+                // v2 record genuinely has: no height, no progress, no failure.
+                int height = e.optInt("height", 0);
+                int done = e.optInt("done", 0);
+                String error = e.optString("error", null);
                 Job j;
                 if (version >= 2) {
                     JSONArray cs = e.optJSONArray("chunks");
@@ -269,7 +385,7 @@ public final class Jobs {
                         chunks.add(new Chunk(co.optString("prompt", ""),
                                 co.optInt("start", 0), co.optInt("frames", 0)));
                     }
-                    j = new Job(item, chunks, host, started);
+                    j = new Job(item, chunks, host, started, height, done, error);
                 } else {
                     j = new Job(item, e.optString("prompt", ""), host, started);
                 }

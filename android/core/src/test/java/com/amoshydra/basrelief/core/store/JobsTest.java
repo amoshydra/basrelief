@@ -184,4 +184,83 @@ public class JobsTest {
         assertEquals("early", jobs.pending().get(0).itemId);
         assertEquals("late", jobs.pending().get(1).itemId);
     }
+
+    /**
+     * A FAILED run stays a record, carrying the server's own words.
+     *
+     * <p>The failure can arrive minutes after the share with the phone face down.
+     * Clearing the record there left the failure in a toast that is gone before it
+     * is read; the sheet line and the tile's corner need it on disk until the user
+     * acts. The chunks stay too, because the job is still the thing the row's name
+     * is attached to — Regenerate replaces it.
+     */
+    @Test
+    public void aFailedJobSurvivesTheRoundTrip() {
+        Jobs jobs = Jobs.empty()
+                .with(job("a", "p1"))
+                .withError("p1", "the run needed ~19 GiB; the server has ~24");
+        Jobs parsed = Jobs.parse(jobs.toJson());
+        assertEquals("a failure is kept, not cleared", 1, parsed.pending().size());
+        Jobs.Job j = parsed.pending().get(0);
+        assertTrue(j.isFailed());
+        assertEquals("a, still a record",
+                "the run needed ~19 GiB; the server has ~24", j.error);
+        assertEquals(1, j.chunks.size());
+        assertEquals("p1", j.chunks.get(0).promptId);
+    }
+
+    /**
+     * The count the job line states and the height its memory figure is stated at
+     * both survive; the count is clamped to the chunk list, because a late report
+     * cannot describe work that was never submitted.
+     */
+    @Test
+    public void progressAndPlanSurviveTheRoundTrip() {
+        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
+                        new Jobs.Chunk("p0", 0, 228),
+                        new Jobs.Chunk("p1", 228, 12)),
+                        "h", 1000L)
+                .withPlan(960)
+                .withProgress(1));
+        Jobs.Job j = Jobs.parse(jobs.toJson()).pending().get(0);
+        assertEquals(960, j.height);
+        assertEquals(1, j.completed);
+
+        Jobs.Job beyond = new Jobs.Job("a", Arrays.asList(
+                        new Jobs.Chunk("p0", 0, 228),
+                        new Jobs.Chunk("p1", 228, 12)),
+                        "h", 1000L)
+                .withProgress(99);
+        assertEquals("a count past the chunk list is clamped", 2, beyond.completed);
+    }
+
+    /** ANY chunk names the job to mark, because a chunked job's prompts are one unit. */
+    @Test
+    public void anyChunkNamesTheWholeJobWhenMarkingFailed() {
+        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
+                new Jobs.Chunk("p0", 0, 240),
+                new Jobs.Chunk("p1", 240, 240)),
+                "h", 1000L));
+        assertTrue(jobs.withError("p1", "stopped").pending().get(0).isFailed());
+        assertFalse("naming a prompt no job holds changes nothing",
+                jobs.withError("nope", "stopped").pending().get(0).isFailed());
+        assertFalse("and a null prompt is not a name",
+                jobs.withError(null, "stopped").pending().get(0).isFailed());
+    }
+
+    /**
+     * A v2 blob has no failure, no progress and no height — and that is what it
+     * is, not a state to invent. The v3 fields are only written by v3.
+     */
+    @Test
+    public void aVersionTwoRecordReadsAsRunningWithNoProgress() {
+        String v2 = "{\"version\":2,\"jobs\":[{\"item\":\"a\",\"host\":\"h\","
+                + "\"started\":7,\"chunks\":[{\"prompt\":\"p1\",\"start\":0,"
+                + "\"frames\":240}]}]}";
+        Jobs.Job j = Jobs.parse(v2).pending().get(0);
+        assertFalse(j.isFailed());
+        assertEquals(0, j.completed);
+        assertEquals(0, j.height);
+        assertEquals(240, j.chunks.get(0).frames);
+    }
 }

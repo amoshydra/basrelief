@@ -27,6 +27,8 @@ final class ProgressRing extends Drawable {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF bounds = new RectF();
     private final float strokePx;
+    /** The arc's own colour: the track is dim, the head is the caller's. */
+    private final int headColour;
 
     /** 0..1 around the circle. Drives the sweep, not the rotation. */
     private float phase;
@@ -45,6 +47,7 @@ final class ProgressRing extends Drawable {
 
     ProgressRing(int diameterPx, int strokePx, int colour, int trackColour) {
         this.strokePx = strokePx;
+        this.headColour = colour;
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(strokePx);
         paint.setStrokeCap(Paint.Cap.ROUND);
@@ -76,7 +79,12 @@ final class ProgressRing extends Drawable {
         paint.setColor(trackColour);
         canvas.drawArc(bounds, 0, 360, false, paint);
         // A quarter of the circle, so it reads as motion rather than as a pie chart.
-        paint.setColor(0xFF7FD1C1);
+        // The HEAD IS THE CONSTRUCTOR'S COLOUR. This was the literal accent, so the
+        // pill's ring -- which asks for white in so many words -- drew a mint head
+        // and its own caller said otherwise; one of the two had to give, and the
+        // caller was right: a component that ignores the colour it is handed is a
+        // second palette nobody can find.
+        paint.setColor(headColour);
         canvas.drawArc(bounds, phase * 360f, 90f, false, paint);
     }
 

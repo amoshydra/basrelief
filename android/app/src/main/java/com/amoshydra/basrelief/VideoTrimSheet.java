@@ -60,21 +60,10 @@ import com.amoshydra.basrelief.core.depth.BatchBudget;
  */
 final class VideoTrimSheet {
 
-    /**
-     * Measured server cost per frame: a 120-frame import took about 90s end to end,
-     * so ~0.75s of server time per frame at 720p-class input. An ESTIMATE shown as
-     * one ("about ..."), never a promise, and the one constant to revise when the
-     * pipeline or the host changes.
-     */
-    private static final float SECONDS_PER_FRAME = 0.75f;
-
-    /**
-     * The server-time line where the framing flips to a Job. The mockup's number,
-     * and it is about the SHAPE of the wait rather than about cost: under half a
-     * minute a sheet can honestly say "about 40s"; past it, the honest thing is that
-     * the user can leave and the work continues.
-     */
-    private static final float JOB_SECONDS = 30f;
+    /* The time estimate's two constants and the seconds it implies live in
+     * BatchBudget, because the trim sheet and a RUNNING job's line state the same
+     * fact at two moments. Two copies is how "about 40s" before a run and "about
+     * 4 min" during it come to disagree about the same server. */
 
     /** How many preview frames the filmstrip shows; more is wasted at tile width. */
     private static final int THUMBS = 10;
@@ -255,8 +244,8 @@ final class VideoTrimSheet {
                 // place.
                 final int perBatch = single ? frames : Math.min(frames, chunk);
                 final double gb = BatchBudget.estimateMb(perBatch, height) / 1024.0;
-                final float secs = frames * SECONDS_PER_FRAME;
-                final boolean job = secs >= JOB_SECONDS;
+                final float secs = BatchBudget.estimateSeconds(frames);
+                final boolean job = secs >= BatchBudget.JOB_SECONDS;
                 String line;
                 if (single) {
                     line = activity.getString(R.string.trim_estimate,
@@ -348,6 +337,23 @@ final class VideoTrimSheet {
         if (sec < 90) return Math.round(sec) + "s";
         if (sec < 5400) return Math.round(sec / 60f) + " min";
         return (Math.round(sec / 360f) / 10f) + " hr";
+    }
+
+    /**
+     * The wait formatter, for the sheet's other surface.
+     *
+     * <p>The running job's line states the same "about N min" as the trim sheet's
+     * estimate, from the same estimate and the same formatting: a job line that
+     * rounded differently from the sheet that started it would be two answers to
+     * one question.
+     */
+    static String waitText(float sec) {
+        return fmtWait(sec);
+    }
+
+    /** The memory number, shared with the running job's line for the same reason. */
+    static String gbText(double gb) {
+        return fmtGb(gb);
     }
 
     /**

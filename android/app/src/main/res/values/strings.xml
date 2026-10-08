@@ -731,9 +731,34 @@
     <string name="video_phase_uploading">Uploading</string>
     <string name="video_phase_generating">Generating depth for the clip</string>
     <!-- The chunked run's honest progress: a long import has no percentage, but it
-         has a denominator (the prompts the server actually runs). -->
+         has a denominator (the prompts the server actually runs). Also the job
+         line's own primary text while a chunk is being generated. -->
     <string name="video_phase_generating_chunk">Generating %1$d of %2$d</string>
     <string name="video_phase_fetching">Fetching</string>
     <string name="video_phase_poster">Writing the poster frame</string>
     <string name="video_phase_adding">Adding to the gallery</string>
+
+    <!--
+      The running job's line. It sits in the fix line's seat for the whole server
+      round, so a row being imported never reads as "No depth — Generate a map"
+      while its depth is already being generated.
+    -->
+    <!-- Before the first phase message arrives there is nothing to name. -->
+    <string name="video_job_running_indeterminate">Generating…</string>
+    <!-- The two facts the line adds after the count, from the trim sheet's own
+         estimate of the whole batch: "about 6 of server time" and the memory it
+         asks the card for. -->
+    <string name="video_job_estimate"> — about %1$s · ~%2$s GiB</string>
+    <!--
+      The failed form. %1$s is the SERVER's own words where it gave any — a CUDA
+      out-of-memory message names the range it wanted and the card it had — and
+      the line keeps them until Regenerate or a delete clears the record.
+    -->
+    <string name="video_job_failed">Stopped: %1$s</string>
+
+    <!-- The tile corner's spoken states, and the pernicious glyph. A screen reader
+         hears these because the ring and the plate are colour, not words. -->
+    <string name="gallery_importing">Importing — the server is generating depth and normals</string>
+    <string name="gallery_import_failed">Import stopped</string>
+    <string name="gallery_import_warning_glyph">⚠︎</string>
 </resources>

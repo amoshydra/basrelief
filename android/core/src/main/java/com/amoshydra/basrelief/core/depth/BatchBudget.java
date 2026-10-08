@@ -149,6 +149,40 @@ public final class BatchBudget {
         return best;
     }
 
+    // ------------------------------------------------------------- the time
+
+    /**
+     * Measured server cost per frame: a 120-frame import took about 90s end to
+     * end, so ~0.75s of server time per frame at 720p-class input. An ESTIMATE
+     * shown as one ("about ..."), never a promise, and the one constant to
+     * revise when the pipeline or the host changes.
+     *
+     * <p>Here rather than on the trim sheet because TWO surfaces state it: the
+     * trim sheet before a run ("about 40s of server time") and the job line while
+     * one runs ("about 4 min" remaining). Two copies of the constant is how the
+     * two numbers come to disagree about the same server.
+     */
+    public static final float SECONDS_PER_FRAME = 0.75f;
+
+    /**
+     * The server-time line where the framing flips to a Job. About the SHAPE of
+     * the wait rather than about cost: under half a minute a sheet can honestly
+     * say "about 40s"; past it, the honest thing is that the user can leave and
+     * the work continues.
+     */
+    public static final float JOB_SECONDS = 30f;
+
+    /**
+     * How much server time {@code frames} are expected to take, in seconds.
+     *
+     * <p>0 for a frame count nothing has read, so a caller can tell "no work left
+     * to estimate" from "an instant".
+     */
+    public static float estimateSeconds(int frames) {
+        if (frames <= 0) return 0f;
+        return frames * SECONDS_PER_FRAME;
+    }
+
     // ------------------------------------------------------------ chunked runs
 
     /**

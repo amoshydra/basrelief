@@ -1,5 +1,6 @@
 package com.amoshydra.basrelief;
 
+import com.amoshydra.basrelief.core.depth.BatchBudget;
 import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
@@ -1444,7 +1445,8 @@ public class MainActivity extends Activity {
                 // A shared image is a new item, not a replacement: sharing three
                 // photos should leave three rows, and the two already in the
                 // gallery must not lose their depth maps and framing to the third.
-                LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
+                LibraryItem added = LibraryStore.add(prefs, PrefFiles.store(target),
+                        null, pickedName);
                 prefs.edit().remove("status").apply();
                 refreshSliders();
                 applyFiles();
@@ -1452,8 +1454,10 @@ public class MainActivity extends Activity {
                 // up: both read the index once and would otherwise keep showing
                 // the list the new row was added to. Measured: a shared photo was
                 // selected and absent from the gallery, which reads as the import
-                // having failed.
-                gallery.reindex();
+                // having failed. Inserted in place rather than reindexed: the same
+                // "one row appeared" shape as a clip import, and a rebuild would
+                // re-decode every other thumbnail for it.
+                if (added != null) gallery.itemAppeared(added);
                 Toast.makeText(MainActivity.this,
                         "Shared image loaded \u2014 set as wallpaper, or generate depth",
                         Toast.LENGTH_LONG).show();
@@ -4689,7 +4693,11 @@ public class MainActivity extends Activity {
      *
      * <p>Three of the PRD's four are implemented: no depth map, a run in progress,
      * and a run that failed. Unreachable-server and failed-generation are the SAME
-     * condition to a user, so they are one line and one pair of actions.
+     * condition to a user, so they are one line and one pair of actions. A CLIP
+     * import's job is a fourth state and takes the seat first — see
+     * {@link #showClipJobLine} — because its row is a photograph with no depth for
+     * the whole server round, and the no-depth line under it would invite a second
+     * generation.
      *
      * <p><b>The fourth -- gyro neutral drifted -- is deliberately absent, and this
      * is an audit rather than an omission.</b> No drift value exists to read:
@@ -4730,6 +4738,11 @@ public class MainActivity extends Activity {
                     }, null, null, false);
             return;
         }
+        // A clip import takes the seat before the depth conditions do: running or
+        // stopped, it is the row's own state, and the "No depth · Generate a map"
+        // line under it would invite a second generation of the thing already
+        // running. See showClipJobLine.
+        if (item != null && showClipJobLine(item)) return;
         // The one derivation, so this line and the gallery's chip cannot disagree
         // about the same photograph. It may also start the file read that resolves an
         // embedded map, which is why it is consulted rather than looked up.
@@ -4823,6 +4836,130 @@ public class MainActivity extends Activity {
                         pickFile(REQ_DEPTH);
                     }
                 });
+    }
+
+    // ------------------------------------------------------------ the job line
+
+    /**
+     * Repaint everything a running import shows: the sheet's job line and both
+     * surfaces' corner marks.
+     *
+     * <p>Called from a phase callback, from a completion, and from a failure —
+     * every one of which is the record or the live phase having moved. It is
+     * derived, never stashed: the line reads the record and the live phase again
+     * rather than remembering what the last phase string was.
+     */
+    private void refreshImportUi() {
+        if (isFinishing() || isDestroyed()) return;
+        if (gallery != null) gallery.jobsChanged();
+        refreshSliders();
+    }
+
+    /** The active row's job record, or null. */
+    private Jobs.Job activeJob(String itemId) {
+        if (itemId == null) return null;
+        for (Jobs.Job job : JobsStore.load(prefs).pending()) {
+            if (itemId.equals(job.itemId)) return job;
+        }
+        return null;
+    }
+
+    /**
+     * The sheet's line for a clip job, when the active row has one.
+     *
+     * <p><b>The job takes the fix line's seat.</b> The fix line lives outside the
+     * scroll so a condition survives the launch peek; a running import has the
+     * same claim, and leaving "No depth · Generate a map" under "Generating 3 of
+     * 8" would be two answers for one state — one of them inviting a second
+     * generation of the thing already running.
+     *
+     * @return true when the line was taken by a job; false when the caller should
+     *         go on to the depth conditions
+     */
+    private boolean showClipJobLine(final LibraryItem item) {
+        final Jobs.Job job = activeJob(item.id);
+        final VideoImport.Live live = VideoImport.live(item.id);
+        if (job == null && live == null) return false;
+
+        if (job != null && job.isFailed()) {
+            // The server's own words, kept until the user acts. Amber, like the
+            // tile's warning: the condition is the row's, and the one action that
+            // clears it is Regenerate.
+            setFixBorderColour(WARN_COLOUR);
+            setFixLine(getString(R.string.video_job_failed, job.error),
+                    getString(R.string.action_regenerate), new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            // Acting on the failure is what clears it: the record
+                            // exists to keep it visible until then, and the new
+                            // generation writes a fresh record once submitted.
+                            JobsStore.clearItem(prefs, item.id);
+                            refreshImportUi();
+                            regenerateClip(item);
+                        }
+                    }, null, null);
+            return true;
+        }
+
+        setFixLine(jobLineText(job, live), null, null, null, null, false);
+        return true;
+    }
+
+    /**
+     * What the running line says: "Generating 3 of 8 — about 4 min · ~6 GiB".
+     *
+     * <p><b>The count comes from the record, the words from the live phase.</b> A
+     * chunk that is being generated has a k and an N (the chunk is the unit the
+     * server runs, and the record counted the finished ones); between chunks the
+     * phase's own word — Uploading, Fetching — is the honest text, and inventing a
+     * count for it would be a number nothing measured. The time and memory come
+     * from {@link BatchBudget}'s one estimate, through the same formatter the trim
+     * sheet used to state the run before it started.
+     */
+    private CharSequence jobLineText(Jobs.Job job, VideoImport.Live live) {
+        int chunks = job == null ? 0 : job.chunks.size();
+        int done = job == null ? 0 : Math.min(job.completed, chunks);
+        int n = chunks;
+        int k = 0;
+        if (live != null && live.generating && live.chunk > 0 && live.count > 0) {
+            k = live.chunk;
+            n = live.count;
+        } else if (job != null && chunks > 0 && done < chunks) {
+            k = done + 1;
+            n = chunks;
+        }
+
+        String primary;
+        if (k > 0 && n > 0) {
+            primary = getString(R.string.video_phase_generating_chunk, k, n);
+        } else if (live != null && !live.phase.isEmpty()) {
+            primary = live.phase;
+        } else {
+            primary = getString(R.string.video_job_running_indeterminate);
+        }
+
+        // The two facts, from the record alone: a live import has no plan until all
+        // its prompts are submitted, so an estimate before that would be a guess.
+        // The loop walks the RECORD's chunks, not the live count: the record is the
+        // only list whose frames are known, and the two can differ for the moment a
+        // superseded run is being replaced.
+        if (job != null && k > 0) {
+            int remainingFrames = 0;
+            int perBatch = 0;
+            for (int i = 0; i < chunks; i++) {
+                int frames = job.chunks.get(i).frames;
+                if (i >= done) remainingFrames += Math.max(0, frames);
+                perBatch = Math.max(perBatch, frames);
+            }
+            float secs = BatchBudget.estimateSeconds(remainingFrames);
+            double gb = job.height > 0 && perBatch > 0
+                    ? BatchBudget.estimateMb(perBatch, job.height) / 1024.0 : 0;
+            if (secs > 0 && gb > 0) {
+                primary = primary + getString(R.string.video_job_estimate,
+                        VideoTrimSheet.waitText(secs), VideoTrimSheet.gbText(gb));
+            }
+        }
+        return primary;
     }
 
     // ----------------------------------------------------------- the photo line
@@ -5536,11 +5673,13 @@ public class MainActivity extends Activity {
                         new VideoImport.Listener() {
                             @Override
                             public void phase(final String message) {
+                                // The sheet's line, not a toast: a regenerate is the
+                                // same server round as an import and reports itself
+                                // the same way.
                                 runOnUiThread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        Toast.makeText(MainActivity.this, message,
-                                                Toast.LENGTH_SHORT).show();
+                                        refreshImportUi();
                                     }
                                 });
                             }
@@ -5571,13 +5710,15 @@ public class MainActivity extends Activity {
                     String why = (error == null || error.getMessage() == null)
                             ? getString(R.string.video_import_failed)
                             : error.getMessage();
+                    refreshImportUi();
                     Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
                     return;
                 }
                 // Same row, new files behind it: the poster changed, so the strip's
                 // thumbnail is stale, and the pair identity changed, so the renderer
-                // must reload rather than answer "already showing".
-                gallery.reindex();
+                // must reload rather than answer "already showing". One row is
+                // repainted; the rest of the strip keeps its decoded thumbnails.
+                gallery.itemUpdated(item);
                 applyFiles();
                 refreshSliders();
             }
@@ -5665,14 +5806,14 @@ public class MainActivity extends Activity {
                             public void phase(final String message) {
                                 // Posted, because phase() is called FROM the Io thread
                                 // and touching a view from there is the crash this
-                                // comment exists to prevent. A toast rather than a
-                                // panel: an import the user did not start from a
-                                // dialog must not be able to vanish behind one.
+                                // comment exists to prevent. The sheet's line is the
+                                // report: it is re-derived from the record and the live
+                                // phase rather than toasted, because a toast is gone
+                                // before a minutes-long import is read.
                                 runOnUiThread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        Toast.makeText(MainActivity.this, message,
-                                                Toast.LENGTH_SHORT).show();
+                                        refreshImportUi();
                                     }
                                 });
                             }
@@ -5692,14 +5833,18 @@ public class MainActivity extends Activity {
                                 // THE ROW EXISTS NOW, before any depth does, and this
                                 // is the callback that shows it. Posted to the UI
                                 // thread because added() is called from the Io worker;
-                                // reindexed so the strip draws the poster and applied so
-                                // the studio renders it. The user watches their video
-                                // land instead of a toast for three minutes, and a
-                                // failed generation leaves them the photograph.
+                                // inserted in place rather than reindexed, so every
+                                // other thumbnail keeps the bitmap it already holds --
+                                // a rebuild decodes the whole strip again and the
+                                // decodes queue behind this very import. Applied so the
+                                // studio renders it: the user watches their video land
+                                // instead of a line for three minutes, and a failed
+                                // generation leaves them the photograph.
                                 runOnUiThread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        gallery.reindex();
+                                        if (isFinishing() || isDestroyed()) return;
+                                        gallery.itemAppeared(placed);
                                         applyFiles();
                                         refreshSliders();
                                     }
@@ -5719,17 +5864,19 @@ public class MainActivity extends Activity {
                     // The server's own message when there is one. "Depth generation
                     // failed: <why>" is the whole diagnostic, and replacing it with a
                     // generic string is how a user ends up looking for a network fault
-                    // that is really a refused prompt.
+                    // that is really a refused prompt. The record now carries the same
+                    // words, so the sheet keeps them after the toast is gone.
                     String why = (error == null || error.getMessage() == null)
                             ? getString(R.string.video_import_failed)
                             : error.getMessage();
+                    refreshImportUi();
                     Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
                     return;
                 }
                 // The import selected the row in the index, so both surfaces pick it
                 // up through the ordinary write path -- applyFiles resolves the pair
                 // and hands the renderer its medium, which is where the clip starts.
-                gallery.reindex();
+                gallery.itemUpdated(item);
                 applyFiles();
                 refreshSliders();
             }
@@ -5835,9 +5982,11 @@ public class MainActivity extends Activity {
                     // otherwise would be a lie.
                     LibraryItem added = LibraryStore.add(prefs, PrefFiles.store(target), null, pickedName);
                     // The picker can be opened from the open grid, whose list was
-                    // read before this row existed; re-read it now or the selected
-                    // photo is missing from the gallery that is still on screen.
-                    gallery.reindex();
+                    // read before this row existed; insert the one row now or the
+                    // selected photo is missing from the gallery that is still on
+                    // screen. Not a rebuild: the other thumbnails keep their
+                    // decoded bitmaps, which is what keeps the strip from blanking.
+                    if (added != null) gallery.itemAppeared(added);
                     Toast.makeText(MainActivity.this,
                             "Added " + added.displayName(), Toast.LENGTH_SHORT).show();
                 } else if (depthForId != null) {
@@ -6024,6 +6173,15 @@ public class MainActivity extends Activity {
                             new VideoImport.Listener() {
                                 @Override
                                 public void phase(String message) {
+                                    // The live phase feeds the sheet's line: a resume
+                                    // that is fetching says so. Posted from the Io
+                                    // worker like every other UI touch here.
+                                    runOnUiThread(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            refreshImportUi();
+                                        }
+                                    });
                                 }
 
                                 @Override
@@ -6038,11 +6196,14 @@ public class MainActivity extends Activity {
                                     // are the useful part -- a CUDA out-of-memory says
                                     // what the range asked for and what the card had --
                                     // and a resume that failed silently is the state
-                                    // this pass exists to end.
+                                    // this pass exists to end. The record keeps the
+                                    // same words, so the sheet still says them after
+                                    // the toast is gone.
                                     runOnUiThread(new Runnable() {
                                         @Override
                                         public void run() {
                                             if (isFinishing() || isDestroyed()) return;
+                                            refreshImportUi();
                                             Toast.makeText(MainActivity.this, message,
                                                     Toast.LENGTH_LONG).show();
                                         }
@@ -6055,13 +6216,18 @@ public class MainActivity extends Activity {
                 @Override
                 public void onDone(LibraryItem item, Exception error) {
                     if (isFinishing() || isDestroyed()) return;
-                    if (item == null) return;
-                    // Only when something actually arrived: a still-running job
-                    // returns null, and reindexing for it would drop every thumbnail
-                    // for nothing -- which is the defect the strip already taught us.
-                    gallery.reindex();
-                    applyFiles();
-                    refreshSliders();
+                    if (item != null) {
+                        // Something actually arrived: repaint that one row and hand
+                        // the renderer its files. A still-running job returns null,
+                        // and rebuilding for it would re-decode every thumbnail for
+                        // nothing -- which is the defect the strip already taught us.
+                        gallery.itemUpdated(item);
+                        applyFiles();
+                    }
+                    // Whatever happened, the record may have changed (a failure
+                    // recorded, a job still running): the line and the corners read
+                    // it again.
+                    refreshImportUi();
                 }
             });
         }
