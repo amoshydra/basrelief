@@ -864,6 +864,27 @@ public class DepthWallpaperService extends WallpaperService {
                         // apply(Framing, Apply).
                         renderer.apply(framing);
                     }
+                    // The MEDIUM is armed BEFORE the load, and the order is
+                    // load-bearing -- the same order MainActivity.applyFiles keeps,
+                    // on purpose: one order, both surfaces. The decode reads the
+                    // medium on the Io thread, so a load issued first can capture
+                    // the PREVIOUS medium -- this surface's previous resolve was the
+                    // row selected a moment ago, which during an import is the
+                    // poster (a photograph). The install then reports a photograph,
+                    // the clip never starts, and the PairCache entry that decode
+                    // leaves serves the same wrong answer to the studio's decode.
+                    // And it is handed over EVERY resolve, not only on a pair
+                    // change: the still pair has a cheap "is this what is on
+                    // screen" test and a clip does not, so asking only on a change
+                    // would leave a clip playing over a photograph just selected --
+                    // the wallpaper showing the wrong medium. Null for a
+                    // photograph, which is every row without tracks, and it is
+                    // explicit for the reason requestClip documents. The rate rides
+                    // with it: a pref change can be the Speed slider, and the
+                    // engine must follow it live.
+                    renderer.setSpeed(framing.speed);
+                    renderer.requestClip(active == null ? null : active.video, getFilesDir());
+
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own
                     // copy updated at request time, so a load that never landed
@@ -884,7 +905,7 @@ public class DepthWallpaperService extends WallpaperService {
                     // comparison cannot.
                     // `active` is NULL when nothing is selected -- an emptied
                     // gallery, or the moment a delete of the active row lands. Both
-                    // this and the requestClip below used to read `active.video`
+                    // this and the requestClip above used to read `active.video`
                     // bare, and the delete crashed the engine with an NPE on every
                     // resolve: a wallpaper that crash-loops the app the moment the
                     // last photo is deleted. Null means "no clip wanted", which is
@@ -897,18 +918,6 @@ public class DepthWallpaperService extends WallpaperService {
                         renderer.loadPairAsync(img, dep, nrm);
                     }
 
-                    // The medium, handed over EVERY resolve and not only on a pair
-                    // change. That is the asymmetry worth noting: the still pair has
-                    // a cheap "is this what is on screen" test, and the clip does not
-                    // -- so asking only when the pair changes would leave a clip
-                    // playing over a photograph that had just been selected, which is
-                    // the wallpaper showing the wrong medium. Null for a photograph,
-                    // which is every row without tracks, and it is explicit for the
-                    // reason requestClip documents.
-                    // The rate, on every resolve like the medium: a pref change can be
-                    // the Speed slider, and the engine must follow it live.
-                    renderer.setSpeed(framing.speed);
-                    renderer.requestClip(active == null ? null : active.video, getFilesDir());
                     // The same pump the studio runs, because the wallpaper surface is
                     // WHEN_DIRTY too and a motionless phone raises no sensor events.
                     // Without it a clip plays only while you tilt the phone.

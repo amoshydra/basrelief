@@ -1496,8 +1496,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // frame correct: the system snapshots the surface ~100ms after it appears
         // and a decode takes ~1s, so anything decoded after that point is too late
         // to be in the snapshot no matter how it is scheduled.
+        //
+        // ONLY WHEN IT ANSWERS THE QUESTION ASKED. The cache key is the three
+        // paths, and the medium is not a path: both surfaces in this process decode
+        // the same pair, and at an import's completion the wallpaper's engine
+        // resolves it too -- with the medium its PREVIOUS resolve left armed, which
+        // for an import is the poster row's `null` (a photograph). Its decode lands
+        // in the cache first; the studio's clip request then hits that entry, the
+        // install reports a photograph, and the clip never starts. The row shows
+        // its poster until a relaunch misses the cache and decodes fresh, which is
+        // why the clip did not "automatically" play. A cache hit must answer the
+        // medium it was asked about; a mismatch is a miss, and the fresh decode
+        // below replaces the entry.
         Object warm = PairCache.get(imagePath, depthPath, normalPath);
-        if (warm instanceof Pending) return (Pending) warm;
+        if (warm instanceof Pending) {
+            Pending w = (Pending) warm;
+            if (w.isClip() == clip) return w;
+            android.util.Log.i("Basrelief", "pairCache: medium mismatch (cached clip="
+                    + w.isClip() + ", want clip=" + clip + ") -- decoding fresh");
+        }
 
         byte[] imageBytes = null;
         Bitmap colorBmp;

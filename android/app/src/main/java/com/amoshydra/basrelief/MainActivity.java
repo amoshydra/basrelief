@@ -6141,12 +6141,16 @@ public class MainActivity extends Activity {
             // The medium changed, so the pair load has to happen even when the stills
             // are identical: applyPending is what stops/starts the running clip, and
             // skipping it is how a re-selected clip stayed paused for ever.
+            //
+            // ONE load per resolve, and this is the only one. A second, older guard
+            // (`if (!showingSamePair) loadPairAsync`) used to follow it and issued a
+            // SECOND decode of the same pair on every pair change -- the two raced
+            // for the one PairCache entry, and the first could land after the second
+            // was already superseded. The condition above already covers the pair
+            // change; issuing it twice bought nothing but the race.
             renderer.loadPairAsync(img, dep, nrm);
         }
         startClipPump();
-        if (!renderer.showingSamePair(img, dep, nrm)) {
-            renderer.loadPairAsync(img, dep, nrm);
-        }
         glView.requestRender();
         refreshStatus();
     }
