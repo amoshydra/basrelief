@@ -198,8 +198,9 @@ already cost real time.
     row claiming a track that is not there.
   - **A running import is the pair invariant's one TRANSIENT exception, and the
     record is what keeps it from being silent.** `VideoImport` remuxes the range to
-    the row's colour file *before* anything is submitted, so while a `Jobs` record
-    exists the colour can play with a deliberately flat field — colour moving, flat
+    the row's remux file (`LibraryItem.videoFileName`) *before* anything is
+    submitted, so while a `Jobs` record exists the colour can play with a
+    deliberately flat field — colour moving, flat
     relief — without the index ever holding half a clip: `item.video` stays null and
     the preview is a request passed to the renderer, never stored. What makes that not
     §2's silent flat clip is the record (the only thing that says the depth is
@@ -625,7 +626,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 546 tests across thirty classes:
+it**. 547 tests across thirty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -746,35 +747,51 @@ has run.**
     end, no error anywhere, a hitch at every loop. The stream node is now given
     `frame_count = 0` and runs the whole of the file the app holds, and the app's
     exact sample count (`VideoImport.sampleCountOf`, one sample per frame) is used
-    only to CHECK, on three axes now that the generated tracks are capped: the
-    sidecar's `src_frames` must equal that count (the upload is the plan, before
-    anything is downloaded); the arrived depth clip's sample count must equal what
-    the node says it wrote -- `frames`/`done`, NEVER the colour's, which a capped
-    clip is shorter than BY DESIGN; and both fetched clips' durations must match the
-    colour's timeline within one output frame, plus half a source frame of
-    frame-grid rounding. Every mismatch is a failure with both numbers in it, and
-    either side unknown (0) is logged as unchecked rather than called a mismatch,
-    because a window claims nothing.
-  - **Depth and normal are written at `min(source, 30)`, and the player bounds a
-    stream that still cannot keep up.** Measured on a Pixel 7 Pro with a 50 fps
-    source: three simultaneous 1080p clip decoders each ran at ~39-40 fps, so the
-    shared clock could not pin them and the relief drifted 0.4-1.0 s from the
-    picture, worst on the normal, the heaviest encode. The node's `fps_cap` input
-    is therefore stated by the app -- `ComfyWorkflow.STREAM_FPS_CAP = 30`, one
-    constant, passed explicitly after `batch_size` rather than left to the node's
-    default -- and output frame k is source frame `round_half_up(k × src/out)`:
-    fewer samples over the same seconds, never a retime. The colour stays the app's
-    own remux, re-encoded by nobody. The sidecar carries `src_frames`/`src_fps`/
-    `fps_out`, which is what the fetch checks above are computed from. And for a
-    decoder that STILL falls behind, `ClipDecoder.catchUpIfLate` is the fail-soft
-    bound: a released frame more than 300 ms behind the clock (measured normal
-    jitter is one frame, 40 ms; the gate's lead is 120 ms) seeks forward to the
-    frame due now, at most once a second, never while `awaitingKeyframe` and never
-    at `rate <= 0`. The seek reuses the loop-rewind shape -- no flush, timestamps
-    absolute at the input -- and the node's one-second GOP bounds its cost; the
-    colour's bound is the source's own GOP. `ClipPlayer.stats` reports both deltas
-    (`depthSkew`/`normalSkew`) because the old single skew was blind to the normal,
-    the worst offender.
+    only to CHECK, on the axes the caps make separate: the sidecar's `src_frames`
+    must equal that count (the upload is the plan, before anything is downloaded);
+    the arrived depth clip's sample count -- and the node colour's, when the run
+    named one -- must equal what the node says it wrote (`frames`/`done`, NEVER the
+    remux's, which a capped clip is shorter than BY DESIGN); the node colour is
+    never compared with the remux's frame count (only the `src_frames` check ties it
+    to the upload); and every fetched clip's duration must match the timeline within
+    one output frame, plus half a source frame of frame-grid rounding -- depth/normal
+    against the remux's source timeline, the node colour against the depth it was
+    encoded beside, because the same decoded frames at the same rate are equal by
+    construction. Every mismatch is a failure with both numbers in it, and either
+    side unknown (0) is logged as unchecked rather than called a mismatch, because a
+    window claims nothing.
+  - **The playback tracks are sized for the PHONE, not the camera, and the player
+    bounds only a stream that is genuinely spent.** Measured on a Pixel 7 Pro: a
+    1440x2560 portrait 50 fps source could not be decoded at all -- even the COLOUR
+    stream fell 0.4-2.4 s behind -- while 1080p-class content held ~40 fps per
+    stream (three simultaneous decoders each ran at ~39-40 fps and the shared clock
+    could not pin them: the relief drifted 0.4-1.0 s from the picture, worst on the
+    normal, the heaviest encode). Two caps are therefore stated by the app rather
+    than left to the node: `ComfyWorkflow.STREAM_MAX_LONG_SIDE = 1920` (the long
+    side of the generated tracks AND of the node's colour) and
+    `ComfyWorkflow.STREAM_FPS_CAP = 30` (their rate), each passed explicitly, and
+    output frame k is source frame `round_half_up(k × src/out)`: fewer samples over
+    the same seconds, never a retime. The sidecar carries `src_frames`/`src_fps`/
+    `fps_out`, which is what the fetch checks above are computed from. **The colour
+    is the node's when the source exceeded the caps and the app's own remux
+    otherwise.** The remux (`LibraryItem.videoFileName`) stays the upload, the
+    plan's frame count and the Regenerate input -- overwriting it with the
+    downscaled colour would cap every later regeneration twice; a node colour lands
+    on its own name (`LibraryItem.videoColorFileName`) and `VideoTracks.color`
+    names whichever file the run produced, so every existing row stays valid with no
+    migration. And for a decoder that STILL falls behind, `ClipDecoder.catchUpIfLate`
+    is a last resort, not a recovery mechanism: a released frame more than **1.5 s**
+    behind the clock, at most once per **10 s**, seeks forward to the frame due now.
+    The first version (300 ms / 1 s) fired into a SEEK STORM on the measured source --
+    the seek lands on the PREVIOUS keyframe (`SEEK_TO_CLOSEST_SYNC`) and the
+    source's GOPs were seconds long, so every catch-up rewound further than it
+    saved and the stream never converged, which the user saw as strobing -- so the
+    thresholds are now unreachable by a stream that is merely keeping up, and with
+    the caps this should never fire at all. The seek shape is otherwise unchanged:
+    the loop-rewind arithmetic, no flush, timestamps absolute at the input, never
+    while `awaitingKeyframe` and never at `rate <= 0`. `ClipPlayer.stats` reports
+    both deltas (`depthSkew`/`normalSkew`) because the old single skew was blind to
+    the normal, the worst offender.
   - **An import patches the strip and the grid; it does not reindex them.** The
     early write inserts ONE tile and ONE cell (`Gallery.itemAppeared`), the
     completion repaints that row (`Gallery.itemUpdated`), and `reindex()` stays
@@ -826,10 +843,14 @@ has run.**
     largest window in 1..4 whose `pixels × window` product stays at or under the
     measured anchor (`1920×1080 × 4` = the 12.3 GiB peak), so 1080p gets 4, 1440p 2,
     4K 1, and an unknown dimension gets 1 -- the "a window claims nothing" rule
-    applied to a number. The colour is still the app's own remux: it is the playback
-    medium AND the upload, so the frames the node saw and the frames the renderer
-    plays are one file, and a failed remux copies the share and cuts the range from
-    the copy -- the node writes no colour at all.
+    applied to a number. **The colour is the node's when the source exceeded the
+    playback caps, and the app's own remux otherwise.** The remux is still the
+    upload and the plan, and it is never overwritten by the node's downscaled
+    colour -- a Regenerate uploads the remux, or it would cap an already-capped
+    copy twice; the node colour lands on its own name
+    (`LibraryItem.videoColorFileName`) and `VideoTracks.color` names whichever file
+    the run produced. A failed remux copies the share and cuts the range from the
+    copy, and a source within the caps is not re-encoded at all.
   - **A clip's SPEED is a render value on the item, and the gate is where it
     applies.** Playback rate is per photo and per surface, on `SurfaceSettings`
     beside `motion`, edited by a row in the "How it moves" group shown only for a

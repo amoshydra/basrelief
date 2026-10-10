@@ -45,16 +45,21 @@ import java.nio.ByteBuffer;
  * the seam, because no timestamp now comes from a queue — the gate keeps each decoder
  * on the same frame index.
  *
- * <p><b>A decoder that cannot keep up is bounded by a seek, not left behind.</b>
- * The gate pins a decoder that is FAST — a frame is held until its absolute time is
- * due — but a stream whose codec cannot decode at the clip's rate releases frames
- * that are already overdue, and the deficit accumulates. Measured on a 50 fps import:
- * all three 1080p streams ran at ~39-40 fps, each fell behind by its own deficit,
- * and the relief was 0.4-1.0 s from the picture at the loop. {@link #catchUpIfLate}
- * is the fail-soft bound: when a released frame is far enough behind the clock and
- * enough time has passed since the last seek, the decoder jumps to the frame that is
- * due now. It is deliberately hard to trigger while a stream keeps up — see the
- * constants for the measured numbers the threshold sits between.
+ * <p><b>A decoder that cannot keep up is bounded by a seek, not left behind — but
+ * the seek is a LAST RESORT, not a recovery mechanism.</b> The gate pins a decoder
+ * that is FAST — a frame is held until its absolute time is due — but a stream whose
+ * codec cannot decode at the clip's rate releases frames that are already overdue,
+ * and the deficit accumulates. Measured on a 50 fps import: all three 1080p streams
+ * ran at ~39-40 fps, each fell behind by its own deficit, and the relief was 0.4-1.0 s
+ * from the picture at the loop. The first version of {@link #catchUpIfLate} tried to
+ * close that gap with a 300 ms threshold and a 1 s cooldown and made it worse: it
+ * seeks to the PREVIOUS keyframe, a source's GOP can be seconds long, so every
+ * catch-up rewound seconds of source, re-decoded, and fell behind again — a seek
+ * storm the user saw as strobing. What keeps a stream in sync is the content caps
+ * instead: the node writes the played tracks at the phone's caps, so this should now
+ * never fire. It stays as the fail-soft bound it always claimed to be — see the
+ * constants for why 1.5 s and 10 s cannot be reached by a stream that is merely
+ * keeping up.
  *
  * <p><b>This is not a {@link Thread} of its own making.</b> It starts one, and
  * {@link #stop} joins it, because a decoder thread outliving the surface it feeds
@@ -78,30 +83,34 @@ final class ClipDecoder {
      * How far behind the clock a released frame may be before the decoder seeks
      * forward to the frame that is due now.
      *
-     * <p><b>The fail-soft bound for an overloaded decoder, chosen to be unreachable
-     * while one keeps up.</b> The gate releases a frame the moment its absolute time
-     * is due, so a healthy decoder hands a frame over within a scheduling delay of
-     * {@code clock + lead}: the measured steady-state skew between two gated streams
-     * is one frame interval (40 ms in the recorded run) and the gate's own lead is
-     * 120 ms. A decoder that cannot keep up is a different shape: it releases frames
-     * whose pts is already past, and the deficit accumulates — measured on a 50 fps
-     * source, three 1080p streams each ran at ~39-40 fps and the depth drifted
-     * 0.4-1.0 s from the colour. The threshold sits well above healthy jitter and
-     * below the measured failure.
+     * <p><b>A last resort, not a recovery mechanism, and the content caps are what
+     * made it so.</b> Its first version sat at 300 ms -- between healthy jitter and
+     * the measured failure -- and it made the measured failure WORSE. The seek
+     * lands on the previous keyframe ({@code SEEK_TO_CLOSEST_SYNC}), and the
+     * source's GOPs can be seconds long: every catch-up rewound several seconds of
+     * source, re-decoded, and fell behind again, a seek storm the user saw as
+     * strobing. What actually keeps a stream in sync is that the node now writes
+     * the played tracks at the phone's caps ({@code
+     * ComfyWorkflow.STREAM_MAX_LONG_SIDE} and {@code STREAM_FPS_CAP}), so a stream
+     * that cannot keep up at those caps is a decoder at the end of its budget, not
+     * one merely a few frames late. 1.5 s is far past anything the gate's own lead
+     * (120 ms) or healthy jitter (one frame, 40 ms measured) can produce; with the
+     * caps this should never fire at all.
      */
-    private static final long CATCH_UP_LAG_US = 300_000L;
+    private static final long CATCH_UP_LAG_US = 1_500_000L;
 
     /**
      * The least time between two catch-ups.
      *
-     * <p>A seek decodes from the sync sample before its target, so firing it
-     * continuously would turn a slightly slow stream into one that is always
-     * jumping. The magnitude is set by the measured deficit: at ~39 fps against a
-     * 50 fps clip the lag grows ~220 ms/s, so after a catch-up it takes over a
-     * second to cross the threshold again. With the threshold and this cooldown the
-     * lag stays under roughly half a second instead of growing without bound.
+     * <p>Ten seconds, because a seek's cost is the SOURCE's GOP and the measured
+     * failure was a multi-second rewind: at the old 300 ms threshold and 1 s
+     * cooldown the catch-up fired every second, each seek rewound further than it
+     * saved, and the stream never converged -- the seek storm above. With the caps
+     * this should never fire at all; when it does, one jump per ten seconds bounds
+     * what it can cost and gives the stream the whole interval to re-converge by
+     * decoding rather than seeking.
      */
-    private static final long CATCH_UP_COOLDOWN_US = 1_000_000L;
+    private static final long CATCH_UP_COOLDOWN_US = 10_000_000L;
 
     /** How long either dequeue may block, in ms. Short, because the gate polls this. */
     private static final int POLL_MS = 5;
@@ -379,10 +388,14 @@ final class ClipDecoder {
      * jump. The frames between the sync sample and the target are released as their
      * turn comes, and the keyframe wait drops the stale ones.
      *
-     * <p><b>What makes this cheap is the encoder's GOP.</b> The stream node pins its
-     * GOP to one second, so a catch-up costs at most that much decode before the
-     * frame that is due. The colour is the app's own remux, which carries the
-     * source's GOP, so the bound there is one source GOP -- the honest limit.
+     * <p><b>What it costs is the stream's GOP, and that is why the thresholds are a
+     * last resort.</b> The stream node pins its GOP to one second, so a catch-up on
+     * a generated track costs at most that much decode before the frame that is
+     * due. The colour can carry the SOURCE's GOP -- the app's remux copies samples,
+     * and a source within the caps is never re-encoded -- and on the measured
+     * 1440x2560@50 source those GOPs were seconds long, so a seek rewound far more
+     * than it saved. See the constants: the bounds are now wide enough that this
+     * fires only when a decoder is genuinely spent.
      *
      * <p>Never fires while {@code awaitingKeyframe}: a jump already in flight must
      * not be jumped again on the stale frames it is dropping, and the cooldown is a

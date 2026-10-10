@@ -393,18 +393,19 @@ public class ComfyWorkflowTest {
      * The server's answer for the stream shape: the real MoGe pipeline with the
      * {@code MoGeVideoStream} custom node beside it.
      *
-     * <p>The schema is copied from the live server's {@code /object_info}: ten
+     * <p>The schema is copied from the live server's {@code /object_info}: eleven
      * required inputs, the {@code MOGE_MODEL} handle first, and the scalars with
      * the defaults the builder is expected to discover. The list matters because
      * two of them -- {@code resolution_level} and {@code refine_steps} -- are
      * never named by the app and must arrive from exactly here.
      *
-     * <p><b>{@code fps_cap}'s fixture default is deliberately NOT the live default
-     * (30).</b> The app must STATE the cap for its own sync reasons -- see
-     * {@link ComfyWorkflow#STREAM_FPS_CAP} -- so if this fixture carried 30, an
-     * assertion reading 30 could not tell "the app stated it" from "the builder
-     * inherited the default", which is a guard that cannot fail. 60 makes the
-     * app's constant the only way 30 can reach the input.
+     * <p><b>Both caps' fixture defaults are deliberately NOT the live defaults
+     * (30 and 1920).</b> The app must STATE each for its own playback reasons -- see
+     * {@link ComfyWorkflow#STREAM_FPS_CAP} and
+     * {@link ComfyWorkflow#STREAM_MAX_LONG_SIDE} -- so if this fixture carried the
+     * app's values, an assertion reading them could not tell "the app stated it"
+     * from "the builder inherited the default", which is a guard that cannot fail.
+     * 60 and 4096 make each constant the only way its value can reach the input.
      */
     private static JSONObject streamServerInfo() throws JSONException {
         JSONObject base = moGeServerInfo();
@@ -416,12 +417,20 @@ public class ComfyWorkflowTest {
                 + "  \"start_frame\": [\"INT\", {\"default\": 0, \"min\": 0}],"
                 + "  \"frame_count\": [\"INT\", {\"default\": 0, \"min\": 0}],"
                 + "  \"target_height\": [\"INT\", {\"default\": 0, \"min\": 0, \"max\": 8192}],"
+                + "  \"max_long_side\": [\"INT\", {\"default\": 4096, \"min\": 0, \"max\": 8192}],"
                 + "  \"batch_size\": [\"INT\", {\"default\": 4, \"min\": 1, \"max\": 16}],"
                 + "  \"fps_cap\": [\"INT\", {\"default\": 60, \"min\": 0, \"max\": 240}],"
                 + "  \"resolution_level\": [\"INT\", {\"default\": 9, \"min\": 0, \"max\": 9}],"
                 + "  \"refine_steps\": [\"INT\", {\"default\": 3, \"min\": 0, \"max\": 8}]}},"
-                + "\"output\": [\"STRING\", \"STRING\", \"INT\"]}"));
+                + "\"output\": [\"STRING\", \"STRING\", \"STRING\", \"INT\"]}"));
         return base;
+    }
+
+    /** One stream input's fixture default, for the "stated, not inherited" guards. */
+    private static int streamFixtureDefault(String input) throws JSONException {
+        return streamServerInfo().getJSONObject("MoGeVideoStream")
+                .getJSONObject("input").getJSONObject("required")
+                .getJSONArray(input).getJSONObject(1).getInt("default");
     }
 
     private static JSONObject streamWf() throws JSONException {
@@ -458,11 +467,11 @@ public class ComfyWorkflowTest {
      * off-by-one (240 frames report 9.9586 s, so {@code round(x*24)} is 239) this
      * app has already shipped once.
      *
-     * <p>The {@code fps_cap} assertion is meaningful only because the fixture's
-     * default is a different number (60, see {@link #streamServerInfo}), so it can
-     * pass only when the builder STATES the cap -- and the second assertion holds
-     * the fixture to that, because a fixture that drifted back to 30 would turn
-     * the first one into a guard that cannot fail.
+     * <p>Both cap assertions are meaningful only because the fixture's defaults are
+     * different numbers (60 and 4096, see {@link #streamServerInfo}), so each can
+     * pass only when the builder STATES the constant -- and the {@code assertNotEquals}
+     * pair holds the fixture to that, because a fixture that drifted back to the
+     * app's value would turn each assertion into a guard that cannot fail.
      */
     @Test
     public void theStreamNodeCarriesTheRunsOwnInputs() throws Exception {
@@ -476,12 +485,14 @@ public class ComfyWorkflowTest {
         assertEquals("the window", 4, in.getInt("batch_size"));
         assertEquals("the generated tracks' rate cap is the app's, not the node's default",
                 ComfyWorkflow.STREAM_FPS_CAP, in.getInt("fps_cap"));
-        int fixtureDefault = streamServerInfo().getJSONObject("MoGeVideoStream")
-                .getJSONObject("input").getJSONObject("required")
-                .getJSONArray("fps_cap").getJSONObject(1).getInt("default");
+        assertEquals("the playback long-side cap is the app's, not the node's default",
+                ComfyWorkflow.STREAM_MAX_LONG_SIDE, in.getInt("max_long_side"));
         assertNotEquals("the fixture's fps_cap default must differ, or the assertion "
                         + "above cannot tell the app's cap from the discovered default",
-                ComfyWorkflow.STREAM_FPS_CAP, fixtureDefault);
+                ComfyWorkflow.STREAM_FPS_CAP, streamFixtureDefault("fps_cap"));
+        assertNotEquals("the fixture's max_long_side default must differ, or the assertion "
+                        + "above cannot tell the app's cap from the discovered default",
+                ComfyWorkflow.STREAM_MAX_LONG_SIDE, streamFixtureDefault("max_long_side"));
     }
 
     /**

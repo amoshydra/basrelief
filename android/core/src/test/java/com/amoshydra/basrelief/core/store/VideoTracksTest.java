@@ -306,7 +306,10 @@ public class VideoTracksTest {
      * one fixed name filled a gallery with nine rows showing one photo — so the name
      * derives from the id rather than being chosen. The extensions differ from the
      * stills', which is what lets a poster and a clip of the same row live side by
-     * side under one id without either overwriting the other (§3 step 8).
+     * side under one id without either overwriting the other (§3 step 8). The node's
+     * colour is in here for the same reason as the other two tracks: it is a third
+     * file of the same row, and if it could collide with the remux or a track the
+     * import would overwrite one of them.
      */
     @Test
     public void clipFileNamesAreUniquePerItemAndNeverCollideWithTheStills() {
@@ -319,6 +322,8 @@ public class VideoTracksTest {
                 LibraryItem.videoDepthFileName("id-two"),
                 LibraryItem.videoNormalFileName("id-one"),
                 LibraryItem.videoNormalFileName("id-two"),
+                LibraryItem.videoColorFileName("id-one"),
+                LibraryItem.videoColorFileName("id-two"),
                 LibraryItem.imageFileName("id-one"),
                 LibraryItem.depthFileName("id-one"),
                 LibraryItem.normalFileName("id-one")}) {

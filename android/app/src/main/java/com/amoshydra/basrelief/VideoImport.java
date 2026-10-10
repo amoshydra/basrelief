@@ -50,11 +50,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * at frame 174 on the server's 16 GiB cap) and finished in 340 s. Length stopped
  * being a thing that decides whether an import can run at all.
  *
- * <p><b>The colour clip is the app's own remux, and it is also the upload.</b> The
- * share is remuxed -- encoded samples copied, nothing re-encoded -- into the row's
- * colour filename, which the renderer later plays; that same file is what is
- * uploaded and what the node reads. So the frames MoGe is asked about and the frames
- * the user sees are one file, and the node never has to produce a colour at all.
+ * <p><b>The remux is the upload and the regenerate input; the colour the renderer
+ * plays is the node's when the source exceeded the playback caps.</b> The share is
+ * remuxed -- encoded samples copied, nothing re-encoded -- into the row's remux
+ * filename ({@code LibraryItem.videoFileName}), and that same file is what is
+ * uploaded, what the plan's frame count is read from, and what a regenerate uploads
+ * again. A source heavier than the caps (a long side over
+ * {@code ComfyWorkflow.STREAM_MAX_LONG_SIDE}, a rate over {@code STREAM_FPS_CAP})
+ * cannot be decoded by the phone -- measured on a 1440x2560@50 import, even the
+ * colour fell 0.4-2.4 s behind -- so the node RE-ENCODES a colour at the playback
+ * caps and the app fetches it to its own filename
+ * ({@code LibraryItem.videoColorFileName}), which is then the file the renderer
+ * plays. The remux is never overwritten: sending an already-downscaled copy back to
+ * the node would cap it twice, so it stays the higher-quality input every later
+ * regenerate starts from.
  *
  * <p><b>The progress channel is the node's sidecar, and it is a FILE.</b> The node
  * rewrites {@code basrelief_<tag>.progress.json} every window with
@@ -67,15 +76,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>The count is verified, not trusted -- and the cap means the checks are no
  * longer one number.</b> Depth and normal are written at {@code min(source, 30)}
  * ({@code ComfyWorkflow.STREAM_FPS_CAP}), so a generated clip holds FEWER samples
- * than the colour by design. The app counts its own upload's samples exactly and
- * checks three things against the run: the sidecar's {@code src_frames} against
- * that count (the upload is the plan), the arrived depth clip's samples against the
- * count the node says it wrote (no truncation), and both clips' durations against
- * the colour's timeline within one output frame (the same timeline, decimated).
- * This is what replaced the old duration-based planner: a 240-frame remux reports
- * 9.9586 s, so {@code round(9.9586 x 24)} is 239, and planning a run from that
- * number asked for one frame fewer than the colour held -- a clip one frame short,
- * at the end, with no error anywhere.
+ * than the remux by design. The app counts its own upload's samples exactly and
+ * checks it against the run: the sidecar's {@code src_frames} against that count
+ * (the upload is the plan), the arrived depth clip's samples -- and the node
+ * colour's, when the run named one -- against the count the node says it wrote (no
+ * truncation), and every fetched clip's duration on the same timeline within one
+ * output frame (the same timeline, decimated). This is what replaced the old
+ * duration-based planner: a 240-frame remux reports 9.9586 s, so
+ * {@code round(9.9586 x 24)} is 239, and planning a run from that number asked for
+ * one frame fewer than the colour held -- a clip one frame short, at the end, with
+ * no error anywhere.
  *
  * <p><b>No clips are stored until they both exist.</b> The pair invariant is in
  * {@code VideoTracks}, not in a writer, and the index still owns the selection and
@@ -268,8 +278,8 @@ final class VideoImport {
     }
 
     /**
-     * What one finished run produced: the two server-side file names, the frame
-     * count the node reported, and the run's own plan and rates from the sidecar.
+     * What one finished run produced: the server-side file names, the frame count
+     * the node reported, and the run's own plan and rates from the sidecar.
      *
      * <p>Its own type because two readers hand it to {@link #attach} in opposite
      * directions: the live poll reads the names out of {@code /history} and
@@ -281,6 +291,19 @@ final class VideoImport {
     private static final class StreamOutputs {
         final String depthName;
         final String normalName;
+        /**
+         * The node's own colour file, or "" when the source fit the playback caps.
+         *
+         * <p><b>A named colour is the played medium on a heavy source, and its
+         * absence is a FACT rather than a missing name.</b> The node re-encodes a
+         * colour only when the source exceeds the caps, and reports it in both the
+         * sidecar and the history; when it does not, the app's own remux is the
+         * colour -- the state every existing row is already in, which is what makes
+         * this need no migration. There is deliberately no deterministic fallback
+         * name here: asking for a file the node chose not to write would fail the
+         * import, so an empty string stays empty.
+         */
+        final String colorName;
         /** Frames the node says it WROTE: the sidecar's {@code done}, or history's {@code frames}. */
         final int frames;
         /** Source frames the node says it READ; the app's own sample count must equal this. */
@@ -290,14 +313,20 @@ final class VideoImport {
         /** The source's own rate, for the duration tolerance; 0 when unknown. */
         final float srcFps;
 
-        StreamOutputs(String depthName, String normalName, int frames, int srcFrames,
-                      float fpsOut, float srcFps) {
+        StreamOutputs(String depthName, String normalName, String colorName, int frames,
+                      int srcFrames, float fpsOut, float srcFps) {
             this.depthName = depthName == null ? "" : depthName;
             this.normalName = normalName == null ? "" : normalName;
+            this.colorName = colorName == null ? "" : colorName;
             this.frames = Math.max(0, frames);
             this.srcFrames = Math.max(0, srcFrames);
             this.fpsOut = fpsOut > 0f ? fpsOut : 0f;
             this.srcFps = srcFps > 0f ? srcFps : 0f;
+        }
+
+        /** Whether the node wrote a colour this run must fetch and play. */
+        boolean hasColor() {
+            return !colorName.isEmpty();
         }
     }
 
@@ -324,9 +353,10 @@ final class VideoImport {
      * are.
      *
      * <p><b>The colour is a local copy, made before the server is asked anything.</b>
-     * Its content is already here -- it is the clip being regenerated -- so the server
-     * is never asked to re-encode it, and the new generation owns a file under its
-     * own name from the start.
+     * It is a copy of the row's remux -- never of a node colour the row may be
+     * playing, because that copy would already be downscaled -- so the new
+     * generation owns a file under its own name from the start and uploads the best
+     * local copy.
      *
      * @param item the clip row to regenerate. Must carry clips.
      */
@@ -349,28 +379,33 @@ final class VideoImport {
     private static void regenerateBody(final Context app, final SharedPreferences prefs,
                                        final LibraryItem item, final ComfyApi api,
                                        final Listener listener) {
-        // The colour clip is already here; regeneration re-runs the node over IT.
-        // TWO WAYS IT IS HERE: attached to the row as a clip, or fetched by an
-        // import whose attach() wrote the colour clip and then failed before the
-        // depth landed -- a partial fetch, and the case this fallback still serves.
-        // The import writes the remuxed range under this name before the server
-        // round, so a row whose generation never ran still has its range here and
-        // this is its retry.
-        final File colour = item.video != null
-                ? item.video.colorFile(app.getFilesDir())
-                : new File(app.getFilesDir(), LibraryItem.videoFileName(item.id));
+        // THE REMUX IS THE UPLOAD, even when the row plays the node's colour. The
+        // row's `video.color` names whatever the run landed (see attach): on a
+        // heavy source that is the node's downscaled colour, and re-running the
+        // node over THAT would cap an already-capped copy -- resolution lost on
+        // every later regenerate. `videoFileName` is the import's own remuxed
+        // range, written before the server round and never overwritten, so it is
+        // both the fallback for a row whose generation never ran and the best copy
+        // to re-run. The row's own colour is the fallback when the remux is gone:
+        // degraded beats un-regenerable.
+        final File dir = app.getFilesDir();
+        final File remux = new File(dir, LibraryItem.videoFileName(item.id));
+        final File colour = remux.exists()
+                ? remux
+                : (item.video != null ? item.video.colorFile(dir) : null);
         if (colour == null || !colour.exists()) {
             fail(prefs, null, listener, "regenerate: the colour clip is gone", null);
             return;
         }
         long stamp = System.currentTimeMillis();
         String[] names = {
-                "ai_clip_" + stamp + ".mp4",        // colour clip
+                "ai_clip_" + stamp + ".mp4",        // colour copy = the upload
                 "ai_clipdepth_" + stamp + ".mp4",   // depth clip
                 "ai_clipnormal_" + stamp + ".mp4",  // normal clip
                 "ai_clip_" + stamp + ".png",        // poster (image)
                 "ai_depth_" + stamp + ".png",       // depth still -- the still path's convention
                 "ai_normal_" + stamp + ".png",      // normal still
+                "ai_clipcolor_" + stamp + ".mp4",   // node colour, when the caps fired
         };
         File colourCopy = new File(app.getFilesDir(), names[0]);
         try {
@@ -451,7 +486,7 @@ final class VideoImport {
         final String tag = ComfyWorkflow.streamTag(job.itemId);
         // The row's OWN names: attach() writes the fetched clips under the
         // id-derived names, and the resume must land on the same files or the row
-        // would point at nothing.
+        // would point at nothing. The last one is where a node colour lands.
         final String[] names = {
                 LibraryItem.videoFileName(job.itemId),
                 LibraryItem.videoDepthFileName(job.itemId),
@@ -459,19 +494,31 @@ final class VideoImport {
                 LibraryItem.imageFileName(job.itemId),
                 LibraryItem.depthFileName(job.itemId),
                 LibraryItem.normalFileName(job.itemId),
+                LibraryItem.videoColorFileName(job.itemId),
         };
-        // WHERE THE COLOUR IS: the row's own clip when it has one, otherwise the
-        // early import's file under the same name. No colour means there is nothing
-        // to re-submit from and nothing to preview -- clear rather than leave a
-        // line with no action, and the row's own fix line offers Generate.
-        final File colour = item.video != null
-                ? item.video.colorFile(dir)
-                : new File(dir, names[0]);
+        // WHERE THE UPLOAD IS: the remux -- the file the original run read, and the
+        // one a re-submit must send so the sidecar's `src_frames` and the plan's
+        // count are the same file. `video.color` may name the node's downscaled
+        // colour, so it is only the fallback for a row whose remux has gone; no
+        // colour at all means there is nothing to re-submit from and nothing to
+        // preview -- clear rather than leave a line with no action, and the row's
+        // own fix line offers Generate.
+        final File remux = new File(dir, names[0]);
+        final File colour = remux.exists()
+                ? remux
+                : (item.video != null ? item.video.colorFile(dir) : null);
         if (colour == null || !colour.exists()) {
             Log.w(TAG, "resume: " + job.itemId + " has no colour clip to re-submit");
             JobsStore.clearItem(prefs, job.itemId);
             return;
         }
+        // THE PLAN'S COUNT comes from the remux, not from whatever `video.color`
+        // names: on a heavy source that is the node's downscaled colour, and the
+        // sidecar's `src_frames` counted the frames of the UPLOAD. 0 when the remux
+        // is gone -- the check is logged as unchecked rather than answered with a
+        // number read from the wrong file.
+        final int plannedFrames = remux.exists()
+                ? sampleCountOf(app, Uri.fromFile(remux)) : 0;
 
         // THE SIDECAR IS ASKED FIRST, because it is the run's own state and it can
         // answer four of the cases without touching /history.
@@ -502,12 +549,17 @@ final class VideoImport {
                                 ComfyWorkflow.streamDepthName(tag)),
                         nonEmpty(side.optString("normal", ""),
                                 ComfyWorkflow.streamNormalName(tag)),
+                        // No deterministic fallback for the colour, unlike depth and
+                        // normal: the sidecar naming none is the honest answer "the
+                        // source fit the caps, the remux is the colour", and a derived
+                        // name would ask for a file the node chose not to write.
+                        colorNameOf(side),
                         side.optInt("done", 0),
                         side.optInt("src_frames", 0),
                         (float) side.optDouble("fps_out", 0),
                         (float) side.optDouble("src_fps", 0));
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
-                        job.promptId, sampleCountOf(app, Uri.fromFile(colour)),
+                        job.promptId, plannedFrames,
                         listener, editFinisher(prefs, job.itemId));
                 if (built != null) listener.done(built);
                 return;
@@ -550,9 +602,9 @@ final class VideoImport {
             }
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                StreamOutputs out = streamOutputsOf(entry, tag, 0, 0f, 0f);
+                StreamOutputs out = streamOutputsOf(entry, tag, 0, 0f, 0f, "");
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
-                        job.promptId, sampleCountOf(app, Uri.fromFile(colour)),
+                        job.promptId, plannedFrames,
                         listener, editFinisher(prefs, job.itemId));
                 if (built != null) listener.done(built);
                 return;
@@ -766,8 +818,8 @@ final class VideoImport {
      * asked with the scaled dimensions; see {@link BatchBudget#streamWindow}.
      *
      * @param upload    the file to upload (the remuxed range, or a regenerate copy)
-     * @param names     colour clip, depth clip, normal clip, poster, depth still,
-     *                  normal still
+     * @param names     remux/colour copy, depth clip, normal clip, poster, depth
+     *                  still, normal still, node-colour target (see attach)
      * @param outHeight the resolution chip: the height to load at, 0 = the source's
      * @return the built-but-unstored item, or null after reporting a failure
      */
@@ -877,28 +929,33 @@ final class VideoImport {
      * resume pass so the two cannot drift -- a resume that fetched slightly
      * differently from an import would be a second way for a clip to be wrong.
      *
-     * <p><b>The colour is not fetched.</b> It is {@code names[0]} already: the import
-     * remuxed the range there before submitting, and a regenerate copied its source
-     * there. The node writes no colour at all, which is what makes the frames the
-     * server saw and the frames the renderer plays one file by construction.
+     * <p><b>The remux is always there; the node's colour is fetched only when the
+     * run named one.</b> {@code names[0]} is the import's own remux -- the upload,
+     * the regenerate input and the range's source timeline -- and the node writes a
+     * colour of its own only when the source exceeded the playback caps, in which
+     * case the sidecar (or /history's ui payload) names it and its bytes are fetched
+     * to {@code names[6]}. The played colour is whichever file the run produced, and
+     * every row written before node colours existed already names the remux, which is
+     * what makes this need no migration.
      *
-     * <p><b>Three checks, because the cap means the counts are no longer one
+     * <p><b>Four checks, because the cap means the counts are no longer one
      * number.</b> Before the fetch: the sidecar's {@code src_frames} against the
      * app's exact count of the upload, which is the plan -- a run that read a
      * different file cannot be fixed by downloading what it wrote. After it: the
      * arrived depth clip's samples against the count the node says it wrote
-     * ({@code frames}/{@code done}), because a capped clip is shorter than the
-     * colour BY DESIGN and the colour's count is therefore the wrong number to
-     * compare. And the fetched clips' durations against the colour's timeline
-     * within one output frame -- plus half a source frame of grid rounding; see
-     * {@link #timelineMismatch} -- because the cap decimates samples and must not
-     * retime them. Every failure carries both numbers, and either side unknown (0)
-     * is logged as unchecked rather than called a mismatch: a window claims
+     * ({@code frames}/{@code done}), because a capped clip is shorter than the remux
+     * BY DESIGN and the remux's count is therefore the wrong number to compare; the
+     * node's colour, when fetched, against that same written count, because it is
+     * encoded from the same decoded frames; and every fetched clip's duration on the
+     * same timeline -- depth/normal against the remux's source timeline, the node
+     * colour against the depth it was encoded beside; see {@link #timelineMismatch}
+     * for the tolerance. Every failure carries both numbers, and either side unknown
+     * (0) is logged as unchecked rather than called a mismatch: a window claims
      * nothing.
      *
      * @param outputs   the server-side file names and the run's own counts, from
      *                  /history and the sidecar
-     * @param plannedFrames the app's own count of the colour clip, or 0 when unread
+     * @param plannedFrames the app's own count of the upload, or 0 when unread
      */
     private static LibraryItem attach(final Context app, final SharedPreferences prefs,
                                       final ComfyApi api, final String rowId,
@@ -925,10 +982,15 @@ final class VideoImport {
 
         phase(rowId, listener, app.getString(R.string.video_phase_fetching));
         final File dir = app.getFilesDir();
+        // `colour` is the REMUX: the upload, the regenerate input and the range's
+        // source timeline. The node's own colour, when it wrote one, lands beside it
+        // under names[6]; the remux is never overwritten (see regenerateBody).
         final File colour = new File(dir, names[0]);
         final File depth = new File(dir, names[1]);
         final File normal = new File(dir, names[2]);
+        final File nodeColour = outputs.hasColor() ? new File(dir, names[6]) : null;
         boolean haveNormal = true;
+        boolean haveNodeColour = false;
         try {
             write(api.view(outputs.depthName, "", "output"), depth);
             if (outputs.normalName.isEmpty()) {
@@ -946,16 +1008,30 @@ final class VideoImport {
                     write(normalBytes, normal);
                 }
             }
+            if (outputs.hasColor()) {
+                // The node NAMED this file, so it exists by the time the run is
+                // finished -- the files are renamed before the sidecar says done.
+                // view(), not viewIfPresent(): a named-but-missing colour is exactly
+                // the heavy-source failure the caps exist to remove, and silently
+                // falling back to the remux would put the undecodable stream on
+                // screen with nothing saying why.
+                write(api.view(outputs.colorName, "", "output"), nodeColour);
+                haveNodeColour = true;
+            }
         } catch (Exception e) {
             fail(prefs, promptId, listener, app.getString(R.string.video_import_failed), e);
             return null;
         }
 
-        // (b) NO TRUNCATION: the depth clip must hold the count the node says it
-        // WROTE. That count is the sidecar's `done` or /history's `frames`; it is not
-        // the colour's any more, because a capped clip holds fewer samples than the
-        // colour on purpose. A short encode is one frame of drift at every loop and
-        // nothing else in the pipeline can see it.
+        // (b) NO TRUNCATION: the fetched generated tracks must hold the count the
+        // node says it WROTE. That count is the sidecar's `done` or /history's
+        // `frames`; it is not the remux's any more, because a capped clip holds fewer
+        // samples than the remux on purpose. The node colour is checked the same way
+        // for the same reason: it is encoded from the same decoded frames at the same
+        // rate, so it must hold the same samples -- comparing it with the remux's
+        // count instead would call a correct run wrong by design. A short encode is
+        // one frame of drift at every loop and nothing else in the pipeline can see
+        // it.
         if (outputs.frames > 0) {
             int depthFrames = sampleCountOf(app, Uri.fromFile(depth));
             if (depthFrames > 0 && depthFrames != outputs.frames) {
@@ -966,15 +1042,26 @@ final class VideoImport {
                         app.getString(R.string.video_import_failed) + ": " + reason, null);
                 return null;
             }
+            if (haveNodeColour) {
+                int colourFrames = sampleCountOf(app, Uri.fromFile(nodeColour));
+                if (colourFrames > 0 && colourFrames != outputs.frames) {
+                    String reason = "the node colour clip holds " + colourFrames
+                            + " frames but the node wrote " + outputs.frames;
+                    Log.w(TAG, "attach: " + rowId + " " + reason);
+                    fail(prefs, promptId, listener,
+                            app.getString(R.string.video_import_failed) + ": " + reason, null);
+                    return null;
+                }
+            }
         } else {
             Log.w(TAG, "attach: " + rowId
-                    + " the node reported no written count; the fetched clip is unchecked");
+                    + " the node reported no written count; the fetched clips are unchecked");
         }
 
         // (c) THE SAME TIMELINE, decimated: see timelineMismatch for the tolerance
-        // and why it is not simply the colour's sample count.
+        // and why it is not simply the remux's sample count.
         String timeline = timelineMismatch(app, colour, depth, haveNormal ? normal : null,
-                outputs.fpsOut, outputs.srcFps);
+                haveNodeColour ? nodeColour : null, outputs.fpsOut, outputs.srcFps);
         if (timeline != null) {
             Log.w(TAG, "attach: " + rowId + " " + timeline);
             fail(prefs, promptId, listener,
@@ -1001,7 +1088,12 @@ final class VideoImport {
         phase(rowId, listener, app.getString(R.string.video_phase_adding));
         VideoTracks tracks;
         try {
-            tracks = VideoTracks.of(names[0], names[1], haveNormal ? names[2] : null);
+            // WHICH COLOUR THE ROW PLAYS: the node's when the caps fired (it is the
+            // copy sized for the phone), the remux otherwise -- which is also every
+            // row written before node colours existed, hence no migration. The remux
+            // keeps its own name either way, because it is the upload.
+            tracks = VideoTracks.of(haveNodeColour ? names[6] : names[0], names[1],
+                    haveNormal ? names[2] : null);
         } catch (Exception e) {
             fail(prefs, promptId, listener, app.getString(R.string.video_import_failed), e);
             return null;
@@ -1014,9 +1106,9 @@ final class VideoImport {
     }
 
     /**
-     * Whether the fetched clips sit on the colour's timeline within one output
-     * frame -- the check that catches a run which covered the wrong span where the
-     * counts alone agree.
+     * Whether the fetched clips sit on the run's timeline within one output frame
+     * -- the check that catches a run which covered the wrong span where the counts
+     * alone agree.
      *
      * <p><b>The cap decimates, it does not retime.</b> Output frame k is source
      * frame {@code round_half_up(k x src/out)}, so the generated clips hold fewer
@@ -1031,6 +1123,14 @@ final class VideoImport {
      * conventions 40 ms apart, past a bare one-output-frame bound). A gross
      * mismatch -- the wrong range, the wrong rate -- still fails by seconds.
      *
+     * <p><b>Two references, and the node colour's is the depth.</b> Depth and normal
+     * are checked against the remux, which IS the source range (its samples are what
+     * was uploaded), so a run that fetched outputs from a different range cannot
+     * agree with it. The node's colour and those two tracks were encoded from the
+     * same decoded frames at the same rate, so they are equal by construction and
+     * the depth clip is the reference that catches a stale or wrong colour -- the
+     * pair invariant guarantees the depth exists.
+     *
      * <p>Unknown numbers are no claim, not failures: a run whose sidecar could not
      * be read, or a container whose duration cannot be read, is logged and left to
      * the sample-count check above.
@@ -1039,7 +1139,7 @@ final class VideoImport {
      *         failure's words with both durations and the tolerance in them
      */
     private static String timelineMismatch(Context app, File colour, File depth, File normal,
-                                           float fpsOut, float srcFps) {
+                                           File nodeColour, float fpsOut, float srcFps) {
         if (fpsOut <= 0f) {
             Log.w(TAG, "the run reported no output rate; the clips' timeline is unchecked");
             return null;
@@ -1051,25 +1151,36 @@ final class VideoImport {
             Log.w(TAG, "the colour clip's duration is unreadable; the timeline is unchecked");
             return null;
         }
-        String why = durationMismatch(app, "depth", depth, colourUs, toleranceUs);
+        String why = durationMismatch(app, "depth", depth, colourUs, "the colour", toleranceUs);
         if (why != null) return why;
         if (normal != null) {
-            why = durationMismatch(app, "normal", normal, colourUs, toleranceUs);
+            why = durationMismatch(app, "normal", normal, colourUs, "the colour", toleranceUs);
+            if (why != null) return why;
+        }
+        if (nodeColour != null) {
+            long depthUs = durationUsOf(app, Uri.fromFile(depth));
+            if (depthUs <= 0) {
+                Log.w(TAG, "the depth clip's duration is unreadable; the node "
+                        + "colour's timeline is unchecked");
+                return null;
+            }
+            why = durationMismatch(app, "node colour", nodeColour, depthUs, "the depth",
+                    toleranceUs);
         }
         return why;
     }
 
-    /** One clip's duration against the colour's, or null when they agree. */
-    private static String durationMismatch(Context app, String name, File clip, long colourUs,
-                                           long toleranceUs) {
+    /** One clip's duration against a reference's, or null when they agree. */
+    private static String durationMismatch(Context app, String name, File clip, long refUs,
+                                           String refName, long toleranceUs) {
         long clipUs = durationUsOf(app, Uri.fromFile(clip));
         if (clipUs <= 0) {
             Log.w(TAG, name + " clip duration unreadable; its timeline is unchecked");
             return null;
         }
-        if (Math.abs(clipUs - colourUs) <= toleranceUs) return null;
-        return "the " + name + " clip runs " + clipUs / 1000L + "ms but the colour runs "
-                + colourUs / 1000L + "ms (the same-timeline tolerance is "
+        if (Math.abs(clipUs - refUs) <= toleranceUs) return null;
+        return "the " + name + " clip runs " + clipUs / 1000L + "ms but " + refName
+                + " runs " + refUs / 1000L + "ms (the same-timeline tolerance is "
                 + toleranceUs / 1000L + "ms)";
     }
 
@@ -1153,7 +1264,8 @@ final class VideoImport {
         listener.added(placed);
 
         // Id-derived names, so a re-import of the same video is a new row with its
-        // own files; regenerate uses stamped names for the same row.
+        // own files; regenerate uses stamped names for the same row. The last one is
+        // where the node's colour lands when the source exceeded the playback caps.
         final String[] names = {
                 LibraryItem.videoFileName(id),
                 LibraryItem.videoDepthFileName(id),
@@ -1161,12 +1273,16 @@ final class VideoImport {
                 LibraryItem.imageFileName(id),
                 LibraryItem.depthFileName(id),
                 LibraryItem.normalFileName(id),
+                LibraryItem.videoColorFileName(id),
         };
 
-        // THE RANGE IS CUT LOCALLY, AND IT IS THE COLOUR AND THE UPLOAD. The samples
-        // of the chosen range are copied into their own container, so a 126 MB source
-        // uploads a few megabytes -- and the copy is kept under the row's colour name,
-        // which is both what the renderer plays and what the node reads.
+        // THE RANGE IS CUT LOCALLY, AND IT IS THE UPLOAD. The samples of the chosen
+        // range are copied into their own container, so a 126 MB source uploads a few
+        // megabytes -- and the copy is kept under the row's remux name, which is what
+        // the node reads, what the plan's frame count is measured from and what a
+        // regenerate uploads again. On a source within the playback caps it is also
+        // the colour the renderer plays; on a heavier one the node's own capped
+        // colour is played instead (see attach), and this remux is never overwritten.
         phase(id, listener, app.getString(R.string.video_phase_copying));
         final long startUs = (long) (startFrame / Math.max(1f, fps) * 1_000_000f);
         // frames 0 = the whole clip, and then there is no end time to cap: the
@@ -1237,6 +1353,7 @@ final class VideoImport {
         int srcFrames = 0;
         float fpsOut = 0f;
         float srcFps = 0f;
+        String colorName = "";
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(POLL_MS);
             try {
@@ -1260,6 +1377,11 @@ final class VideoImport {
                     if (side.optDouble("src_fps", 0) > 0) {
                         srcFps = (float) side.optDouble("src_fps", 0);
                     }
+                    // Constant across a run, like the plan fields above: a colour is
+                    // either written by this run or not at all. Absence is a fact --
+                    // no fallback name is derived, see StreamOutputs.colorName.
+                    String colour = colorNameOf(side);
+                    if (colour != null) colorName = colour;
                 }
             } catch (Exception ignored) {
                 // The sidecar is a bonus: the history below is the authority on
@@ -1282,32 +1404,39 @@ final class VideoImport {
             if (why != null) throw new ServerFailure(why);
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                return streamOutputsOf(entry, tag, srcFrames, fpsOut, srcFps);
+                return streamOutputsOf(entry, tag, srcFrames, fpsOut, srcFps, colorName);
             }
         }
         throw new Exception("the run did not finish in time");
     }
 
     /**
-     * A finished history entry's ui payload: the two file names and the frame count,
+     * A finished history entry's ui payload: the file names and the frame count,
      * with the sidecar's plan and rates passed through.
      *
      * <p>The node is an OUTPUT_NODE whose ui payload names the files it wrote under
      * its own node id ({@code {"2": {"depth": [...], "normal": [...],
-     * "frames": [...]}}}). The payload is found by its SHAPE rather than by that id,
-     * because the builder owns the id and a rename there would otherwise silently
-     * find nothing; the deterministic names then still address the files, since the
-     * node derives them from the tag.
+     * "color": [...], "frames": [...]}}}). The payload is found by its SHAPE rather
+     * than by that id, because the builder owns the id and a rename there would
+     * otherwise silently find nothing; the deterministic names then still address
+     * depth and normal, since the node derives them from the tag. <b>{@code color}
+     * is the exception</b>: it is present only when the run wrote one, and its
+     * absence is a fact (the remux is the colour), so it is taken as absent rather
+     * than derived.
      *
      * <p>{@code srcFrames}/{@code fpsOut}/{@code srcFps} come from the sidecar the
      * poll read, not from this payload -- /history carries no plan and no rates.
      * They are 0 when no sidecar could be read, and {@link #attach} logs the
-     * resulting checks as unchecked rather than inventing them.
+     * resulting checks as unchecked rather than inventing them. {@code sidecarColor}
+     * is the same pass's sidecar answer, kept as a fallback for the colour name
+     * because the sidecar is the run's own state.
      */
     private static StreamOutputs streamOutputsOf(JSONObject entry, String tag, int srcFrames,
-                                                 float fpsOut, float srcFps) {
+                                                 float fpsOut, float srcFps,
+                                                 String sidecarColor) {
         String depth = null;
         String normal = null;
+        String color = null;
         int frames = 0;
         JSONObject outputs = entry == null ? null : entry.optJSONObject("outputs");
         if (outputs != null) {
@@ -1318,19 +1447,43 @@ final class VideoImport {
                 if (node.optJSONArray("depth") == null) continue;
                 depth = firstString(node, "depth");
                 normal = firstString(node, "normal");
+                color = firstString(node, "color");
                 frames = firstInt(node, "frames");
                 break;
             }
         }
         if (depth == null) depth = ComfyWorkflow.streamDepthName(tag);
         if (normal == null) normal = ComfyWorkflow.streamNormalName(tag);
-        return new StreamOutputs(depth, normal, frames, srcFrames, fpsOut, srcFps);
+        if (color == null) color = sidecarColor;
+        return new StreamOutputs(depth, normal, color, frames, srcFrames, fpsOut, srcFps);
+    }
+
+    /**
+     * The node's colour file name from an object that may carry {@code color}, or
+     * null when it does not.
+     *
+     * <p><b>Null is an answer, so nothing is derived from it.</b> The node writes a
+     * colour only when the source exceeded the playback caps, so no name means the
+     * app's remux is the colour -- a deterministic fallback would ask for a file the
+     * node chose not to write. The value is read through {@code opt} and checked for
+     * its type because Android's {@code optString} returns the four-character string
+     * {@code "null"} for a JSON null, and a file named "null" is a 404, not a colour.
+     */
+    private static String colorNameOf(JSONObject o) {
+        Object raw = o == null ? null : o.opt("color");
+        if (!(raw instanceof String)) return null;
+        String s = (String) raw;
+        return s.isEmpty() || "null".equals(s) ? null : s;
     }
 
     private static String firstString(JSONObject o, String key) {
         JSONArray arr = o.optJSONArray(key);
         if (arr == null || arr.length() == 0) return null;
-        String s = arr.optString(0, "");
+        // Checked for its type rather than read with optString: a JSON null element
+        // would come back as the string "null" and name a file that cannot exist.
+        Object raw = arr.opt(0);
+        if (!(raw instanceof String)) return null;
+        String s = (String) raw;
         return s.isEmpty() ? null : s;
     }
 

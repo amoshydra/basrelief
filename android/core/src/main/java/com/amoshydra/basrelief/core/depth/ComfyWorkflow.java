@@ -113,6 +113,25 @@ public final class ComfyWorkflow {
     public static final int STREAM_FPS_CAP = 30;
 
     /**
+     * The long-side cap the generated clips and the node's colour are written at,
+     * in pixels.
+     *
+     * <p><b>ONE constant, because it is the other half of the player's contract.</b>
+     * Measured on a Pixel 7 Pro, a 1440x2560 portrait 50 fps source could not be
+     * decoded by even ONE of the three streams -- the colour alone fell 0.4-2.4 s
+     * behind -- while 1080p-class content held ~40 fps per stream. The node
+     * therefore writes the depth and normal tracks, and its own re-encoded colour
+     * when the source exceeds the caps, at {@code long_side <= max_long_side}; the
+     * app plays the node's colour when it wrote one (see
+     * {@code VideoImport.attach}). 1920 keeps the colour under 1080p in its long
+     * dimension; 0 would mean no cap, and the app never passes it. Stated here and
+     * passed explicitly rather than left to the node's default, because a
+     * server-side default change would move a playback dimension the phone's
+     * measured behaviour rests on.
+     */
+    public static final int STREAM_MAX_LONG_SIDE = 1920;
+
+    /**
      * The prefix of every file the stream node writes.
      *
      * <p>The names are the app's whole handle on the run's outputs: the node takes a
@@ -120,7 +139,11 @@ public final class ComfyWorkflow {
      * {@code basrelief_<tag>_normal.mp4} and {@code basrelief_<tag>.progress.json}
      * from it, so a client can address all three WITHOUT having seen a response.
      * That is what lets the app fetch a run that finished while the phone was dead
-     * and read the sidecar for a run that is still going.
+     * and read the sidecar for a run that is still going. The node also derives
+     * {@code basrelief_<tag>_color.mp4}, but the app never addresses that one
+     * unprompted: it exists only when the source exceeded the playback caps, and
+     * the sidecar's {@code color} field is what says so -- an absent name is the
+     * answer "the remux is the colour", not a name to guess at.
      */
     public static final String STREAM_FILE_PREFIX = "basrelief_";
     /** The depth clip's suffix; see {@link #STREAM_FILE_PREFIX}. */
@@ -367,9 +390,10 @@ public final class ComfyWorkflow {
      * <pre>
      * LoadMoGeModel(model_name) ──▶ MOGE_MODEL
      *   MoGeVideoStream(moge_model, video, tag, start_frame, frame_count,
-     *                   target_height, batch_size, fps_cap, resolution_level,
-     *                   refine_steps)
+     *                   target_height, max_long_side, batch_size, fps_cap,
+     *                   resolution_level, refine_steps)
      *     ──▶ basrelief_&lt;tag&gt;_depth.mp4, basrelief_&lt;tag&gt;_normal.mp4,
+     *         basrelief_&lt;tag&gt;_color.mp4 (only when the caps fired),
      *         basrelief_&lt;tag&gt;.progress.json  (files, in the output dir)
      * </pre>
      *
@@ -395,9 +419,11 @@ public final class ComfyWorkflow {
      * shapes at once.</p>
      *
      * <p><b>{@code video} is the uploaded file's server-side name.</b> The app
-     * uploads its own remuxed range first and the node never sees the share URI; the
-     * upload is also the colour clip the renderer plays, so the frames MoGe is asked
-     * about and the frames the user sees are the same file.</p>
+     * uploads its own remuxed range first and the node never sees the share URI.
+     * The upload is the PLAN and the best local copy -- it is also what a regenerate
+     * uploads again -- but it is no longer necessarily the colour the renderer
+     * plays: for a source heavier than the playback caps the node re-encodes a
+     * colour of its own and the app fetches and plays that.</p>
      *
      * <p><b>{@code frame_count = 0} means the whole upload</b>, which is what every
      * app run passes: the remux is already the range, so the plan is "all of it" and
@@ -406,11 +432,13 @@ public final class ComfyWorkflow {
      * planner shipped — a 240-frame remux reports 9.9586 s, so {@code round(9.9586 ×
      * 24)} is 239 and the joined depth decoded one frame short.</p>
      *
-     * <p><b>{@code fps_cap} is the sync knob, and {@link #STREAM_FPS_CAP} owns it.</b>
-     * The generated tracks are written at {@code min(source, fps_cap)} and the
-     * timeline is kept: output frame k is source frame
+     * <p><b>{@code max_long_side} and {@code fps_cap} are the sync knob, and the two
+     * constants own them.</b> The generated tracks -- and the node's colour, when the
+     * source exceeds either cap -- are written at {@code long_side <=
+     * STREAM_MAX_LONG_SIDE} and {@code min(source, STREAM_FPS_CAP)} and the timeline
+     * is kept: output frame k is source frame
      * {@code round_half_up(k × src/out)}, so fewer samples over the same seconds.
-     * See the constant for the measurement that made the cap necessary.</p>
+     * See each constant for the measurements that made the caps necessary.</p>
      *
      * <p><b>The tag is the app's handle on the outputs.</b> The node sanitises it
      * ({@link #streamTag}) and derives all three filenames from it, so the fetch and
@@ -453,9 +481,12 @@ public final class ComfyWorkflow {
         in.put("start_frame", Math.max(0, startFrame));
         in.put("frame_count", Math.max(0, frameCount));
         in.put("target_height", Math.max(0, targetHeight));
+        // After target_height, as on the node: the chip is a generation choice, the
+        // long-side cap is a playback one. See STREAM_MAX_LONG_SIDE.
+        in.put("max_long_side", STREAM_MAX_LONG_SIDE);
         in.put("batch_size", batchSize);
-        // After batch_size, as on the node: the window is the memory knob, the cap
-        // is the sync one.
+        // After batch_size, as on the node: the window is the memory knob, the caps
+        // are the sync ones.
         in.put("fps_cap", STREAM_FPS_CAP);
         stream.put("inputs", in);
 

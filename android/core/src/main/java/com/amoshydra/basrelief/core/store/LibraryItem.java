@@ -523,6 +523,23 @@ public final class LibraryItem {
         return requireValidId(id, "item-" + id + "-normal.mp4");
     }
 
+    /**
+     * The node's re-encoded colour clip's filename. See {@link #videoFileName}.
+     *
+     * <p><b>A name of its own, because the remux must stay the upload.</b> When a
+     * source exceeds the playback caps the node writes a colour at those caps, and
+     * that is what the renderer plays -- but the remux ({@link #videoFileName}) is
+     * still the range's lossless sample copy, the plan the import checks against
+     * and the file a Regenerate uploads. Overwriting it with the downscaled colour
+     * would cap every later regeneration twice, so the node's colour lands here and
+     * {@link VideoTracks#color} names whichever file the run produced. Every row
+     * written before node colours existed already names the remux, which is why
+     * this needed no migration.
+     */
+    public static String videoColorFileName(String id) {
+        return requireValidId(id, "item-" + id + "-color.mp4");
+    }
+
     private static String requireValidId(String id, String candidate) {
         // The id is checked rather than trusted, because the candidate is then
         // only sanitised, not rejected: a traversal id would collapse to a name

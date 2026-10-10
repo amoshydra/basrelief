@@ -188,6 +188,26 @@ public class LibraryItemTest {
         }
     }
 
+    /**
+     * The node's colour clip is its own file, not a second name for the remux.
+     *
+     * <p>The remux is the upload, the plan's frame count and the Regenerate input;
+     * the node colour is the capped medium a heavy source plays. Overwriting one
+     * with the other would either point playback at the full-resolution stream the
+     * phone cannot decode, or send an already-capped copy back to the server and cap
+     * it again on every regenerate.
+     */
+    @Test
+    public void theNodeColourClipHasItsOwnFileName() {
+        String remux = LibraryItem.videoFileName(ID);
+        String colour = LibraryItem.videoColorFileName(ID);
+        assertEquals("item-" + ID + "-color.mp4", colour);
+        assertFalse("the node colour must not overwrite the remux", colour.equals(remux));
+        assertFalse(colour.equals(LibraryItem.videoDepthFileName(ID)));
+        assertFalse(colour.equals(LibraryItem.videoNormalFileName(ID)));
+        assertEquals("must stay a bare filename", colour, LibraryItem.normaliseName(colour));
+    }
+
     // ------------------------------------------------------------ identity
 
     /**
