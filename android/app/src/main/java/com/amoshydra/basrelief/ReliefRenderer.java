@@ -30,6 +30,7 @@ import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
+import com.amoshydra.basrelief.core.render.Splat;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -62,7 +63,18 @@ import javax.microedition.khronos.opengles.GL10;
  * story is unchanged and lives in {@code TiltController}: the draw rate is
  * bounded by the gyro and the expensive sensor sleeps after 10s of stillness.
  *
- * Settings (SharedPreferences "depthwall") are read at startup; live
+ * <p><b>The GLES3 path has two modes, and the relief is the default.</b> The
+ * relief is one continuous displaced surface; the point-splat mode
+ * ({@code render_3d}, read in {@link #reloadFromPrefs}) draws one small card per
+ * field sample instead, each at its own depth with a flat colour sample and a
+ * normal gradient -- no triangle spans a depth cliff, so the shear a silhouette
+ * shows on the relief cannot happen, at the price of holes where the single view
+ * never saw behind anything. Both modes go through ONE program and one camera:
+ * the mode is a uniform inside the vertex shader's branch, so with the flag off
+ * the relief is the same program, the same buffers and the same draw it always
+ * was. See {@link #VERT3} and {@link com.amoshydra.basrelief.core.render.Splat}.
+ *
+ * <p>Settings (SharedPreferences "depthwall") are read at startup; live
  * changes arrive through setDepth / setZoom / setMotion / loadPair,
  * always invoked on the GL thread.
  */
@@ -124,6 +136,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final int GRID = 384;
 
     /**
+     * The pref that selects the point-splat mode. Off by default, and read in
+     * {@link #reloadFromPrefs}; see {@link #render3d}.
+     */
+    private static final String KEY_RENDER_3D = "render_3d";
+
+    /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
      * at 60/30fps to save battery; it was removed because it could not do that,
      * and it caused visible tearing:
@@ -167,9 +185,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "attribute vec3 aPosition;\n" +
             "attribute vec2 aUV;\n" +
             "varying vec2 vUv;\n" +
+            // The normal's own UV. It is a straight copy of aUV here and is a
+            // separate varying only so this shader and VERT3 stay the same shape:
+            // the GPU path needs the two apart (the splat's colour is one texel
+            // for a whole card while its normal keeps a gradient), and a
+            // fragment shader that sampled a different varying on each path
+            // would be two shaders to keep in step instead of one.
+            "varying vec2 vNormalUv;\n" +
             "varying vec3 vWorldPos;\n" +
             "void main() {\n" +
             "  vUv = aUV;\n" +
+            "  vNormalUv = aUV;\n" +
             "  vec3 p = aPosition * uModelScale;\n" +
             "  p.z *= uIntensity;\n" +
             "  vWorldPos = p;\n" +
@@ -179,6 +205,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final String FRAG =
             "precision highp float;\n" +
             "varying vec2 vUv;\n" +
+            "varying vec2 vNormalUv;\n" +
             "varying vec3 vWorldPos;\n" +
             "uniform sampler2D uColor;\n" +
             // The supplied normal map, or nothing. uHasNormal is 0 for a photo with
@@ -201,7 +228,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // the colour one so image-top is v=1. This is OpenGL convention (+Y
             // up), so G is NOT negated -- picking directx instead inverts the
             // vertical light cue. A device-only check.
-            "    n = texture2D(uNormal, vUv).rgb * 2.0 - 1.0;\n" +
+            "    n = texture2D(uNormal, vNormalUv).rgb * 2.0 - 1.0;\n" +
             // MoGe predicts the surface before the Depth stretch; the inverse
             // transpose of the z scale is nz/intensity, exactly as the old derived
             // path folded intensity into its derivative. Without it the shading
@@ -273,22 +300,115 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform sampler2D uDepth;\n" +
             "uniform float uGrid;\n" +
             "uniform float uAspect;\n" +
+            // The splat mode's switch and its four numbers. One PROGRAM for both
+            // modes on purpose: the relief must be the same program, the same
+            // buffers and the same draws when the flag is off, and a second
+            // program would be a second copy of the relief's maths to keep in
+            // step with this one. uSplat is 0 for the relief, 1 for the cards.
+            "uniform float uSplat;\n" +
+            "uniform float uSplatSize;\n" +
+            "uniform float uCamDist;\n" +
+            // The photograph's camera, as two numbers that are both already
+            // resolved in :core (Splat, with its own test): the effective focal in
+            // pixels -- the row's own, or the 50-degree default when it has none --
+            // and that default itself. Their ratio is the depth scale, so this
+            // shader carries no field-of-view constant of its own to drift from
+            // Splat.DEFAULT_FOV_DEG.
+            "uniform float uFocal;\n" +
+            "uniform float uRefFocal;\n" +
             "in vec2 aPosition;\n" +   // (u-0.5, v-0.5); x is scaled by uAspect here
             "in vec2 aUV;\n" +
+            // The card corner, (-0.5..0.5)^2, shared by the four vertices of one
+            // splat sample. The relief's grid has no such attribute, so the value
+            // is the attribute's default and the else branch never reads it.
+            "in vec2 aCorner;\n" +
             "out vec2 vUv;\n" +
+            // TWO UVs, and the split is the whole point of the mode. The colour is
+            // sampled at the sample's own texel for all four corners of a card --
+            // flat, so the colour cannot stretch across a card however the card is
+            // placed. The normal keeps a per-corner UV, so the lighting varies
+            // across the card and a cloud of cards reads as a model rather than as
+            // facets. On the relief path both are aUV, exactly as before.
+            "out vec2 vNormalUv;\n" +
             "out vec3 vWorldPos;\n" +
             "void main() {\n" +
-            "  vUv = aUV;\n" +
             "  float n = uGrid + 1.0;\n" +
             "  float gx = aUV.x * uGrid;\n" +
             "  float gy = (1.0 - aUV.y) * uGrid;\n" +
             "  vec2 duv = vec2(gx + 0.5, gy + 0.5) / n;\n" +
+            // ONE FETCH PER SAMPLE, not per corner: the four vertices of a card
+            // share aUV, so duv is the sample's texel centre for all of them. This
+            // is what keeps a triangle from spanning a depth cliff -- the whole
+            // card sits at one depth, and the surface being torn open is the point
+            // of the mode rather than an artifact of it.
             "  float h = textureLod(uDepth, duv, 0.0).r / 255.0 - 0.5;\n" +
+            "  vec3 a;\n" +
+            "  if (uSplat > 0.5) {\n" +
+            // The card is placed on the ray the DRAWING CAMERA gives its pixel, at
+            // a camera distance of uCamDist minus the card's own depth. Position
+            // and card size both carry the depth ratio, so a card's angular size
+            // is its footprint's at any depth: the coverage constant tiles the
+            // reference plane (h == 0 lands exactly where the relief drew it, so
+            // the picture does not move when the mode is switched), and the gaps
+            // that open elsewhere are the scene genuinely disoccluding.
+            //
+            // A card off the reference plane moves along ITS OWN RAY, which is
+            // why the picture at rest is the photograph whatever the depth: only
+            // the camera moving reveals the depth, as parallax and as occlusion.
+            // The focal's whole effect is how much depth there is to reveal (the
+            // line below), not where a pixel lands.
+            //
+            // WHAT THE FOCAL DOES HERE, AND WHY IT IS NOT IN THE RAY.
+            // X = (u-0.5)/(f/W)*Z is the unprojection through the PHOTO's camera.
+            // Drawing it through this renderer's camera -- which is the same
+            // camera the relief and every gesture use, at a fixed 45 degrees --
+            // would re-frame the picture: a phone's main camera is nearer 70
+            // degrees than 45, so the same photo would arrive up to 70% larger and
+            // cropped. The ray is therefore this camera's own, and the stored
+            // focal scales the DEPTH, which is the one length the photograph
+            // actually carries: its image plane sits f/H image heights in front of
+            // the eye. Scaling the whole cloud about the eye is exactly the same
+            // statement said the other way round -- the stored focal's ray,
+            // compensated back onto this camera -- which is why the two are one
+            // implementation and not two ideas.
+            "    float depthGain = uRefFocal > 0.0 ? uFocal / uRefFocal : 1.0;\n" +
+            // uModelScale * uIntensity IS the world depth of h == 1: the MVP
+            // carries S(scale, scale, scale * zScale), so a model z of hCard
+            // becomes a world offset of hCard * scale * zScale. Computed here
+            // because the camera distance is in world units and the model z is
+            // not.
+            "    float denom = uModelScale * uIntensity;\n" +
+            "    float zOff = h * denom * depthGain;\n" +
+            // A card must stay in front of the eye. Pushed past it the card
+            // renders mirrored and inside out, and it is a whole card appearing in
+            // the middle of the picture, so the offset is clamped here rather than
+            // left to the near plane to decide.
+            "    if (denom > 1e-6) zOff = min(zOff, uCamDist - 0.15);\n" +
+            "    float zEye = uCamDist - zOff;\n" +
+            "    float hCard = denom > 1e-6 ? zOff / denom : 0.0;\n" +
+            "    vec2 q = (aPosition + aCorner * uSplatSize) * uAspect;\n" +
+            "    a = vec3(q * (zEye / uCamDist), hCard);\n" +
+            // THE COLOUR'S v IS NOT THE FIELD'S v, and this is the second
+            // convention the relief also carries: the depth field is uploaded
+            // top-first (t = 0 is the image's top row, which is why duv is small
+            // at aUV.y = 1), while the colour and normal bitmaps are flipped at
+            // upload so their v = 1 is the image's top. Sampling the colour at
+            // duv would draw the photograph upside down against its own depth --
+            // so the flat texel is named in the IMAGE's convention here, and the
+            // normal's gradient follows the plane's corner, which is the same
+            // direction.
+            "    vec2 suv = vec2(duv.x, 1.0 - duv.y);\n" +
+            "    vUv = suv;\n" +
+            "    vNormalUv = suv + aCorner * (uSplatSize * 0.5);\n" +
+            "  } else {\n" +
+            "    a = vec3(aPosition.x * uAspect, aPosition.y, h);\n" +
+            "    vUv = aUV;\n" +
+            "    vNormalUv = aUV;\n" +
+            "  }\n" +
             // a is the plane-space position the camera's MVP already scales --
             // uMVP carries S(scale, scale, scale*zScale), exactly as the GLES2
             // path's uMVP does. x carries the image aspect here so one static
             // grid fits every photo.
-            "  vec3 a = vec3(aPosition.x * uAspect, aPosition.y, h);\n" +
             "  vec3 p = a * uModelScale;\n" +
             "  p.z *= uIntensity;\n" +
             "  vWorldPos = p;\n" +
@@ -306,6 +426,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "#version 300 es\n" +
             "precision highp float;\n" +
             "in vec2 vUv;\n" +
+            "in vec2 vNormalUv;\n" +
             "in vec3 vWorldPos;\n" +
             "uniform sampler2D uColor;\n" +
             "uniform sampler2D uNormal;\n" +
@@ -320,7 +441,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "void main() {\n" +
             "  vec3 n;\n" +
             "  if (uHasNormal > 0.5) {\n" +
-            "    n = texture(uNormal, vUv).rgb * 2.0 - 1.0;\n" +
+            // The NORMAL's UV, not the colour's: on the splat path the colour is
+            // one texel for a whole card while the shading keeps the card's
+            // gradient. On the relief path the two are the same value.
+            "    n = texture(uNormal, vNormalUv).rgb * 2.0 - 1.0;\n" +
             "    n = normalize(vec3(n.x, n.y, n.z / max(uIntensity, 1e-3)));\n" +
             "  } else {\n" +
             "    n = vec3(0.0, 0.0, 1.0);\n" +
@@ -362,6 +486,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private int uNormal = -1, uHasNormal = -1;
     // GLES3-only relief uniforms.
     private int uDepth = -1, uGrid = -1, uAspect = -1;
+    /**
+     * GLES3-only splat uniforms: the mode switch, the card size, the camera
+     * distance the cards are placed against, and the photograph's camera as the
+     * effective focal plus the default it is measured against.
+     */
+    private int aCorner = -1;
+    private int uSplat = -1, uSplatSize = -1, uCamDist = -1, uFocal = -1, uRefFocal = -1;
 
     /**
      * The static relief grid for the GLES3 path: a {@code (GRID+1)^2} vertex
@@ -376,6 +507,44 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private int gridVbo = 0, gridIbo = 0;
     private int gridIndexCount = 0;
+
+    /**
+     * The splat grid: one quad per field sample, the same {@code (GRID+1)^2}
+     * samples the relief grid places vertices at.
+     *
+     * <p><b>What it costs.</b> 385² = 148,225 samples at GRID = 384, so 592,900
+     * vertices at 24 bytes (position, uv, corner) is <b>14.2 MB</b>, and the index
+     * buffer is 889,350 indices at 4 bytes, <b>3.6 MB</b> -- about 18 MB of static
+     * GPU memory against the relief grid's 6 MB, which is the price of four
+     * vertices and six indices per sample instead of one and six per <i>cell</i>.
+     * The per-frame cost is 889k triangles where the relief draws 295k -- measured
+     * territory on a Pixel 7 Pro, and the reason the mode is a pref rather than the
+     * default. The depth fetch is once per sample (the four corners share aUV), so
+     * the vertex-texture work is a quarter of what the vertex count suggests.
+     *
+     * <p><b>Built lazily, on the first splat draw of the context,</b> unlike the
+     * relief grid, which every draw needs: a user with the pref off never pays
+     * these 18 MB, and the one-off build cost (~tens of milliseconds, logged) lands
+     * on the frame that turns the mode on rather than on every engine's start.
+     */
+    private int splatVbo = 0, splatIbo = 0;
+    private int splatIndexCount = 0;
+
+    /**
+     * The point-splat mode, off unless the {@code render_3d} pref says otherwise.
+     *
+     * <p>Read in {@link #reloadFromPrefs}, which is the one cold-load path both
+     * surfaces converge on, so it can be A/B-tested on a device without a rebuild
+     * -- and it is OFF by default because it is a different look, not a bug fix:
+     * a screenshot of the relief is what every existing row was framed against.
+     * The setter exists for tests.
+     *
+     * <p><b>GLES3 only.</b> The mode draws a static grid that only the GPU path
+     * builds; the legacy GLES2 path has no such buffer and ignores the flag
+     * rather than falling back to a CPU-built cloud, which would be a third
+     * renderer rather than a mode.
+     */
+    private volatile boolean render3d = false;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -429,6 +598,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         FloatBuffer posBuffer, uvBuffer;
         /** Image width / height, baked into the mesh's x and the camera's aspect. */
         float aspect = 1f;
+        /**
+         * The photograph's camera, for the splat mode: the focal in pixels of the
+         * image above, or 0 for unknown, and that image's height in pixels.
+         *
+         * <p>Carried on the render rather than read from the index at draw time
+         * for the same reason {@link #framing} is: during a cross-fade two
+         * photographs are on screen at once and each must be drawn with its OWN
+         * camera. A row that gains a focal is a re-install (see
+         * {@link #showingSamePair}), so these are set where the pair is.
+         */
+        float focal;
+        float imageH;
         /** The framing this render is drawn with while it is on screen or fading. */
         Framing framing;
         /** The light, resolved once per framing capture so no draw does trigonometry. */
@@ -583,6 +764,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * showing", or the new texture is never uploaded. See {@link #showingSamePair}.
      */
     private volatile String loadedNormalPath;
+    /**
+     * The focal of the pair on screen: see {@link #showingSamePair}. Part of the
+     * identity for the reason the normal is -- a row whose focal arrives later (an
+     * import or a regenerate that finished while it was on screen) must be
+     * re-installed, or the new camera never reaches the shader.
+     */
+    private volatile float loadedFocal;
     /**
      * Whether anything has ever been installed into the current GL context.
      *
@@ -1164,11 +1352,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * glass stayed flat. Null-safe, because "the packaged demo" is (null, null,
      * null) and calling equals on either side is a crash on exactly that path.
      */
-    public boolean showingSamePair(String imagePath, String depthPath, String normalPath) {
+    /**
+     * The full identity: the three files <b>and</b> the photograph's camera.
+     *
+     * <p>The focal is compared exactly, because both sides are the same float off
+     * the same row; 0 means unknown on both, so a row that has no focal is "the
+     * same pair" as itself. It is in the identity for the same reason the normal
+     * is: a row that gains a focal is a re-install -- a regenerate that fits one,
+     * or an import whose first frames were drawn before the sidecar had one --
+     * and without this the renderer would be told the pair is already showing and
+     * the new geometry would never be uploaded.
+     *
+     * <p>There is deliberately no three-argument overload to forget it: a caller
+     * that omitted it would compare a row's real focal against 0, answer "not the
+     * same pair" on every resolve, and re-decode the photograph each time -- the
+     * waste the guard exists to prevent, from the safe-looking call.
+     */
+    public boolean showingSamePair(String imagePath, String depthPath, String normalPath,
+                                   float focal) {
         if (!hasInstalled) return false; // see hasInstalled
         return samePath(imagePath, loadedImagePath)
                 && samePath(depthPath, loadedDepthPath)
-                && samePath(normalPath, loadedNormalPath);
+                && samePath(normalPath, loadedNormalPath)
+                && focal == loadedFocal;
     }
 
     private static boolean samePath(String a, String b) {
@@ -1190,6 +1396,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void setRenderRequester(Runnable r) {
         this.renderRequester = r;
+    }
+
+    /**
+     * Select the point-splat mode without the pref. For a test, and for a host
+     * that ever wants a per-surface mode.
+     *
+     * <p>A volatile write and nothing else, per the threading rule: what it
+     * changes is read once per draw on the GL thread, and the geometry that
+     * difference needs (the splat grid) is built with every other GL name in
+     * {@link #onSurfaceCreated}.
+     */
+    public void setRender3d(boolean on) {
+        this.render3d = on;
     }
 
     private FloatBuffer ringBuffer;
@@ -1633,7 +1852,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * fail the pair, because the pair is the photograph and the normal only decides
      * how it is lit.
      */
-    private Pending decodePair(String imagePath, String depthPath, String normalPath) {
+    /**
+     * The decode, with the camera the row stores.
+     *
+     * <p>The focal is a request parameter because it is not in the files: it is a
+     * property of the row, and the decode is where the request's identity is
+     * captured. 0 is a legitimate value -- a row written before the node measured
+     * one -- and is the renderer's "unknown", not a missing argument.
+     */
+    private Pending decodePair(String imagePath, String depthPath, String normalPath,
+                               float focal) {
+        // The camera, sanitised ONCE here and used for both the cache key and the
+        // decode: a NaN reaching either would key a cache entry against itself
+        // (NaN != NaN) and the fallback arithmetic would then never see the value
+        // it was given. LibraryItem clamps what it stores, so this is the same
+        // rule one layer out rather than a second one.
+        final float cam = (Float.isFinite(focal) && focal > 0f) ? focal : 0f;
         // The medium travels WITH the decode rather than being re-derived at install
         // time: it is a property of the pair this request is asking for, and asking
         // install() to work it out again from the paths would be a second derivation
@@ -1668,7 +1902,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // full-clip decode of the same still pair are both "clip", but their status
         // lines differ ("depth pending" vs "clip + depth"), and the entry a preview
         // leaves must not answer a full-clip request with the preview's own words.
-        Object warm = PairCache.get(imagePath, depthPath, normalPath);
+        Object warm = PairCache.get(imagePath, depthPath, normalPath, cam);
         if (warm instanceof Pending) {
             Pending w = (Pending) warm;
             if (w.isClip() == clip && w.isPreview() == preview) return w;
@@ -1758,10 +1992,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
         Pending result = new Pending(colorBmp, grayOut, dims[0], dims[1],
                 customImage, customDepth, embedded, flat, normalBmp,
-                imagePath, depthPath, normalPath, clip, preview);
+                imagePath, depthPath, normalPath, clip, preview, cam);
         // Offer it to the other surface. Only the selected pair is worth keeping,
         // and the studio is always the one that decodes first.
-        PairCache.put(imagePath, depthPath, normalPath, result);
+        PairCache.put(imagePath, depthPath, normalPath, cam, result);
         return result;
     }
 
@@ -1800,6 +2034,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
          */
         final String requestedImage, requestedDepth, requestedNormal;
         /**
+         * The camera of the pair being decoded: the row's focal in pixels of the
+         * image, or 0.
+         *
+         * <p>Carried on the decode for the same reason the medium is: it is a
+         * property of what was asked for, and it must reach {@link #install} in the
+         * same event as the textures it belongs to. A request that never completes
+         * must not have named a camera either.
+         */
+        final float focal;
+        /**
          * Whether the pair this decode answers is a clip's, rather than a
          * photograph's.
          *
@@ -1820,7 +2064,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 boolean customImage, boolean customDepth, boolean embedded, boolean flat,
                 Bitmap normalBmp,
                 String requestedImage, String requestedDepth, String requestedNormal,
-                boolean clip, boolean preview) {
+                boolean clip, boolean preview, float focal) {
             this.colorBmp = colorBmp;
             this.gray = gray;
             this.w = w;
@@ -1834,6 +2078,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             this.requestedNormal = requestedNormal;
             this.clip = clip;
             this.preview = preview;
+            this.focal = focal;
             this.flat = flat;
         }
 
@@ -1897,6 +2142,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // The normal is part of the pair identity, so a photo that gains one is
         // re-installed and this records it. See showingSamePair.
         loadedNormalPath = p.suppliedNormal() ? p.requestedNormal : null;
+        // And so is the camera: 0 for a row that has none, which is a value the
+        // identity compares like any other.
+        loadedFocal = p.focal;
         // The medium moves HERE, beside the pair identity it describes and in the
         // same event as the swap -- not at request time, because a request that
         // never completes would then have named a medium the screen never reached,
@@ -1958,8 +2206,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * and the arrival cross-fades into the new one.
      *
      */
+    /**
+     * Ask for a pair, with the row's camera.
+     *
+     * <p>The focal rides with the paths because it is part of the pair's identity:
+     * a row that gains one is a different render of the same files. There is no
+     * three-argument form, deliberately -- a caller that forgot the focal would
+     * silently install "the default lens" over a row that has a measured one, and
+     * the pair identity it checks against would agree with itself.
+     */
     public void loadPairAsync(final String imagePath, final String depthPath,
-                              final String normalPath) {
+                              final String normalPath, final float focal) {
         // Tag the request so a result can be recognised as out of date.
         //
         // Decodes run off the GL thread and finish whenever they finish, so an
@@ -1982,19 +2239,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // Assigned for every request, not only a different pair: a request that
         // matches the displayed pair must clear an earlier request's freeze, or a
         // superseded decode would leave the display frozen forever.
-        pairChangePending = hasInstalled && !showingSamePair(imagePath, depthPath, normalPath);
+        pairChangePending = hasInstalled
+                && !showingSamePair(imagePath, depthPath, normalPath, focal);
         final java.util.concurrent.Executor glThread = glDispatch;
         if (glThread == null) {
             // No dispatcher yet: we are almost certainly inside onSurfaceCreated
             // before the host could set one, which cannot happen with the current
             // wiring, so just do it inline rather than dropping the image.
-            applyPending(decodePair(imagePath, depthPath, normalPath));
+            applyPending(decodePair(imagePath, depthPath, normalPath, focal));
             return;
         }
         Io.run(new java.util.concurrent.Callable<Pending>() {
             @Override
             public Pending call() {
-                return decodePair(imagePath, depthPath, normalPath);
+                return decodePair(imagePath, depthPath, normalPath, focal);
             }
         }, new Io.Callback<Pending>() {
             @Override
@@ -2036,9 +2294,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Synchronous load, for tests and any caller that needs the result before
      * continuing. Must be called on the GL thread.
+     *
+     * <p>The focal is a parameter for the same reason it is on the async form: a
+     * pair is its files <i>and</i> its camera, and 0 is the row-without-one.
      */
-    public boolean loadPair(String imagePath, String depthPath, String normalPath) {
-        return applyPending(decodePair(imagePath, depthPath, normalPath));
+    public boolean loadPair(String imagePath, String depthPath, String normalPath, float focal) {
+        return applyPending(decodePair(imagePath, depthPath, normalPath, focal));
     }
 
     /**
@@ -2167,6 +2428,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uDepth = GLES20.glGetUniformLocation(program, "uDepth");
         uGrid = GLES20.glGetUniformLocation(program, "uGrid");
         uAspect = GLES20.glGetUniformLocation(program, "uAspect");
+        aCorner = GLES20.glGetAttribLocation(program, "aCorner");
+        uSplat = GLES20.glGetUniformLocation(program, "uSplat");
+        uSplatSize = GLES20.glGetUniformLocation(program, "uSplatSize");
+        uCamDist = GLES20.glGetUniformLocation(program, "uCamDist");
+        uFocal = GLES20.glGetUniformLocation(program, "uFocal");
+        uRefFocal = GLES20.glGetUniformLocation(program, "uRefFocal");
+        if (GLES3 && aCorner < 0) {
+            // The splat mode needs a third attribute; without it the draw path
+            // would silently fall back to the relief while the pref says
+            // otherwise. It cannot happen while the shader declares aCorner in a
+            // uniform branch (the compiler cannot drop it), which is exactly why
+            // it is worth one line to say it did not.
+            android.util.Log.w("Basrelief",
+                    "aCorner missing from the GLES3 program; the splat mode cannot draw");
+        }
 
         markerProgram = createProgram(GLES3 ? MARKER_VERT3 : MARKER_VERT,
                 GLES3 ? MARKER_FRAG3 : MARKER_FRAG);
@@ -2180,6 +2456,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         gridVbo = 0;
         gridIbo = 0;
         gridIndexCount = 0;
+        splatVbo = 0;
+        splatIbo = 0;
+        splatIndexCount = 0;
         if (GLES3) buildGrid();
 
         // The mesh attribute pointers are bound once per install, not per frame
@@ -2188,7 +2467,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and the linker is free to hand out the same index to both. If it
         // does, drawing the marker overwrites a mesh pointer, so we re-bind
         // afterwards instead of assuming it cannot happen.
-        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV;
+        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV
+                || markerAPos == aCorner;
         if (markerClobbersMesh) {
             android.util.Log.w("Basrelief", "marker attribute index " + markerAPos
                     + " collides with a mesh attribute; re-binding after each marker draw");
@@ -2583,12 +2863,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+        // The 3D mode. Read HERE, with the other cold-load state, because this is
+        // the one path both surfaces converge on -- the studio's cold start and
+        // the wallpaper's engine rebuild -- so the pref can be flipped and the app
+        // restarted to A/B the two looks without a rebuild. OFF by default: the
+        // relief is what every existing row was framed against, and this mode is a
+        // different reconstruction, not a fix.
+        render3d = p.getBoolean(KEY_RENDER_3D, false);
         // The index owns the selection, so one dereference gives the files and the
         // settings together and cannot come back naming a photo that was deleted.
         // Loaded once: this runs on the GL thread at cold start, and each load
         // re-reads and re-validates the whole gallery.
         final AppState state = AppState.load(context, p, context.getFilesDir());
         final LibraryItem active = state.activeItem();
+        // The photograph's camera, from the row and from nothing else. It is part
+        // of the pair identity the load below carries (see showingSamePair), so a
+        // row that gained a focal while the wallpaper was up is re-installed
+        // rather than left rendering through the lens it no longer names.
+        final float focal = active == null ? 0f : active.focal;
         // The medium is armed HERE, not only where the activity asks for it, because
         // this is the one path both surfaces converge on -- the studio's cold start
         // and the wallpaper's engine both come through here -- and arming it only at
@@ -2656,7 +2948,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.normalName);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
-                nrm == null ? null : nrm.getAbsolutePath());
+                nrm == null ? null : nrm.getAbsolutePath(),
+                focal);
     }
 
     /**
@@ -2672,7 +2965,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the window, which is a far worse bug than a consistent one: it looks like a
      * rendering fault rather than a missing guarantee.
      */
-    private void load(String imgAbs, String depAbs, String nrmAbs) {
+    private void load(String imgAbs, String depAbs, String nrmAbs, float focal) {
         // Off the GL thread: the read, decode and mesh build are seconds of work
         // and must not sit between two frames of a live wallpaper. The dispatcher
         // comes from the host (see setGlDispatch), which both surfaces set before
@@ -2681,9 +2974,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             loadedOnce = true;
             // Inline on purpose: see syncFirstLoad. Blocks this thread for one
             // decode so the surface is never empty when the system snapshots it.
-            applyPending(decodePair(imgAbs, depAbs, nrmAbs));
+            applyPending(decodePair(imgAbs, depAbs, nrmAbs, focal));
         } else {
-            loadPairAsync(imgAbs, depAbs, nrmAbs);
+            loadPairAsync(imgAbs, depAbs, nrmAbs, focal);
         }
     }
 
@@ -2935,17 +3228,35 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // collision harmless rather than something to remember.
             GLES20.glUniform1f(uGrid, GRID);
             GLES20.glUniform1f(uAspect, r.aspect);
+            // The mode switch, uploaded for EVERY GLES3 draw so a stale 1 cannot
+            // outlive the pref being turned off. The relief's draw is otherwise
+            // untouched by this: same program, same buffers, same call, and the
+            // shader's else branch is the arithmetic it always was.
+            GLES20.glUniform1f(uSplat, render3d ? 1f : 0f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
-            GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
-            GLES20.glEnableVertexAttribArray(aPosition);
-            GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
-            GLES20.glEnableVertexAttribArray(aUV);
-            GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 16, 8);
-            GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, gridIbo);
-            GLES20.glDrawElements(GLES30.GL_TRIANGLES, gridIndexCount,
-                    GLES30.GL_UNSIGNED_INT, 0);
+            if (render3d && aCorner >= 0) {
+                // Built on the FIRST splat draw of this context, not with the
+                // relief grid: 18 MB of buffers for a mode that is off by default
+                // is memory the relief never asked for, and the lazy build cannot
+                // get the ordering wrong -- the pref is read in reloadFromPrefs,
+                // which runs after the grids are built in onSurfaceCreated.
+                if (splatIndexCount == 0) buildSplatGrid();
+                drawSplatGrid(r);
+            } else {
+                // Leave aCorner off, so the relief draw cannot read the splat
+                // buffer through an attribute pointer that is still enabled.
+                if (aCorner >= 0) GLES20.glDisableVertexAttribArray(aCorner);
+                GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
+                GLES20.glEnableVertexAttribArray(aPosition);
+                GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
+                GLES20.glEnableVertexAttribArray(aUV);
+                GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 16, 8);
+                GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, gridIbo);
+                GLES20.glDrawElements(GLES30.GL_TRIANGLES, gridIndexCount,
+                        GLES30.GL_UNSIGNED_INT, 0);
+            }
             // Leave buffer 0 bound for the marker's client-side ring buffer; a
             // bound VBO would make glVertexAttribPointer read the ring as an
             // offset into the grid.
@@ -2960,6 +3271,39 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, r.vertexCount);
         }
         return f;
+    }
+
+    /**
+     * Draw the point-splat cloud in place of the relief: one quad per field
+     * sample, as {@link #buildSplatGrid} laid out.
+     *
+     * <p>Everything about the camera comes from the same place the relief's does
+     * -- {@code uMVP}, {@code uModelScale} and {@code uIntensity} are already
+     * uploaded by {@link #drawRender} -- so pan, orbit, tilt and zoom drive the
+     * cloud exactly as they drive the surface, and there is one camera in the
+     * class rather than two. The uniforms set here are the ones that exist only
+     * for this mode.
+     */
+    private void drawSplatGrid(Render r) {
+        GLES20.glUniform1f(uSplatSize, Splat.cardSize(GRID));
+        GLES20.glUniform1f(uCamDist, CameraModel.CAM_DIST);
+        // The row's focal, or the documented default when it has none, and the
+        // default itself as the reference the shader divides by. Both resolved in
+        // :core, where the fallback is a tested function of the image height
+        // (SplatTest) -- the shader receiving a second copy of that arithmetic
+        // would be two answers to "what does an unknown focal draw at".
+        GLES20.glUniform1f(uFocal, Splat.effectiveFocalPx(r.focal, r.imageH));
+        GLES20.glUniform1f(uRefFocal, Splat.fallbackFocalPx(r.imageH));
+        GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, splatVbo);
+        GLES20.glEnableVertexAttribArray(aPosition);
+        GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 24, 0);
+        GLES20.glEnableVertexAttribArray(aUV);
+        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 24, 8);
+        GLES20.glEnableVertexAttribArray(aCorner);
+        GLES20.glVertexAttribPointer(aCorner, 2, GLES20.GL_FLOAT, false, 24, 16);
+        GLES20.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, splatIbo);
+        GLES20.glDrawElements(GLES30.GL_TRIANGLES, splatIndexCount,
+                GLES30.GL_UNSIGNED_INT, 0);
     }
 
     /**
@@ -3047,6 +3391,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
         Render r = new Render();
         r.aspect = (float) upright.getWidth() / upright.getHeight();
+        // The photograph's camera, from the request. imageH is the height of the
+        // bitmap actually uploaded: the focal is stored in pixels of this image, so
+        // the pair (focal, imageH) is what the vertex shader turns into a field of
+        // view, and taking the height from anywhere else would be a second
+        // derivation of the size of the picture being drawn.
+        r.focal = p.focal;
+        r.imageH = upright.getHeight();
         r.textureColor = upload(upright);
         // A texture name of 0 is never a success, it is the default texture,
         // which has no image and samples pure black. Cheap to assert here and
@@ -3374,6 +3725,91 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
         gridIndexCount = idx.length;
+    }
+
+    /**
+     * Build the point-splat grid: <b>one quad per field sample</b>, the same
+     * {@code (GRID+1)^2} samples {@link #buildGrid} places vertices at.
+     *
+     * <p><b>The layout is three attributes per vertex</b>, interleaved as
+     * {@code (x, y, u, v, cornerX, cornerY)} at a stride of 24 bytes: the sample's
+     * plane position and UV <i>shared by all four of its vertices</i>, plus the
+     * quad's corner in {@code (-0.5..0.5)^2}. Indices are six per sample, two
+     * triangles wound the way the relief's cells are (bottom-left, bottom-right,
+     * top-left, then bottom-right, top-right, top-left).
+     *
+     * <p><b>Cost, measured in bytes rather than guessed:</b> 148,225 samples at
+     * GRID = 384 is 592,900 vertices -- 14.2 MB of VBO -- and 889,350 indices --
+     * 3.6 MB of IBO, against the relief grid's 6 MB for both. It is built once
+     * per EGL context (a few milliseconds of fill; see the log line), and it is
+     * the reason the splat is a pref rather than a replacement: the per-frame cost
+     * is three times the relief's triangles.
+     *
+     * <p><b>Filled straight into the direct buffer it is uploaded from.</b> The
+     * relief grid's {@code float[]} + {@code toBuffer} pattern would hold both
+     * copies at once, and at this size that is a 14 MB heap spike on the same
+     * devices a live wallpaper shares with everything else. One buffer, one pass,
+     * and nothing to collect afterwards.
+     */
+    private void buildSplatGrid() {
+        int n = GRID + 1;
+        final int samples = n * n;
+        final int floatsPerVertex = 6;
+        long startNanos = System.nanoTime();
+
+        FloatBuffer vb = ByteBuffer.allocateDirect(samples * 4 * floatsPerVertex * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        // Bottom-left, bottom-right, top-left, top-right -- the same corner order
+        // the prototype used, and the order the index list below assumes.
+        final float[][] corners = {{-0.5f, -0.5f}, {0.5f, -0.5f},
+                {-0.5f, 0.5f}, {0.5f, 0.5f}};
+        for (int gy = 0; gy < n; gy++) {
+            float v = 1f - (float) gy / GRID;   // top row first, like the relief grid
+            for (int gx = 0; gx < n; gx++) {
+                float u = (float) gx / GRID;
+                for (int c = 0; c < 4; c++) {
+                    vb.put(u - 0.5f);
+                    vb.put(v - 0.5f);
+                    vb.put(u);
+                    vb.put(v);
+                    vb.put(corners[c][0]);
+                    vb.put(corners[c][1]);
+                }
+            }
+        }
+        vb.position(0);
+        int[] vbo = new int[1];
+        GLES30.glGenBuffers(1, vbo, 0);
+        splatVbo = vbo[0];
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, splatVbo);
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, samples * 4 * floatsPerVertex * 4,
+                vb, GLES30.GL_STATIC_DRAW);
+
+        IntBuffer ib = ByteBuffer.allocateDirect(samples * 6 * 4)
+                .order(ByteOrder.nativeOrder()).asIntBuffer();
+        for (int s = 0; s < samples; s++) {
+            int base = s * 4;
+            ib.put(base);
+            ib.put(base + 1);
+            ib.put(base + 2);
+            ib.put(base + 1);
+            ib.put(base + 3);
+            ib.put(base + 2);
+        }
+        ib.position(0);
+        int[] ibo = new int[1];
+        GLES30.glGenBuffers(1, ibo, 0);
+        splatIbo = ibo[0];
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, splatIbo);
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, samples * 6 * 4, ib,
+                GLES30.GL_STATIC_DRAW);
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
+        splatIndexCount = samples * 6;
+        android.util.Log.i("Basrelief", "splat grid " + samples + " samples, "
+                + samples * 4 + " verts, " + (samples * 4 * floatsPerVertex * 4 / (1 << 20))
+                + "MB vbo + " + (samples * 6 * 4 / (1 << 20)) + "MB ibo in "
+                + (System.nanoTime() - startNanos) / 1e6f + "ms");
     }
 
     private static FloatBuffer buildRing(int segments) {

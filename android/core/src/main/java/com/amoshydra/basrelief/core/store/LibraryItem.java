@@ -109,6 +109,34 @@ public final class LibraryItem {
      */
     public final VideoTracks video;
 
+    /**
+     * The camera's focal length in <b>pixels of {@link #imageName}</b>, or 0 for
+     * unknown.
+     *
+     * <p><b>One number, because MoGe's intrinsics are one number.</b> The stream
+     * node infers with {@code force_projection=True}, so the point map it returns
+     * is the depth unprojected through its own camera, and those intrinsics are
+     * square-pixel and centred on (0.5, 0.5) by construction. The whole camera is
+     * therefore {@code X/Z = (u - 0.5)/(f/W)}, {@code Y/Z = (v - 0.5)/(f/H)} with
+     * the same {@code f} -- measured against a real geometry packet, reproducing
+     * the point map to 4e-6 relative. The 3D (splat) render mode is the reader;
+     * the relief does not need it.
+     *
+     * <p><b>Belongs to the colour, not to the depth.</b> It is a property of the
+     * photograph the run saw, so a writer that replaces the image or attaches new
+     * files must say what happens to it ({@link #withFilesAndVideo} takes it as an
+     * argument) and a writer that only replaces the depth map carries it, because
+     * the colour -- and therefore the camera -- has not changed.
+     *
+     * <p><b>0 is "unknown" and is omitted from the blob</b>, the same rule
+     * {@code normal} and {@code video} follow: a library this build never touched
+     * stays byte-identical, which is why this needed no schema version. Every row
+     * written before this field existed has 0, and the renderer falls back to a
+     * 50-degree default rather than refusing to draw -- a window claims nothing,
+     * but a look must not vanish.
+     */
+    public final float focal;
+
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
 
@@ -235,7 +263,7 @@ public final class LibraryItem {
     private LibraryItem(String id, String imageName, String depthName,
                         String normalName, String label, long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                SurfaceSettings.defaults(), null, false, normalName, null);
+                SurfaceSettings.defaults(), null, false, normalName, null, 0f);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
@@ -243,23 +271,27 @@ public final class LibraryItem {
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, archived, normalName, null);
+                home, lockSettings, archived, normalName, null, 0f);
     }
 
     /**
      * The one constructor every write path funnels into.
      *
-     * <p>It takes all eleven stored fields, so a caller that has to change one of
-     * them has to name the other ten — and that is the {@link #copy} discipline
+     * <p>It takes all twelve stored fields, so a caller that has to change one of
+     * them has to name the other eleven -- and that is the {@link #copy} discipline
      * made mechanical. The {@link VideoTracks} reference rides here for the same
      * reason it is not a loose field: every mutator below names it, so a writer
      * written before clips existed cannot silently drop a user's video the way
-     * {@code withDepth} silently reset Motion, brightness and shadow.
+     * {@code withDepth} silently reset Motion, brightness and shadow. The
+     * {@link #focal} was added the same way, one field later, and is the reason a
+     * setter is not offered for it: a writer either names it or compiles against
+     * the constructor that cannot.
      */
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
-                        boolean archived, String normalName, VideoTracks video) {
+                        boolean archived, String normalName, VideoTracks video,
+                        float focal) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -308,6 +340,12 @@ public final class LibraryItem {
         this.home = home;
         this.lock = lockSettings;
         this.archived = archived;
+        // The focal is a length in pixels of the image, so 0 is "unknown" and is
+        // the only non-positive value that means anything. A corrupt blob's NaN
+        // or -3 is clamped rather than carried: a negative focal inverts the
+        // unprojection it drives, and a NaN one poisons every vertex it touches.
+        // Clamped here, in the one constructor, so no writer can store one.
+        this.focal = (Float.isFinite(focal) && focal > 0f) ? focal : 0f;
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -634,7 +672,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived, normalName, video);
+                archived, normalName, video, focal);
     }
 
     /**
@@ -751,7 +789,12 @@ public final class LibraryItem {
      * {@link #withDepth}.
      */
     public LibraryItem withDepthAndNormal(String depth, String normal) {
-        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video);
+        // The focal is carried, not cleared, and that is a decision rather than an
+        // omission: it describes the CAMERA of the colour image, and this writer
+        // replaces the depth and its normal -- the two things a run derives from
+        // that colour. A still's regenerated depth is the same photograph; a clip's
+        // regenerate goes through withFilesAndVideo, which does name the focal.
+        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video, focal);
     }
 
     /**
@@ -790,7 +833,7 @@ public final class LibraryItem {
      * holds for a clip as well as for a still.
      */
     public LibraryItem withFiles(String image, String depth, String normal) {
-        return withFilesAndVideo(image, depth, normal, video);
+        return withFilesAndVideo(image, depth, normal, video, focal);
     }
 
     /**
@@ -801,10 +844,30 @@ public final class LibraryItem {
      * a clip makes the pair bigger rather than smaller: an import that wrote the
      * poster first and died before the clips left a row the user would see as a
      * photograph, with no error anywhere.
+     *
+     * <p>The focal is carried, because a caller that swaps the stills but says
+     * nothing about the camera meant "the same photograph, rewritten".
      */
     public LibraryItem withFilesAndVideo(String image, String depth, String normal,
                                          VideoTracks clips) {
-        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips);
+        return withFilesAndVideo(image, depth, normal, clips, focal);
+    }
+
+    /**
+     * The same paired write, with the camera as well.
+     *
+     * <p><b>An import's one finish line, and the reason the focal is a parameter
+     * here rather than a setter.</b> Every value on a row has exactly one writer
+     * that names it; a {@code withFocal} setter would be a second write path that a
+     * later writer could forget, which is the {@code withDepth} scar one field
+     * over. Passing 0 stores "unknown" and is how a regenerate that could not fit a
+     * focal clears the one it replaced -- the files and the number that describes
+     * them arrive together, so a row cannot end up pointing at a run's depth with
+     * the previous run's lens.
+     */
+    public LibraryItem withFilesAndVideo(String image, String depth, String normal,
+                                         VideoTracks clips, float focal) {
+        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips, focal);
     }
 
     /**
@@ -835,16 +898,17 @@ public final class LibraryItem {
         if (isBundled()) {
             throw new IllegalArgumentException("the bundled demo is a still trio");
         }
-        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips);
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips, focal);
     }
 
     public LibraryItem withLabel(String newLabel) {
-        return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt, video);
+        return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt,
+                video, focal);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return copy(id, imageName, depthName, normalName, label, addedAt, when, video);
+        return copy(id, imageName, depthName, normalName, label, addedAt, when, video, focal);
     }
 
     /**
@@ -859,7 +923,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on, normalName, video);
+                home, lock, on, normalName, video, focal);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -875,12 +939,17 @@ public final class LibraryItem {
      * did not mean to change, and the short constructor's defaults quietly
      * resetting the other three. Three call sites had exactly that waiting in
      * them.
+     *
+     * <p><b>The focal is a parameter and not a field read here</b> for the same
+     * reason the three names are: {@link #withFilesAndVideo} has to be able to
+     * write the focal along with the files it belongs to, and a defaulted field
+     * would make that the one writer with no way to say it.
      */
     private LibraryItem copy(String id, String imageName, String depthName, String normalName,
                              String label, long addedAt, long lastUsedAt,
-                             VideoTracks video) {
+                             VideoTracks video, float focal) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived, normalName, video);
+                home, lock, archived, normalName, video, focal);
     }
 
     // ---------------------------------------------------------- serialise
@@ -913,6 +982,12 @@ public final class LibraryItem {
             // touched, which is why clips needed no version bump either. The same
             // argument the normal and the archived flag already make.
             if (video != null) o.put("video", new JSONObject(video.toJson()));
+            // Written only when known, so a library with no focal is byte-identical
+            // to one this build never touched -- the normal/video/archived argument
+            // again, and why this needed no version bump either. 0 means UNKNOWN and
+            // is never stored, because a stored 0 and an absent key would be two
+            // spellings of one state.
+            if (focal > 0f) o.put("focal", focal);
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -1043,7 +1118,11 @@ public final class LibraryItem {
                     // missing image name, which is one id-gated fact rather than two.
                     Library.BUNDLED_ID.equals(id)
                             ? null
-                            : VideoTracks.fromJson(o.optJSONObject("video")));
+                            : VideoTracks.fromJson(o.optJSONObject("video")),
+                    // 0 = unknown, and the constructor is what refuses a negative
+                    // or NaN value: one place, so a hand-edited "focal": "NaN"
+                    // cannot reach the vertex shader and poison a whole cloud.
+                    (float) o.optDouble("focal", 0d));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -1054,6 +1133,7 @@ public final class LibraryItem {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + (normalName != null ? " +normal" : "")
                 + (video != null ? " " + video : "")
+                + (focal > 0f ? " focal=" + focal : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt
                 + (archived ? " ARCHIVED" : "")
                 + " home=" + home + (lock == null ? "" : " lock=" + lock) + "}";

@@ -312,9 +312,19 @@ final class VideoImport {
         final float fpsOut;
         /** The source's own rate, for the duration tolerance; 0 when unknown. */
         final float srcFps;
+        /**
+         * The camera's focal length in pixels of the uploaded frame, or 0 when the
+         * node could not fit one (see {@code _fit_focal} in the node).
+         *
+         * <p>Not a derived value and not a fallback: it is a measurement the node
+         * makes once per run from MoGe's own point map, and 0 is the measurement
+         * failing. The app stores it on the row, and the 3D mode's default is what
+         * an absent one draws.
+         */
+        final int focal;
 
         StreamOutputs(String depthName, String normalName, String colorName, int frames,
-                      int srcFrames, float fpsOut, float srcFps) {
+                      int srcFrames, float fpsOut, float srcFps, int focal) {
             this.depthName = depthName == null ? "" : depthName;
             this.normalName = normalName == null ? "" : normalName;
             this.colorName = colorName == null ? "" : colorName;
@@ -322,6 +332,7 @@ final class VideoImport {
             this.srcFrames = Math.max(0, srcFrames);
             this.fpsOut = fpsOut > 0f ? fpsOut : 0f;
             this.srcFps = srcFps > 0f ? srcFps : 0f;
+            this.focal = Math.max(0, focal);
         }
 
         /** Whether the node wrote a colour this run must fetch and play. */
@@ -557,7 +568,10 @@ final class VideoImport {
                         side.optInt("done", 0),
                         side.optInt("src_frames", 0),
                         (float) side.optDouble("fps_out", 0),
-                        (float) side.optDouble("src_fps", 0));
+                        (float) side.optDouble("src_fps", 0),
+                        // The run's own camera, from the run's own state. 0 from an
+                        // older node, which the row stores as "unknown".
+                        side.optInt("focal", 0));
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
                         job.promptId, plannedFrames,
                         listener, editFinisher(prefs, job.itemId));
@@ -602,7 +616,7 @@ final class VideoImport {
             }
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                StreamOutputs out = streamOutputsOf(entry, tag, 0, 0f, 0f, "");
+                StreamOutputs out = streamOutputsOf(entry, tag, 0, 0f, 0f, "", 0);
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
                         job.promptId, plannedFrames,
                         listener, editFinisher(prefs, job.itemId));
@@ -640,7 +654,7 @@ final class VideoImport {
                     @Override
                     public LibraryItem edit(LibraryItem it) {
                         return it.withFilesAndVideo(built.imageName, built.depthName,
-                                built.normalName, built.video);
+                                built.normalName, built.video, built.focal);
                     }
                 });
                 return LibraryStore.load(prefs).find(itemId);
@@ -1108,7 +1122,14 @@ final class VideoImport {
         LibraryItem built = LibraryItem.of(rowId, poster.getName(),
                         depthStill.getName(), System.currentTimeMillis())
                 .withFilesAndVideo(poster.getName(), depthStill.getName(),
-                        normalStill == null ? null : normalStill.getName(), tracks);
+                        normalStill == null ? null : normalStill.getName(), tracks,
+                        // The run's camera, written with the files it belongs to --
+                        // the ONE finish line, so a regenerate that fitted a new focal
+                        // replaces the old one and a run that fitted none clears it,
+                        // rather than a second setter that a later writer could forget.
+                        outputs.focal);
+        Log.i(TAG, "attach: " + rowId + " focal=" + outputs.focal + "px ("
+                + (outputs.focal > 0 ? "measured" : "unknown, the app's default look") + ")");
         return finisher.finish(built);
     }
 
@@ -1360,6 +1381,7 @@ final class VideoImport {
         int srcFrames = 0;
         float fpsOut = 0f;
         float srcFps = 0f;
+        int focal = 0;
         String colorName = "";
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(POLL_MS);
@@ -1389,6 +1411,12 @@ final class VideoImport {
                     // no fallback name is derived, see StreamOutputs.colorName.
                     String colour = colorNameOf(side);
                     if (colour != null) colorName = colour;
+                    // The focal is constant too, but it is read UNCONDITIONALLY: 0
+                    // is a legitimate measured value (the fit failed), so "a value
+                    // that is present and non-zero" is not the test -- the last
+                    // readable sidecar wins, and the first one (written before the
+                    // first window is fitted) legitimately carries 0.
+                    focal = side.optInt("focal", 0);
                 }
             } catch (Exception ignored) {
                 // The sidecar is a bonus: the history below is the authority on
@@ -1411,7 +1439,7 @@ final class VideoImport {
             if (why != null) throw new ServerFailure(why);
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                return streamOutputsOf(entry, tag, srcFrames, fpsOut, srcFps, colorName);
+                return streamOutputsOf(entry, tag, srcFrames, fpsOut, srcFps, colorName, focal);
             }
         }
         throw new Exception("the run did not finish in time");
@@ -1437,14 +1465,20 @@ final class VideoImport {
      * resulting checks as unchecked rather than inventing them. {@code sidecarColor}
      * is the same pass's sidecar answer, kept as a fallback for the colour name
      * because the sidecar is the run's own state.
+     *
+     * <p>{@code focal} is the same split: the sidecar's when it answered, else the
+     * payload's own copy, which a current node writes. An older node has neither
+     * and 0 reaches the row -- which the renderer reads as "unknown" and draws the
+     * default look at, not as an error.
      */
     private static StreamOutputs streamOutputsOf(JSONObject entry, String tag, int srcFrames,
                                                  float fpsOut, float srcFps,
-                                                 String sidecarColor) {
+                                                 String sidecarColor, int sidecarFocal) {
         String depth = null;
         String normal = null;
         String color = null;
         int frames = 0;
+        int focal = sidecarFocal;
         JSONObject outputs = entry == null ? null : entry.optJSONObject("outputs");
         if (outputs != null) {
             Iterator<String> nodes = outputs.keys();
@@ -1456,13 +1490,15 @@ final class VideoImport {
                 normal = firstString(node, "normal");
                 color = firstString(node, "color");
                 frames = firstInt(node, "frames");
+                int fromPayload = firstInt(node, "focal");
+                if (fromPayload > 0) focal = fromPayload;
                 break;
             }
         }
         if (depth == null) depth = ComfyWorkflow.streamDepthName(tag);
         if (normal == null) normal = ComfyWorkflow.streamNormalName(tag);
         if (color == null) color = sidecarColor;
-        return new StreamOutputs(depth, normal, color, frames, srcFrames, fpsOut, srcFps);
+        return new StreamOutputs(depth, normal, color, frames, srcFrames, fpsOut, srcFps, focal);
     }
 
     /**

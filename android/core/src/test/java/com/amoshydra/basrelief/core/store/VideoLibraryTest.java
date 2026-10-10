@@ -145,18 +145,24 @@ public class VideoLibraryTest {
     // ------------------------------------------------------------ the single-field trap
 
     /**
-     * <b>No write may drop a user's clip.</b> The {@code withDepth} scar, one field
-     * over.
+     * <b>No write may drop a user's clip, or a photograph's camera.</b> The
+     * {@code withDepth} scar, one field over.
      *
      * <p>{@code withDepth} shipped broken once: it reset Motion, brightness and
      * shadow, because those values had been added after it was written and the
      * constructor it used defaulted everything it was not given. A clip is exactly
      * that shape of value — added after the writers existed — so every mutator is
-     * asserted over it here rather than trusted.
+     * asserted over it here rather than trusted. The focal is the same shape
+     * again, one field later, which is why it is asserted in the same walk rather
+     * than in a test of its own: the enumeration is the guard, and a second place
+     * to remember is a second place to forget.
      */
     @Test
     public void everyMutatorCarriesTheClip() {
         LibraryItem base = shadedClip("a", 1L)
+                .withFilesAndVideo("item-a.png", "item-a-depth.png", "item-a-normal.png",
+                        VideoTracks.of("item-a.mp4", "item-a-depth.mp4",
+                                "item-a-normal.mp4"), 2643f)
                 .withDepthAndNormal("item-a-depth.png", "item-a-normal.png")
                 .withIntensity(Surface.HOME, 66)
                 .withZoom(Surface.HOME, 133)
@@ -202,6 +208,7 @@ public class VideoLibraryTest {
                 LibraryItem.videoDepthFileName("a"), item.video.depth);
         assertEquals(what + " must keep the normal clip",
                 LibraryItem.videoNormalFileName("a"), item.video.normal);
+        assertEquals(what + " must keep the camera", 2643f, item.focal, 0f);
     }
 
     /**

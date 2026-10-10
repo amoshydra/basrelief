@@ -408,6 +408,86 @@ public class LibraryItemTest {
         assertEquals("n.png", item.normalName);
     }
 
+    // ---------------------------------------------------------------- the focal
+
+    /**
+     * The focal survives a round trip, and a row that has none does not write the
+     * key — the byte-stability property every optional field here is held to, and
+     * the reason one more optional number needed no schema version.
+     *
+     * <p>0 means unknown and must never be <i>stored</i> as a zero: an absent key
+     * and a stored 0 would be two spellings of one state, and only one of them
+     * can be what the writer meant.
+     */
+    @Test
+    public void focalSurvivesARoundTripAndIsAbsentWhenUnknown() {
+        LibraryItem withFocal = sample().withFilesAndVideo(
+                "a.png", "a-depth.png", "a-normal.png", null, 2643f);
+        assertEquals(2643f, withFocal.focal, 0f);
+        assertTrue("a known focal is written", withFocal.toJson().contains("focal"));
+        LibraryItem back = LibraryItem.fromJson(json(withFocal.toJson()));
+        assertNotNull(back);
+        assertEquals("the camera must survive the round trip", 2643f, back.focal, 0f);
+
+        LibraryItem unknown = sample();
+        assertEquals(0f, unknown.focal, 0f);
+        assertFalse("an unknown focal must not write a key",
+                unknown.toJson().contains("focal"));
+        assertEquals(0f, LibraryItem.fromJson(json(unknown.toJson())).focal, 0f);
+    }
+
+    /**
+     * A stored value that cannot be a focal length is "unknown", not a length.
+     *
+     * <p>Three shapes, because a blob is not always written by this build: absent,
+     * a negative number, and the literal string {@code "NaN"} — which Android's
+     * {@code optDouble} happily parses into a NaN, and a NaN focal would make every
+     * vertex of a splat cloud vanish. A negative one would silently mirror the
+     * reconstruction instead of vanishing, which is the quieter failure.
+     */
+    @Test
+    public void aStoredFocalThatCannotBeALengthReadsAsUnknown() {
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1}")).focal, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"focal\":-50}")).focal, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"focal\":\"NaN\"}")).focal, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"focal\":0}")).focal, 0f);
+    }
+
+    /**
+     * The focal belongs to the colour, so a writer that replaces the DEPTH carries
+     * it and the paired file-and-camera write is where a run's own focal lands.
+     *
+     * <p>This is the {@code withDepth} trap stated as two behaviours on one value:
+     * the depth writer must not clear it (the camera did not change), and the
+     * import's paired write must be able to set it — including clearing it, which
+     * is how a regenerate that could not fit a focal stops the row claiming the
+     * previous run's lens.
+     */
+    @Test
+    public void theFocalRidesWithTheColourNotTheDepth() {
+        LibraryItem focused = sample().withFilesAndVideo(
+                "a.png", "a-depth.png", null, null, 1234f);
+        LibraryItem remapped = focused.withDepth("b-depth.png");
+        assertEquals("a new depth map is the same camera", 1234f, remapped.focal, 0f);
+
+        LibraryItem replaced = focused.withFilesAndVideo(
+                "b.png", "b-depth.png", null, null, 999f);
+        assertEquals(999f, replaced.focal, 0f);
+        LibraryItem cleared = focused.withFilesAndVideo(
+                "b.png", "b-depth.png", null, null, 0f);
+        assertEquals("a run with no focal clears the one it replaces", 0f, cleared.focal, 0f);
+        // And the files-only form carries whatever the row had, so a writer that
+        // does not mention the camera cannot silently drop it.
+        assertEquals(1234f, focused.withFiles("c.png", "c-depth.png").focal, 0f);
+    }
+
     // -------------------------------------------------------------- archive
 
     /**

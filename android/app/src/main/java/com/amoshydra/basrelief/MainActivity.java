@@ -6109,6 +6109,12 @@ public class MainActivity extends Activity {
         final String img = imgF == null ? null : imgF.getAbsolutePath();
         final String dep = depF == null ? null : depF.getAbsolutePath();
         final String nrm = nrmF == null ? null : nrmF.getAbsolutePath();
+        // The photograph's camera, resolved from the same item as the three files
+        // and for the same reason: it is part of the pair identity, so a row that
+        // gains one is a re-install rather than a resolve that leaves the glass on
+        // the old lens. 0 on no selection, which is "unknown" and matches what the
+        // renderer records for a demo it has installed.
+        final float focal = active == null ? 0f : active.focal;
         // THE PREVIEW, through the one derivation: the row has no clips of its own and
         // a job record for it exists, and its remuxed colour file is actually here
         // (JobsStore owns the file half; Jobs owns the precedence). Resolved ONCE and
@@ -6133,9 +6139,9 @@ public class MainActivity extends Activity {
         // that did load. The question has one answer and it is the renderer's.
         boolean sameMedia = renderer.clipMatches(active == null ? null : active.video, preview);
         android.util.Log.i("Basrelief", "applyFiles id=" + (active == null ? "none" : active.id)
-                + " samePair=" + renderer.showingSamePair(img, dep, nrm)
+                + " samePair=" + renderer.showingSamePair(img, dep, nrm, focal)
                 + " sameMedia=" + sameMedia);
-        final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm) && sameMedia)
+        final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm, focal) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
         glView.queueEvent(new Runnable() {
@@ -6174,7 +6180,7 @@ public class MainActivity extends Activity {
         // start at its own stored speed rather than at whatever the last one used.
         renderer.setSpeed(framing.speed);
         renderer.requestClip(active == null ? null : active.video, preview, getFilesDir());
-        if (!renderer.showingSamePair(img, dep, nrm) || !sameMedia) {
+        if (!renderer.showingSamePair(img, dep, nrm, focal) || !sameMedia) {
             // The medium changed, so the pair load has to happen even when the stills
             // are identical: applyPending is what stops/starts the running clip, and
             // skipping it is how a re-selected clip stayed paused for ever.
@@ -6185,7 +6191,7 @@ public class MainActivity extends Activity {
             // for the one PairCache entry, and the first could land after the second
             // was already superseded. The condition above already covers the pair
             // change; issuing it twice bought nothing but the race.
-            renderer.loadPairAsync(img, dep, nrm);
+            renderer.loadPairAsync(img, dep, nrm, focal);
         }
         startClipPump();
         glView.requestRender();

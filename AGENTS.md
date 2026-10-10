@@ -68,11 +68,12 @@ android/app  ──depends on──▶  android/core
 
 `:core` exists so the maths that is easy to get quietly wrong is testable
 without a device. It holds depth→geometry (`ReliefMesh`), the camera
-(`CameraModel`), the picture adjustments (`Picture`), a vendored `Mat4`, the prefs
-path scheme (`PrefFiles`), the whole persisted schema (`Config`, `Library`,
-`LibraryItem`, `Surface`, `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`,
-`VideoTracks`), the three "where did this come from" vocabularies (`DepthSource`,
-`NormalSource`, `VideoSource`), and the one resolution of state into numbers
+(`CameraModel`), the picture adjustments (`Picture`), the splat mode's numbers
+(`Splat`), a vendored `Mat4`, the prefs path scheme (`PrefFiles`), the whole
+persisted schema (`Config`, `Library`, `LibraryItem`, `Surface`,
+`SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`, `VideoTracks`), the three
+"where did this come from" vocabularies (`DepthSource`, `NormalSource`,
+`VideoSource`), and the one resolution of state into numbers
 (`Framing`, `SurfaceResolver`).
 
 Anything that would otherwise be untestable GL or platform code belongs here as a
@@ -285,6 +286,60 @@ already cost real time.
   **not** negated) sampled per fragment; it is part of the loaded pair identity,
   so a photo that gains one is re-installed rather than reported as already
   showing.
+- **The 3D mode is one card per field sample, and the focal is the only camera a
+  photograph carries.** `render_3d` (a pref, read in `ReliefRenderer.reloadFromPrefs`,
+  **off by default**) swaps the continuous relief for a point-splat cloud, GLES3
+  only. `buildSplatGrid` emits one quad per field sample — 4 vertices and 6
+  indices each, 592,900 vertices and ~18 MB of static buffers at GRID = 384 — and
+  the vertex shader's `uSplat` branch places every card on the ray the DRAWING
+  camera gives its pixel, at a camera distance of `uCamDist` minus the card's own
+  depth, with the card's size scaled by the same depth ratio. The colour is
+  sampled at the sample's own texel for all four corners — **flat**, which is what
+  removes the shear, because a card's colour cannot stretch across it however the
+  card is placed — while the normal keeps a per-corner UV — **a gradient**, because
+  a flat normal per card makes a cloud of cards read as facets. The height is
+  fetched once per sample, so **no triangle spans a depth cliff**, and the holes
+  that open when the camera moves are the single view genuinely disoccluding: the
+  honest part of the mode, not a bug. Every card stays on its own ray, so the
+  picture at rest is the photograph whatever the Depth slider says and whatever the
+  focal is — only camera motion reveals the depth. `Splat.cardSize` is
+  `1.15 / (GRID + 1)`, the coverage constant: one grid cell plus a 15% margin, so the
+  reference plane tiles rather than screen-dooring, and a card's angular size is
+  its footprint's at every depth because the size carries the same depth ratio the
+  position does.
+  - **The focal does NOT go into the ray, and that is a decision with a measurement
+    behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
+    camera; drawing it through this renderer's camera — fixed 45°, because it is the
+    same camera the relief and every gesture use — re-frames the picture, and a
+    phone's main camera is nearer 70° than 45, so the same photo would arrive up to
+    70% larger and cropped. The ray is therefore the drawing camera's own and the
+    stored focal scales the DEPTH (its image plane sits `f/H` image heights in front
+    of the eye); scaling the whole cloud about the eye is the same statement the
+    other way round, which is why this is one implementation and not two. `SplatTest`
+    pins the arithmetic. A row with `focal == 0` draws the documented **50-degree
+    default** (`f = H/2 / tan(25°)`) rather than nothing: a window claims nothing,
+    but a look must not vanish.
+  - **The node fits the focal once per run, and the app stores it on the row.**
+    `_fit_focal` regresses `X/Z` against `(j + 0.5) / W` (and `Y/Z` against `(i + 0.5) / H`)
+    on the first window's `points`, which is legitimate because MoGe's intrinsics
+    are ONE number: square pixels, centre exactly (0.5, 0.5) by construction
+    (`intrinsics_from_focal_center`), measured reproducing the point map to 4e-6
+    relative (p99 5e-4). The mean of the two axes, scaled from the model input to the
+    uploaded frame, is written to the sidecar and the ui payload; a fit that is not
+    finite and positive writes 0. `VideoImport.attach` writes it through
+    `withFilesAndVideo` — the one finish line an import already uses — so the files
+    and the camera arrive together and a regenerate replaces it, and there is
+    deliberately no `withFocal` setter that a later writer could forget.
+  - **A focal is part of the pair identity, so a row that gains one is a
+    re-install.** `showingSamePair` takes it and there is deliberately **no
+    three-argument overload to forget it**: a caller that omitted it would compare a
+    row's real focal against 0, answer "not the same pair" on every resolve and
+    re-decode the photograph each time — the waste the guard exists to prevent, from
+    the safe-looking call. `PairCache` keys on it for the same reason. The field is
+    0-or-absent in the blob (omitted from `toJson` when 0, no schema bump — the
+    `normal`/`video` rule) and every mutator carries it; `VideoLibraryTest`'s
+    `everyMutatorCarriesTheClip` walk asserts it beside the clip, because it is the
+    same shape of value: added after the writers existed.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -654,7 +709,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 548 tests across thirty classes:
+it**. 556 tests across thirty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -668,6 +723,18 @@ has run.**
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
   the v convention and dropping a face normal each fail it.
+- `SplatTest` — the splat mode's two numbers, each with the one wrong answer that
+  a screenshot cannot tell from the right one. The fallback focal is asserted by
+  INVERTING it: the implied field of view is 50 degrees for every image height, and
+  scaling the height scales the focal, because a constant in pixels would make the
+  same lens wider on a taller image. The depth scale the shader forms
+  (`effectiveFocalPx / fallbackFocalPx`) is pinned at 1 for an unknown focal,
+  linear in the focal, and invariant when the focal and the height scale together.
+  A height that cannot imply a reference answers 0, and the shader treats that as
+  the default look rather than dividing by it — the "a window claims nothing" rule
+  applied to a number. The card size is held to a RANGE at every grid rather than a
+  value: at least the cell it replaces, or the reference plane is a screen door,
+  and under two cells, or the picture smears into itself.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

@@ -39,6 +39,7 @@ final class PairCache {
     private static String imagePath;
     private static String depthPath;
     private static String normalPath;
+    private static float focal;
     private static Object cached; // a ReliefRenderer.Pending, opaque on purpose
 
     /**
@@ -47,18 +48,19 @@ final class PairCache {
      * <p>Called on whichever thread finished the decode, which is the IO
      * executor, not the GL thread.
      */
-    static void put(String image, String depth, String normal, Object pending) {
+    static void put(String image, String depth, String normal, float focalPx, Object pending) {
         if (pending == null) return;
         synchronized (LOCK) {
             imagePath = image;
             depthPath = depth;
             normalPath = normal;
+            focal = focalPx;
             cached = pending;
         }
     }
 
     /**
-     * The decoded pair for these exact paths, or null.
+     * The decoded pair for these exact paths <b>and this camera</b>, or null.
      *
      * <p>Null for the packaged demo pair, which is not worth caching: it is decoded
      * from a resource in memory already and is the same bytes every time. It is no
@@ -69,12 +71,19 @@ final class PairCache {
      * <p><b>The normal is part of the key.</b> A photo can gain a normal after its
      * depth (the "Generate normals" run), and a cached entry that ignored the third
      * path would hand back the flat-lit decode for a photo that is now shaded.
+     *
+     * <p><b>So is the focal</b>, one field later and for the same failure: the same
+     * files decoded before and after a run fitted a camera are two different
+     * renders, and a hit that ignored the focal would hand the wallpaper a decode
+     * whose splat geometry is the old lens -- with the renderer then told the pair
+     * is on screen, so the new one never lands.
      */
-    static Object get(String image, String depth, String normal) {
+    static Object get(String image, String depth, String normal, float focalPx) {
         if (image == null) return null;
         synchronized (LOCK) {
             if (cached != null && eq(imagePath, image) && eq(depthPath, depth)
-                    && eq(normalPath, normal) && ReliefRenderer.isUsable(cached)) {
+                    && eq(normalPath, normal) && focal == focalPx
+                    && ReliefRenderer.isUsable(cached)) {
                 return cached;
             }
             return null;
@@ -87,6 +96,7 @@ final class PairCache {
             imagePath = null;
             depthPath = null;
             normalPath = null;
+            focal = 0f;
             cached = null;
         }
     }
