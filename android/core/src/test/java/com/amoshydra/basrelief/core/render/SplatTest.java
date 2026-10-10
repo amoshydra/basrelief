@@ -111,4 +111,53 @@ public class SplatTest {
         assertEquals("no grid, no card", 0f, Splat.cardSize(0), 0f);
         assertEquals("no grid, no card", 0f, Splat.cardSize(-3), 0f);
     }
+
+    /**
+     * The backdrop is behind every card, and that is the whole of its contract: a
+     * plane in front of the deepest cards hides them instead of filling the gaps
+     * between them, and the picture loses the surface it is most proud of.
+     *
+     * <p>The cards' range is fixed by the field being 8-bit and read as
+     * {@code r/255 - 0.5}: every h, including the farthest a photograph can
+     * produce, lies inside {@code [-0.5, 0.5]}. So the assertion is against that
+     * range rather than against a drawing of it -- the boundary is the arithmetic,
+     * not a value this test measures.
+     */
+    @Test
+    public void theBackdropSitsBehindEveryCard() {
+        float deepest = -0.5f;     // r == 0, the far end of the 8-bit field
+        assertTrue("the backdrop must be BEHIND the deepest card, not in front of it",
+                Splat.BACKDROP_H < deepest);
+        // ...and not so far that it stops parallaxing with the scene at all: the
+        // depth offset is proportional to h, so a plane 100x the model's range out
+        // would be a distant billboard rather than the photograph's own background.
+        assertTrue("the backdrop must stay within a few model depths",
+                Splat.BACKDROP_H > 4f * deepest);
+    }
+
+    /**
+     * The level is an index into {@link Splat#GRID_LEVELS} and nothing else: the
+     * two ways to get it wrong are an index off the end and a stored value that was
+     * never a level at all, and both answer the default rather than a grid nobody
+     * chose. The default is the field's own sampling, which is the look the mode
+     * shipped with — a level pref that arrived on an upgrade must not change it.
+     */
+    @Test
+    public void aLevelIsAnIndexIntoTheGridsAndAnythingElseIsTheDefault() {
+        assertEquals(Splat.DEFAULT_FIELD_GRID, Splat.GRID_LEVELS[0]);
+        assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(0));
+        for (int i = 0; i < Splat.GRID_LEVELS.length; i++) {
+            assertEquals(Splat.GRID_LEVELS[i], Splat.gridForLevel(i));
+        }
+        // Monotonic: a level that drew a SMALLER grid than the one below it would
+        // make the control a lie in one direction and the cost curve a lie in the
+        // other.
+        for (int i = 1; i < Splat.GRID_LEVELS.length; i++) {
+            assertTrue("levels must not go backwards",
+                    Splat.GRID_LEVELS[i] > Splat.GRID_LEVELS[i - 1]);
+        }
+        assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(-1));
+        assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(Splat.GRID_LEVELS.length));
+        assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(9999));
+    }
 }

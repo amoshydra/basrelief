@@ -60,6 +60,55 @@ public final class Splat {
      */
     public static final float COVERAGE = 1.15f;
 
+    /**
+     * The model-space height the splat's backdrop plane sits at.
+     *
+     * <p>The depth field is 8-bit and the shader reads it as {@code r/255 - 0.5},
+     * so every card lies in {@code [-0.5, 0.5]} and the backdrop has to be BEYOND
+     * the far end of that range or it hides the deepest cards instead of filling
+     * the gaps between them — a backdrop in front is a hole that never opens and a
+     * photograph that loses its deepest surface. It is a quarter of the range
+     * behind, which is enough margin for the depth buffer at this scale and small
+     * enough that the plane still parallaxes with the scene rather than reading as
+     * a distant billboard.
+     *
+     * <p>What it is FOR: the cards are one view, so tilting opens gaps where the
+     * surface moved and nothing was ever recorded behind it. The backdrop fills
+     * them with the same photograph, blurred and shaded the same way, so a gap
+     * reads as out-of-focus background rather than as black. It is a fill, not a
+     * reconstruction — the content in a gap is still a guess, which is why the
+     * inpainting pass exists in the plan.
+     */
+    public static final float BACKDROP_H = -0.75f;
+
+    /**
+     * The splat grids a level can select, smallest first: the field's own sampling
+     * and multiples of it.
+     *
+     * <p>The field is built at {@link #DEFAULT_FIELD_GRID} and the cards may sample
+     * it more finely than it holds texels — the field is BLURRED float depth, so a
+     * finer card grid interpolates it rather than inventing detail. What a finer
+     * grid buys is area: the cards get smaller, the flat-colour mosaic gets closer
+     * to the photograph, and the holes a depth cliff opens are covered by more,
+     * smaller cards instead of a few large ones. What it costs is vertex work: six
+     * vertex invocations per sample, so the largest level here is ~3.5 M per frame
+     * against the smallest level's 890 k.
+     */
+    public static final int[] GRID_LEVELS = {384, 512, 640, 768};
+
+    /** The grid the relief's own field is built at, and the default level. */
+    public static final int DEFAULT_FIELD_GRID = 384;
+
+    /**
+     * The grid a stored level means. Anything unrecognised is the default rather
+     * than an extrapolation: a level written by a newer build, a negative, or the
+     * absent pref all draw the documented default look.
+     */
+    public static int gridForLevel(int level) {
+        if (level < 0 || level >= GRID_LEVELS.length) return GRID_LEVELS[0];
+        return GRID_LEVELS[level];
+    }
+
     private Splat() {
     }
 

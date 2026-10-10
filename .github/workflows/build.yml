@@ -6,6 +6,10 @@ name: build
 #     the sampling cannot land without a red build.
 #   - check-parity: every path AGENTS.md mentions must exist, and the constants
 #     the web and Android ports must share must still agree.
+#   - check-shaders: every GLSL shader the app keeps in Java compiles. The Android
+#     build cannot see this -- shaders compile at runtime on the GL thread -- and
+#     a reserved word in one has already crashed both the studio and the live
+#     wallpaper on a real phone.
 #
 # Uses the same containerised Gradle path as `android/podman-build.sh` — the
 # host needs nothing but podman, which ubuntu-latest already has.
@@ -30,6 +34,11 @@ jobs:
       # stays fast and cannot break for an unrelated reason.
       - name: AGENTS.md links + web/Android parity
         run: node scripts/check-parity.mjs
+      - name: Shaders compile (glslangValidator)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          node scripts/check-shaders.mjs
 
   android:
     name: android (unit tests + debug APK)

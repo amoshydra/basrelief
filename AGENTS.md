@@ -54,7 +54,9 @@ worked, because the build still succeeds. Override the location with
 `GRADLE_CACHE_DIR`, or opt out entirely with `GRADLE_NO_CACHE=1`.
 
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
-every push, plus a `vite` build for the web. It invokes the script from the repo
+every push, plus a `vite` build for the web and a `guards` job: AGENTS.md's paths
+and the port parity, and `scripts/check-shaders.mjs`, which compiles every GLSL
+shader the app keeps in Java. It invokes the script from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
 
 Web (reference port, not maintained): `npm install && npm run build`.
@@ -286,27 +288,48 @@ already cost real time.
   **not** negated) sampled per fragment; it is part of the loaded pair identity,
   so a photo that gains one is re-installed rather than reported as already
   showing.
-- **The 3D mode is one card per field sample, and the focal is the only camera a
-  photograph carries.** `render_3d` (a pref, read in `ReliefRenderer.reloadFromPrefs`,
-  **off by default**) swaps the continuous relief for a point-splat cloud, GLES3
-  only. `buildSplatGrid` emits one quad per field sample — 4 vertices and 6
-  indices each, 592,900 vertices and ~18 MB of static buffers at GRID = 384 — and
-  the vertex shader's `uSplat` branch places every card on the ray the DRAWING
-  camera gives its pixel, at a camera distance of `uCamDist` minus the card's own
-  depth, with the card's size scaled by the same depth ratio. The colour is
-  sampled at the sample's own texel for all four corners — **flat**, which is what
-  removes the shear, because a card's colour cannot stretch across it however the
-  card is placed — while the normal keeps a per-corner UV — **a gradient**, because
-  a flat normal per card makes a cloud of cards read as facets. The height is
-  fetched once per sample, so **no triangle spans a depth cliff**, and the holes
-  that open when the camera moves are the single view genuinely disoccluding: the
-  honest part of the mode, not a bug. Every card stays on its own ray, so the
-  picture at rest is the photograph whatever the Depth slider says and whatever the
-  focal is — only camera motion reveals the depth. `Splat.cardSize` is
-  `1.15 / (GRID + 1)`, the coverage constant: one grid cell plus a 15% margin, so the
-  reference plane tiles rather than screen-dooring, and a card's angular size is
-  its footprint's at every depth because the size carries the same depth ratio the
-  position does.
+- **The 3D mode is one card per grid sample, DERIVED FROM `gl_VertexID`, and the
+  focal is the only camera a photograph carries.** `render_3d` (a pref, read in
+  `ReliefRenderer.reloadFromPrefs`, **off by default**) swaps the continuous relief
+  for a point-splat cloud, GLES3 only. There is no buffer: one card is six vertices
+  of `glDrawArrays`, and the vertex shader gets the sample (`gl_VertexID / 6`), the
+  corner (the 0,1,2,1,3,2 pattern indexed by `gl_VertexID % 6`) and the UV from that
+  id. **That is what makes the resolution a uniform** — the level pref is an index
+  into `Splat.GRID_LEVELS` and the whole draw is a uniform block and one call — where
+  one quad per sample in a VBO was 18 MB and a measured **7.4 s** build at the bottom
+  level (three contexts per launch, 22 s of GL thread: the ANR the user saw as
+  "isn't responding"), and 71 MB at the top one. The card grid is independent of the
+  field's: the field is built at `GRID = 384` and a finer card grid interpolates it
+  rather than reading detail it does not hold. The vertex shader's `uSplat` branch
+  places every card on the ray the DRAWING camera gives its pixel, at a camera
+  distance of `uCamDist` minus the card's own depth, with the card's size scaled by
+  the same depth ratio. The colour is sampled at the sample's own texel for all four
+  corners — **flat**, which is what removes the shear, because a card's colour cannot
+  stretch across it however the card is placed — while the normal keeps a per-corner
+  UV — **a gradient**, because a flat normal per card makes a cloud of cards read as
+  facets. The height is fetched once per sample, so **no triangle spans a depth
+  cliff**, and the holes that open when the camera moves are the single view
+  genuinely disoccluding: the honest part of the mode, not a bug. Every card stays on
+  its own ray, so the picture at rest is the photograph whatever the Depth slider
+  says and whatever the focal is — only camera motion reveals the depth.
+  `Splat.cardSize` is `1.15 / (GRID + 1)`, the coverage constant: one grid cell plus
+  a 15% margin, so the reference plane tiles rather than screen-dooring, and a card's
+  angular size is its footprint's at every depth because the size carries the same
+  depth ratio the position does.
+  - **The gaps are filled by a blurred backdrop, and it is a fill rather than a
+    reconstruction.** A single view has nothing behind the surface it saw, so every
+    tilt that translates the camera opens gaps between cards — black ones, which
+    read as a screen door over the photograph and is what the user reported as "all
+    3d media looks odd". The mode therefore draws the same photograph, at a
+    sixteenth of its size and sampled LINEAR, as one quad BEHIND the whole cloud,
+    so a gap shows the photograph out of focus. `Splat.BACKDROP_H` places it beyond
+    the field's own range (`[-0.5, 0.5]`, because h is `r/255 - 0.5`) and has the
+    test that keeps it there; the fragment shader keeps the shading, the brightness
+    and the shadow, so the fill belongs to the same picture. **It is deliberately
+    not a solution to the disocclusion** — the content in a gap is still a guess —
+    which is what the inpainting pass in the plan is for; and it does not make the
+    mode denser, which is the other half of why the demo's 3.7 M-point render has
+    no dot screen where the phone's 148 k cards do.
   - **The aspect goes on X and only on X, where the relief puts it.** The card's
     footprint is the cell it replaces — `aspect/GRID` wide and one grid cell tall — so the
     sample's position and the x half of the footprint carry `uAspect` and the y half
@@ -722,7 +745,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 556 tests across thirty-one classes:
+it**. 558 tests across thirty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -732,6 +755,19 @@ This has already cost one session: a broken `MainActivity` call passed `test`
 clean, and the failure surfaced as an unrelated agent reporting it could not
 build. **"The gate is green" is only true of the JVM tests until `build-apk`
 has run.**
+
+And **neither gate can see a GLSL error**: shaders live in Java strings, compile at
+runtime on the GL thread, and a failed compile throws there. `node
+scripts/check-shaders.mjs` closes that hole — it extracts every shader the app keeps
+in its sources (both the GLES2 and GLES3 variants, `#version` or not) and runs it
+through `glslangValidator`, and CI installs the tool and runs it in the `guards`
+job. It exists because **`sample` is a reserved word in GLSL ES 3.00** and using it
+as a variable name put the studio and the live wallpaper into a crash-loop on a real
+phone: the engine crashed on every restart until Android gave up and reverted the
+wallpaper to the system's static image — which only the wallpaper picker can
+restore. One shader checker would have caught it before the install; the file's own
+rule is that anything that can invalidate a device test has to be checkable without
+one.
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
@@ -747,7 +783,17 @@ has run.**
   the default look rather than dividing by it — the "a window claims nothing" rule
   applied to a number. The card size is held to a RANGE at every grid rather than a
   value: at least the cell it replaces, or the reference plane is a screen door,
-  and under two cells, or the picture smears into itself.
+  and under two cells, or the picture smears into itself. Its fourth is the
+  **backdrop's height** (`BACKDROP_H`), asserted against the field's own range rather
+  than against a drawing of it: the cards' h is `r/255 - 0.5`, so every card lies
+  inside `[-0.5, 0.5]`, and a backdrop that moved inside that range would hide the
+  deepest cards instead of filling the gaps between them — the failure it would
+  cause is an occluded photograph, not a missing backdrop, which is why it is worth
+  a test that can fail. Its fifth is the **level ladder**: every level must be a
+  real index, the grids must not go backwards, and anything that is not a level —
+  a negative, an index past the end, a value a newer build wrote — answers the
+  default, because that default is the look the mode shipped with and an upgrade
+  must not move it.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

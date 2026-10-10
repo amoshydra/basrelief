@@ -714,6 +714,10 @@ final class BasreliefSlider extends LinearLayout {
         // case its only options were a row labelled "glide_ms" or a second,
         // hand-rolled row that could (and did) disagree about the gaps.
         else if ("glide_ms".equals(key)) res = R.string.slider_glide;
+        // The 3D mode's detail level, a Settings row like the glide rate and for
+        // the same reason: the same slider, and a key drawn as itself would read
+        // "render_3d_level" in the name column.
+        else if ("render_3d_level".equals(key)) res = R.string.slider_splat_detail;
         else res = 0;
         return res == 0 ? key : a.getString(res);
     }

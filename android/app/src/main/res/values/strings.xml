@@ -568,6 +568,8 @@
     -->
     <string name="settings_render_3d">3D mode</string>
     <string name="settings_render_3d_sub">photo as a point cloud; tilt for true parallax</string>
+    <!-- The level slider's name column, resolved by BasreliefSlider.labelFor. -->
+    <string name="slider_splat_detail">3D detail</string>
     <string name="settings_licence">MIT</string>
     <!-- The sheet's grip. It has no label on screen, so a screen reader is told
          what it is; "Done" would be a lie, because the bar closes the sheet
