@@ -138,8 +138,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * The pref that selects the point-splat mode. Off by default, and read in
      * {@link #reloadFromPrefs}; see {@link #render3d}.
+     *
+     * <p>Package-private because the Settings screen's switch writes it: the key
+     * is declared once, next to the one reader, and no other class spells the
+     * string out -- the same rule the three switches in {@link Settings} follow.
      */
-    private static final String KEY_RENDER_3D = "render_3d";
+    static final String KEY_RENDER_3D = "render_3d";
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws

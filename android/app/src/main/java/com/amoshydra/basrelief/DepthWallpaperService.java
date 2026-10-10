@@ -297,6 +297,24 @@ public class DepthWallpaperService extends WallpaperService {
                         // without watching it the wallpaper would hold the poster for
                         // the whole server round while the studio played. The engine
                         // is the surface that cannot be nudged any other way.
+                        // And the 3D mode, which is not a blob and has no resolve of
+                        // its own: the renderer holds it, so a flip goes straight to
+                        // the one reload path both surfaces converge on. Without
+                        // this, the home screen kept the relief until the engine
+                        // happened to be rebuilt -- and "the control did nothing" is
+                        // the failure the app's switches exist to prevent.
+                        if (ReliefRenderer.KEY_RENDER_3D.equals(key)) {
+                            if (glView != null && renderer != null) {
+                                glView.queueEvent(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        renderer.reloadFromPrefs();
+                                    }
+                                });
+                                glView.requestRender();
+                            }
+                            return;
+                        }
                         if (!Config.KEY.equals(key) && !Library.KEY.equals(key)
                                 && !Playlists.KEY.equals(key) && !Jobs.KEY.equals(key)) return;
                         advancePlaylistIfDue(p);

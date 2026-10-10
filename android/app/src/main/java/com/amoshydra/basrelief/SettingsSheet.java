@@ -76,16 +76,18 @@ import android.widget.TextView;
 final class SettingsSheet {
 
     /**
-     * The three toggles, named once.
+     * The four toggles, named once.
      *
      * <p>A pref key as a literal at two call sites is a key that can be renamed at
-     * one of them, which is a toggle that silently stops persisting. The keys live
-     * in {@link Settings} next to the one reader each has, and nothing here spells a
-     * key out.
+     * one of them, which is a toggle that silently stops persisting. Each key lives
+     * next to its one reader -- the three behaviours in {@link Settings}, and the 3D
+     * mode in {@link ReliefRenderer}, which is the class that draws it -- and
+     * nothing here spells a key out.
      */
     private static final String KEY_BATTERY_SAVER = Settings.KEY_BATTERY_SAVER_FOLLOW;
     private static final String KEY_CALIBRATE_ON_WAKE = Settings.KEY_CALIBRATE_ON_WAKE;
     private static final String KEY_SLEEP_WHEN_STILL = Settings.KEY_SLEEP_WHEN_STILL;
+    private static final String KEY_RENDER_3D = ReliefRenderer.KEY_RENDER_3D;
 
     /**
      * What a key nobody has written yet reads as. On, for all three.
@@ -285,6 +287,29 @@ final class SettingsSheet {
                 activity.getString(R.string.app_name) + " " + versionName(),
                 activity.getString(R.string.settings_licence)));
 
+        // ---- The 3D mode. A switch in About rather than a group of its own:
+        // Settings is four groups by design (this file's header says why), and a
+        // device-wide rendering mode is a fact about what the app is doing rather
+        // than a question of its own. It is the one control here whose effect is
+        // read immediately rather than at its next use -- the renderer holds the
+        // mode -- so the switch hands the change to the same reloadFromPrefs path
+        // a cold start takes; waiting for the next onResume would wait forever,
+        // because a Dialog over the studio never causes one.
+        box.addView(toggle(R.string.settings_render_3d,
+                R.string.settings_render_3d_sub, KEY_RENDER_3D, false,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.glView.queueEvent(new Runnable() {
+                            @Override
+                            public void run() {
+                                activity.renderer.reloadFromPrefs();
+                            }
+                        });
+                        activity.glView.requestRender();
+                    }
+                }));
+
         // ---- Reset. The one destructive action here, so it asks first (see
         // confirmReset) and it carries the consequence on the plate itself. The
         // subtitle is settings_reset_message, the same string the confirm dialog
@@ -323,10 +348,31 @@ final class SettingsSheet {
      * the state it was built with and the change listener reports the state the
      * widget actually moved to.
      */
-    private View toggle(int titleRes, int subRes, final String key) {
+    private View toggle(int titleRes, int subRes, String key) {
+        return toggle(titleRes, subRes, key, DEFAULT_ON, null);
+    }
+
+    /**
+     * The same row, for a switch that starts off and whose change has to reach a
+     * reader that is already running.
+     *
+     * <p>{@code defaultOn} is a parameter rather than {@link #DEFAULT_ON} because
+     * the 3D mode is the one switch here that must not arrive on for an upgrading
+     * user: every row was framed against the relief, and this mode is a different
+     * reconstruction of the same photograph rather than a fix to it.
+     *
+     * <p>{@code afterWrite} is what makes such a switch visible the moment it is
+     * flipped. The battery and gyro behaviours are read at their next use -- the
+     * next sensor wake, the next glide -- but the renderer holds the mode in a
+     * field, so a switch that only wrote the pref would show the old look until the
+     * app was restarted, which is the "control that displays a value the app
+     * ignores" this screen exists to refuse.
+     */
+    private View toggle(int titleRes, int subRes, final String key, boolean defaultOn,
+                        final Runnable afterWrite) {
         return ModalSheet.switchRow(activity,
                 activity.getString(titleRes), activity.getString(subRes),
-                isTrue(key, DEFAULT_ON),
+                isTrue(key, defaultOn),
                 new ModalSheet.OnToggled() {
                     @Override
                     public void onToggled(boolean on) {
@@ -334,6 +380,7 @@ final class SettingsSheet {
                         // the next read is the value just written and not the one
                         // that was there.
                         prefs().edit().putBoolean(key, on).apply();
+                        if (afterWrite != null) afterWrite.run();
                     }
                 });
     }
