@@ -64,13 +64,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * the node's rule, which is what lets the fetch and resume paths address files they
  * have never been told about.
  *
- * <p><b>The count is verified, not trusted.</b> The app counts its own upload's
- * samples exactly and checks the node's reported {@code frames} against it; the
- * fetch then checks the arrived depth clip's samples against the colour's. This is
- * what replaced the old duration-based planner: a 240-frame remux reports 9.9586 s,
- * so {@code round(9.9586 x 24)} is 239, and planning a run from that number asked
- * for one frame fewer than the colour held -- a clip one frame short, at the end,
- * with no error anywhere.
+ * <p><b>The count is verified, not trusted -- and the cap means the checks are no
+ * longer one number.</b> Depth and normal are written at {@code min(source, 30)}
+ * ({@code ComfyWorkflow.STREAM_FPS_CAP}), so a generated clip holds FEWER samples
+ * than the colour by design. The app counts its own upload's samples exactly and
+ * checks three things against the run: the sidecar's {@code src_frames} against
+ * that count (the upload is the plan), the arrived depth clip's samples against the
+ * count the node says it wrote (no truncation), and both clips' durations against
+ * the colour's timeline within one output frame (the same timeline, decimated).
+ * This is what replaced the old duration-based planner: a 240-frame remux reports
+ * 9.9586 s, so {@code round(9.9586 x 24)} is 239, and planning a run from that
+ * number asked for one frame fewer than the colour held -- a clip one frame short,
+ * at the end, with no error anywhere.
  *
  * <p><b>No clips are stored until they both exist.</b> The pair invariant is in
  * {@code VideoTracks}, not in a writer, and the index still owns the selection and
@@ -263,22 +268,36 @@ final class VideoImport {
     }
 
     /**
-     * What one finished run produced: the two server-side file names and the frame
-     * count the node reported (0 when the history carried no ui payload).
+     * What one finished run produced: the two server-side file names, the frame
+     * count the node reported, and the run's own plan and rates from the sidecar.
      *
      * <p>Its own type because two readers hand it to {@link #attach} in opposite
-     * directions: the live poll reads the names out of {@code /history}, while a
-     * resume that found the sidecar saying {@code done} derives them from the tag.
+     * directions: the live poll reads the names out of {@code /history} and
+     * captures the sidecar's numbers in the same passes, while a resume that found
+     * the sidecar saying {@code done} derives all of it from the sidecar. The plan
+     * and rate fields are 0 when the sidecar could not be read, which is "no claim"
+     * rather than a mismatch -- the {@code DepthSource} rule, applied to a run.
      */
     private static final class StreamOutputs {
         final String depthName;
         final String normalName;
+        /** Frames the node says it WROTE: the sidecar's {@code done}, or history's {@code frames}. */
         final int frames;
+        /** Source frames the node says it READ; the app's own sample count must equal this. */
+        final int srcFrames;
+        /** The rate the generated tracks were written at; 0 when unknown. */
+        final float fpsOut;
+        /** The source's own rate, for the duration tolerance; 0 when unknown. */
+        final float srcFps;
 
-        StreamOutputs(String depthName, String normalName, int frames) {
+        StreamOutputs(String depthName, String normalName, int frames, int srcFrames,
+                      float fpsOut, float srcFps) {
             this.depthName = depthName == null ? "" : depthName;
             this.normalName = normalName == null ? "" : normalName;
             this.frames = Math.max(0, frames);
+            this.srcFrames = Math.max(0, srcFrames);
+            this.fpsOut = fpsOut > 0f ? fpsOut : 0f;
+            this.srcFps = srcFps > 0f ? srcFps : 0f;
         }
     }
 
@@ -473,15 +492,20 @@ final class VideoImport {
             String state = side.optString("state", "running");
             if ("done".equals(state)) {
                 // The files are named from the tag, so the sidecar's own names (and
-                // the deterministic fallback) are the whole fetch contract. The
-                // planned count is the colour's own samples -- the artifact check
-                // then compares what arrived with what the app holds.
+                // the deterministic fallback) are the whole fetch contract. `done`
+                // is the written count the arrived depth clip is checked against --
+                // NOT the colour's count, which a capped run is shorter than by
+                // design. The plan for the source side is the colour's own samples,
+                // exactly as in a live import.
                 StreamOutputs out = new StreamOutputs(
                         nonEmpty(side.optString("depth", ""),
                                 ComfyWorkflow.streamDepthName(tag)),
                         nonEmpty(side.optString("normal", ""),
                                 ComfyWorkflow.streamNormalName(tag)),
-                        0);
+                        side.optInt("done", 0),
+                        side.optInt("src_frames", 0),
+                        (float) side.optDouble("fps_out", 0),
+                        (float) side.optDouble("src_fps", 0));
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
                         job.promptId, sampleCountOf(app, Uri.fromFile(colour)),
                         listener, editFinisher(prefs, job.itemId));
@@ -526,7 +550,7 @@ final class VideoImport {
             }
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                StreamOutputs out = streamOutputsOf(entry, tag);
+                StreamOutputs out = streamOutputsOf(entry, tag, 0, 0f, 0f);
                 LibraryItem built = attach(app, prefs, api, job.itemId, names, out,
                         job.promptId, sampleCountOf(app, Uri.fromFile(colour)),
                         listener, editFinisher(prefs, job.itemId));
@@ -733,8 +757,9 @@ final class VideoImport {
      * {@code frame_count = 0} -- the whole of the file -- because the app already
      * holds the exact frames the colour clip plays: asking for a computed count is
      * how the old planner shipped a depth clip one frame short of its colour. The
-     * app's own sample count is used only to CHECK, both against the node's reported
-     * count and against the depth file that arrives.
+     * app's own sample count is used only to CHECK the run -- the sidecar's
+     * {@code src_frames} must equal it, and the fetched clips are checked against
+     * what the node says it wrote; see {@link #attach}.
      *
      * <p><b>The window is sized from the pixels the node will load.</b> The
      * resolution chip scales the batch before MoGe sees it, so the memory rule is
@@ -774,8 +799,8 @@ final class VideoImport {
         int loadWidth = size[1] > 0
                 ? Math.round(size[0] * (float) loadHeight / size[1]) : size[0];
         int window = BatchBudget.streamWindow(loadWidth, loadHeight);
-        // The CHECK's baseline, exact when the sample table can be walked: the one
-        // number this app knows about its own file, and the one the duration
+        // The PLAN's source count, exact when the sample table can be walked: the
+        // sidecar's `src_frames` must equal it, and the one number the duration
         // estimate famously gets wrong by one.
         int plannedFrames = sampleCountOf(app, Uri.fromFile(upload));
         Log.i(TAG, "video generate id=" + id + " source=" + upload.getName()
@@ -826,7 +851,7 @@ final class VideoImport {
             // Seed the line with the plan so it states a denominator from the first
             // second; the sidecar replaces both numbers as they become real.
             if (plannedFrames > 0) generating(id, listener, 0, plannedFrames);
-            StreamOutputs outputs = pollStream(api, promptId, tag, id, listener, plannedFrames);
+            StreamOutputs outputs = pollStream(api, promptId, tag, id, listener);
             return attach(app, prefs, api, id, names, outputs, promptId, plannedFrames,
                     listener, finisher);
         } catch (Exception e) {
@@ -857,14 +882,22 @@ final class VideoImport {
      * there. The node writes no colour at all, which is what makes the frames the
      * server saw and the frames the renderer plays one file by construction.
      *
-     * <p><b>The frame check has two halves and they catch different failures.</b>
-     * {@link #pollStream} checks the count the node REPORTED against the app's own
-     * sample count before anything is downloaded; this checks the file that actually
-     * ARRIVED. A discrepancy either way is one frame of drift against the colour at
-     * every loop, which is the defect the old duration-derived planner shipped and
-     * this project cannot see in a screenshot.
+     * <p><b>Three checks, because the cap means the counts are no longer one
+     * number.</b> Before the fetch: the sidecar's {@code src_frames} against the
+     * app's exact count of the upload, which is the plan -- a run that read a
+     * different file cannot be fixed by downloading what it wrote. After it: the
+     * arrived depth clip's samples against the count the node says it wrote
+     * ({@code frames}/{@code done}), because a capped clip is shorter than the
+     * colour BY DESIGN and the colour's count is therefore the wrong number to
+     * compare. And the fetched clips' durations against the colour's timeline
+     * within one output frame -- plus half a source frame of grid rounding; see
+     * {@link #timelineMismatch} -- because the cap decimates samples and must not
+     * retime them. Every failure carries both numbers, and either side unknown (0)
+     * is logged as unchecked rather than called a mismatch: a window claims
+     * nothing.
      *
-     * @param outputs   the server-side file names, from /history or the sidecar
+     * @param outputs   the server-side file names and the run's own counts, from
+     *                  /history and the sidecar
      * @param plannedFrames the app's own count of the colour clip, or 0 when unread
      */
     private static LibraryItem attach(final Context app, final SharedPreferences prefs,
@@ -872,8 +905,27 @@ final class VideoImport {
                                       final String[] names, final StreamOutputs outputs,
                                       final String promptId, final int plannedFrames,
                                       final Listener listener, final Finisher finisher) {
+        // (a) THE PLAN, checked before anything is downloaded. src_frames is the
+        // source frames the node read for the range; the upload -- the app's own
+        // remux -- is the plan. The old check compared the node's count with the
+        // COLOUR's, which a capped run makes wrong by design.
+        if (outputs.srcFrames > 0 && plannedFrames > 0) {
+            if (outputs.srcFrames != plannedFrames) {
+                String reason = "the node read " + outputs.srcFrames
+                        + " source frames but the upload holds " + plannedFrames;
+                Log.w(TAG, "attach: " + rowId + " " + reason);
+                fail(prefs, promptId, listener,
+                        app.getString(R.string.video_import_failed) + ": " + reason, null);
+                return null;
+            }
+        } else {
+            Log.w(TAG, "attach: " + rowId + " source frames unchecked: node="
+                    + outputs.srcFrames + " upload=" + plannedFrames);
+        }
+
         phase(rowId, listener, app.getString(R.string.video_phase_fetching));
         final File dir = app.getFilesDir();
+        final File colour = new File(dir, names[0]);
         final File depth = new File(dir, names[1]);
         final File normal = new File(dir, names[2]);
         boolean haveNormal = true;
@@ -899,19 +951,37 @@ final class VideoImport {
             return null;
         }
 
-        if (plannedFrames > 0) {
+        // (b) NO TRUNCATION: the depth clip must hold the count the node says it
+        // WROTE. That count is the sidecar's `done` or /history's `frames`; it is not
+        // the colour's any more, because a capped clip holds fewer samples than the
+        // colour on purpose. A short encode is one frame of drift at every loop and
+        // nothing else in the pipeline can see it.
+        if (outputs.frames > 0) {
             int depthFrames = sampleCountOf(app, Uri.fromFile(depth));
-            if (depthFrames > 0 && depthFrames != plannedFrames) {
+            if (depthFrames > 0 && depthFrames != outputs.frames) {
                 String reason = "the depth clip holds " + depthFrames
-                        + " frames but the colour holds " + plannedFrames;
+                        + " frames but the node wrote " + outputs.frames;
                 Log.w(TAG, "attach: " + rowId + " " + reason);
                 fail(prefs, promptId, listener,
                         app.getString(R.string.video_import_failed) + ": " + reason, null);
                 return null;
             }
+        } else {
+            Log.w(TAG, "attach: " + rowId
+                    + " the node reported no written count; the fetched clip is unchecked");
         }
 
-        File colour = new File(dir, names[0]);
+        // (c) THE SAME TIMELINE, decimated: see timelineMismatch for the tolerance
+        // and why it is not simply the colour's sample count.
+        String timeline = timelineMismatch(app, colour, depth, haveNormal ? normal : null,
+                outputs.fpsOut, outputs.srcFps);
+        if (timeline != null) {
+            Log.w(TAG, "attach: " + rowId + " " + timeline);
+            fail(prefs, promptId, listener,
+                    app.getString(R.string.video_import_failed) + ": " + timeline, null);
+            return null;
+        }
+
         phase(rowId, listener, app.getString(R.string.video_phase_poster));
         File poster, depthStill, normalStill = null;
         try {
@@ -941,6 +1011,66 @@ final class VideoImport {
                 .withFilesAndVideo(poster.getName(), depthStill.getName(),
                         normalStill == null ? null : normalStill.getName(), tracks);
         return finisher.finish(built);
+    }
+
+    /**
+     * Whether the fetched clips sit on the colour's timeline within one output
+     * frame -- the check that catches a run which covered the wrong span where the
+     * counts alone agree.
+     *
+     * <p><b>The cap decimates, it does not retime.</b> Output frame k is source
+     * frame {@code round_half_up(k x src/out)}, so the generated clips hold fewer
+     * samples over the same seconds; a duration more than a frame off is the node
+     * and the app disagreeing about where the range ended, which is exactly what
+     * the old exact frame-equality check caught and cannot any more. The tolerance
+     * is one output frame -- the app's own remux is measured reporting
+     * last-sample-only (9.9586 s for 240 frames at 24 fps) while ffmpeg's writer
+     * includes the last frame's interval -- plus half a source frame, because the
+     * last output frame sits on the output grid up to half a source frame from its
+     * mapped source frame (arithmetic: 1609 frames of 50 -> 30 put the two muxer
+     * conventions 40 ms apart, past a bare one-output-frame bound). A gross
+     * mismatch -- the wrong range, the wrong rate -- still fails by seconds.
+     *
+     * <p>Unknown numbers are no claim, not failures: a run whose sidecar could not
+     * be read, or a container whose duration cannot be read, is logged and left to
+     * the sample-count check above.
+     *
+     * @return null when they agree (or when nothing can be compared), else the
+     *         failure's words with both durations and the tolerance in them
+     */
+    private static String timelineMismatch(Context app, File colour, File depth, File normal,
+                                           float fpsOut, float srcFps) {
+        if (fpsOut <= 0f) {
+            Log.w(TAG, "the run reported no output rate; the clips' timeline is unchecked");
+            return null;
+        }
+        long frameUs = (long) (1_000_000f / fpsOut);
+        long toleranceUs = frameUs + (srcFps > 0f ? (long) (500_000f / srcFps) : 0L);
+        long colourUs = durationUsOf(app, Uri.fromFile(colour));
+        if (colourUs <= 0) {
+            Log.w(TAG, "the colour clip's duration is unreadable; the timeline is unchecked");
+            return null;
+        }
+        String why = durationMismatch(app, "depth", depth, colourUs, toleranceUs);
+        if (why != null) return why;
+        if (normal != null) {
+            why = durationMismatch(app, "normal", normal, colourUs, toleranceUs);
+        }
+        return why;
+    }
+
+    /** One clip's duration against the colour's, or null when they agree. */
+    private static String durationMismatch(Context app, String name, File clip, long colourUs,
+                                           long toleranceUs) {
+        long clipUs = durationUsOf(app, Uri.fromFile(clip));
+        if (clipUs <= 0) {
+            Log.w(TAG, name + " clip duration unreadable; its timeline is unchecked");
+            return null;
+        }
+        if (Math.abs(clipUs - colourUs) <= toleranceUs) return null;
+        return "the " + name + " clip runs " + clipUs / 1000L + "ms but the colour runs "
+                + colourUs / 1000L + "ms (the same-timeline tolerance is "
+                + toleranceUs / 1000L + "ms)";
     }
 
     /**
@@ -1094,13 +1224,19 @@ final class VideoImport {
      * rate the node writes and a finished run is noticed within one poll of the file
      * landing. A sidecar read that fails is ignored -- absence is its normal state
      * before the first window and after an output-directory clean -- while a history
-     * failure is tolerated {@link #HISTORY_MISSES} times before it is one.
+     * failure is tolerated {@link #HISTORY_MISSES} times before it is one. The
+     * sidecar's own plan and rates are captured on the way and handed to
+     * {@link #attach}, where the checks live: attach is the one fetch tail a resume
+     * shares, and a second implementation here could drift from it.
      */
     private static StreamOutputs pollStream(ComfyApi api, String promptId, String tag,
-                                            String itemId, Listener listener,
-                                            int plannedFrames) throws Exception {
+                                            String itemId, Listener listener)
+            throws Exception {
         long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         int missed = 0;
+        int srcFrames = 0;
+        float fpsOut = 0f;
+        float srcFps = 0f;
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(POLL_MS);
             try {
@@ -1111,6 +1247,18 @@ final class VideoImport {
                     int total = side.optInt("total", 0);
                     if (total > 0) {
                         generating(itemId, listener, side.optInt("done", 0), total);
+                    }
+                    // Constant across a run, so any readable sidecar states them as
+                    // well as the last one; 0 means the file predates this contract
+                    // and the checks will say "unchecked" rather than fail.
+                    if (side.optInt("src_frames", 0) > 0) {
+                        srcFrames = side.optInt("src_frames", 0);
+                    }
+                    if (side.optDouble("fps_out", 0) > 0) {
+                        fpsOut = (float) side.optDouble("fps_out", 0);
+                    }
+                    if (side.optDouble("src_fps", 0) > 0) {
+                        srcFps = (float) side.optDouble("src_fps", 0);
                     }
                 }
             } catch (Exception ignored) {
@@ -1134,49 +1282,15 @@ final class VideoImport {
             if (why != null) throw new ServerFailure(why);
             JSONObject status = entry.optJSONObject("status");
             if (status != null && status.optBoolean("completed", false)) {
-                StreamOutputs out = streamOutputsOf(entry, tag);
-                verifyStreamFrames(out, plannedFrames);
-                return out;
+                return streamOutputsOf(entry, tag, srcFrames, fpsOut, srcFps);
             }
         }
         throw new Exception("the run did not finish in time");
     }
 
     /**
-     * The server's reported frame count must be the count the app planned for.
-     *
-     * <p><b>This replaces the old planner's job and inverts it.</b> The planner
-     * computed a count to ASK for from the container's duration; a 240-frame remux
-     * reports 9.9586 s, so {@code round(9.9586 x 24)} is 239 and the run asked for
-     * one frame fewer than the colour held. The run no longer asks for a count at
-     * all -- it runs the whole upload -- and the app's EXACT sample count is used to
-     * check what the node says it wrote. A mismatch is a failure with both numbers
-     * in it, because one frame short is a hitch at every loop and nothing else in
-     * the pipeline can see it.
-     *
-     * <p>Either side unknown (0) is reported to the log and not treated as a
-     * mismatch: a window claims nothing, and {@link #attach} is the second oracle
-     * once the file is on disk.
-     */
-    private static void verifyStreamFrames(StreamOutputs out, int plannedFrames)
-            throws Exception {
-        if (out.frames <= 0) {
-            Log.w(TAG, "the run reported no frame count; only the fetched clip can be checked");
-            return;
-        }
-        if (plannedFrames <= 0) {
-            Log.w(TAG, "the run reported " + out.frames
-                    + " frames and the upload's own count could not be read");
-            return;
-        }
-        if (out.frames != plannedFrames) {
-            throw new Exception("the server wrote " + out.frames
-                    + " frames but the clip holds " + plannedFrames);
-        }
-    }
-
-    /**
-     * A finished history entry's ui payload: the two file names and the frame count.
+     * A finished history entry's ui payload: the two file names and the frame count,
+     * with the sidecar's plan and rates passed through.
      *
      * <p>The node is an OUTPUT_NODE whose ui payload names the files it wrote under
      * its own node id ({@code {"2": {"depth": [...], "normal": [...],
@@ -1184,8 +1298,14 @@ final class VideoImport {
      * because the builder owns the id and a rename there would otherwise silently
      * find nothing; the deterministic names then still address the files, since the
      * node derives them from the tag.
+     *
+     * <p>{@code srcFrames}/{@code fpsOut}/{@code srcFps} come from the sidecar the
+     * poll read, not from this payload -- /history carries no plan and no rates.
+     * They are 0 when no sidecar could be read, and {@link #attach} logs the
+     * resulting checks as unchecked rather than inventing them.
      */
-    private static StreamOutputs streamOutputsOf(JSONObject entry, String tag) {
+    private static StreamOutputs streamOutputsOf(JSONObject entry, String tag, int srcFrames,
+                                                 float fpsOut, float srcFps) {
         String depth = null;
         String normal = null;
         int frames = 0;
@@ -1204,7 +1324,7 @@ final class VideoImport {
         }
         if (depth == null) depth = ComfyWorkflow.streamDepthName(tag);
         if (normal == null) normal = ComfyWorkflow.streamNormalName(tag);
-        return new StreamOutputs(depth, normal, frames);
+        return new StreamOutputs(depth, normal, frames, srcFrames, fpsOut, srcFps);
     }
 
     private static String firstString(JSONObject o, String key) {

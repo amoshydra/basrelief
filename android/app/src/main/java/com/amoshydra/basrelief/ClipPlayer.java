@@ -189,13 +189,33 @@ final class ClipPlayer {
                 // "preview" is the state the line is there to distinguish.
                 + " depth[" + (depth == null ? "preview"
                         : depth.state() + " loops=" + depth.loops()) + "]"
-                + " skew=" + (depth == null ? "-"
-                        : (Math.abs(color.lastAbsPts() - depth.lastAbsPts()) / 1000L) + "ms")
+                // BOTH deltas, each against the shared colour, and each named. The
+                // old single skew reported only the depth's, and the measured
+                // divergence of a 50 fps import was worst on the NORMAL -- the
+                // heaviest encode -- so the stream that was furthest behind was the
+                // one the line could not see.
+                + " depthSkew=" + skewMs(color, depth)
+                + " normalSkew=" + skewMs(color, normal)
                 + " range=" + color.rangeName()
                 + (withProbes
                     ? " fieldCentre=" + blit.fieldCentreSample()
                         + " normalRGB=" + blit.normalCentreSample()
                     : "");
+    }
+
+    /**
+     * The gap between the colour's on-screen frame and one track's, in ms, or "-".
+     *
+     * <p>-1 is "no frame yet" on either side and must not be differenced: a decoder
+     * that has released nothing reports -1, and {@code |-1 - x|} is a number that
+     * reads as a huge skew rather than as "nothing has played yet".
+     */
+    private static String skewMs(ClipDecoder colour, ClipDecoder track) {
+        if (colour == null || track == null) return "-";
+        long a = colour.lastAbsPts();
+        long b = track.lastAbsPts();
+        if (a < 0 || b < 0) return "-";
+        return String.valueOf(Math.abs(a - b) / 1000L) + "ms";
     }
 
     /**

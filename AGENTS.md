@@ -746,9 +746,35 @@ has run.**
     end, no error anywhere, a hitch at every loop. The stream node is now given
     `frame_count = 0` and runs the whole of the file the app holds, and the app's
     exact sample count (`VideoImport.sampleCountOf`, one sample per frame) is used
-    only to CHECK: the node's reported `frames` before the fetch, and the arrived
-    depth clip's samples against the colour's after it. A mismatch is a failure with
-    both numbers in it.
+    only to CHECK, on three axes now that the generated tracks are capped: the
+    sidecar's `src_frames` must equal that count (the upload is the plan, before
+    anything is downloaded); the arrived depth clip's sample count must equal what
+    the node says it wrote -- `frames`/`done`, NEVER the colour's, which a capped
+    clip is shorter than BY DESIGN; and both fetched clips' durations must match the
+    colour's timeline within one output frame, plus half a source frame of
+    frame-grid rounding. Every mismatch is a failure with both numbers in it, and
+    either side unknown (0) is logged as unchecked rather than called a mismatch,
+    because a window claims nothing.
+  - **Depth and normal are written at `min(source, 30)`, and the player bounds a
+    stream that still cannot keep up.** Measured on a Pixel 7 Pro with a 50 fps
+    source: three simultaneous 1080p clip decoders each ran at ~39-40 fps, so the
+    shared clock could not pin them and the relief drifted 0.4-1.0 s from the
+    picture, worst on the normal, the heaviest encode. The node's `fps_cap` input
+    is therefore stated by the app -- `ComfyWorkflow.STREAM_FPS_CAP = 30`, one
+    constant, passed explicitly after `batch_size` rather than left to the node's
+    default -- and output frame k is source frame `round_half_up(k × src/out)`:
+    fewer samples over the same seconds, never a retime. The colour stays the app's
+    own remux, re-encoded by nobody. The sidecar carries `src_frames`/`src_fps`/
+    `fps_out`, which is what the fetch checks above are computed from. And for a
+    decoder that STILL falls behind, `ClipDecoder.catchUpIfLate` is the fail-soft
+    bound: a released frame more than 300 ms behind the clock (measured normal
+    jitter is one frame, 40 ms; the gate's lead is 120 ms) seeks forward to the
+    frame due now, at most once a second, never while `awaitingKeyframe` and never
+    at `rate <= 0`. The seek reuses the loop-rewind shape -- no flush, timestamps
+    absolute at the input -- and the node's one-second GOP bounds its cost; the
+    colour's bound is the source's own GOP. `ClipPlayer.stats` reports both deltas
+    (`depthSkew`/`normalSkew`) because the old single skew was blind to the normal,
+    the worst offender.
   - **An import patches the strip and the grid; it does not reindex them.** The
     early write inserts ONE tile and ONE cell (`Gallery.itemAppeared`), the
     completion repaints that row (`Gallery.itemUpdated`), and `reindex()` stays
@@ -813,8 +839,10 @@ has run.**
     items. A global speed would reintroduce that one version later. The mechanism is
     the DECODER'S GATE, never dropped frames: the gate compares a frame's clip time
     against the wall clock, so dividing that comparison by the rate plays the clip at
-    the rate and nothing is skipped or repeated -- the clip's own timeline is
-    untouched, so `loops`, the seam arithmetic and the skew line keep their meaning.
+    the rate and nothing is skipped or repeated while the decoder keeps up -- the
+    clip's own timeline is untouched, so `loops`, the seam arithmetic and the skew
+    line keep their meaning; the catch-up above is the bounded exception for a
+    decoder that cannot keep up.
     Both decoders of a clip get the same rate for the same reason they get the same
     lead: two rates are two frame indices by construction.
   - **`Framing` has THIRTEEN float fields and the count is asserted, so a new one

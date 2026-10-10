@@ -95,6 +95,24 @@ public final class ComfyWorkflow {
     public static final String VIDEO_STREAM = "MoGeVideoStream";
 
     /**
+     * The rate cap the generated tracks are written at, in frames per second.
+     *
+     * <p><b>ONE constant, because the player's sync rests on it.</b> Measured on a
+     * Pixel 7 Pro with a 50 fps source: three simultaneous 1080p clip decoders each
+     * ran at ~39-40 fps, so the shared clock could not pin them and the relief
+     * drifted 0.4-1.0 s from the picture, worst on the heaviest encode. Depth and
+     * normal are therefore written at {@code min(source, 30)} -- output frame k is
+     * source frame {@code round_half_up(k x src/out)}, the same timeline with fewer
+     * samples -- while the colour stays the app's own remux, re-encoded by nobody.
+     * 30 because the renderer latches ~30-40 frames/s and samples the depth per
+     * draw, so the generated tracks never needed the source's rate. It is stated
+     * here and passed explicitly rather than left to the node's default, or a
+     * server-side default change would move the rate under the player's measured
+     * behaviour. 0 would mean the source's own rate; the app never passes it.
+     */
+    public static final int STREAM_FPS_CAP = 30;
+
+    /**
      * The prefix of every file the stream node writes.
      *
      * <p>The names are the app's whole handle on the run's outputs: the node takes a
@@ -349,7 +367,8 @@ public final class ComfyWorkflow {
      * <pre>
      * LoadMoGeModel(model_name) ──▶ MOGE_MODEL
      *   MoGeVideoStream(moge_model, video, tag, start_frame, frame_count,
-     *                   target_height, batch_size, resolution_level, refine_steps)
+     *                   target_height, batch_size, fps_cap, resolution_level,
+     *                   refine_steps)
      *     ──▶ basrelief_&lt;tag&gt;_depth.mp4, basrelief_&lt;tag&gt;_normal.mp4,
      *         basrelief_&lt;tag&gt;.progress.json  (files, in the output dir)
      * </pre>
@@ -386,6 +405,12 @@ public final class ComfyWorkflow {
      * Asking for a duration-derived count is exactly the off-by-one the old chunk
      * planner shipped — a 240-frame remux reports 9.9586 s, so {@code round(9.9586 ×
      * 24)} is 239 and the joined depth decoded one frame short.</p>
+     *
+     * <p><b>{@code fps_cap} is the sync knob, and {@link #STREAM_FPS_CAP} owns it.</b>
+     * The generated tracks are written at {@code min(source, fps_cap)} and the
+     * timeline is kept: output frame k is source frame
+     * {@code round_half_up(k × src/out)}, so fewer samples over the same seconds.
+     * See the constant for the measurement that made the cap necessary.</p>
      *
      * <p><b>The tag is the app's handle on the outputs.</b> The node sanitises it
      * ({@link #streamTag}) and derives all three filenames from it, so the fetch and
@@ -429,6 +454,9 @@ public final class ComfyWorkflow {
         in.put("frame_count", Math.max(0, frameCount));
         in.put("target_height", Math.max(0, targetHeight));
         in.put("batch_size", batchSize);
+        // After batch_size, as on the node: the window is the memory knob, the cap
+        // is the sync one.
+        in.put("fps_cap", STREAM_FPS_CAP);
         stream.put("inputs", in);
 
         JSONObject wf = new JSONObject();

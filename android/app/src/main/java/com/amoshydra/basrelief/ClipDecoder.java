@@ -45,6 +45,17 @@ import java.nio.ByteBuffer;
  * the seam, because no timestamp now comes from a queue — the gate keeps each decoder
  * on the same frame index.
  *
+ * <p><b>A decoder that cannot keep up is bounded by a seek, not left behind.</b>
+ * The gate pins a decoder that is FAST — a frame is held until its absolute time is
+ * due — but a stream whose codec cannot decode at the clip's rate releases frames
+ * that are already overdue, and the deficit accumulates. Measured on a 50 fps import:
+ * all three 1080p streams ran at ~39-40 fps, each fell behind by its own deficit,
+ * and the relief was 0.4-1.0 s from the picture at the loop. {@link #catchUpIfLate}
+ * is the fail-soft bound: when a released frame is far enough behind the clock and
+ * enough time has passed since the last seek, the decoder jumps to the frame that is
+ * due now. It is deliberately hard to trigger while a stream keeps up — see the
+ * constants for the measured numbers the threshold sits between.
+ *
  * <p><b>This is not a {@link Thread} of its own making.</b> It starts one, and
  * {@link #stop} joins it, because a decoder thread outliving the surface it feeds
  * takes the renderer's texture with it.
@@ -62,6 +73,35 @@ final class ClipDecoder {
      * four cycles.
      */
     private static final long LEAD_US = 120_000L;
+
+    /**
+     * How far behind the clock a released frame may be before the decoder seeks
+     * forward to the frame that is due now.
+     *
+     * <p><b>The fail-soft bound for an overloaded decoder, chosen to be unreachable
+     * while one keeps up.</b> The gate releases a frame the moment its absolute time
+     * is due, so a healthy decoder hands a frame over within a scheduling delay of
+     * {@code clock + lead}: the measured steady-state skew between two gated streams
+     * is one frame interval (40 ms in the recorded run) and the gate's own lead is
+     * 120 ms. A decoder that cannot keep up is a different shape: it releases frames
+     * whose pts is already past, and the deficit accumulates — measured on a 50 fps
+     * source, three 1080p streams each ran at ~39-40 fps and the depth drifted
+     * 0.4-1.0 s from the colour. The threshold sits well above healthy jitter and
+     * below the measured failure.
+     */
+    private static final long CATCH_UP_LAG_US = 300_000L;
+
+    /**
+     * The least time between two catch-ups.
+     *
+     * <p>A seek decodes from the sync sample before its target, so firing it
+     * continuously would turn a slightly slow stream into one that is always
+     * jumping. The magnitude is set by the measured deficit: at ~39 fps against a
+     * 50 fps clip the lag grows ~220 ms/s, so after a catch-up it takes over a
+     * second to cross the threshold again. With the threshold and this cooldown the
+     * lag stays under roughly half a second instead of growing without bound.
+     */
+    private static final long CATCH_UP_COOLDOWN_US = 1_000_000L;
 
     /** How long either dequeue may block, in ms. Short, because the gate polls this. */
     private static final int POLL_MS = 5;
@@ -179,6 +219,14 @@ final class ClipDecoder {
      * seam note in {@link #loop0}.
      */
     private long basePtsUs;
+    /**
+     * The shared clock's reading at the last catch-up: the cooldown's baseline.
+     *
+     * <p>Initialised a full cooldown in the past, so the FIRST frame that is far
+     * enough behind may catch up immediately rather than waiting out a cooldown
+     * that never started. Decoder thread only.
+     */
+    private long lastCatchUpUs = -CATCH_UP_COOLDOWN_US;
     private volatile int produced;
     private volatile int loops;
     private volatile String error;
@@ -317,6 +365,55 @@ final class ClipDecoder {
         }
     }
 
+    /**
+     * Jump to the frame that is due now, if this decoder has fallen too far behind.
+     *
+     * <p><b>The arithmetic mirrors the loop rewind, not the gate.</b> The target is
+     * {@code (clock + lead) * rate} -- the same expression the gate releases
+     * against, so the target is exactly "due now" -- and the seek lands on the
+     * nearest sync sample at or before it. Whole loops move into {@code basePtsUs}
+     * exactly as the rewind's do, and {@code loops} is set from the same division,
+     * so the diagnostics and the next rewind stay on one clock. The codec is not
+     * flushed, for the same reason the rewind does not flush: timestamps are made
+     * absolute at the INPUT, so the codec's own output stays monotonic across the
+     * jump. The frames between the sync sample and the target are released as their
+     * turn comes, and the keyframe wait drops the stale ones.
+     *
+     * <p><b>What makes this cheap is the encoder's GOP.</b> The stream node pins its
+     * GOP to one second, so a catch-up costs at most that much decode before the
+     * frame that is due. The colour is the app's own remux, which carries the
+     * source's GOP, so the bound there is one source GOP -- the honest limit.
+     *
+     * <p>Never fires while {@code awaitingKeyframe}: a jump already in flight must
+     * not be jumped again on the stale frames it is dropping, and the cooldown is a
+     * second guard on the same hazard.
+     *
+     * @return true when a seek was made, in which case the frame in hand is late
+     *         and must not be shown
+     */
+    private boolean catchUpIfLate(MediaExtractor extractor, long absPtsUs) {
+        Clock c = clock;
+        if (c == null || awaitingKeyframe || rate <= 0f || clipUs <= 0) return false;
+        long nowUs = c.nowUs();
+        long targetUs = (long) ((nowUs + leadUs) * (double) rate);
+        if (targetUs - absPtsUs <= CATCH_UP_LAG_US) return false;
+        if (nowUs - lastCatchUpUs <= CATCH_UP_COOLDOWN_US) return false;
+        lastCatchUpUs = nowUs;
+        long jump = targetUs / clipUs;
+        basePtsUs = jump * clipUs;
+        loops = (int) jump;
+        long seekUs = targetUs - basePtsUs;
+        // seekTo even at 0: exactly on a loop boundary the stream must still rewind
+        // to the start, which is what the loop path does.
+        extractor.seekTo(seekUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+        awaitingKeyframe = true;
+        keyframeDropBudget = 8;
+        android.util.Log.i(TAG, "clip " + tag + " catch-up: "
+                + (targetUs - absPtsUs) / 1000 + "ms behind, seek to " + seekUs
+                + "us (loop " + jump + ")");
+        return true;
+    }
+
     private void loop0() {
         MediaExtractor extractor = null;
         try {
@@ -443,6 +540,14 @@ final class ClipDecoder {
                             // and nothing is recomputed from `loops` here.
                             long absPts = info.presentationTimeUs;
                             awaitSpace(absPts);
+                            // A frame whose turn has come is released; a frame that is
+                            // far enough LATE is the signal that this stream cannot
+                            // keep up, and is replaced by a seek to what is due now.
+                            // See catchUpIfLate.
+                            if (!eos && catchUpIfLate(extractor, absPts)) {
+                                codec.releaseOutputBuffer(out, false);
+                                continue;
+                            }
                             codec.releaseOutputBuffer(out, true);
                             lastAbsPts = absPts;
                             produced++;
