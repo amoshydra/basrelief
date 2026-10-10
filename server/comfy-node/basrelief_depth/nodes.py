@@ -468,3 +468,44 @@ class MoGeVideoStream:
         return {"ui": ui,
                 "result": (color_name if col_enc is not None else "", depth_name,
                            normal_name, written)}
+
+
+# ------------------------------------------------------------------ prototype tool
+
+class MoGeGeometryNPZ:
+    """PROTOTYPE: dump a MOGE_GEOMETRY packet to .npz for offline 3D work.
+
+    The streaming node keeps only depth; MoGe also produces the POINT MAP and the
+    intrinsics, which is the data a real-3D (splat) render needs. This is a tool for
+    the splat prototype, not part of the import path.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "moge_geometry": ("MOGE_GEOMETRY",),
+            "tag": ("STRING", {"default": "geo"}),
+        }}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("npz",)
+    FUNCTION = "run"
+    CATEGORY = "basrelief"
+    OUTPUT_NODE = True
+
+    def run(self, moge_geometry, tag):
+        import numpy as np
+        safe = "".join(c for c in (tag or "geo") if c.isalnum() or c in "-_")[:48]
+        if not safe:
+            safe = "geo"
+        name = "basrelief_%s.npz" % safe
+        path = os.path.join(folder_paths.get_output_directory(), name)
+        arrs = {}
+        for k, v in moge_geometry.items():
+            if hasattr(v, "detach"):
+                arrs[k] = v.detach().cpu().numpy()
+            else:
+                arrs[k] = np.asarray(v)
+        np.savez_compressed(path, **arrs)
+        print("[basrelief] geometry dumped: %s (%d arrays)" % (name, len(arrs)), flush=True)
+        return {"ui": {"npz": [name]}, "result": (name,)}
