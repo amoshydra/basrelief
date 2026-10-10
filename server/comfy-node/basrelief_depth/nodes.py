@@ -25,8 +25,14 @@ someone else's release. `moge_model.infer` is the one upstream surface this reli
 
 The client contract: outputs are `basrelief_<tag>_depth.mp4`, `basrelief_<tag>_normal.mp4`
 and the sidecar `basrelief_<tag>.progress.json` (all fetchable through `/view`), the
-sidecar holds `{done, total, state}` and is rewritten every window, and the run's UI
-payload in `/history` names the same three files.
+sidecar holds `{done, total, state, src_frames, src_fps, fps_out}` and is rewritten
+every window, and the run's UI payload in `/history` names the same files.
+
+`fps_cap` (default 30) caps the rate the generated tracks are written at, never above
+the source. Output frame k is source frame `round_half_up(k * src/out)` -- same
+timeline, fewer samples -- which is what lets the app hold three decoders in lockstep
+on a phone (measured: three 1080p50 streams each ran ~39-40 fps and diverged). The
+colour clip is NOT produced here: it stays the app's own remux.
 """
 
 import json
@@ -104,11 +110,15 @@ def _decoder(path):
         stdout=subprocess.PIPE, bufsize=10 ** 8)
 
 
-def _encoder(path, w, h, fps):
+def _encoder(path, w, h, fps, gop):
     return subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h), "-r", fps, "-i", "-",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+         # A short GOP is load-bearing for the player: it restarts a clip by seeking
+         # to the nearest keyframe, and it bounds how far a decoder that fell behind
+         # can be pulled forward. One second.
+         "-g", str(gop),
          "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", path],
         stdin=subprocess.PIPE, bufsize=1024 * 1024)
 
@@ -148,6 +158,15 @@ class MoGeVideoStream:
                 # Frames per inference call. This is the memory knob: peak = model +
                 # window. 4 is the core node's default and keeps 4K windows small.
                 "batch_size": ("INT", {"default": 4, "min": 1, "max": 16}),
+                # The rate the DEPTH AND NORMAL clips are written at, capped from the
+                # source. Measured on a Pixel 7 Pro: three simultaneous 1080p50
+                # decoder streams each ran at ~39-40 fps, so their positions
+                # diverged ~0.5-1 s over minutes (the player's own skew line), worst
+                # on the heaviest encode. The renderer latches ~30-40/s and the depth
+                # is sampled per draw, so writing the generated tracks at 30 removes
+                # two thirds of that load and lets the shared clock pin all three.
+                # 0 = the source's own rate.
+                "fps_cap": ("INT", {"default": 30, "min": 0, "max": 240}),
                 "resolution_level": ("INT", {"default": 9, "min": 0, "max": 9}),
                 "refine_steps": ("INT", {"default": 3, "min": 0, "max": 8}),
             }
@@ -170,7 +189,7 @@ class MoGeVideoStream:
         return float("NaN")
 
     def run(self, moge_model, video, tag, start_frame, frame_count, target_height,
-            batch_size, resolution_level, refine_steps):
+            batch_size, fps_cap, resolution_level, refine_steps):
         src = folder_paths.get_annotated_filepath(video)
         if not src or not os.path.isfile(src):
             raise ValueError("video not found in the input directory: %r" % (video,))
@@ -185,6 +204,25 @@ class MoGeVideoStream:
         if total <= 0:
             raise ValueError("nothing to do: start_frame=%d of %d frames"
                              % (start_frame, src_frames))
+
+        # The rate the generated tracks are written at, capped from the source.
+        # The source is decoded in order either way; the cap only decides which
+        # frames become output frames, and the mapping keeps the TIMELINE: output
+        # frame k is source frame round_half_up(k * src/out), so the clips stay
+        # aligned with the colour in TIME -- they simply have fewer samples. The
+        # app's frame-count check applies the same rule; rounding is half-up
+        # (int(x + 0.5)) on both sides, never banker's rounding, or the two
+        # derivations disagree by a frame at some rates.
+        num, den = (fps.split("/") + ["1"])[:2]
+        src_rate = float(num) / float(den or 1)
+        capped = fps_cap > 0 and src_rate > fps_cap
+        out_rate = float(fps_cap) if capped else src_rate
+        ratio = src_rate / out_rate
+        enc_fps = ("%d/1" % fps_cap) if capped else fps
+        gop = max(1, int(round(out_rate)))
+        total_out = 0
+        while int(total_out * ratio + 0.5) < total:
+            total_out += 1
 
         safe = "".join(c for c in (tag or "") if c.isalnum() or c in "-_")[:48]
         if not safe:
@@ -206,19 +244,23 @@ class MoGeVideoStream:
             # exactly the rate the sheet's line wants.
             try:
                 with open(progress_path, "w") as f:
-                    json.dump({"done": done, "total": total, "state": state,
+                    json.dump({"done": done, "total": total_out, "state": state,
                                "depth": depth_name, "normal": normal_name,
-                               "progress": progress_name}, f)
+                               "progress": progress_name,
+                               # The input side of the count, so the app can verify
+                               # the exactness it planned instead of trusting it.
+                               "src_frames": total, "src_fps": round(src_rate, 3),
+                               "fps_out": int(round(out_rate))}, f)
             except OSError:
                 pass
 
         dec = _decoder(src)
-        dep_enc = _encoder(depth_tmp, out_w, out_h, fps)
-        nrm_enc = _encoder(normal_tmp, out_w, out_h, fps)
+        dep_enc = _encoder(depth_tmp, out_w, out_h, enc_fps, gop)
+        nrm_enc = _encoder(normal_tmp, out_w, out_h, enc_fps, gop)
         frame_bytes = src_w * src_h * 3
         written = 0
         started = time.time()
-        pbar = comfy.utils.ProgressBar(total)
+        pbar = comfy.utils.ProgressBar(total_out)
         write_progress(0, "running")
 
         try:
@@ -230,13 +272,22 @@ class MoGeVideoStream:
                     raise ValueError("start_frame %d is past the end of the video"
                                      % start_frame)
 
-            while written < total:
+            src_index = 0
+            kept = 0
+            next_keep = 0
+            while written < total_out:
                 window = []
-                for _ in range(min(batch_size, total - written)):
+                # The keep-rule: output frame k is source frame round_half_up(k *
+                # src/out). With no cap, ratio is 1 and every frame is kept.
+                while len(window) < batch_size and written + len(window) < total_out:
                     raw = dec.stdout.read(frame_bytes)
                     if len(raw) < frame_bytes:
                         break
-                    window.append(np.frombuffer(raw, np.uint8).reshape(src_h, src_w, 3))
+                    if src_index == next_keep:
+                        window.append(np.frombuffer(raw, np.uint8).reshape(src_h, src_w, 3))
+                        kept += 1
+                        next_keep = int(kept * ratio + 0.5)
+                    src_index += 1
                 if not window:
                     break
 
@@ -274,7 +325,7 @@ class MoGeVideoStream:
                 write_progress(written, "running")
                 if written % 30 < batch_size:
                     print("[basrelief] %d/%d frames  %.2fs/frame"
-                          % (written, total, (time.time() - started) / max(1, written)),
+                          % (written, total_out, (time.time() - started) / max(1, written)),
                           flush=True)
 
                 if comfy.model_management.processing_interrupted():
