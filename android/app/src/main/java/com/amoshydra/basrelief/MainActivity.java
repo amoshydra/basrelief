@@ -84,14 +84,12 @@ public class MainActivity extends Activity {
      * same one resolution every control here reads rather than parsing the blob again.
      */
     AppState state() {
-        // CACHED, and that is the whole point: AppState.load parses and validates the
-        // entire index and was measured at 113ms, and this helper is called from every
-        // refresh, slider update and sheet rebuild -- so the UI thread paid it over and
-        // over for a state that had not changed. The cache is invalidated by the prefs
-        // listener below, which is the transport every writer goes through, so a stale
-        // read is not possible: any write fires the listener before anything can ask.
-        if (cachedState == null) cachedState = AppState.load(this, prefs, getFilesDir());
-        return cachedState;
+        // ONE cache, and it lives in AppState: keyed on the stored blobs and AHEAD of
+        // them while an index write is in flight (writers publish in memory first).
+        // A copy here could only ever be a second, staler answer -- and the measured
+        // three-second launch this replaced was that copy being invalidated and
+        // re-read on every refresh, before the cache moved down a layer.
+        return AppState.load(this, prefs, getFilesDir());
     }
     private TextView statusView;
     private LinearLayout panel;
@@ -663,31 +661,12 @@ public class MainActivity extends Activity {
     /** Last value written to the shared {@code gyro_status} key, to avoid rewriting it per frame. */
     private String lastGyroStatus = null;
     /** The one parsed index; see {@link #state()}. Null means "re-read". */
-    private AppState cachedState;
 
     /**
      * Any pref write invalidates the cache -- selection, settings, playlists, the
      * wallpaper's own writes. The listener does not inspect the key: a cache that
      * decides which changes matter is a cache that can be wrong about one of them.
      */
-    private final SharedPreferences.OnSharedPreferenceChangeListener indexListener =
-            new SharedPreferences.OnSharedPreferenceChangeListener() {
-                @Override
-                public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-                    // THE INDEX KEYS ONLY, and they are exactly three. Prefs carry far
-                    // more than the index -- gyro_status and wallpaper_debug are
-                    // written every second by the tilt sleep and the wallpaper -- and
-                    // clearing on those re-parsed the whole index every second, which
-                    // is the lag this cache exists to remove. The keys are listed here
-                    // because they ARE the index transport: Library, Config and
-                    // Playlists each own one, and a new one must be added here.
-                    if (Library.KEY.equals(key) || Config.KEY.equals(key)
-                            || Playlists.KEY.equals(key) || Jobs.KEY.equals(key)) {
-                        cachedState = null;
-                    }
-                }
-            };
-
     private final SharedPreferences.OnSharedPreferenceChangeListener statusListener =
             new SharedPreferences.OnSharedPreferenceChangeListener() {
                 @Override
@@ -1349,7 +1328,6 @@ public class MainActivity extends Activity {
         sensorPolicy.start();
         writeGyroStatus(); // publish our own state, not the wallpaper's
         prefs.registerOnSharedPreferenceChangeListener(statusListener);
-        prefs.registerOnSharedPreferenceChangeListener(indexListener);
 
         handleShareIntent(getIntent());
     }
@@ -1654,7 +1632,6 @@ public class MainActivity extends Activity {
         // And the ring, which spins at 60 Hz while a depth run outlives the studio.
         if (stripRing != null) stripRing.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
-        prefs.unregisterOnSharedPreferenceChangeListener(indexListener);
         Io.shutdown();
         super.onDestroy();
     }

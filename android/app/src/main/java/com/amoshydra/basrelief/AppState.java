@@ -145,6 +145,15 @@ final class AppState {
     private static String cachedConfigBlob;
     private static String cachedLibraryBlob;
     private static AppState cachedState;
+    /**
+     * The cached library is NEWER than the stored blob: an index write was published
+     * in memory and its disk write is queued. A reader must get the in-memory truth
+     * (that is the point -- the tap that caused it has already happened), so this is
+     * checked before the blob compare. It is cleared only by the write that matches
+     * the cached library OBJECT, so an older queued write landing cannot mark a newer
+     * publish as stored.
+     */
+    private static boolean cachedLibraryAhead;
 
     private static boolean eq(String a, String b) {
         return a == null ? b == null : a.equals(b);
@@ -154,13 +163,16 @@ final class AppState {
         String configBlob = prefs.getString(Config.KEY, null);
         String libraryBlob = prefs.getString(Library.KEY, null);
         synchronized (CACHE_LOCK) {
-            if (cachedState != null && eq(cachedConfigBlob, configBlob)
-                    && eq(cachedLibraryBlob, libraryBlob)) {
+            if (cachedState != null
+                    && (cachedLibraryAhead
+                        || (eq(cachedConfigBlob, configBlob)
+                            && eq(cachedLibraryBlob, libraryBlob)))) {
                 return cachedState;
             }
             AppState fresh = loadUncached(context, prefs, filesDir);
             cachedConfigBlob = configBlob;
             cachedLibraryBlob = libraryBlob;
+            cachedLibraryAhead = false;
             cachedState = fresh;
             return fresh;
         }
@@ -173,15 +185,28 @@ final class AppState {
      * config beside a fresh library is exactly the pair a blob-keyed cache must not
      * mix, and dropping the cache costs one re-parse on the rare config write.
      */
-    static void publishedLibrary(SharedPreferences prefs, Library library, String blob) {
-        String configBlob = prefs.getString(Config.KEY, null);
+    static void publishedLibrary(SharedPreferences prefs, Library library) {
         synchronized (CACHE_LOCK) {
-            if (cachedState == null || !eq(cachedConfigBlob, configBlob)) {
-                cachedState = null;
-                return;
-            }
-            cachedLibraryBlob = blob;
+            if (cachedState == null) return;
             cachedState = new AppState(cachedState.config, library);
+            cachedLibraryAhead = true;
+        }
+    }
+
+    /**
+     * The queued index write landed, and the stored blob is this library's.
+     *
+     * <p>Cleared only on REFERENCE equality: if a newer publish replaced the cached
+     * library while this write was in flight, the reference differs and the newer
+     * write keeps its own "ahead" until it lands. Comparing blobs here instead would
+     * let an older write mark a newer state as stored.
+     */
+    static void libraryStored(Library library, String blob) {
+        synchronized (CACHE_LOCK) {
+            if (cachedState != null && cachedState.library == library) {
+                cachedLibraryBlob = blob;
+                cachedLibraryAhead = false;
+            }
         }
     }
 

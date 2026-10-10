@@ -109,10 +109,19 @@ resolves) on the one main thread. That is the whole of the measured 3.2 s warm /
 hot launch, with `Choreographer: Skipped 304/316 frames` twice. `AppState` now keys the
 parsed state on the exact two blobs: a blob change fails the compare and the state is
 re-derived, so it cannot serve a stale index — the failure that matters is a wallpaper
-showing a photo the user deleted. Every writer publishes the blob it just stored
-(`LibraryStore.save`, `LibraryStore.saveNow`, `ConfigStore.save`), so a write does not force the next
-reader to re-parse; both halves are validated against the other blob before mixing, and a
-mismatch drops the cache rather than pairing a stale config with a fresh library. After:
+showing a photo the user deleted. Every writer publishes the library IN
+MEMORY the moment it is mutated (`LibraryStore.save`, `LibraryStore.saveNow`), so a write
+does not force the next reader to re-parse and the cache is **AHEAD of the stored blob
+while the write is queued** -- that flag is what a reader checks first, so the tap that
+caused the write is visible to the wallpaper immediately. The disk write itself is
+serialise + commit on a dedicated single `index-writer` thread (measured: `toJson` is
+~81 ms and a `commit()` 33-430 ms, and every gallery tap, archive toggle and slider
+release used to pay both on the UI thread); FIFO ordering is the single thread, and the
+"ahead" flag is cleared only by the write whose library object IS the cached one, so an
+older queued write landing cannot mark a newer publish as stored. A process death inside
+the queue's window loses the write, exactly as `apply()` already accepts for every
+per-item edit. `MainActivity`'s own `cachedState` and its index listener are deleted --
+one cache, one invalidation rule, and `state()` is now just `AppState.load`. After:
 **warm 1.7 s, hot 0.56 s, no skipped frames.** The remaining cold-start cost is the single
 parse (and the dirty-check serialisations inside it); moving that off the UI thread is the
 next step. The wallpaper's per-resolve diagnostic write is `apply()`, not `commit()` — a
