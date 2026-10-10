@@ -71,7 +71,9 @@ final class VideoTrimSheet {
     /**
      * Called with the chosen range, in frames, or with whole=true for all of it.
      *
-     * @param outHeight the height to scale the clip to, or 0 for the source's own.
+     * @param outHeight the resolution chip -- a SHORT-SIDE cap, "1080p" means
+     *                  1080 on the short side -- or 0 for the source's own. The
+     *                  conversion to the node's height is VideoImport's.
      *                  It travels to the SERVER, which scales the batch as it loads:
      *                  a smaller batch is less GPU memory, a shorter job and smaller
      *                  files, and it is the one control that makes a high-resolution
@@ -153,8 +155,10 @@ final class VideoTrimSheet {
         body.addView(times);
 
         // THE RESOLUTION. It is the user's quality choice, and it is also the
-        // memory knob: the node loads at this height, and the inference window is
-        // sized from the pixels that result (BatchBudget.streamWindow). Nothing
+        // memory knob: the chip caps the SHORT side ("1080p" means 1080 across,
+        // so a portrait source keeps its aspect), the node loads at the resulting
+        // height, and the inference window is sized from the pixels that result
+        // (BatchBudget.streamWindow). Nothing
         // here moves the chip on the user's behalf -- with the streaming node no
         // range or resolution is refused, so a chip that cannot "fit" does not
         // exist and a guard that silently moved one would be moving a choice for

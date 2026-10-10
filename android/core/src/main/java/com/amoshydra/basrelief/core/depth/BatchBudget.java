@@ -77,6 +77,30 @@ public final class BatchBudget {
         return (int) window;
     }
 
+    /**
+     * The node's {@code target_height} for a resolution chip, with the chip read as
+     * a SHORT-SIDE cap.
+     *
+     * <p><b>"1080p" means 1080 on the short side</b> — which is what the label means
+     * to everyone, and what the node cannot express alone: it takes a HEIGHT, and for
+     * a portrait source the short side is the WIDTH. Measured on a 1440x2560 phone
+     * recording, the height-only reading turned the "1080" chip into a 608-wide clip,
+     * a quarter of the pixels the user asked for; a landscape 1920x1080 source is
+     * unchanged either way. Never upscales: a source whose short side is already at
+     * or under the chip keeps its own height.
+     *
+     * <p>An unknown dimension returns 0, the source's own size: the
+     * {@code DepthSource}/{@code VideoSource} "a window claims nothing" rule applied
+     * to a shape — guessing by height is the exact bug this function removes.
+     */
+    public static int targetHeightFor(int chip, int width, int height) {
+        if (chip <= 0) return 0;
+        if (width <= 0 || height <= 0) return 0;
+        int shortSide = Math.min(width, height);
+        double scale = Math.min(1.0, chip / (double) shortSide);
+        return (int) Math.round(height * scale);
+    }
+
     // ------------------------------------------------------------- the time
 
     /**

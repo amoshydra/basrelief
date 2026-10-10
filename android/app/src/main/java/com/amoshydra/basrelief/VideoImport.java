@@ -820,7 +820,8 @@ final class VideoImport {
      * @param upload    the file to upload (the remuxed range, or a regenerate copy)
      * @param names     remux/colour copy, depth clip, normal clip, poster, depth
      *                  still, normal still, node-colour target (see attach)
-     * @param outHeight the resolution chip: the height to load at, 0 = the source's
+     * @param outHeight the resolution chip, a SHORT-SIDE cap (see
+     *                  BatchBudget.targetHeightFor); 0 = the source's own
      * @return the built-but-unstored item, or null after reporting a failure
      */
     private static LibraryItem generate(final Context app, final SharedPreferences prefs,
@@ -846,8 +847,14 @@ final class VideoImport {
         // The dimensions the NODE will load, not the file's raw size: the chip may
         // scale the source down, and that scaled size is what the memory rule is
         // about. An unknown size gets window 1; see BatchBudget.streamWindow.
+        //
+        // The chip is a SHORT-SIDE cap, so the node's height is derived here, once,
+        // beside the dimensions it needs: "1080p" on a portrait 1440x2560 recording
+        // must mean 1080x1920, not the 608x1080 a height-only reading gives. See
+        // BatchBudget.targetHeightFor.
         int[] size = videoSizeOf(app, Uri.fromFile(upload));
-        int loadHeight = outHeight <= 0 ? size[1] : Math.min(outHeight, size[1]);
+        int targetHeight = BatchBudget.targetHeightFor(outHeight, size[0], size[1]);
+        int loadHeight = targetHeight <= 0 ? size[1] : targetHeight;
         int loadWidth = size[1] > 0
                 ? Math.round(size[0] * (float) loadHeight / size[1]) : size[0];
         int window = BatchBudget.streamWindow(loadWidth, loadHeight);
@@ -886,7 +893,7 @@ final class VideoImport {
             }
             String graph = ComfyWorkflow.buildVideoStreamWorkflow(
                     new JSONObject(info), "MoGeInference", uploadedName, tag,
-                    0, 0, Math.max(0, outHeight), window);
+                    0, 0, targetHeight, window);
             JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-" + id));
             promptId = submitted.getString("prompt_id");
             // THE RECORD, written once the server has accepted the prompt. From here
@@ -1204,7 +1211,7 @@ final class VideoImport {
      *                   the same by construction. Only the note OFFSETS travel to the
      *                   server for the poster; the node itself always runs the whole
      *                   upload from frame 0.
-     * @param outHeight  the resolution chip: the height the node should load at,
+     * @param outHeight  the resolution chip, a SHORT-SIDE cap; 0 = the source's
      *                   0 = the source's own
      */
     static void run(final Context app, final SharedPreferences prefs, final Uri uri,

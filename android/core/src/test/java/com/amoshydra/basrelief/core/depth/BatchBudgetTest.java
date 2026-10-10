@@ -119,4 +119,28 @@ public class BatchBudgetTest {
         assertEquals(0f, BatchBudget.estimateSeconds(0), 1e-9);
         assertEquals(0f, BatchBudget.estimateSeconds(-5), 1e-9);
     }
+
+    /**
+     * The chip means a SHORT-SIDE cap, and the portrait case is the one that proves
+     * it: measured on a 1440x2560 phone recording, the old height-only reading turned
+     * "1080" into a 608-wide clip -- a quarter of the pixels the user asked for.
+     * Landscape is unchanged, which is why the bug could live this long, and a source
+     * smaller than the chip is never upscaled.
+     */
+    @Test
+    public void aChipCapsTheShortSide() {
+        // Landscape 1080p: the chip is a no-op, exactly as before.
+        assertEquals(1080, BatchBudget.targetHeightFor(1080, 1920, 1080));
+        // Portrait 1440x2560: "1080" means 1080 on the WIDTH -> 1080x1920.
+        assertEquals(1920, BatchBudget.targetHeightFor(1080, 1440, 2560));
+        // Portrait 1080x1920 at the 720 chip -> 720x1280.
+        assertEquals(1280, BatchBudget.targetHeightFor(720, 1080, 1920));
+        // Square: either side is the short side.
+        assertEquals(720, BatchBudget.targetHeightFor(720, 1080, 1080));
+        // Never an upscale: a 640x360 source at the 1080 chip keeps its height.
+        assertEquals(360, BatchBudget.targetHeightFor(1080, 640, 360));
+        // Chip 0 is the source's own size, and an unread shape claims nothing.
+        assertEquals(0, BatchBudget.targetHeightFor(0, 1440, 2560));
+        assertEquals(0, BatchBudget.targetHeightFor(1080, 0, 0));
+    }
 }

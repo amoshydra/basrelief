@@ -626,7 +626,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 547 tests across thirty classes:
+it**. 548 tests across thirty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -843,7 +843,11 @@ has run.**
     largest window in 1..4 whose `pixels × window` product stays at or under the
     measured anchor (`1920×1080 × 4` = the 12.3 GiB peak), so 1080p gets 4, 1440p 2,
     4K 1, and an unknown dimension gets 1 -- the "a window claims nothing" rule
-    applied to a number. **The colour is the node's when the source exceeded the
+    applied to a number. **The chip is a SHORT-SIDE cap** -- `1080p` means 1080
+    across, so a portrait 1440x2560 recording gets 1080x1920 rather than the 608
+    pixels wide a height-only reading gives (`BatchBudget.targetHeightFor`; the node
+    itself still takes a height, so the conversion happens where the dimensions are
+    read). **The colour is the node's when the source exceeded the
     playback caps, and the app's own remux otherwise.** The remux is still the
     upload and the plan, and it is never overwritten by the node's downscaled
     colour -- a Regenerate uploads the remux, or it would cap an already-capped
@@ -1020,7 +1024,10 @@ has run.**
   the decoded frames, which is why the rule is linear in `pixels × window` at
   all. Its second theme is the time estimate both surfaces state — the sheet
   before a run, the job line during one — from the single `SECONDS_PER_FRAME`
-  constant.
+  constant. Its third is the chip's short-side reading (`targetHeightFor`):
+  landscape 1080p is a no-op, portrait 1440x2560 at the 1080 chip is 1920 tall
+  (1080x1920, not 608x1080), a small source is never upscaled, and unknown
+  dimensions claim nothing.
 - `JobsTest` — the pending-import record. The traps are the ones the class
   exists for: a record that does not survive the round trip is the loss this
   class was written to end, a blob that throws on read is worse than a lost
