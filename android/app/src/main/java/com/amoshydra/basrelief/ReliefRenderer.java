@@ -104,7 +104,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final float ATTACK_ERROR = 0.125f;
     /** Depth default: 90% of the maximum the camera allows at this zoom. */
     private static final int DEFAULT_DEPTH = 90;
-    private static final int GRID = 256; // relief grid resolution
+    // Relief grid resolution: (GRID+1)^2 vertices, and the depth field's size.
+    // 384 rather than 256 is an experiment in sampling fidelity: the depth clips
+    // and stills are 1080p-class and were being thrown away down to 257 field
+    // points, which is the relief's real resolution ceiling (shading is already
+    // per-fragment). Costs scale quadratically: 2.25x the vertices, the pair's
+    // blur and the per-frame clip blit. Measured on the Pixel before shipping
+    // this constant.
+    private static final int GRID = 512;
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
