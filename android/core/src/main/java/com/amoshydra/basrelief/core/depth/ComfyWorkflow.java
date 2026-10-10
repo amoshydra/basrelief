@@ -23,13 +23,16 @@ import java.util.List;
  * produces a graph ComfyUI accepts but renders from the wrong tensor — which
  * surfaces as a blank or unblended depth map rather than an error.
  *
- * <p><b>Two graph shapes.</b> A classical depth node (Depth-Anything V1/V2, the
+ * <p><b>Three graph shapes.</b> A classical depth node (Depth-Anything V1/V2, the
  * preprocessors) is one node that takes an image and emits an image, so the
  * graph is {@code LoadImage → <node> → SaveImage}. MoGe is a pipeline rather
  * than a node — a loader, an inference step and a renderer — so it gets its own
- * builder and its own five-node graph. {@link #buildWorkflow} picks between them
- * and the two shapes are kept structurally distinct on purpose; collapsing them
- * would put the pipeline's wires on the single-node path.
+ * builder and its own seven-node graph. {@link #buildWorkflow} picks between
+ * them and the two still shapes are kept structurally distinct on purpose;
+ * collapsing them would put the pipeline's wires on the single-node path. The
+ * VIDEO shape is a third builder again: {@code LoadMoGeModel →
+ * MoGeVideoStream}, a custom node that streams frames through MoGe and writes
+ * the depth and normal clips itself — see {@link #buildVideoStreamWorkflow}.
  */
 public final class ComfyWorkflow {
 
@@ -76,42 +79,84 @@ public final class ComfyWorkflow {
     static final String MOGE_INFERENCE = "MoGeInference";
     static final String MOGE_RENDER = "MoGeRender";
 
-    // ---- the VIDEO shape's own ids.
+    // ---- the STREAM shape's own ids.
     //
-    // A THIRD set, disjoint from both still shapes, and that is the point: the video
-    // graph is the same MoGe pipeline with a video loader in front and a video
-    // combiner behind, so every id it shares with the still pipeline would be one
-    // more wire to get wrong silently. Its own ids mean a wire into the still shape
-    // cannot compile against this one.
+    // A THIRD set, disjoint from both still shapes, and that is the point: the stream
+    // shape shares the MoGe loader with the still pipeline, so a wire into the still
+    // shape's ids would be one more way to be silently wrong. Its own ids mean a wire
+    // into the still shapes cannot compile against this one.
 
-    /** {@code VHS_LoadVideoPath}: the frames, as one IMAGE batch. */
-    private static final String VLOAD_ID = "10";
-    /** The MoGe loader — same class as the still shape, its own id here. */
-    private static final String V_MOGE_LOAD_ID = "11";
-    /** {@code MoGeInference}: ONE inference for the whole batch. */
-    private static final String V_MOGE_INFER_ID = "12";
-    /** {@code MoGeRender(output=depth)}, then {@code VHS_VideoCombine}. */
-    private static final String V_MOGE_RENDER_ID = "13";
-    private static final String V_DEPTH_COMBINE_ID = "14";
-    /** {@code MoGeRender(output=normal_opengl)}, then its own combiner. */
-    private static final String V_MOGE_NORMAL_RENDER_ID = "15";
-    private static final String V_NORMAL_COMBINE_ID = "16";
+    /** {@code LoadMoGeModel}: the checkpoint, whose MOGE_MODEL feeds the stream node. */
+    private static final String S_MOGE_LOAD_ID = "1";
+    /** {@code MoGeVideoStream}: the loop, the inference and the two clips, one node. */
+    private static final String S_STREAM_ID = "2";
+
+    /** The custom node that streams a video through MoGe with bounded memory. */
+    public static final String VIDEO_STREAM = "MoGeVideoStream";
+
     /**
-     * The COLOUR combiner, reading the loader directly.
+     * The prefix of every file the stream node writes.
      *
-     * <p>A third combiner, because the three clips that play together must be the
-     * same frames at the same rate for the same length -- and a colour track taken
-     * from the ORIGINAL upload has a different frame count from a depth track capped
-     * by the loader, so the two loop on different clocks and drift at every seam
-     * while the relief stays behind. Writing the colour back out of the same loader's
-     * batch makes all three from one decode: one frame count, one rate, one length.
-     * It costs a re-encode of frames the decoder already holds, which is nothing next
-     * to the inference.
+     * <p>The names are the app's whole handle on the run's outputs: the node takes a
+     * {@code tag} and derives {@code basrelief_<tag>_depth.mp4},
+     * {@code basrelief_<tag>_normal.mp4} and {@code basrelief_<tag>.progress.json}
+     * from it, so a client can address all three WITHOUT having seen a response.
+     * That is what lets the app fetch a run that finished while the phone was dead
+     * and read the sidecar for a run that is still going.
      */
-    private static final String V_COLOUR_COMBINE_ID = "17";
+    public static final String STREAM_FILE_PREFIX = "basrelief_";
+    /** The depth clip's suffix; see {@link #STREAM_FILE_PREFIX}. */
+    public static final String STREAM_DEPTH_SUFFIX = "_depth.mp4";
+    /** The normal clip's suffix; see {@link #STREAM_FILE_PREFIX}. */
+    public static final String STREAM_NORMAL_SUFFIX = "_normal.mp4";
+    /** The progress sidecar's suffix; see {@link #STREAM_FILE_PREFIX}. */
+    public static final String STREAM_PROGRESS_SUFFIX = ".progress.json";
 
-    static final String VIDEO_LOADER = "VHS_LoadVideo";
-    static final String VIDEO_COMBINE = "VHS_VideoCombine";
+    /**
+     * The tag the stream node's filenames are derived from, sanitised by the app's
+     * copy of the node's own rule.
+     *
+     * <p><b>The app sanitises because the app has to NAME the files without asking.</b>
+     * The node runs {@code c.isalnum() or c in "-_"} and truncates to 48; the fetch
+     * and resume paths derive filenames from the item id and must produce exactly the
+     * string the node would, or they would ask for files that do not exist. Item ids
+     * are UUIDs and survive this unchanged; the rule exists for a hand-edited or
+     * imported index whose id carries a space or punctuation.
+     *
+     * <p>An id that sanitises to nothing yields the empty tag, and the node then falls
+     * back to its own timestamp name, which the app cannot predict — callers use
+     * {@link #isStreamTagUsable} to refuse that before submitting rather than fetch
+     * names that will never exist.
+     */
+    public static String streamTag(String itemId) {
+        if (itemId == null) return "";
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < itemId.length() && b.length() < 48; i++) {
+            char c = itemId.charAt(i);
+            if (Character.isLetterOrDigit(c) || c == '-' || c == '_') b.append(c);
+        }
+        return b.toString();
+    }
+
+    /** Whether a tag is one the node's filenames can be derived from. */
+    public static boolean isStreamTagUsable(String tag) {
+        return tag != null && !tag.isEmpty();
+    }
+
+    /** {@code basrelief_<tag>_depth.mp4}, the depth clip's server-side name. */
+    public static String streamDepthName(String tag) {
+        return STREAM_FILE_PREFIX + tag + STREAM_DEPTH_SUFFIX;
+    }
+
+    /** {@code basrelief_<tag>_normal.mp4}, the normal clip's server-side name. */
+    public static String streamNormalName(String tag) {
+        return STREAM_FILE_PREFIX + tag + STREAM_NORMAL_SUFFIX;
+    }
+
+    /** {@code basrelief_<tag>.progress.json}, the sidecar's server-side name. */
+    public static String streamProgressName(String tag) {
+        return STREAM_FILE_PREFIX + tag + STREAM_PROGRESS_SUFFIX;
+    }
 
 
     /**
@@ -160,26 +205,6 @@ public final class ComfyWorkflow {
      * association and a test pins them.
      */
     public static final String NORMAL_FILE_PREFIX = "normal_";
-    /**
-     * The prefix of the depth CLIP, mirroring {@link #DEPTH_FILE_PREFIX}.
-     *
-     * <p><b>Clip, not frame.</b> The still path saves a PNG per run and the fetch
-     * path takes the newest by prefix; here there is one file, an mp4, and it keeps
-     * the same leading prefix so the two fetch paths cannot confuse each other's
-     * files.
-     */
-    public static final String DEPTH_CLIP_PREFIX = DEPTH_FILE_PREFIX;
-    /** The prefix of the normal clip. See {@link #DEPTH_CLIP_PREFIX}. */
-    public static final String NORMAL_CLIP_PREFIX = NORMAL_FILE_PREFIX;
-    /**
-     * The prefix of the colour clip.
-     *
-     * <p>Distinct from the upload's own name, so a colour clip cannot be confused
-     * with the file that went in -- which matters because a fetch that picked the
-     * wrong one would loop the ORIGINAL while the depth loops the batch, and that is
-     * exactly the divergence the third combiner exists to remove.
-     */
-    public static final String COLOUR_CLIP_PREFIX = "colourclip_";
 
     /**
      * Assemble the ComfyUI graph for the chosen depth model.
@@ -319,119 +344,70 @@ public final class ComfyWorkflow {
     }
 
     /**
-     * Assemble the video graph: the MoGe pipeline with a video loader in front and a
-     * video combiner behind each render.
+     * Assemble the stream graph: two nodes, one prompt, no window plan.
      *
      * <pre>
-     * VHS_LoadVideoPath(video, force_rate, …)  ──▶ images, as ONE IMAGE batch
-     *   LoadMoGeModel(model_name) ──┐
-     *   MoGeInference(moge_model, image) ──▶ geometry for the WHOLE batch
-     *       ├→ MoGeRender(output=depth)        → VHS_VideoCombine(depthmap_…)
-     *       └→ MoGeRender(output=normal_opengl)→ VHS_VideoCombine(normal_…)
-     *   └─(only when the app has no colour of its own)
-     *     ──────────────────────────────────→ VHS_VideoCombine(colourclip_…)
+     * LoadMoGeModel(model_name) ──▶ MOGE_MODEL
+     *   MoGeVideoStream(moge_model, video, tag, start_frame, frame_count,
+     *                   target_height, batch_size, resolution_level, refine_steps)
+     *     ──▶ basrelief_&lt;tag&gt;_depth.mp4, basrelief_&lt;tag&gt;_normal.mp4,
+     *         basrelief_&lt;tag&gt;.progress.json  (files, in the output dir)
      * </pre>
      *
-     * <p><b>One inference for every frame, because an IMAGE is a batch.</b> This is
-     * the whole reason the graph is four lines of new wiring rather than a new
-     * pipeline: {@code MoGeInference.image} takes a batch, so a clip's frames go in
-     * as one node and come back as one geometry, and per-frame is only an
-     * implementation detail of the batch size. The alternative — extracting frames
-     * and running the existing still graph once per frame — costs one round trip,
-     * one prompt and one model load per frame, and a clip is dozens of frames.
+     * <p><b>The node owns the loop, which is why the app stopped chunking.</b>
+     * {@code MoGeVideoStream} takes the video PATH, decodes a window at a time,
+     * runs MoGe over it and encodes the frames straight out, so peak memory is the
+     * model plus one window instead of the whole range. The graph that made a long
+     * clip a batch — {@code VHS_LoadVideo → MoGeInference → VHS_VideoCombine} — held
+     * every frame of the range live and OOMed on the measured clip: 480 frames at
+     * 1920x1080 climbed to 15.48 GiB and requested 4.03 more at frame 174 on the
+     * server's 16 GiB cap. Through the node the same clip held 11.5-12.3 GiB flat
+     * for all 480 frames and finished in 340 s.</p>
      *
-     * <p><b>The batch is why a long range is submitted CHUNKED.</b> {@code
-     * skip_first_frames} and {@code frame_load_cap} can be asked for any window of
-     * the upload, so the caller can run this exact graph once per window and
-     * concatenate the results — see {@code BatchBudget.chunkPlan} — instead of
-     * materialising a whole long clip as one tensor. The graph itself does not
-     * know the difference; the window is what makes a chunk a chunk.
+     * <p><b>{@code batch_size} is the window and therefore the memory knob.</b> The
+     * caller sizes it from the pixels the node will load — {@code
+     * BatchBudget.streamWindow} — because the measured peak is dominated by MoGe's
+     * ViT-G activations for the window, not by the decoded frames. It is the one
+     * number in this graph a client computes rather than discovers.</p>
      *
-     * <p><b>Out[0] of the loader is the IMAGE.</b> The loader has four outputs and
-     * two of them are typed {@code IMAGE}: the frames and the mask. Guessing wrong is
-     * the silent failure this class exists to prevent — a mask fed to MoGe produces a
-     * plausible depth map of nothing, and nothing anywhere says so — so the index is
-     * pinned by test rather than trusted.
+     * <p><b>{@code resolution_level} and {@code refine_steps} are discovered, not
+     * named.</b> The app has never exposed them; they take the server's own defaults
+     * exactly as the still MoGe shape does, so a server that tunes them tunes both
+     * shapes at once.</p>
      *
-     * <p><b>{@code VHS_LoadVideo}, NOT {@code VHS_LoadVideoPath}.</b> The two look
-     * interchangeable and only one of them works: {@code Path} validates its argument
-     * as a path on the <b>server's</b> filesystem and rejects the name of an uploaded
-     * file outright — measured, {@code "video - Invalid file path: up.mp4"} — while
-     * {@code LoadVideo} takes a filename from the combo the server builds out of its
-     * input directory, which is where {@code /upload/image} puts it. Since the depth
-     * server is reached over HTTP and is not on the phone, there is no path we could
-     * hand the other node. Verified end to end: both clips generate.
+     * <p><b>{@code video} is the uploaded file's server-side name.</b> The app
+     * uploads its own remuxed range first and the node never sees the share URI; the
+     * upload is also the colour clip the renderer plays, so the frames MoGe is asked
+     * about and the frames the user sees are the same file.</p>
      *
-     * <p><b>Both clips come out of one graph</b> for the reason the still path emits
-     * both: {@code MoGeRender} selects exactly one output, so depth and normal are two
-     * render nodes sharing one cached inference, and two combiners so neither file
-     * overwrites the other.
+     * <p><b>{@code frame_count = 0} means the whole upload</b>, which is what every
+     * app run passes: the remux is already the range, so the plan is "all of it" and
+     * the app verifies the written count against its own sample count afterwards.
+     * Asking for a duration-derived count is exactly the off-by-one the old chunk
+     * planner shipped — a 240-frame remux reports 9.9586 s, so {@code round(9.9586 ×
+     * 24)} is 239 and the joined depth decoded one frame short.</p>
      *
-     * @param fps        frames per second of the OUTPUT clips. It must be the source
-     *                   clip's rate, or the depth drifts against the colour by
-     *                   exactly this factor — the sync bug, at generation time
-     *                   instead of playback time.
-     * @param frameCap   how many frames to read, so a long video does not become an
-     *                   unbounded graph. {@code 0} means the server's own default.
+     * <p><b>The tag is the app's handle on the outputs.</b> The node sanitises it
+     * ({@link #streamTag}) and derives all three filenames from it, so the fetch and
+     * resume paths can name files they have never been told about.</p>
+     *
+     * @param info         the parsed {@code /object_info} body
+     * @param model        the checkpoint filename, or {@code MoGeInference} to
+     *                     keep the server's discovered default
+     * @param videoPath    the uploaded file's name in the server's input dir
+     * @param tag          the sanitised run tag; see {@link #streamTag}
+     * @param startFrame   the first frame to process; always 0 for the app, whose
+     *                     upload is already trimmed
+     * @param frameCount   how many frames to process; 0 = to the end of the upload
+     * @param targetHeight the height to load at; 0 = the source's own
+     * @param batchSize    the inference window, 1..16; see {@code BatchBudget}
      */
-    public static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
-                                     long timestampMs, float fps, int frameCap,
-                                     int skipFirstFrames, int width, int height)
+    public static String buildVideoStreamWorkflow(JSONObject info, String model, String videoPath,
+                                                  String tag, int startFrame, int frameCount,
+                                                  int targetHeight, int batchSize)
             throws JSONException {
-        return buildVideoWorkflow(info, model, videoPath, timestampMs, fps, frameCap,
-                skipFirstFrames, width, height, true);
-    }
-
-    /**
-     * The same video graph, with or without the colour write-back.
-     *
-     * @param includeColour whether to add the third combiner that re-encodes the
-     *        loader's frames as the colour clip. <b>False for a run the app will
-     *        supply its own colour for</b>: a chunked import already holds the
-     *        exact range as a local file (the upload it sent is that range), so a
-     *        server-side re-encode of the same frames is work and a download for
-     *        nothing -- and for a chunk it is also the only way to have one
-     *        colour clip rather than N. True for the one shape that has no local
-     *        range to use: a failed remux, or a v1 job migrated from the build
-     *        that always asked for it, where the run must produce its own colour
-     *        or the clip has none.
-     */
-    public static String buildVideoWorkflow(JSONObject info, String model, String videoPath,
-                                     long timestampMs, float fps, int frameCap,
-                                     int skipFirstFrames, int width, int height,
-                                     boolean includeColour)
-            throws JSONException {
-        JSONObject vloadInfo = info.getJSONObject(VIDEO_LOADER);
-        JSONObject combineInfo = info.getJSONObject(VIDEO_COMBINE);
         JSONObject loaderInfo = info.getJSONObject(MOGE_LOADER);
-        JSONObject inferInfo = info.getJSONObject(MOGE_INFERENCE);
-        JSONObject renderInfo = info.getJSONObject(MOGE_RENDER);
-
-        JSONObject vload = new JSONObject();
-        vload.put("class_type", VIDEO_LOADER);
-        JSONObject vloadIn = discoveredInputs(vloadInfo);
-        // A path on the SERVER's filesystem, which is why the clip is uploaded first
-        // -- exactly as the still path uploads its PNG before asking for a graph.
-        vloadIn.put("video", videoPath);
-        // The source rate is asked for explicitly rather than left to the loader's
-        // default, because the OUTPUT clips are written at this rate too and the two
-        // have to be the same number or the depth slides against the colour.
-        vloadIn.put("force_rate", (double) fps);
-        // THE TRIM, expressed as the loader's own window: skip_first_frames and
-        // frame_load_cap are the range the user chose in the trim sheet. When the
-        // colour combine is included all three clips come back trimmed to it and
-        // aligned, from one decode -- the device never re-encodes anything, and
-        // there is no second trimming path to disagree with this one. On the
-        // chunked shape the pair of numbers is one chunk's window instead: the
-        // chunks tile the app's own remuxed range, so the trim is the chunk plan.
-        // 0 frames = the whole clip, which is the sheet's "Use the whole clip" and
-        // also what a regenerate passes, since the stored colour clip is already
-        // trimmed.
-        if (frameCap > 0) vloadIn.put("frame_load_cap", frameCap);
-        if (skipFirstFrames > 0) vloadIn.put("skip_first_frames", skipFirstFrames);
-        if (width > 0) vloadIn.put("custom_width", width);
-        if (height > 0) vloadIn.put("custom_height", height);
-        vload.put("inputs", vloadIn);
+        JSONObject streamInfo = info.getJSONObject(VIDEO_STREAM);
 
         JSONObject loader = new JSONObject();
         loader.put("class_type", MOGE_LOADER);
@@ -439,66 +415,26 @@ public final class ComfyWorkflow {
         if (!MOGE_INFERENCE.equals(model)) loaderIn.put("model_name", model);
         loader.put("inputs", loaderIn);
 
-        JSONObject infer = new JSONObject();
-        infer.put("class_type", MOGE_INFERENCE);
-        JSONObject inferIn = discoveredInputs(inferInfo, "moge_model", "image");
-        inferIn.put("moge_model", link(V_MOGE_LOAD_ID));
-        // Output 0 of the loader -- the FRAMES. See the class note on the mask.
-        inferIn.put("image", link(VLOAD_ID, FIRST_OUTPUT));
-        infer.put("inputs", inferIn);
-
-        // The same two renders, the same forced outputs, the same discovered
-        // scalars as the still path -- one factory, so the video shape cannot drift
-        // into asking for depth_colored because someone edited one builder.
-        JSONObject depthRender = moGeRenderNode(renderInfo, MOGE_STILL_OUTPUT, V_MOGE_INFER_ID);
-        JSONObject normalRender = moGeRenderNode(renderInfo, MOGE_NORMAL_OUTPUT, V_MOGE_INFER_ID);
-
-        JSONObject depthCombine = videoCombineNode(combineInfo, V_MOGE_RENDER_ID,
-                FIRST_OUTPUT, DEPTH_CLIP_PREFIX, timestampMs, fps);
-        JSONObject normalCombine = videoCombineNode(combineInfo, V_MOGE_NORMAL_RENDER_ID,
-                FIRST_OUTPUT, NORMAL_CLIP_PREFIX, timestampMs, fps);
+        JSONObject stream = new JSONObject();
+        stream.put("class_type", VIDEO_STREAM);
+        // `moge_model` is a link and `video` is the uploaded name the caller has
+        // already resolved; every other input is discovered and then overridden with
+        // the caller's value, so a scalar the node adds still reaches it while the
+        // ones this class owns are stated rather than defaulted.
+        JSONObject in = discoveredInputs(streamInfo, "moge_model", "video");
+        in.put("moge_model", link(S_MOGE_LOAD_ID));
+        in.put("video", videoPath);
+        in.put("tag", tag);
+        in.put("start_frame", Math.max(0, startFrame));
+        in.put("frame_count", Math.max(0, frameCount));
+        in.put("target_height", Math.max(0, targetHeight));
+        in.put("batch_size", batchSize);
+        stream.put("inputs", in);
 
         JSONObject wf = new JSONObject();
-        wf.put(VLOAD_ID, vload);
-        wf.put(V_MOGE_LOAD_ID, loader);
-        wf.put(V_MOGE_INFER_ID, infer);
-        wf.put(V_MOGE_RENDER_ID, depthRender);
-        wf.put(V_DEPTH_COMBINE_ID, depthCombine);
-        wf.put(V_MOGE_NORMAL_RENDER_ID, normalRender);
-        wf.put(V_NORMAL_COMBINE_ID, normalCombine);
-        if (includeColour) {
-            // The colour, straight off the loader. Three clips, one decode: this is
-            // what makes the loop a loop, rather than three clocks that agree until
-            // the seam. Only a run with no local range of its own asks for it.
-            JSONObject colourCombine = videoCombineNode(combineInfo, VLOAD_ID,
-                    FIRST_OUTPUT, COLOUR_CLIP_PREFIX, timestampMs, fps);
-            wf.put(V_COLOUR_COMBINE_ID, colourCombine);
-        }
+        wf.put(S_MOGE_LOAD_ID, loader);
+        wf.put(S_STREAM_ID, stream);
         return wf.toString();
-    }
-
-    /**
-     * One {@code VHS_VideoCombine}, discovering every scalar the server offers.
-     *
-     * <p><b>h264 in an mp4</b>, forced rather than discovered: the format list's
-     * first entry is a GIF, and a GIF has no reliable frame timing, which would put
-     * the depth and the colour a frame apart for the whole clip. The container is the
-     * renderer's contract — {@code MediaExtractor} reading it — so it is stated here
-     * and pinned by test.
-     */
-    private static JSONObject videoCombineNode(JSONObject combineInfo, String imagesNodeId,
-                                              int imagesOutputIndex, String prefix,
-                                              long timestampMs, float fps)
-            throws JSONException {
-        JSONObject n = new JSONObject();
-        n.put("class_type", VIDEO_COMBINE);
-        JSONObject in = discoveredInputs(combineInfo, "images");
-        in.put("images", link(imagesNodeId, imagesOutputIndex));
-        in.put("frame_rate", (double) fps);
-        in.put("filename_prefix", prefix + timestampMs);
-        in.put("format", "video/h264-mp4");
-        n.put("inputs", in);
-        return n;
     }
 
     /**

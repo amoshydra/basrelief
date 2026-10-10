@@ -17,6 +17,13 @@ import java.io.File;
  * {@code apply()}, and that is deliberate: the whole point of this record is to
  * survive a process death, and an async fsync is exactly the guarantee it cannot
  * give.
+ *
+ * <p><b>Progress is not written here.</b> A running import's "frame 137 of 480"
+ * comes from the streaming node's sidecar file and lives in {@code VideoImport}'s
+ * in-memory live map — a copy on disk would be a second, staler answer, and the
+ * record's own write paths are minutes apart (submit, fail, clear). What is on disk
+ * is the fact that survives: the prompt, the host, and the server's own failure
+ * message.
  */
 final class JobsStore {
 
@@ -34,9 +41,8 @@ final class JobsStore {
      * its own, a record exists — is {@link Jobs#previewColourName} in {@code :core},
      * which also owns the "tracks win" rule, and this only answers the half the pure
      * function cannot: whether the file is actually here. A record whose colour is
-     * missing (a failed remux, a migrated v1 job whose colour is on the server) is
-     * not a preview — playing a file that is not there is a decoder error, not a
-     * picture.
+     * missing (a run whose remux failed) is not a preview — playing a file that is
+     * not there is a decoder error, not a picture.
      *
      * <p>Both hosts and the renderer's cold path call THIS, so a wallpaper and the
      * studio cannot disagree about whether a row is previewing.
@@ -55,9 +61,8 @@ final class JobsStore {
     /**
      * Write one job, replacing any earlier job for the same item.
      *
-     * <p>The caller builds the whole {@link Jobs.Job}, chunks and all, because
-     * only the caller knows the range it planned; this class owns the write and
-     * nothing else.
+     * <p>The caller builds the whole {@link Jobs.Job}, because only the caller knows
+     * the prompt the server returned; this class owns the write and nothing else.
      */
     static void record(SharedPreferences prefs, Jobs.Job job) {
         if (job == null || !job.isUsable()) return;
@@ -65,20 +70,8 @@ final class JobsStore {
     }
 
     /**
-     * Record how many of a job's chunks the server has finished.
-     *
-     * <p>A commit, on the worker, once per chunk: minutes apart, and the count is
-     * the one number the sheet's job line states — a value that survives the sheet
-     * being rebuilt is the point of it being on disk at all.
-     */
-    static void progress(SharedPreferences prefs, String itemId, int completed) {
-        if (itemId == null || itemId.isEmpty()) return;
-        saveNow(prefs, load(prefs).withProgress(itemId, completed));
-    }
-
-    /**
-     * Mark the job one of whose chunks names {@code promptId} failed, carrying the
-     * message the user must be able to read.
+     * Mark the job named by {@code promptId} failed, carrying the message the user
+     * must be able to read.
      *
      * <p>KEEPS the record, unlike {@link #clear}: a run the server refused is a
      * state the sheet line and the tile's corner show until the user acts, and a
@@ -90,11 +83,10 @@ final class JobsStore {
     }
 
     /**
-     * Clear the job one of whose chunks names {@code promptId}.
+     * Clear the job named by {@code promptId}.
      *
-     * <p>One prompt id is enough for the whole job — {@link Jobs#afterRemoving}
-     * removes by any chunk — which is what lets the tail clear an N-chunk import
-     * with the one prompt id it happens to hold.
+     * <p>Scoped to the prompt rather than the item, so a superseded run finishing
+     * cannot clear the record of the submission that replaced it.
      */
     static void clear(SharedPreferences prefs, String promptId) {
         if (promptId == null) return;

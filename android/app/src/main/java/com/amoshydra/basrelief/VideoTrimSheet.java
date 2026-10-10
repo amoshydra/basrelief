@@ -30,21 +30,19 @@ import com.amoshydra.basrelief.core.depth.BatchBudget;
  * control that keeps a source too big for the server importable, and the MEMORY
  * GUARD moves it by itself when the current choice cannot fit.
  *
- * <p><b>The range is in FRAMES and travels to the server as frames.</b>
- * {@code skip_first_frames} and {@code frame_load_cap} are the loader's own window
- * (see {@code ComfyWorkflow}), so all three clips come back trimmed and aligned. The
- * device never re-encodes anything, which is why there is no second trimming path to
- * disagree with this one -- the mockup's "the seek is the missing feature" is
- * answered by the same mechanism as the trim.
+ * <p><b>The range is in FRAMES, and it is cut locally into the colour clip.</b>
+ * The remuxed range is the playback medium and the file the server node reads, so
+ * the trim and the run are one artefact: the node never sees the share URI and
+ * never trims, it runs the whole upload from frame 0. A failed remux fails the
+ * import rather than silently falling back, because the colour clip must exist for
+ * anything to play.
  *
- * <p><b>A range too big for one batch is no longer refused -- it is chunked.</b>
- * The memory guard below still finds the resolution and states the number, but
- * "the whole range must fit one batch" stopped being a condition of importing:
- * the run is split into prompts of {@code BatchBudget.chunkFrames(height)} frames
- * and joined on the device, so the line that used to say "this range cannot be
- * generated" now says how many chunks it takes. The one thing that still refuses
- * is a height no chunk fits at, which is the unknown-reading case rather than a
- * length.
+ * <p><b>Memory is not a decision the sheet states any more.</b> The streaming node
+ * owns the loop and sizes its own inference window from the pixels it loads, so no
+ * range and no resolution can be refused by a memory budget: the sheet states the
+ * server TIME the range costs and the resolution the user wants, and nothing else.
+ * The old "N chunks · X GiB each" line described a chunked plan the app no longer
+ * makes.
  *
  * <p><b>Zoom stops, not a free pinch.</b> The deepest useful zoom is set by the
  * binding loop: a 2s range must be wider than a 44dp handle, which is what makes
@@ -52,11 +50,10 @@ import com.amoshydra.basrelief.core.depth.BatchBudget;
  * three stops; the handles never change size, the time beneath them does.
  *
  * <p><b>Past 30 seconds of server time it is a JOB, and the sheet says so without
- * advising.</b> The estimate is a fact -- the frames cost what they cost in time
- * AND in the server's memory -- and the copy states where the result lives and that
- * closing the app does not cancel it. Facts, no steering: the mockup is explicit
- * that the sheet does not warn, so an over-budget range states its number and the
- * guard refuses it rather than advising a smaller one.
+ * advising.</b> The estimate is a fact -- the frames cost what they cost in time --
+ * and the copy states where the result lives and that closing the app does not
+ * cancel it. Facts, no steering: the mockup is explicit that the sheet does not
+ * warn, so the sheet never advises a smaller range.
  */
 final class VideoTrimSheet {
 
@@ -114,10 +111,9 @@ final class VideoTrimSheet {
      *
      * @param fps          the source rate, so a time becomes a frame
      * @param totalFrames  the source's frame count, or 0 when it could not be read
-     * @param sourceHeight the video's own height, for the "Original" estimate
      */
     static void show(final Activity activity, final Uri video, final String label,
-                     final float fps, final int totalFrames, final int sourceHeight,
+                     final float fps, final int totalFrames,
                      final Chosen onChosen) {
         // Guarded here as well as at the call site: the check there and the show here
         // are not one atomic step, and a Dialog with a dead token throws rather than
@@ -156,13 +152,13 @@ final class VideoTrimSheet {
         times.addView(stepper(activity, R.string.trim_end, endText, bar, false));
         body.addView(times);
 
-        // THE RESOLUTION. It exists because a source can be too big to generate at
-        // all: the depth inference holds the whole batch, and the cost scales with
-        // frames AND with height -- superlinearly in height, because MoGe's own
-        // working resolution follows the input. Scaling at the LOADER fixes batch,
-        // job length and file size together, and it costs the user one tap. The
-        // MEMORY GUARD below makes that tap automatic when the chosen size cannot
-        // fit: the sheet must not let a batch be submitted that can only OOM.
+        // THE RESOLUTION. It is the user's quality choice, and it is also the
+        // memory knob: the node loads at this height, and the inference window is
+        // sized from the pixels that result (BatchBudget.streamWindow). Nothing
+        // here moves the chip on the user's behalf -- with the streaming node no
+        // range or resolution is refused, so a chip that cannot "fit" does not
+        // exist and a guard that silently moved one would be moving a choice for
+        // no reason it could state.
         final int[] outHeight = {0};
         LinearLayout resRow = new LinearLayout(activity);
         resRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -203,11 +199,9 @@ final class VideoTrimSheet {
         final android.widget.Button whole = ModalSheet.button(activity,
                 activity.getString(R.string.trim_whole_clip), false, true);
 
-        // The live readout: times, the estimate, and the Job framing past the line.
-        // ONE runnable for all of it, because the memory guard and the number are one
-        // decision: the guard may move the resolution chip, and the line must then
-        // state the number that chip implies. A second derivation of the same fact is
-        // how a sheet ends up showing an estimate for a size it will not submit.
+        // The live readout: the times and the estimate. ONE runnable for both,
+        // because they are one decision: the handles move the range and the number
+        // states the cost of the range they now hold.
         final Runnable refresh = new Runnable() {
             @Override
             public void run() {
@@ -215,67 +209,38 @@ final class VideoTrimSheet {
                 startText.setText(hms(bar.startFrame() / fps));
                 endText.setText(hms(bar.endFrame() / fps));
 
-                // THE MEMORY GUARD, and what chunking changed about it. A SINGLE
-                // batch is still the shape the budget describes, so when the whole
-                // range fits one the guard behaves exactly as before -- the user's
-                // chip when it can, otherwise the tallest that can. When it does not
-                // fit ANYWHERE, length is no longer what refuses the import: the run
-                // is split into prompts of BatchBudget.chunkFrames(height) and joined
-                // on the device, so the guard's remaining job is the CHUNK size and
-                // the number the line states. The user's chip is kept for a chunked
-                // run rather than moved: every chip can be chunked, and the count of
-                // chunks the user sees is the honest cost of the one they picked.
-                final int pick = BatchBudget.pick(frames, sourceHeight, outHeight[0]);
-                final boolean single = pick >= 0;
-                if (single) outHeight[0] = pick;
-                for (int j = 0; j < chips.length; j++) {
-                    paintChip(chips[j], heights[j] == outHeight[0]);
-                }
-
-                final int height = BatchBudget.heightOf(outHeight[0], sourceHeight);
-                final int chunk = BatchBudget.chunkFrames(height);
-                final boolean canChunk = chunk > 0;
-                final int chunks = single ? 1 : BatchBudget.chunkCount(frames, height);
-                // THE NUMBER IS THE BATCH'S, not the range's. For a single batch that
-                // is every frame it holds; for a chunked run it is the largest chunk,
-                // because per-chunk memory is the thing that decides whether the run
-                // can happen at all -- the whole range's total is no longer asked of
-                // the card in one go, and stating it would be the old lie in a new
-                // place.
-                final int perBatch = single ? frames : Math.min(frames, chunk);
-                final double gb = BatchBudget.estimateMb(perBatch, height) / 1024.0;
+                // THE NUMBER IS THE RUN'S TIME AND NOTHING ELSE. The memory figure
+                // left this line with the chunk plan: the streaming node owns the
+                // loop and sizes its own inference window from the pixels it loads,
+                // so there is no per-prompt batch for the user to see or choose --
+                // "N chunks · X GiB each" would be describing a plan the app no
+                // longer makes. The time estimate stays, and so does the Job
+                // framing past the line, because those are still facts about the
+                // wait in front of the user.
                 final float secs = BatchBudget.estimateSeconds(frames);
                 final boolean job = secs >= BatchBudget.JOB_SECONDS;
-                String line;
-                if (single) {
-                    line = activity.getString(R.string.trim_estimate,
-                            fmtWait(secs), fmtGb(gb));
-                } else if (canChunk) {
-                    line = activity.getString(R.string.trim_estimate_chunked,
-                            fmtWait(secs), chunks, fmtGb(gb));
-                } else {
-                    line = activity.getString(R.string.trim_estimate_over,
-                            fmtWait(secs), fmtGb(gb));
-                }
+                String line = activity.getString(R.string.trim_estimate, fmtWait(secs));
                 if (job) line = line + "\n" + activity.getString(R.string.trim_job_note);
                 estimate.setText(line);
                 caption.setText(job ? activity.getString(R.string.trim_job_caption) : "");
                 caption.setVisibility(job ? View.VISIBLE : View.GONE);
                 living.setText(job ? activity.getString(R.string.trim_job_start)
                         : activity.getString(R.string.trim_living_photo));
-                living.setEnabled(single || canChunk);
-                // THE WHOLE CLIP IS A SUPERSET OF THE RANGE. It needs a length to
-                // chunk by, so an unreadable frame count still refuses it -- the
-                // "a window claims nothing" rule -- and otherwise it is bounded the
-                // same way the range is, by the chunk.
-                whole.setEnabled(totalFrames > 0 && canChunk);
+                // No range and no resolution can be refused: the colour clip is cut
+                // locally, and the node runs the whole of it whatever its length.
+                living.setEnabled(true);
+                // The whole clip is the superset of the range and needs no length to
+                // be cut: the import remuxes until the samples end, and the node
+                // runs the whole upload.
+                whole.setEnabled(true);
+                for (int j = 0; j < chips.length; j++) {
+                    paintChip(chips[j], heights[j] == outHeight[0]);
+                }
             }
         };
         bar.onChange = refresh;
 
-        // The chips are wired AFTER refresh exists: a tap only sets the candidate,
-        // and refresh is what decides whether it can stay -- a chip that cannot fit
-        // is moved off by the same guard that moves it when the handles drag.
+        // A chip tap is the user's choice, and it stands: nothing moves it back.
         for (int i = 0; i < heights.length; i++) {
             final int idx = i;
             chips[i].setOnClickListener(new View.OnClickListener() {
@@ -349,20 +314,6 @@ final class VideoTrimSheet {
      */
     static String waitText(float sec) {
         return fmtWait(sec);
-    }
-
-    /** The memory number, shared with the running job's line for the same reason. */
-    static String gbText(double gb) {
-        return fmtGb(gb);
-    }
-
-    /**
-     * "15.2" — the memory estimate's GiB, one decimal. The unit lives in the
-     * string resource, so the number is all this returns; a value is never
-     * rounded up to a rounder one, because the line is a fact.
-     */
-    private static String fmtGb(double gb) {
-        return String.format("%.1f", gb);
     }
 
     private static TextView timeText(Activity a) {

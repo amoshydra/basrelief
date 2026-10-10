@@ -118,6 +118,31 @@ public final class ComfyApi {
         return readBytes(c);
     }
 
+    /**
+     * The same fetch, with "not there" as a null rather than an exception.
+     *
+     * <p>The streaming node's sidecar is a file that does not exist until the node
+     * starts, and is gone again the moment the output directory is cleaned. A resume
+     * has to tell those absences — which mean "re-submit" — from a server it cannot
+     * reach, which means "keep asking later". {@code view} reports both as an
+     * IOException carrying an HTTP 404, and parsing an exception's text to decide
+     * which state the import is in is exactly the kind of guess this project keeps
+     * paying for.
+     */
+    public byte[] viewIfPresent(String filename, String subfolder, String type)
+            throws IOException {
+        String path = "/view?filename=" + enc(filename)
+                + "&subfolder=" + enc(subfolder)
+                + "&type=" + enc(type);
+        HttpURLConnection c = open(path, "GET");
+        int code = c.getResponseCode();
+        if (code == 404) {
+            c.disconnect();
+            return null;
+        }
+        return readBytes(c);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static String enc(String s) throws IOException {

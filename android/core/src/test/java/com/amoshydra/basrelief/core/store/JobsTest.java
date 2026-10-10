@@ -7,8 +7,6 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
-import java.util.Arrays;
-
 /**
  * The pending-import record: what survives a restart, and what must not be invented.
  *
@@ -18,10 +16,12 @@ import java.util.Arrays;
  * naming a photo that is gone must not be resurrected here -- this class cannot see
  * the library, so it must not pretend to.
  *
- * <p><b>The chunk list is the second half of all of that.</b> A chunked import
- * submits several prompts for one item, so a record that kept only the first would
- * strand every finished chunk behind it -- and a v1 record is a legitimate in-flight
- * single-prompt job, so it migrates to a one-chunk job rather than being dropped.
+ * <p><b>v4 is one prompt again, and the OLDER chunk lists migrate rather than being
+ * dropped.</b> A v2/v3 blob is a legitimate in-flight run -- the server may still be
+ * running it -- and the first prompt in its list is the handle it answers to; the
+ * new resume asks the sidecar for the run's state, so the frame ranges and the
+ * completed-chunk count are deliberately not carried. The one fact that survives
+ * every version is a failure: a failed job has to keep failing until the user acts.
  */
 public class JobsTest {
 
@@ -36,52 +36,43 @@ public class JobsTest {
         assertEquals(1, parsed.pending().size());
         Jobs.Job j = parsed.pending().get(0);
         assertEquals("a", j.itemId);
-        // A single-prompt job is a one-chunk job, and that is the whole v1 shape.
-        assertEquals(1, j.chunks.size());
-        assertEquals("p1", j.chunks.get(0).promptId);
+        assertEquals("p1", j.promptId);
         assertEquals("http://host:8188", j.host);
         assertEquals(1000L, j.startedAtMs);
+        assertFalse(j.isFailed());
     }
 
     /**
-     * A chunked job keeps every prompt, in order, with the range each one covers.
+     * The whole blob is v4: one prompt per job, and NO count.
      *
-     * <p>The ORDER is load-bearing: the fetch tail concatenates the chunks by
-     * position, so a list that parsed back shuffled -- or dropped the last chunk --
-     * would write a clip that plays short without failing anywhere.
+     * <p>Pinned as an exact key set because the count moving to the sidecar is the
+     * decision this version made: a "done" or "frames" field written back into the
+     * record would be a second, staler answer to the question the sidecar answers,
+     * and a future reader could not tell which one to believe.
      */
     @Test
-    public void aChunkedJobSurvivesTheRoundTrip() {
-        Jobs.Job chunked = new Jobs.Job("a", Arrays.asList(
-                new Jobs.Chunk("p0", 0, 240),
-                new Jobs.Chunk("p1", 240, 240),
-                new Jobs.Chunk("p2", 480, 121)),
-                "http://host:8188", 2000L);
-        Jobs parsed = Jobs.parse(Jobs.empty().with(chunked).toJson());
-        assertEquals(1, parsed.pending().size());
-        Jobs.Job j = parsed.pending().get(0);
-        assertEquals(3, j.chunks.size());
-        assertEquals("p0", j.chunks.get(0).promptId);
-        assertEquals(0, j.chunks.get(0).startFrame);
-        assertEquals(240, j.chunks.get(0).frames);
-        assertEquals("p2", j.chunks.get(2).promptId);
-        assertEquals(480, j.chunks.get(2).startFrame);
-        assertEquals("the last chunk takes the remainder", 121, j.chunks.get(2).frames);
-        assertEquals(Arrays.asList("p0", "p1", "p2"), j.prompts());
+    public void theRecordHoldsOnePromptAndNoProgress() throws Exception {
+        org.json.JSONObject blob = new org.json.JSONObject(
+                Jobs.empty().with(job("a", "p1")).toJson());
+        org.json.JSONObject entry = blob.getJSONArray("jobs").getJSONObject(0);
+        assertEquals(4, blob.getInt("version"));
+        assertTrue(entry.getString("prompt").equals("p1"));
+        for (String forbidden : new String[] {"chunks", "done", "height", "frames"}) {
+            assertFalse("v4 must not carry '" + forbidden + "': the sidecar owns progress",
+                    entry.has(forbidden));
+        }
     }
 
     /**
-     * A version 1 record MIGRATES to a one-chunk job.
+     * A version 1 record MIGRATES: its one prompt is the handle the old run answers
+     * to.
      *
-     * <p>Not dropped, and that is the decision the schema bump had to make: a v1
-     * blob is a legitimate in-flight single-prompt run -- the server still has it --
-     * so forgetting it would strand a finished result in the output folder, which is
-     * the exact loss this class exists to end. Its one prompt becomes one chunk with
-     * no frame range, because the old schema never recorded one and inventing a
-     * range would be pretending to know something nothing wrote down.
+     * <p>Not dropped, and that is the decision every schema bump had to make: a v1
+     * blob is a legitimate in-flight run, so forgetting it would strand a finished
+     * result in the output folder, which is the exact loss this class exists to end.
      */
     @Test
-    public void aVersionOneRecordMigratesToOneChunk() {
+    public void aVersionOneRecordMigratesToTheNewShape() {
         String v1 = "{\"version\":1,\"jobs\":[{\"item\":\"a\",\"prompt\":\"p1\","
                 + "\"host\":\"h\",\"started\":7}]}";
         Jobs jobs = Jobs.parse(v1);
@@ -90,26 +81,66 @@ public class JobsTest {
         assertEquals("a", j.itemId);
         assertEquals("h", j.host);
         assertEquals(7L, j.startedAtMs);
-        assertEquals(1, j.chunks.size());
-        assertEquals("p1", j.chunks.get(0).promptId);
-        assertEquals(0, j.chunks.get(0).startFrame);
-        assertEquals(0, j.chunks.get(0).frames);
+        assertEquals("p1", j.promptId);
         assertTrue(j.isUsable());
+    }
+
+    /**
+     * A v2 or v3 CHUNK LIST migrates to its FIRST prompt.
+     *
+     * <p>The first chunk is the handle the old run answers to -- it was submitted
+     * first and the old tail held it -- while the frame ranges and the completed
+     * count are dropped: the new resume asks the sidecar instead of continuing a
+     * chunk list, and a "completed chunks" number read as frames would be a lie.
+     */
+    @Test
+    public void aChunkListMigratesToItsFirstPrompt() {
+        String v3 = "{\"version\":3,\"jobs\":[{\"item\":\"a\",\"host\":\"h\","
+                + "\"started\":7,\"height\":720,\"done\":2,\"chunks\":["
+                + "{\"prompt\":\"p0\",\"start\":0,\"frames\":240},"
+                + "{\"prompt\":\"p1\",\"start\":240,\"frames\":240}]}]}";
+        Jobs.Job j = Jobs.parse(v3).pending().get(0);
+        assertEquals("p0", j.promptId);
+        assertEquals("a", j.itemId);
+        assertFalse(j.isFailed());
+
+        // A v2 blob is the same shape without the v3 facts.
+        String v2 = "{\"version\":2,\"jobs\":[{\"item\":\"a\",\"host\":\"h\","
+                + "\"started\":7,\"chunks\":[{\"prompt\":\"p1\",\"start\":0,"
+                + "\"frames\":240}]}]}";
+        assertEquals("p1", Jobs.parse(v2).pending().get(0).promptId);
+    }
+
+    /** A v3 failure survives the migration: a failed run keeps failing. */
+    @Test
+    public void aFailuresMessageSurvivesTheMigration() {
+        String v3 = "{\"version\":3,\"jobs\":[{\"item\":\"a\",\"host\":\"h\","
+                + "\"started\":7,\"done\":1,\"error\":\"CUDA out of memory\","
+                + "\"chunks\":[{\"prompt\":\"p0\",\"start\":0,\"frames\":240}]}]}";
+        Jobs.Job j = Jobs.parse(v3).pending().get(0);
+        assertTrue(j.isFailed());
+        assertEquals("CUDA out of memory", j.error);
     }
 
     /**
      * A second submission for one row SUPERSEDES the first, keyed by item.
      *
      * <p>Not by prompt: one photo has one import in flight, and keeping both would
-     * leave two fetches racing to write the same filenames.
+     * leave two fetches racing to write the same filenames. The same rule covers a
+     * resume's re-submit, which writes a new prompt for the same item.
      */
     @Test
     public void aSecondJobForOneItemReplacesTheFirst() {
         Jobs jobs = Jobs.empty().with(job("a", "p1")).with(job("a", "p2"));
         assertEquals("one row, one job", 1, jobs.pending().size());
-        assertEquals("p2", jobs.pending().get(0).chunks.get(0).promptId);
+        assertEquals("p2", jobs.pending().get(0).promptId);
     }
 
+    /**
+     * Removal and failure are keyed by PROMPT, not item -- and that is load-bearing.
+     * A superseded run (the record now holds a newer prompt for the same item) must
+     * not be cleared or failed by the old run finishing.
+     */
     @Test
     public void removalIsByPromptAndByItem() {
         Jobs jobs = Jobs.empty().with(job("a", "p1")).with(job("b", "p2"));
@@ -117,25 +148,11 @@ public class JobsTest {
         assertEquals("b", jobs.afterRemoving("p1").pending().get(0).itemId);
         assertEquals("removing an unknown prompt is not an error",
                 2, jobs.afterRemoving("nope").pending().size());
+        assertEquals("a superseded prompt does not clear the newer record",
+                2, jobs.afterRemoving("old-for-a").pending().size());
         assertEquals("and a delete of the photo takes its job",
                 1, jobs.afterRemovingItem("a").pending().size());
         assertEquals("b", jobs.afterRemovingItem("a").pending().get(0).itemId);
-    }
-
-    /**
-     * Naming ANY chunk clears the whole job, because a chunked job's prompts are one
-     * unit: they were submitted together and the range is fetched together.
-     */
-    @Test
-    public void anyChunkNamesTheWholeJob() {
-        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
-                new Jobs.Chunk("p0", 0, 240),
-                new Jobs.Chunk("p1", 240, 240)),
-                "h", 1000L));
-        assertEquals("the tail holds the first prompt and still clears all of it",
-                0, jobs.afterRemoving("p0").pending().size());
-        assertEquals("and so does any other chunk",
-                0, jobs.afterRemoving("p1").pending().size());
     }
 
     /**
@@ -152,19 +169,19 @@ public class JobsTest {
         assertEquals(0, Jobs.parse("not json at all").pending().size());
         assertEquals(0, Jobs.parse("{\"version\":99,\"jobs\":[{\"item\":\"a\","
                 + "\"prompt\":\"p\",\"host\":\"h\"}]}").pending().size());
-        assertEquals(0, Jobs.parse("{\"version\":1}").pending().size());
+        assertEquals(0, Jobs.parse("{\"version\":4}").pending().size());
         assertEquals("a v2 job with no chunk list is not a job",
                 0, Jobs.parse("{\"version\":2,\"jobs\":[{\"item\":\"a\",\"host\":\"h\"}]}")
                         .pending().size());
     }
 
     /**
-     * An entry missing any of the three things a fetch needs is DROPPED where it is
+     * An entry missing any of the three things a run needs is DROPPED where it is
      * read, not carried and skipped by every caller.
      */
     @Test
     public void anUnusableEntryIsNotARecord() {
-        String blob = "{\"version\":1,\"jobs\":["
+        String blob = "{\"version\":4,\"jobs\":["
                 + "{\"item\":\"a\",\"prompt\":\"p1\",\"host\":\"h\"},"
                 + "{\"item\":\"\",\"prompt\":\"p2\",\"host\":\"h\"},"
                 + "{\"item\":\"c\",\"prompt\":\"\",\"host\":\"h\"},"
@@ -192,8 +209,7 @@ public class JobsTest {
      * <p>The failure can arrive minutes after the share with the phone face down.
      * Clearing the record there left the failure in a toast that is gone before it
      * is read; the sheet line and the tile's corner need it on disk until the user
-     * acts. The chunks stay too, because the job is still the thing the row's name
-     * is attached to — Regenerate replaces it.
+     * acts — Regenerate replaces the record with a fresh submission.
      */
     @Test
     public void aFailedJobSurvivesTheRoundTrip() {
@@ -204,65 +220,24 @@ public class JobsTest {
         assertEquals("a failure is kept, not cleared", 1, parsed.pending().size());
         Jobs.Job j = parsed.pending().get(0);
         assertTrue(j.isFailed());
-        assertEquals("a, still a record",
-                "the run needed ~19 GiB; the server has ~24", j.error);
-        assertEquals(1, j.chunks.size());
-        assertEquals("p1", j.chunks.get(0).promptId);
+        assertEquals("the run needed ~19 GiB; the server has ~24", j.error);
+        assertEquals("p1", j.promptId);
     }
 
     /**
-     * The count the job line states and the height its memory figure is stated at
-     * both survive; the count is clamped to the chunk list, because a late report
-     * cannot describe work that was never submitted.
+     * Marking failed is scoped to the PROMPT, so a superseded run's error cannot
+     * land on the record of the submission that replaced it.
      */
     @Test
-    public void progressAndPlanSurviveTheRoundTrip() {
-        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
-                        new Jobs.Chunk("p0", 0, 228),
-                        new Jobs.Chunk("p1", 228, 12)),
-                        "h", 1000L)
-                .withPlan(960)
-                .withProgress(1));
-        Jobs.Job j = Jobs.parse(jobs.toJson()).pending().get(0);
-        assertEquals(960, j.height);
-        assertEquals(1, j.completed);
-
-        Jobs.Job beyond = new Jobs.Job("a", Arrays.asList(
-                        new Jobs.Chunk("p0", 0, 228),
-                        new Jobs.Chunk("p1", 228, 12)),
-                        "h", 1000L)
-                .withProgress(99);
-        assertEquals("a count past the chunk list is clamped", 2, beyond.completed);
-    }
-
-    /** ANY chunk names the job to mark, because a chunked job's prompts are one unit. */
-    @Test
-    public void anyChunkNamesTheWholeJobWhenMarkingFailed() {
-        Jobs jobs = Jobs.empty().with(new Jobs.Job("a", Arrays.asList(
-                new Jobs.Chunk("p0", 0, 240),
-                new Jobs.Chunk("p1", 240, 240)),
-                "h", 1000L));
-        assertTrue(jobs.withError("p1", "stopped").pending().get(0).isFailed());
+    public void markingFailedIsScopedToThePrompt() {
+        Jobs jobs = Jobs.empty().with(job("a", "p1")).with(job("a", "p2"));
+        assertTrue(jobs.withError("p2", "stopped").pending().get(0).isFailed());
+        assertFalse("the superseded prompt's failure lands nowhere",
+                jobs.withError("p1", "stopped").pending().get(0).isFailed());
         assertFalse("naming a prompt no job holds changes nothing",
                 jobs.withError("nope", "stopped").pending().get(0).isFailed());
         assertFalse("and a null prompt is not a name",
                 jobs.withError(null, "stopped").pending().get(0).isFailed());
-    }
-
-    /**
-     * A v2 blob has no failure, no progress and no height — and that is what it
-     * is, not a state to invent. The v3 fields are only written by v3.
-     */
-    @Test
-    public void aVersionTwoRecordReadsAsRunningWithNoProgress() {
-        String v2 = "{\"version\":2,\"jobs\":[{\"item\":\"a\",\"host\":\"h\","
-                + "\"started\":7,\"chunks\":[{\"prompt\":\"p1\",\"start\":0,"
-                + "\"frames\":240}]}]}";
-        Jobs.Job j = Jobs.parse(v2).pending().get(0);
-        assertFalse(j.isFailed());
-        assertEquals(0, j.completed);
-        assertEquals(0, j.height);
-        assertEquals(240, j.chunks.get(0).frames);
     }
 
     /**

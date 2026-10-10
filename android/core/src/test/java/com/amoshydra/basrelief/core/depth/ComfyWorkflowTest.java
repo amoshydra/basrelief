@@ -365,24 +365,15 @@ public class ComfyWorkflowTest {
                 moGeServerInfo().toString(), checkpoint, "up.png", 1024, TS));
     }
 
-    // ================= the VIDEO shape =================
+    // ================= the STREAM shape =================
 
-    /**
-     * The server as it actually answered {@code /object_info}, for the video shape.
-     *
-     * <p>The two video nodes are the real signatures, including the loader's
-     * <b>four</b> outputs of which two are typed {@code IMAGE}. That duplication is
-     * the trap this fixture exists to keep honest: output 1 is the MASK, and a graph
-     * that fed it to MoGe would produce a plausible depth map of nothing with no
-     * error anywhere.
-     */
     /**
      * Assert that a node's input is a link to exactly one node and output index.
      *
      * <p>The graph is a set of wires, so a failure has to say which one — which is
      * why every call site names it. Compared through the array's own string form
      * rather than element-wise, because the failure message then reads
-     * {@code [12, 0] expected [13, 0]} rather than "arrays differ".
+     * {@code [2, 0] expected [1, 0]} rather than "arrays differ".
      */
     private static void assertLink(String what, String readerNodeId,
                                    String targetNodeId, int outputIndex,
@@ -397,216 +388,156 @@ public class ComfyWorkflowTest {
                 in.getJSONArray(inputName).toString());
     }
 
-    private static JSONObject videoServerInfo() throws JSONException {
+    /**
+     * The server's answer for the stream shape: the real MoGe pipeline with the
+     * {@code MoGeVideoStream} custom node beside it.
+     *
+     * <p>The schema is copied from the live server's {@code /object_info}: nine
+     * required inputs, the {@code MOGE_MODEL} handle first, and the scalars with the
+     * defaults the builder is expected to discover. The list matters because two of
+     * them -- {@code resolution_level} and {@code refine_steps} -- are never named
+     * by the app and must arrive from exactly here.
+     */
+    private static JSONObject streamServerInfo() throws JSONException {
         JSONObject base = moGeServerInfo();
-        base.put("VHS_LoadVideo", new JSONObject("{"
+        base.put("MoGeVideoStream", new JSONObject("{"
                 + "\"input\": {\"required\": {"
-                + "  \"video\": [\"STRING\", {}],"
-                + "  \"force_rate\": [\"FLOAT\", {\"default\": 0.0}],"
-                + "  \"custom_width\": [\"INT\", {\"default\": 0}],"
-                + "  \"custom_height\": [\"INT\", {\"default\": 0}],"
-                + "  \"frame_load_cap\": [\"INT\", {\"default\": 0}],"
-                + "  \"skip_first_frames\": [\"INT\", {\"default\": 0}],"
-                + "  \"select_every_nth\": [\"INT\", {\"default\": 1}]}},"
-                // out0 IMAGE (frames), out1 IMAGE (mask), out2 AUDIO, out3 VIDEO
-                + "\"output\": [\"I\", \"I\", \"A\", \"V\"]}"));
-        base.put("VHS_VideoCombine", new JSONObject("{"
-                + "\"input\": {\"required\": {"
-                + "  \"images\": [\"IMAGE\", {}],"
-                + "  \"frame_rate\": [\"FLOAT\", {\"default\": 0.0}],"
-                + "  \"loop_count\": [\"INT\", {\"default\": 0}],"
-                + "  \"filename_prefix\": [\"STRING\", {}],"
-                + "  \"format\": [\"COMBO\", {\"options\": [\"image/gif\","
-                + "     \"video/h264-mp4\", \"video/webm\"]}],"
-                + "  \"pingpong\": [\"BOOLEAN\", {\"default\": false}],"
-                + "  \"save_output\": [\"BOOLEAN\", {\"default\": true}]}},"
-                + "\"output\": [\"V\"]}"));
+                + "  \"moge_model\": [\"MOGE_MODEL\", {}],"
+                + "  \"video\": [\"STRING\", {\"default\": \"\"}],"
+                + "  \"tag\": [\"STRING\", {\"default\": \"\"}],"
+                + "  \"start_frame\": [\"INT\", {\"default\": 0, \"min\": 0}],"
+                + "  \"frame_count\": [\"INT\", {\"default\": 0, \"min\": 0}],"
+                + "  \"target_height\": [\"INT\", {\"default\": 0, \"min\": 0, \"max\": 8192}],"
+                + "  \"batch_size\": [\"INT\", {\"default\": 4, \"min\": 1, \"max\": 16}],"
+                + "  \"resolution_level\": [\"INT\", {\"default\": 9, \"min\": 0, \"max\": 9}],"
+                + "  \"refine_steps\": [\"INT\", {\"default\": 3, \"min\": 0, \"max\": 8}]}},"
+                + "\"output\": [\"STRING\", \"STRING\", \"INT\"]}"));
         return base;
     }
 
-    private static JSONObject videoWf() throws JSONException {
-        return new JSONObject(ComfyWorkflow.buildVideoWorkflow(
-                videoServerInfo(), "moge_3_vitg_fp16.safetensors",
-                "/tmp/up.mp4", TS, 24f, 48, 0, 0, 0));
+    private static JSONObject streamWf() throws JSONException {
+        return new JSONObject(ComfyWorkflow.buildVideoStreamWorkflow(
+                streamServerInfo(), "MoGeInference", "up.mp4", "item-1",
+                0, 0, 720, 4));
     }
 
     /**
-     * Every wire of the video graph, pinned to its node <b>and</b> its output index.
+     * The whole graph, pinned: two nodes whose one wire is a link to the loader's
+     * output 0.
      *
-     * <p>Each assertion names the node it is about, because a graph is a set of wires
-     * and a failure that does not say which one is a failure you have to re-derive.
+     * <p>A graph is a set of wires, and the failure mode is an off-by-one or a
+     * scalar in a link's place -- ComfyUI accepts it and renders from the wrong
+     * tensor, or rejects it with a message naming a type rather than the mistake.
      */
     @Test
-    public void everyWireOfTheVideoGraphIsPinned() throws JSONException {
-        JSONObject wf = videoWf();
-
-        // The loader reads the UPLOADED path and samples at the OUTPUT rate. The rate
-        // is the one number both the loader and both combiners must agree on, and it
-        // is the number whose disagreement slides the depth against the colour.
-        assertEquals("loader path", "/tmp/up.mp4",
-                wf.getJSONObject("10").getJSONObject("inputs").getString("video"));
-        assertEquals("loader rate", 24.0,
-                wf.getJSONObject("10").getJSONObject("inputs").getDouble("force_rate"), 1e-9);
-        assertEquals("frame cap", 48,
-                wf.getJSONObject("10").getJSONObject("inputs").getInt("frame_load_cap"));
-
-        // MoGe reads the loader's output 0 -- the FRAMES, not the mask. This is the
-        // assertion the whole two-IMAGE-outputs hazard exists for.
-        JSONObject inferIn = wf.getJSONObject("12").getJSONObject("inputs");
-        assertLink("MoGe reads the loader's IMAGE (frames, out 0)",
-                "12", "10", 0, wf, "image");
-        assertLink("MoGe reads this graph's own model loader",
-                "12", "11", 0, wf, "moge_model");
-
-        // BOTH renders read THIS graph's inference, not the still shape's node id.
-        // Sharing the render factory is deliberate, and hardcoding the still id in it
-        // is the bug that would have wired the video's depth to a node that is not in
-        // this graph.
-        assertLink("depth render reads the video inference",
-                "13", "12", 0, wf, "moge_geometry");
-        assertLink("normal render reads the video inference",
-                "15", "12", 0, wf, "moge_geometry");
-
-        // The forced outputs, which are the whole point of asking MoGe at all: `depth`
-        // is displacement and only `depth` is. A default change must not silently turn
-        // the depth clip into a colourised one.
-        assertEquals("depth render asks for depth", "depth",
-                wf.getJSONObject("13").getJSONObject("inputs").getString("output"));
-        assertEquals("normal render asks for the OpenGL convention", "normal_opengl",
-                wf.getJSONObject("15").getJSONObject("inputs").getString("output"));
-
-        // Each combiner reads ITS OWN render, and writes h264 -- not the format list's
-        // first entry, which is a GIF and has no reliable frame timing.
-        assertLink("depth clip reads the depth render", "14", "13", 0, wf, "images");
-        assertLink("normal clip reads the normal render", "16", "15", 0, wf, "images");
-        assertEquals("depth clip is h264", "video/h264-mp4",
-                wf.getJSONObject("14").getJSONObject("inputs").getString("format"));
-        assertEquals("normal clip is h264", "video/h264-mp4",
-                wf.getJSONObject("16").getJSONObject("inputs").getString("format"));
-        assertEquals("depth clip rate", 24.0,
-                wf.getJSONObject("14").getJSONObject("inputs").getDouble("frame_rate"), 1e-9);
-        assertEquals("normal clip rate", 24.0,
-                wf.getJSONObject("16").getJSONObject("inputs").getDouble("frame_rate"), 1e-9);
+    public void theStreamGraphIsTwoNodesAndOneWire() throws Exception {
+        JSONObject wf = streamWf();
+        assertEquals("one loader, one stream node, nothing else", 2, wf.length());
+        assertEquals("LoadMoGeModel", wf.getJSONObject("1").getString("class_type"));
+        assertEquals(ComfyWorkflow.VIDEO_STREAM,
+                wf.getJSONObject("2").getString("class_type"));
+        assertLink("the stream node reads the loader's MOGE_MODEL",
+                "2", "1", 0, wf, "moge_model");
     }
 
     /**
-     * Two prefixes, or one file overwrites the other and the depth half silently
-     * disappears.
+     * The run's own inputs travel as scalars, exactly as given.
      *
-     * <p>{@code MoGeRender} selects one output, so the two clips cannot come from one
-     * node — and losing the normal half is the failure that is invisible, which is
-     * exactly how it already behaved once.
+     * <p>{@code batch_size} is the memory knob and comes from
+     * {@code BatchBudget.streamWindow}; {@code frame_count} is 0 on purpose -- the
+     * upload IS the range, and asking for a duration-derived count is the measured
+     * off-by-one (240 frames report 9.9586 s, so {@code round(x*24)} is 239) this
+     * app has already shipped once.
      */
     @Test
-    public void theTwoClipsAreToldApartByTheirPrefixes() throws JSONException {
-        JSONObject wf = videoWf();
-        String depth = wf.getJSONObject("14").getJSONObject("inputs").getString("filename_prefix");
-        String normal = wf.getJSONObject("16").getJSONObject("inputs").getString("filename_prefix");
-        assertTrue("the depth clip keeps the still path's prefix, so the two fetch "
-                        + "routines cannot confuse each other's files",
-                depth.startsWith(ComfyWorkflow.DEPTH_FILE_PREFIX));
-        assertTrue(normal.startsWith(ComfyWorkflow.NORMAL_FILE_PREFIX));
-        assertFalse("two writers, one name: the second overwrites the first",
-                depth.equals(normal));
-        assertTrue("and both are stamped, or a re-run's files cannot be told from "
-                + "a previous run's", depth.endsWith(String.valueOf(TS))
-                        && normal.endsWith(String.valueOf(TS)));
+    public void theStreamNodeCarriesTheRunsOwnInputs() throws Exception {
+        JSONObject in = streamWf().getJSONObject("2").getJSONObject("inputs");
+        assertEquals("up.mp4", in.getString("video"));
+        assertEquals("item-1", in.getString("tag"));
+        assertEquals(0, in.getInt("start_frame"));
+        assertEquals(0, in.getInt("frame_count"));
+        assertEquals("the resolution chip is the node's target_height",
+                720, in.getInt("target_height"));
+        assertEquals("the window", 4, in.getInt("batch_size"));
     }
 
     /**
-     * The video shape is a THIRD graph, structurally distinct from both still shapes.
-     *
-     * <p>Asserted as node counts and as the absence of both still loaders, because a
-     * single-node builder that grew a video branch would keep passing every other
-     * test here while shipping a graph whose frames never reached the sampler.
+     * The two scalars the app never names arrive from the node's spec, so a server
+     * that tunes them tunes the stream shape too, and a future scalar reaches it
+     * without an app change.
      */
     @Test
-    public void theVideoShapeIsNotTheStillShape() throws JSONException {
-        JSONObject video = videoWf();
-        JSONObject moge = moGeWf("moge_3_vitg_fp16.safetensors");
-
-        // Node COUNT cannot tell these two apart, which is worth stating because it
-        // was the assertion written first. Both are seven nodes: the video graph
-        // replaces LoadImage with the video loader and each SaveImage with a
-        // VideoCombine, and nothing is added or removed. A count is only a
-        // discriminator when the shapes genuinely differ in size -- and asserting one
-        // that happens to hold for the wrong reason is a guard that cannot fail.
-        // EIGHT now, not seven: the third combiner is the colour clip's writer, and
-        // it is the node that makes the three clips one decode. (The node-count note
-        // below survives this edit: the point was never that the shapes match in
-        // size, it is that size cannot DISTINGUISH them -- and one more node still
-        // cannot.)
-        assertEquals("both shapes have the MoGe middle in common; size still proves nothing",
-                moge.length() + 1, video.length());
-
-        // What does distinguish them is the CLASSES, so that is what is pinned.
-        assertFalse("the video graph must not load a still",
-                video.toString().contains("\"LoadImage\""));
-        assertFalse("nor save frames -- it writes clips, not PNGs",
-                video.toString().contains("SaveImage"));
-        assertTrue("it must load the video",
-                video.toString().contains(ComfyWorkflow.VIDEO_LOADER));
-        // THREE combines now, not two: depth, normal, and the COLOUR that used to be
-        // the original upload. A colour track taken from the source has a different
-        // frame count from the depth's capped batch, so the two loop on different
-        // clocks and drift at every seam -- while the relief stays behind. Writing the
-        // colour back out of the same loader's batch makes all three one decode: one
-        // frame count, one rate, one duration, one loop.
-        assertTrue("three combines -- depth, normal, and the colour straight off the loader",
-                countOf(video.toString(), ComfyWorkflow.VIDEO_COMBINE) == 3);
-        // And the shared middle is still the MoGe pipeline, not a second copy of it.
-        assertTrue(video.toString().contains(ComfyWorkflow.MOGE_INFERENCE));
-        assertEquals("one inference for the whole batch",
-                1, countOf(video.toString(), ComfyWorkflow.MOGE_INFERENCE));
+    public void streamScalarsTheAppDoesNotNameComeFromTheSpec() throws Exception {
+        JSONObject in = streamWf().getJSONObject("2").getJSONObject("inputs");
+        assertEquals(9, in.getInt("resolution_level"));
+        assertEquals(3, in.getInt("refine_steps"));
     }
 
-    private static int countOf(String haystack, String needle) {
-        int n = 0, i = 0;
-        while ((i = haystack.indexOf(needle, i)) >= 0) {
-            n++;
-            i += needle.length();
-        }
-        return n;
+    /** A chosen checkpoint lands on the loader; {@code MoGeInference} keeps the default. */
+    @Test
+    public void aChosenCheckpointLandsOnTheStreamLoader() throws Exception {
+        JSONObject wf = new JSONObject(ComfyWorkflow.buildVideoStreamWorkflow(
+                streamServerInfo(), "moge_3_vitg_fp16.safetensors", "up.mp4", "t",
+                0, 0, 0, 2));
+        assertEquals("moge_3_vitg_fp16.safetensors",
+                wf.getJSONObject("1").getJSONObject("inputs").getString("model_name"));
+        // MoGeInference means "the discovered default". The loader's combo has no
+        // explicit default, so the spec's first option is what reaches the node --
+        // the same rule the still shape follows, and it means the app never has to
+        // name a checkpoint to get one.
+        assertEquals("moge_2_vitl_normal_fp16.safetensors",
+                streamWf().getJSONObject("1").getJSONObject("inputs").getString("model_name"));
     }
 
     /**
-     * The chunked shape writes no colour clip, and DROPS the node that would.
-     *
-     * <p>The colour of a chunked run is the app's own remuxed range, so a
-     * server-side re-encode of frames the app already holds is work and a download
-     * for nothing — and one colour for N chunks is only possible if the app owns
-     * it. The shape is the same graph with the third combiner absent, not disabled:
-     * a combiner reading a node that is not in the graph is a prompt the server
-     * refuses.
+     * The fetch and resume paths address files they have never been told about, so
+     * the names they derive must be the node's own names -- and the app's sanitiser
+     * must be the node's rule, because otherwise the two disagree on the one string
+     * the whole run is addressed by.
      */
     @Test
-    public void theChunkedShapeWritesNoColourClip() throws JSONException {
-        JSONObject wf = new JSONObject(ComfyWorkflow.buildVideoWorkflow(
-                videoServerInfo(), "moge_3_vitg_fp16.safetensors",
-                "/tmp/up.mp4", TS, 24f, 240, 480, 0, 720, false));
-
-        assertFalse("no colour writer at all",
-                wf.toString().contains(ComfyWorkflow.COLOUR_CLIP_PREFIX));
-        assertEquals("depth and normal still come back", 2,
-                countOf(wf.toString(), ComfyWorkflow.VIDEO_COMBINE));
-        assertTrue(wf.toString().contains(ComfyWorkflow.DEPTH_CLIP_PREFIX));
-        assertTrue(wf.toString().contains(ComfyWorkflow.NORMAL_CLIP_PREFIX));
-        assertEquals("and the shared middle is untouched", 1,
-                countOf(wf.toString(), ComfyWorkflow.MOGE_INFERENCE));
-        assertFalse("the colour combine's node id is absent",
-                wf.has("17"));
-
-        // The chunk window is IN FRAMES and travels exactly as given: chunk k starts
-        // where chunk k-1 stopped, which is what makes the joined clip continuous.
-        JSONObject in = wf.getJSONObject("10").getJSONObject("inputs");
-        assertEquals("skip_first_frames", 480, in.getInt("skip_first_frames"));
-        assertEquals("frame_load_cap", 240, in.getInt("frame_load_cap"));
-        // The two renders still read the one inference (node 12), not each other.
-        assertLink("depth render reads the video inference",
-                "13", "12", 0, wf, "moge_geometry");
-        assertLink("normal render reads the video inference",
-                "15", "12", 0, wf, "moge_geometry");
+    public void streamFileNamesAndTagMatchTheNodesRule() {
+        assertEquals("basrelief_item-1_depth.mp4", ComfyWorkflow.streamDepthName("item-1"));
+        assertEquals("basrelief_item-1_normal.mp4", ComfyWorkflow.streamNormalName("item-1"));
+        assertEquals("basrelief_item-1.progress.json",
+                ComfyWorkflow.streamProgressName("item-1"));
+        // A UUID id, the production case, survives unchanged.
+        assertEquals("a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                ComfyWorkflow.streamTag("a1b2c3d4-e5f6-7890-abcd-ef1234567890"));
+        // The node's rule: alnum plus - and _, everything else dropped, 48 max.
+        assertEquals("abc-d", ComfyWorkflow.streamTag("a b/c-d"));
+        assertEquals("a_b-cd", ComfyWorkflow.streamTag("a_b-c d"));
+        StringBuilder sixty = new StringBuilder();
+        for (int i = 0; i < 60; i++) sixty.append('x');
+        assertEquals(48, ComfyWorkflow.streamTag(sixty.toString()).length());
+        assertEquals("", ComfyWorkflow.streamTag("///"));
+        assertFalse(ComfyWorkflow.isStreamTagUsable(""));
+        assertFalse(ComfyWorkflow.isStreamTagUsable(null));
+        assertTrue(ComfyWorkflow.isStreamTagUsable("item-1"));
     }
+
+    /**
+     * The stream shape is structurally different from both still shapes, pinned by
+     * the classes it does and does not contain.
+     *
+     * <p>Node COUNT proves nothing (the still MoGe shape is seven and the single
+     * node is three; a shape can be the right size for the wrong reason), so what is
+     * asserted is that no still class survives into this graph and the stream node
+     * is the only consumer.
+     */
+    @Test
+    public void theStreamShapeIsNotAStillShape() throws Exception {
+        JSONObject stream = streamWf();
+        assertFalse("the stream graph must not load a still",
+                stream.toString().contains("\"LoadImage\""));
+        assertFalse("nor save a still", stream.toString().contains("SaveImage"));
+        assertFalse("no inference: the node owns the loop",
+                stream.toString().contains(ComfyWorkflow.MOGE_INFERENCE));
+        assertFalse(stream.toString().contains(ComfyWorkflow.MOGE_RENDER));
+        assertTrue(stream.toString().contains(ComfyWorkflow.VIDEO_STREAM));
+        assertEquals("one loader, one stream node", 2, stream.length());
+    }
+
 
     @Test
     public void moGeGraphHasSevenNodesAndWiresEachStage() throws Exception {

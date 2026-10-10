@@ -250,15 +250,12 @@
     <string name="trim_end">End</string>
     <string name="trim_step_back">‹</string>
     <string name="trim_step_forward">›</string>
-    <!-- The estimate is a fact, and the memory half is part of it: the frames are a
-         batch, so "about N of server time" alone was hiding the number that decides
-         whether the run can happen at all. -->
-    <string name="trim_estimate">about %1$s of server time · ~%2$s GiB</string>
-    <!-- A chunked range states its per-prompt memory and how many prompts it takes:
-         the range's total is no longer asked of the card in one go, so the largest
-         chunk is the number that decides whether the run can happen. -->
-    <string name="trim_estimate_chunked">about %1$s of server time · %2$d chunks · ~%3$s GiB each</string>
-    <string name="trim_estimate_over">about %1$s of server time · ~%2$s GiB — this range cannot be generated</string>
+    <!-- The estimate is a fact, and it is the TIME half of it. The memory figure
+         left this line with the chunk plan: the streaming node owns the loop and
+         sizes its own inference window from the pixels it loads, so there is no
+         per-prompt batch for the user to see or choose, and "N chunks · X GiB
+         each" would describe a plan the app no longer makes. -->
+    <string name="trim_estimate">about %1$s of server time · one run</string>
     <string name="trim_job_caption">Job</string>
     <string name="trim_job_start">Start</string>
     <string name="trim_job_note">This runs as a job on the server. You can leave — it keeps going.</string>
@@ -730,10 +727,10 @@
     <string name="video_phase_copying">Copying the clip</string>
     <string name="video_phase_uploading">Uploading</string>
     <string name="video_phase_generating">Generating depth for the clip</string>
-    <!-- The chunked run's honest progress: a long import has no percentage, but it
-         has a denominator (the prompts the server actually runs). Also the job
-         line's own primary text while a chunk is being generated. -->
-    <string name="video_phase_generating_chunk">Generating %1$d of %2$d</string>
+    <!-- The honest progress the node's sidecar gives: frames done of frames
+         planned, a real denominator the server wrote itself. Also the job line's
+         own primary text while the run is working. -->
+    <string name="video_phase_generating_frames">Frame %1$d of %2$d</string>
     <string name="video_phase_fetching">Fetching</string>
     <string name="video_phase_poster">Writing the poster frame</string>
     <string name="video_phase_adding">Adding to the gallery</string>
@@ -745,10 +742,10 @@
     -->
     <!-- Before the first phase message arrives there is nothing to name. -->
     <string name="video_job_running_indeterminate">Generating…</string>
-    <!-- The two facts the line adds after the count, from the trim sheet's own
-         estimate of the whole batch: "about 6 of server time" and the memory it
-         asks the card for. -->
-    <string name="video_job_estimate"> — about %1$s · ~%2$s GiB</string>
+    <!-- The one fact the line adds after the count, from the trim sheet's own
+         estimate: "about 4 min" of server time remaining. The memory figure is
+         gone with the chunk plan — the streaming node's window is internal. -->
+    <string name="video_job_estimate"> — about %1$s</string>
     <!--
       The failed form. %1$s is the SERVER's own words where it gave any — a CUDA
       out-of-memory message names the range it wanted and the card it had — and

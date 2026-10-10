@@ -4879,6 +4879,22 @@ public class MainActivity extends Activity {
         applyFiles();
     }
 
+    /**
+     * The sidecar's frame count moved: repaint ONLY the running line.
+     *
+     * <p>Not {@link #refreshImportPhase}: that re-resolves the medium and runs
+     * {@code applyFiles}, which is right when the run's STATE changes (the record
+     * appearing, a fetch starting) and wrong for a number that moves every two
+     * seconds — the medium does not change 900 times in one import, and each of
+     * those resolves reads the index and queues a GL event. The line is derived,
+     * so re-deriving it is all this needs.
+     */
+    private void refreshImportCount() {
+        if (isFinishing() || isDestroyed()) return;
+        LibraryItem item = state().activeItem();
+        if (item != null) showClipJobLine(item);
+    }
+
     /** The active row's job record, or null. */
     private Jobs.Job activeJob(String itemId) {
         if (itemId == null) return null;
@@ -4893,8 +4909,8 @@ public class MainActivity extends Activity {
      *
      * <p><b>The job takes the fix line's seat.</b> The fix line lives outside the
      * scroll so a condition survives the launch peek; a running import has the
-     * same claim, and leaving "No depth · Generate a map" under "Generating 3 of
-     * 8" would be two answers for one state — one of them inviting a second
+     * same claim, and leaving "No depth · Generate a map" under "Frame 137 of
+     * 480" would be two answers for one state — one of them inviting a second
      * generation of the thing already running.
      *
      * @return true when the line was taken by a job; false when the caller should
@@ -4925,63 +4941,43 @@ public class MainActivity extends Activity {
             return true;
         }
 
-        setFixLine(jobLineText(job, live), null, null, null, null, false);
+        setFixLine(jobLineText(live), null, null, null, null, false);
         return true;
     }
 
     /**
-     * What the running line says: "Generating 3 of 8 — about 4 min · ~6 GiB".
+     * What the running line says: "Frame 137 of 480 — about 4 min".
      *
-     * <p><b>The count comes from the record, the words from the live phase.</b> A
-     * chunk that is being generated has a k and an N (the chunk is the unit the
-     * server runs, and the record counted the finished ones); between chunks the
-     * phase's own word — Uploading, Fetching — is the honest text, and inventing a
-     * count for it would be a number nothing measured. The time and memory come
+     * <p><b>The count comes from the sidecar, the words from the live phase.</b> The
+     * node rewrites its progress file every window, and {@code VideoImport}'s live
+     * object carries the last read's {@code done}/{@code total}: the line states a
+     * number the SERVER gave, not a client-side interpolation. Between phase reads
+     * — Uploading, Fetching — the phase's own word is the honest text, and inventing
+     * a count for it would be a number nothing measured. The remaining time comes
      * from {@link BatchBudget}'s one estimate, through the same formatter the trim
-     * sheet used to state the run before it started.
+     * sheet used to state the run before it started; the memory half left both
+     * surfaces when the streaming node made the window internal.
+     *
+     * <p>Derived, never stashed: this reads the live phase again on every repaint
+     * rather than remembering what the last string was, so a sheet rebuild
+     * re-derives exactly the same line. The record is not consulted for a count at
+     * all — it holds no progress, because the sidecar is always the truth a resume
+     * asks and a second number on disk could only be staler.
      */
-    private CharSequence jobLineText(Jobs.Job job, VideoImport.Live live) {
-        int chunks = job == null ? 0 : job.chunks.size();
-        int done = job == null ? 0 : Math.min(job.completed, chunks);
-        int n = chunks;
-        int k = 0;
-        if (live != null && live.generating && live.chunk > 0 && live.count > 0) {
-            k = live.chunk;
-            n = live.count;
-        } else if (job != null && chunks > 0 && done < chunks) {
-            k = done + 1;
-            n = chunks;
-        }
-
+    private CharSequence jobLineText(VideoImport.Live live) {
         String primary;
-        if (k > 0 && n > 0) {
-            primary = getString(R.string.video_phase_generating_chunk, k, n);
+        if (live != null && live.generating && live.total > 0) {
+            primary = getString(R.string.video_phase_generating_frames,
+                    live.done, live.total);
+            float secs = BatchBudget.estimateSeconds(Math.max(0, live.total - live.done));
+            if (secs > 0) {
+                primary = primary + getString(R.string.video_job_estimate,
+                        VideoTrimSheet.waitText(secs));
+            }
         } else if (live != null && !live.phase.isEmpty()) {
             primary = live.phase;
         } else {
             primary = getString(R.string.video_job_running_indeterminate);
-        }
-
-        // The two facts, from the record alone: a live import has no plan until all
-        // its prompts are submitted, so an estimate before that would be a guess.
-        // The loop walks the RECORD's chunks, not the live count: the record is the
-        // only list whose frames are known, and the two can differ for the moment a
-        // superseded run is being replaced.
-        if (job != null && k > 0) {
-            int remainingFrames = 0;
-            int perBatch = 0;
-            for (int i = 0; i < chunks; i++) {
-                int frames = job.chunks.get(i).frames;
-                if (i >= done) remainingFrames += Math.max(0, frames);
-                perBatch = Math.max(perBatch, frames);
-            }
-            float secs = BatchBudget.estimateSeconds(remainingFrames);
-            double gb = job.height > 0 && perBatch > 0
-                    ? BatchBudget.estimateMb(perBatch, job.height) / 1024.0 : 0;
-            if (secs > 0 && gb > 0) {
-                primary = primary + getString(R.string.video_job_estimate,
-                        VideoTrimSheet.waitText(secs), VideoTrimSheet.gbText(gb));
-            }
         }
         return primary;
     }
@@ -5703,6 +5699,19 @@ public class MainActivity extends Activity {
                 VideoImport.regenerate(MainActivity.this, prefs, item, api,
                         new VideoImport.Listener() {
                             @Override
+                            public void progress(int done, int total) {
+                                // The sidecar's count, not a change of state: posted
+                                // from the Io worker like every phase, and it repaints
+                                // only the line.
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        refreshImportCount();
+                                    }
+                                });
+                            }
+
+                            @Override
                             public void phase(final String message) {
                                 // The sheet's line, not a toast: a regenerate is the
                                 // same server round as an import and reports itself
@@ -5798,7 +5807,7 @@ public class MainActivity extends Activity {
                 // asked about, and the user can share again.
                 if (isFinishing() || isDestroyed()) return;
                 VideoTrimSheet.show(MainActivity.this, uri, label,
-                        meta.fps, meta.frames, meta.height,
+                        meta.fps, meta.frames,
                         new VideoTrimSheet.Chosen() {
                             @Override
                             public void range(int startFrame, int frameCount, boolean whole,
@@ -5833,6 +5842,19 @@ public class MainActivity extends Activity {
                 VideoImport.run(MainActivity.this, prefs, uri, label, api,
                         startFrame, frames, outHeight,
                         new VideoImport.Listener() {
+                            @Override
+                            public void progress(int done, int total) {
+                                // The sidecar's frame count moved. A count is not a
+                                // state, so this repaints only the line — the medium
+                                // resolve applyFiles does is for phases.
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        refreshImportCount();
+                                    }
+                                });
+                            }
+
                             @Override
                             public void phase(final String message) {
                                 // Posted, because phase() is called FROM the Io thread
@@ -6213,6 +6235,18 @@ public class MainActivity extends Activity {
                     final LibraryItem[] out = new LibraryItem[1];
                     VideoImport.resume(MainActivity.this, prefs, job,
                             new VideoImport.Listener() {
+                                @Override
+                                public void progress(int done, int total) {
+                                    // A resumed run's adopted count: same light
+                                    // repaint as a live import's, for the same reason.
+                                    runOnUiThread(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            refreshImportCount();
+                                        }
+                                    });
+                                }
+
                                 @Override
                                 public void phase(String message) {
                                     // The live phase feeds the sheet's line: a resume

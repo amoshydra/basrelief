@@ -1,152 +1,80 @@
 package com.amoshydra.basrelief.core.depth;
 
 /**
- * What the depth server can hold for one video batch, and which resolution fits.
+ * The two numbers a video run states about the server: how long it will take,
+ * and how large a window of frames one inference may hold.
  *
- * <p><b>Why this exists.</b> The video graph runs ONE MoGe inference over the whole
- * batch — that is what makes a clip import four lines of wiring instead of a
- * per-frame pipeline — so the frames are not streamed and the GPU holds every one
- * of them, plus MoGe's own float tensors, at once. Measured on the user's server
- * (RTX 4090, 23.59 GiB), the same graph with three ranges:
+ * <p><b>The window is what replaced the chunk plan.</b> The old video graph held a
+ * whole range as one IMAGE batch and the app sliced the range into prompts that
+ * fit — measured, 600 frames at 1080p died with 17.10 GiB allocated on a 23.59 GiB
+ * card and 600 at 720p with 15.63 GiB. The streaming node takes the video PATH and
+ * owns the loop, so length stops mattering and the only memory decision left is the
+ * size of one inference's window: peak = the model plus one window. 480 frames at
+ * 1920x1080 consumed 11.5-12.3 GiB flat for the whole run with window 4, and that
+ * peak is dominated by MoGe-3 ViT-G ACTIVATIONS, not by the decoded frames. Four
+ * times the pixels the anchor was measured at (4K) therefore needs a quarter of the
+ * window to keep the same footprint.
  *
- * <ul>
- *   <li>600 frames @ 1080p — allocated 17.10 GiB, OOM.</li>
- *   <li>600 frames @ 720p — allocated 15.63 GiB, OOM.</li>
- *   <li>240 frames @ 1080p — allocated 13.46 GiB, requested 5.56 more, OOM.</li>
- * </ul>
+ * <p><b>The rule is arithmetic on pixels, not a table of resolutions.</b> The
+ * measured anchor is a product — 1920x1080 with window 4 sits at 12.3 GiB — and the
+ * activation cost scales with pixels x window, so any (width, height, window) with
+ * the same product as the anchor costs the same window-worth of memory. The rule
+ * returns the largest window in 1..4 whose product stays at or under the anchor:
+ * 1080p gets 4, 1440p gets 2, 4K gets 1, 720p is capped at 4 because the node's
+ * {@code batch_size} input itself is 1..16 and four is the largest measured.
  *
- * <p>So the cost is ~26 MB per frame at 720p and ~80 MB per frame at 1080p —
- * superlinear in height (2.25× the pixels costs ~3×), because MoGe's internal
- * working resolution follows the input and the loader's {@code custom_height}
- * scales the whole batch at once. <b>FRAMES are the term that dominates, not the
- * model.</b>
+ * <p><b>The budget is the measured peak, not the cap, and that is deliberate.</b>
+ * The anchor is 12.3 GiB against the server's 16 GiB PyTorch line: 3.7 GiB of the
+ * line is left for the model, the CUDA context and fragmentation, which is the
+ * headroom the old 15 GiB batch budget was already reaching into when it died.
+ * Because the rule never exceeds the anchor product, no window it returns asks for
+ * more than that measured 12.3 GiB — a 4K window of 1 costs what a 1080p window of
+ * 4 did, which is exactly the measurement this rule extrapolates from.
  *
- * <p><b>The estimate is an empirical fit, not physics.</b> It is here in {@code
- * :core} because it is pure arithmetic a test can drive, and because a guard that
- * let a measured-OOM batch through is exactly the kind of mistake this project
- * cannot catch by looking at the sheet.
- *
- * <p><b>The budget is 15 GiB, not the 16 the brief suggested.</b> At 26 MB/frame
- * the formula lands the measured 600-frame 720p batch at 15.23 GiB — inside 16 —
- * and it OOMed with 15.63 GiB allocated. 15 GiB is the largest round line that
- * rejects all three measured batches while still allowing 240 frames at 720p
- * (6.1 GiB). The card's own 23.59 GiB leaves the model, the CUDA context and
- * fragmentation their room; this number is what the BATCH may ask for.
+ * <p><b>{@code width} and {@code height} are the dimensions the NODE will load</b>
+ * — the source scaled by the resolution chip — not the source's own size. The
+ * caller computes them because the chip is its choice; this class only owns the
+ * arithmetic.
  */
 public final class BatchBudget {
 
-    /** Measured: 600 frames at 720p allocated 15.63 GiB before it died. */
-    public static final double MB_PER_FRAME_AT_720 = 26.0;
-
+    /** The measured anchor: 1920x1080. */
+    public static final int REFERENCE_WIDTH = 1920;
+    /** The measured anchor: 1920x1080. */
+    public static final int REFERENCE_HEIGHT = 1080;
     /**
-     * Superlinear in height: 2.25× the pixels costs ~3×. The exponent is fitted
-     * from the two measured points (26 MB/frame at 720p, ~80 at 1080p), not
-     * derived — MoGe holds a different number of float tensors as the working
-     * resolution grows.
+     * The window the anchor was measured with: 480 frames of 1920x1080@60 held
+     * 11.5-12.3 GiB flat and finished in 340 s. The old graph on the same clip
+     * climbed to 15.48 GiB and requested 4.03 GiB more at frame 174, on the
+     * server's 16 GiB cap.
      */
-    public static final double HEIGHT_EXPONENT = 2.3;
+    public static final int REFERENCE_WINDOW = 4;
+    /** The node's own {@code batch_size} ceiling that this project has evidence for. */
+    public static final int MAX_WINDOW = 4;
+    /** The smallest window there is: below one frame per inference, nothing runs. */
+    public static final int MIN_WINDOW = 1;
 
     /**
-     * The line the estimate must stay under, in MB.
+     * The window of frames one inference may hold, at the dimensions the server
+     * will load.
      *
-     * <p>See the class doc: the brief said ~16 GiB, and the arithmetic says that
-     * line lets the measured 600@720p OOM through. 15 GiB rejects all three
-     * measured batches.
+     * <p>Returns {@link #MIN_WINDOW} for an unknown dimension: a window claims
+     * nothing, so an unread size must not be answered with a larger one. That is
+     * the {@code DepthSource}/{@code VideoSource} rule applied to a number — the
+     * caller value-loads the clip, so the only way here is a container that would
+     * not say, and one frame per inference is the answer that cannot be wrong about
+     * memory.
      */
-    public static final double BUDGET_MB = 15 * 1024.0;
-
-    /**
-     * The resolution chips, in the order the sheet draws them. {@code 0} means
-     * "the source's own height" — the value the loader takes as "no scaling".
-     */
-    public static final int[] LADDER = {0, 1080, 720};
-
-    /**
-     * The largest chunk, in frames, that this project has evidence for: 240 at
-     * 720p is 6.1 GiB by the fit and is the number {@code BatchBudgetTest}
-     * records as never having OOMed.
-     *
-     * <p><b>A chunk is a prompt, so the ceiling is time and blast radius, not
-     * memory.</b> The budget below says a 720p batch of ~440 frames would fit,
-     * and nothing measured supports that shape; a chunk is one prompt whose
-     * result is fetched whole, so a 7-minute chunk also means 7 minutes with no
-     * progress line and a whole chunk to redo if the server is interrupted.
-     * 240 keeps every chunk at or below a measured-successful batch.
-     */
-    public static final int MAX_CHUNK_FRAMES = 240;
-
-    /**
-     * The fraction of {@link #BUDGET_MB} one chunk may use.
-     *
-     * <p>The budget is what a single batch may ask for, and it stands at 15 GiB
-     * with the class doc's own reasons; a chunk is a whole job, so it also needs
-     * the model, the CUDA context and the fragmentation room that doc describes
-     * beyond the batch. 0.75 is the deliberate margin — a 1080p chunk lands at
-     * ~11.5 GiB instead of touching the line — and it is one number because the
-     * difference between a chunk that fits and one that OOMs is exactly the
-     * thing no screenshot can check.
-     */
-    public static final double CHUNK_HEADROOM = 0.75;
-
-    private BatchBudget() {
-    }
-
-    /**
-     * The measured cost of one frame at {@code height}, in MB.
-     *
-     * <p>A height of 0 or less has no cost to report — the caller has no source
-     * height — and {@link #fits} refuses it rather than treating it as free.
-     */
-    public static double perFrameMb(int height) {
-        if (height <= 0) return 0;
-        return MB_PER_FRAME_AT_720 * Math.pow(height / 720.0, HEIGHT_EXPONENT);
-    }
-
-    /** The whole batch's estimated cost, in MB. */
-    public static double estimateMb(int frames, int height) {
-        if (frames <= 0) return 0;
-        return frames * perFrameMb(height);
-    }
-
-    /**
-     * Whether a batch of {@code frames} at {@code height} can be submitted.
-     *
-     * <p>An unknown height (0) never fits: a guard that answered "fits" for a
-     * batch whose size it could not compute would be the state field that nothing
-     * reads, one layer up.
-     */
-    public static boolean fits(int frames, int height) {
-        return height > 0 && frames > 0 && estimateMb(frames, height) <= BUDGET_MB;
-    }
-
-    /** The pixel height a chip means: the source's own for {@code 0}. */
-    public static int heightOf(int chip, int sourceHeight) {
-        return chip <= 0 ? sourceHeight : chip;
-    }
-
-    /**
-     * The chip to select for a batch of {@code frames}.
-     *
-     * <p>The chosen one when it fits — a user's smaller pick is respected even
-     * when a taller one would fit — otherwise the TALLEST of {@link #LADDER} that
-     * does, so the range lands on the best quality that can actually run. An
-     * upscale above the source is never auto-picked: it costs more memory and
-     * adds no detail. Returns {@code -1} when even the smallest offerable height
-     * does not fit, which is the sheet's "this range cannot be generated".
-     */
-    public static int pick(int frames, int sourceHeight, int chosen) {
-        if (fits(frames, heightOf(chosen, sourceHeight))) return chosen;
-        int best = -1;
-        int bestHeight = -1;
-        for (int chip : LADDER) {
-            int h = heightOf(chip, sourceHeight);
-            if (h <= 0 || h > sourceHeight) continue;
-            if (fits(frames, h) && h > bestHeight) {
-                best = chip;
-                bestHeight = h;
-            }
-        }
-        return best;
+    public static int streamWindow(int width, int height) {
+        if (width <= 0 || height <= 0) return MIN_WINDOW;
+        // The anchor as a product of pixels and frames. long because 8K x 16
+        // overflows an int's worth of carelessness, not because either reaches it.
+        long anchor = (long) REFERENCE_WIDTH * REFERENCE_HEIGHT * REFERENCE_WINDOW;
+        long pixels = (long) width * height;
+        long window = anchor / pixels;
+        if (window < MIN_WINDOW) window = MIN_WINDOW;
+        if (window > MAX_WINDOW) window = MAX_WINDOW;
+        return (int) window;
     }
 
     // ------------------------------------------------------------- the time
@@ -183,61 +111,6 @@ public final class BatchBudget {
         return frames * SECONDS_PER_FRAME;
     }
 
-    // ------------------------------------------------------------ chunked runs
-
-    /**
-     * The largest number of frames one prompt may hold at {@code height}.
-     *
-     * <p><b>The rule, stated once:</b> the largest batch the budget allows with
-     * {@link #CHUNK_HEADROOM} to spare, capped at {@link #MAX_CHUNK_FRAMES}. The
-     * budget is what makes a chunk fit at all; the cap is what keeps a run of
-     * cheap frames (a 480p source can afford over a thousand per batch by the
-     * fit) from becoming one enormous prompt. The two bounds are the two failure
-     * modes named on the constant: too large OOMs, and a chunk is a prompt, so
-     * one that spans too many frames costs the user progress and the project a
-     * batch it may have to run twice.
-     *
-     * <p>Returns {@code 0} for an unknown height, like {@link #fits}: a window
-     * claims nothing, so it cannot be answered with a chunk size.
-     */
-    public static int chunkFrames(int height) {
-        if (height <= 0) return 0;
-        int byBudget = (int) Math.floor(BUDGET_MB * CHUNK_HEADROOM / perFrameMb(height));
-        return Math.min(MAX_CHUNK_FRAMES, byBudget);
-    }
-
-    /**
-     * How many prompts a range of {@code frames} costs at {@code height}, or 0
-     * when the range cannot be chunked at all (an unknown height).
-     */
-    public static int chunkCount(int frames, int height) {
-        int n = chunkFrames(height);
-        if (n <= 0 || frames <= 0) return 0;
-        return (frames + n - 1) / n;
-    }
-
-    /**
-     * The chunk boundaries of a range, in order: each row is
-     * {@code {startFrame, frameCount}} and the rows tile {@code [0, frames)}
-     * exactly — no gap, no overlap, the last one taking the remainder.
-     *
-     * <p><b>In frames, never in times.</b> The loader's {@code skip_first_frames}
-     * and {@code frame_load_cap} count decoded frames, so the plan is what makes
-     * the concatenation line up: chunk k continues where chunk k-1 stopped by
-     * construction, and no second division of the same range can disagree with
-     * this one.
-     *
-     * <p>Empty when {@code frames <= 0} (a length nothing has read yet) or the
-     * height is unknown — the caller then has one prompt over whatever it can
-     * read, which is the pre-chunking behaviour rather than a guess.
-     */
-    public static java.util.List<int[]> chunkPlan(int frames, int height) {
-        java.util.List<int[]> plan = new java.util.ArrayList<int[]>();
-        int n = chunkFrames(height);
-        if (n <= 0 || frames <= 0) return plan;
-        for (int start = 0; start < frames; start += n) {
-            plan.add(new int[] {start, Math.min(n, frames - start)});
-        }
-        return plan;
+    private BatchBudget() {
     }
 }

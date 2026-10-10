@@ -625,7 +625,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 556 tests across thirty-two classes:
+it**. 546 tests across thirty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -694,56 +694,61 @@ has run.**
     clip.** Nothing in the shipping path eases it, which is exactly why that would
     have survived review — and `== SOURCE_VIDEO` is also what survives a third medium,
     since `!= STILL` would call a future `SOURCE_DEPTH_ONLY` a video.
-  - **An import that a restart interrupts leaves a photograph AND a record.** Two
-    halves, and both are load-bearing. The poster is written from the LOCAL file
-    before anything reaches the server, at the RANGE's first frame so the picture does
-    not change when the import lands -- so a process death (an install, an OOM kill, a
-    swipe away) leaves a row the user can see and retry, where measured it left an
-    orphaned clip file and no row at all. And the job is a record on disk (`Jobs` +
-    `JobsStore`, key `jobs`) holding the item, its **CHUNKS** -- `[{prompt, start,
-    frames}]` in frame order -- and the HOST that issued them, written the moment the
-    server has all of them, cleared when the outputs are fetched, and **kept as
-    FAILED when the run stops** -- the sheet's job line and the tile's corner carry
-    the server's own words until Regenerate or a delete clears them, because a
-    failure that exists only in a toast is gone before it is read. `JobsStore`
-    commits rather than applies, deliberately. The record is keyed
-    by ITEM, so a second submission supersedes the first instead of leaving two fetches
-    racing for the same filenames, and clearing names ANY one chunk because a chunked
-    job's prompts are one unit. The schema is **v3** and a v2 record reads with no
-    failure, no progress and no height, which is what it is; a v1 record **MIGRATES to a
-    one-chunk job** rather than being dropped -- a v1 blob is a legitimate in-flight
-    run and dropping it would strand a finished result, the exact loss this class
-    exists to end. The resume pass at studio start treats the states as states rather
-    than errors: photo gone → clear; server unreachable → KEEP (a sleeping laptop is
-    not a lost import); the server has never heard of a chunk → clear and let the
-    photo be Regenerated; a chunk ERRORED → record the server's own words as the
-    job's FAILED state and KEEP it (a later foreground skips a failed job rather than
-    re-asking a run that has already answered, and Regenerate is the action that
-    clears it); a chunk still running → KEEP and ask again next foreground; every chunk completed
-    → fetch, attach, clear. **A chunked job is all-or-nothing**: nothing is fetched
-    until EVERY chunk reports `completed`, because a partial fetch would concatenate
-    two of eight chunks into a clip that plays short. And **`outputs.length() > 0` is
-    not "finished"**: the in-flight poll used to return on the first output it saw
-    (the colour combine finishes before MoGe), so a running import hit `attach()`,
-    found no depth clip, and was reported as failed while it was still working -- the
+  - **An import that a restart interrupts leaves a photograph AND a record, and the
+    run's own state is a FILE the server keeps rewriting.** Two halves, and both are
+    load-bearing. The poster is written from the LOCAL file before anything reaches
+    the server, at the RANGE's first frame so the picture does not change when the
+    import lands -- so a process death (an install, an OOM kill, a swipe away) leaves
+    a row the user can see and retry, where measured it left an orphaned clip file
+    and no row at all. And the job is a record on disk (`Jobs` + `JobsStore`, key
+    `jobs`) holding the item, its ONE PROMPT and the HOST that issued it, written the
+    moment the server accepts the prompt, cleared when the outputs are fetched, and
+    **kept as FAILED when the run stops** -- the sheet's job line and the tile's
+    corner carry the server's own words until Regenerate or a delete clears them,
+    because a failure that exists only in a toast is gone before it is read.
+    `JobsStore` commits rather than applies, deliberately. The record is keyed by
+    ITEM, so a second submission supersedes the first instead of leaving two fetches
+    racing for the same filenames; clearing and failing are keyed by PROMPT, so a
+    superseded run finishing cannot clear the record of the submission that replaced
+    it. The schema is **v4**, one prompt again: the streaming node takes the whole
+    range in one prompt and owns the loop, and **the count is deliberately NOT in the
+    record** -- a running run's progress is the sidecar's `done`/`total`, read live
+    into `VideoImport.Live`, and a persisted copy would be a second, staler answer.
+    A v1 blob (one prompt) and a v2/v3 blob (a chunk list) both MIGRATE by keeping
+    their FIRST prompt, because any of them is a legitimate in-flight run and
+    dropping it would strand a finished result -- the exact loss this class exists to
+    end. **The node's sidecar (`basrelief_<tag>.progress.json`, fetchable through
+    /view) is the run's own state, and the resume pass asks it first:** photo gone or
+    no colour clip → clear; server unreachable → KEEP (a sleeping laptop is not a
+    lost import); sidecar `running` → KEEP and seed the line's count from its
+    `done`/`total` (the node is doing the work, and re-submitting here would run it
+    twice against the same output filenames); sidecar `done` → fetch, attach, clear,
+    with the file names the sidecar itself states; sidecar `failed` or a history
+    error → record the server's own words as the job's FAILED state and KEEP it (a
+    later foreground skips a failed job rather than re-asking a run that has already
+    answered, and Regenerate is the action that clears it); the server has no trace
+    at all → **re-submit from frame 0**, because a single prompt has no partial clip
+    to reuse: the node writes both files whole and renames them at the end, so there
+    is nothing to continue. And **`outputs.length() > 0` is not "finished"**: a
+    running entry can already carry outputs, so the old in-flight poll hit
+    `attach()`, found no depth clip, and reported a working import as failed -- the
     poll and the resume now both require `status.completed` and both ask the one
-    `failedReason()` for the server's words. `jobs` is in the studio's index-transport
-    key set, and `attach()` is the ONE implementation of an import's fetch tail,
-    shared with the resume so the two cannot drift.
-  - **The frame count a run is planned from is the SAMPLE count, and the duration
-    estimate is one short on the app's own file.** Measured on a two-chunk import:
-    the remuxed colour clip holds 240 frames of 24fps, its container duration is
-    9.9586s, and `round(9.9586 × 24) = 239` — the MP4 muxer derives the duration
-    from the last sample it processed, which is not always the highest
-    presentation time. The plan asked the server for 239 frames while the colour
-    held 240, so the joined depth clip decoded 239 against 240: one frame short,
-    at the END (not at the join — the joined file spans 0..238 with a clean
-    11-frame second GOP), with no error anywhere and a hitch at every loop.
-    `FrameCount.resolve` takes the exact sample count when the table can be
-    walked and the duration estimate only as the fallback; `VideoImport`'s
-    `sampleCountOf` walks it without reading sample data. **A duration-derived
-    count must never plan a run again** — the arithmetic is the trap, not a
-    rounding.
+    `failedReason()` for the server's words. `jobs` is in the studio's
+    index-transport key set, and `attach()` is the ONE implementation of an import's
+    fetch tail, shared with the resume so the two cannot drift.
+  - **The frame count a run is planned from is the UPLOAD itself, and the count the
+    node reports is checked against it -- a duration-derived count must never plan a
+    run again.** Measured: the app's own remux of a 240-frame 24fps range reports a
+    container duration of **9.9586s** (the MP4 muxer takes it from the last sample
+    processed, not the highest presentation time), and `round(9.9586 × 24) = 239`.
+    The old chunk planner asked the server for 239 frames while the colour held 240,
+    so the joined depth clip decoded **239 against 240** -- one frame short, at the
+    end, no error anywhere, a hitch at every loop. The stream node is now given
+    `frame_count = 0` and runs the whole of the file the app holds, and the app's
+    exact sample count (`VideoImport.sampleCountOf`, one sample per frame) is used
+    only to CHECK: the node's reported `frames` before the fetch, and the arrived
+    depth clip's samples against the colour's after it. A mismatch is a failure with
+    both numbers in it.
   - **An import patches the strip and the grid; it does not reindex them.** The
     early write inserts ONE tile and ONE cell (`Gallery.itemAppeared`), the
     completion repaints that row (`Gallery.itemUpdated`), and `reindex()` stays
@@ -767,31 +772,38 @@ has run.**
     exists it takes the fix line's seat (`MainActivity.showClipJobLine`),
     because the row is a photograph with no depth for the whole server round and
     "No depth · Generate a map" under it would invite a second generation of the
-    thing already running. The count comes from the record (`Jobs.completed`,
-    written after each chunk), the words from the live phase, and the time and
-    memory from `BatchBudget`'s one estimate through the trim sheet's own
-    formatter — so "about 40s" before the run and "about 4 min" during it cannot
-    disagree. A failed line shows the SERVER'S OWN WORDS and a Regenerate action
-    that clears the record and re-runs; no new field holds any of it, so a sheet
-    rebuild re-derives exactly the same line.
-  - **A long range is CHUNKED, and the app joins the results; the server never holds
-    the whole thing as one batch.** Measured: 600 frames at 1080p died with 17.10 GiB
-    allocated on a 23.59 GiB card, and 600 at 720p with 15.63 GiB, because
-    `VHS_LoadVideo` materialises the range as ONE IMAGE batch and `MoGeInference`
-    holds several float tensors per frame for the whole batch -- `batch_size` chunks
-    the forward passes and bounds neither. The app remuxes the range and keeps it as
-    the COLOUR clip, then submits one prompt per `BatchBudget.chunkPlan(total, height)`
-    window -- `skip_first_frames = k*N` and `frame_load_cap = N`, **in frames**, which
-    is what makes the alignment exact -- and `MediaExtractor`+`MediaMuxer` append the
-    per-chunk samples into one depth clip and one normal clip, no re-encode. **The
-    colour combine is DROPPED for every run that has a local range** (every run whose
-    remux succeeded): the server re-encoding frames the app already holds is work and
-    a download for nothing, and one colour for N chunks is only possible if the app
-    owns it. The one shape that still asks the server for a colour is the run with no
-    local range at all -- a failed remux, or a migrated v1 job -- and `attach()` serves
-    both by taking a nullable local colour. Codec configuration is VERIFIED per part
-    (`csd-0`/`csd-1`) before joining: appending streams whose SPS/PPS differ plays
-    wrongly rather than failing, so a mismatch is an error, never a silent file.
+    thing already running. The count is the SIDECAR's `done`/`total` ("Frame 137
+    of 480"), carried in `VideoImport.Live` and re-read on every repaint; between
+    sidecar reads the live phase's own word (Uploading, Fetching) is the honest
+    text, and the remaining time comes from `BatchBudget`'s one estimate through
+    the trim sheet's own formatter — so "about 40s" before the run and "about
+    4 min" during it cannot disagree. The memory figure left this line with the
+    chunk plan, because the streaming node sizes its own window and the sheet no
+    longer states one. A failed line shows the SERVER'S OWN WORDS and a
+    Regenerate action that clears the record and re-runs; no field holds any of
+    it, so a sheet rebuild re-derives exactly the same line.
+  - **One prompt runs a long range, because the server node owns the loop.** The
+    old video graph (`VHS_LoadVideo → MoGeInference → VHS_VideoCombine`)
+    materialised the range as ONE IMAGE batch and held every frame's float tensors
+    at once: measured, 480 frames at 1920x1080 climbed to 15.48 GiB and requested
+    4.03 GiB more at frame 174, dead under the server's 16 GiB cap. The custom node
+    `MoGeVideoStream` takes the video PATH instead, decodes a window at a time,
+    infers and encodes the frames straight out, so **peak is the model plus one
+    window**: the same 480-frame clip held 11.5-12.3 GiB flat for the whole run and
+    finished in 340 s, with frame 0 numerically equal to the app's reference render.
+    The graph is therefore TWO nodes (`LoadMoGeModel → MoGeVideoStream`; its source
+    lives at `server/comfy-node/basrelief_depth/` in this repo and is deployed), and
+    the app has no chunk plan, no per-part join and no codec verification -- those
+    helpers (`BatchBudget.chunk*`, `ClipJoin`, `VideoImport.joinClips`) are deleted
+    with the shape they served. **The window is the memory knob, and its rule is pure
+    arithmetic in `:core`:** `BatchBudget.streamWindow(width, height)` returns the
+    largest window in 1..4 whose `pixels × window` product stays at or under the
+    measured anchor (`1920×1080 × 4` = the 12.3 GiB peak), so 1080p gets 4, 1440p 2,
+    4K 1, and an unknown dimension gets 1 -- the "a window claims nothing" rule
+    applied to a number. The colour is still the app's own remux: it is the playback
+    medium AND the upload, so the frames the node saw and the frames the renderer
+    plays are one file, and a failed remux copies the share and cuts the range from
+    the copy -- the node writes no colour at all.
   - **A clip's SPEED is a render value on the item, and the gate is where it
     applies.** Playback rate is per photo and per surface, on `SurfaceSettings`
     beside `motion`, edited by a row in the "How it moves" group shown only for a
@@ -912,27 +924,23 @@ has run.**
   server without the whole pipeline offers nothing and an ordinary node on the
   same server is untouched; a test asserts the two shapes have different node
   counts and different `SaveImage` sources so an edit cannot collapse them.
-  - **The VIDEO shape is a bookend on the same pipeline, and its node COUNT
-      proves nothing.** `VHS_LoadVideoPath → MoGeInference → MoGeRender(depth /
-      normal_opengl) → VHS_VideoCombine` each. It is four lines of new wiring rather
-      than a new pipeline because **`MoGeInference.image` takes an IMAGE, and an IMAGE
-      is a batch** — a clip's frames go in as one node and come back as one geometry,
-      where the alternative (extract frames, run the still graph per frame) costs one
-      round trip, one prompt and one model load per frame for a clip that is dozens of
-      frames. One inference serves the whole clip, and it was worth checking the
-      server's `/object_info` rather than assuming: the whole VHS pack is installed.
-      Three things it deliberately does **not** inherit from the still builders. The
-      loader's **output 0** is pinned by test, because the loader has two
-      `IMAGE`-typed outputs and output 1 is the MASK — feeding that to MoGe gives a
-      plausible depth map of nothing with no error anywhere. The render factory takes
-      **which inference it reads** as a parameter, because sharing one factory across
-      shapes is the whole point (so a scalar the server adds reaches both) and a
-      hardcoded still-shape id wires the video's depth to a node that is not in the
-      graph. And the combiner's format is forced to **h264**, not the format list's
-      first entry, which is a GIF — a GIF has no reliable frame timing, which would put
-      the depth a frame off the colour for the whole clip. The loader and both
-      combiners are given the **same** rate: it is the one number whose disagreement
-      slides the depth against the colour.
+  - **The STREAM shape is a third builder: two nodes, one wire, and its node
+    COUNT proves nothing.** `LoadMoGeModel → MoGeVideoStream` — the custom node
+    streams frames through MoGe and writes both clips itself, so there is no
+    `LoadImage`, no `SaveImage` and no inference node in this graph at all, and
+    the test pins the CLASSES (no still loader, no saver, no `MoGeInference`),
+    not a size, because a size is a discriminator that can pass for the wrong
+    reason. The one wire — `MoGeVideoStream.moge_model ← LoadMoGeModel` output 0
+    — is pinned to node AND index like every other link. Everything else travels
+    as scalars: `video` is the uploaded name, `tag` is the item id sanitised by
+    the app's copy of the node's rule (alnum plus `-`/`_`, 48 max) because the
+    fetch and resume paths derive `basrelief_<tag>_depth.mp4` / `_normal.mp4` /
+    `.progress.json` from it without ever being told them, `batch_size` is the
+    window, and `frame_count` is 0 — the upload is the plan. `resolution_level`
+    and `refine_steps` are deliberately NOT named: they arrive from the node's
+    own spec exactly as the still MoGe shape's do, and this was checked against
+    the deployed node's `/object_info` rather than assumed. The old VHS video
+    builder is deleted with its tests; the graph that runs is this one.
   - **A guard that prints "matches" while exiting 1 is worse than no guard, and
     this one did.** `checkTestCounts` logged "matches AGENTS.md" from the *class*
     check's happy path while the *test* check had already pushed a failure, so a
@@ -940,72 +948,49 @@ has run.**
     1. I read that line twice as green while grepping for `"OK"` — which is exactly
     the mechanism the script's own comment warns about, and the reason to fix a gate
     that congratulates itself. Both counts must now agree before it says so.
-  - **A count is only a discriminator when the shapes genuinely differ.** The test
-    asserting the video graph has a different node count from the MoGe still shape
-    was wrong: with the colour combine the video graph is **eight** nodes and the MoGe
-    still shape seven, because the video graph swaps one loader and turns two
-    `SaveImage`s into three `VHS_VideoCombine` nodes -- but size alone distinguishes
-    nothing, which is why the test pins the CLASSES: no `LoadImage`, no `SaveImage`,
-    exactly one inference, and a combine count that matches the shape that was asked
-    for. The third combine (the colour) is now **opt-in**, and the chunked shape is
-    pinned as its absence: `theChunkedShapeWritesNoColourClip` holds
-    `buildVideoWorkflow(..., includeColour=false)` to two combines, no colour prefix,
-    no colour node id, and the exact `skip_first_frames`/`frame_load_cap` window it was
-    given.
-- `BatchBudgetTest` — the video batch's memory guard, and the three measured OOMs
-  it exists to refuse: 600 frames at 1080p (17.10 GiB allocated), 600 at 720p
-  (15.63 GiB) and 240 at 1080p (13.46 + 5.56 refused). The fit is 26 MB per frame
-  at 720p scaled by the height ratio to the power 2.3, because the cost is
-  superlinear in height — MoGe's internal working resolution follows the input, and
-  the loader's `custom_height` scales the whole batch at once. **The trap is the budget line**:
-  the brief's 16 GiB is inside the measured 600@720p failure (15.23 GiB by the
-  fit, 15.63 allocated before it died), so the line is 15 GiB, and tests hold both
-  measured batches above it. The second trap is the auto-pick: it takes the tallest
-  rung of the ladder that fits and **never upscales above the source**, because an
-  upscale costs more memory and adds no detail; an unknown height fits nothing —
-  the `DepthSource`/`VideoSource` "a window claims nothing" rule applied to a
-  number. Its second theme is the **chunk rule** the chunked pipeline sizes prompts
-  with: `chunkFrames(height)` is the largest batch the budget allows with 0.75 of it
-  as headroom, capped at the measured-safe 240 — 1080p is budget-bound (174 frames,
-  ~11.5 GiB) and 720p is cap-bound (240, ~6.1 GiB) — and `chunkPlan` must tile the
-  range exactly, no gap and no overlap, with the last chunk taking the remainder,
-  because the join is by order and a non-tiling plan would build a clip that plays
-  wrongly without failing anywhere.
-- `ClipJoinTest` — the join's arithmetic, moved out of the `MediaExtractor` +
-  `MediaMuxer` loop so a device is not needed to check it: the frame duration is
-  the smallest positive step between a part's timestamps (decode order makes
-  consecutive deltas meaningless when B-frames are present), and the next part
-  starts **strictly after** the previous part's last frame, never on it. The
-  boundary test is the one that matters: two parts whose raw timestamps meet at
-  the seam, where a shift that only reached the previous max would write two
-  samples at one instant — and the merge must hold both parts' frames, one frame
-  apart across the seam. `VideoImport.joinClips` calls this class; the muxing
-  itself stays untestable and is not what the test claims.
-- `FrameCountTest` — which frame count an import is planned from, and the
-  measured file where the answers differ: the app's own remux of a 240-frame
-  24fps range reports a container duration of **9.9586s** (the muxer takes it
-  from the last sample processed, not the highest presentation time), and
-  `round(9.9586 × 24) = 239`. Planning from that estimate asked the server for
-  one frame fewer than the colour clip held, so the joined depth clip decoded
-  **239 against 240** — one frame short, at the end, no error anywhere. The
-  sample count wins whenever the table can be walked; the duration estimate is
-  the fallback for a container that cannot be read, and 0 is the answer for
-  neither, because a window claims nothing.
-- `JobsTest` — the pending-import record. The chunk list is the second half of
-  "a record survives the restart": a chunked import has N prompts for one item,
-  the fetch concatenates by ORDER, and a v1 blob migrates to a one-chunk job
-  rather than being dropped because it is a legitimate in-flight run. Its v3
-  theme is the three facts a run has to show outside the worker that owns it:
-  the failure the server reported (**kept**, not cleared — the sheet line and
-  the tile's corner carry it until Regenerate or a delete), the count of
-  completed chunks the job line states, and the load height its memory figure is
-  stated at. A v2 blob reads with none of them, which is what it is, and a
-  progress count past the chunk list is clamped rather than invented. Its
-  preview theme pins the precedence window: a record with no tracks on the row
-  names the row's colour preview, another row's record names nothing, **tracks
-  win over a lingering record** (the resolve that lands between the finish's
-  writes, and every resolve during a regenerate), and a FAILED record still
-  previews because the colour is still the user's video.
+  - **A count is only a discriminator when the shapes genuinely differ.** The old
+    video shape's test asserting it had a different node count from the MoGe still
+    shape was a guard that could not fail: the two happened to differ, but size
+    alone proves nothing about which classes are wired. What is pinned instead is
+    the CLASSES: the stream shape has no `LoadImage`, no `SaveImage` and no
+    `MoGeInference`, and its graph is exactly the two nodes the builder names.
+- `BatchBudgetTest` — the window rule and the time estimate. The rule is
+  `streamWindow(width, height)`: the largest window in 1..4 whose `pixels ×
+  window` product stays at or under the measured anchor, where the anchor is
+  1920×1080 with window 4 — the run that held **11.5-12.3 GiB flat for all 480
+  frames** while the old whole-batch graph climbed to 15.48 GiB and asked for
+  4.03 more at frame 174 on the server's 16 GiB cap. The tests hold the
+  endpoints (1080p → 4, 4K → 1, 1440p → 2), sweep a grid to assert no returned
+  window ever exceeds the anchor product unless the pixels already do, and pin
+  the unknown-dimension answer at 1 — the `DepthSource`/`VideoSource` "a window
+  claims nothing" rule applied to a number, because a size the caller could not
+  read must not be answered with a larger window. The measured costs that drove
+  the chunk planner (26 MB/frame at 720p, the 2.3 height exponent, the 15 GiB
+  batch budget) are deleted with the shape that needed them: the streaming
+  node's peak is dominated by MoGe's ViT-G activations for one window, not by
+  the decoded frames, which is why the rule is linear in `pixels × window` at
+  all. Its second theme is the time estimate both surfaces state — the sheet
+  before a run, the job line during one — from the single `SECONDS_PER_FRAME`
+  constant.
+- `JobsTest` — the pending-import record. The traps are the ones the class
+  exists for: a record that does not survive the round trip is the loss this
+  class was written to end, a blob that throws on read is worse than a lost
+  record because it is read on the path to drawing, and a record naming a photo
+  that is gone must not be resurrected. **v4 is one prompt again**, and the
+  tests pin the record's key set as exactly item/host/started/prompt/error — a
+  `done` or `frames` field written back would be a second, staler answer to the
+  question the node's sidecar answers. The migrations are the older half: a v1
+  prompt and a v2/v3 chunk list both MIGRATE rather than being dropped (the
+  first prompt is the handle the old run answers to, and dropping the record
+  would strand a finished server result), and a v3 failure message survives, so
+  a failed run keeps failing until the user acts. Removal and failure are keyed
+  by PROMPT while the record itself is keyed by ITEM — that split is pinned,
+  because a superseded run finishing must not clear or fail the submission that
+  replaced it. Its preview theme pins the precedence window: a record with no
+  tracks on the row names the row's colour preview, another row's record names
+  nothing, **tracks win over a lingering record** (the resolve that lands
+  between the finish's writes, and every resolve during a regenerate), and a
+  FAILED record still previews because the colour is still the user's video.
 - `ModelRankingTest` — the model chooser's ordering: the most recently used
   models first, then discovery order. It exists because the dialog preferred the
   first MoGe entry it found, so the default checkpoint followed the server's
