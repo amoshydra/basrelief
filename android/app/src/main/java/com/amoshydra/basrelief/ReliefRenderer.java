@@ -335,10 +335,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uBackdropH;\n" +
             "in vec2 aPosition;\n" +   // (u-0.5, v-0.5); x is scaled by uAspect here
             "in vec2 aUV;\n" +
-            // The card corner, (-0.5..0.5)^2, shared by the four vertices of one
-            // splat sample. The relief's grid has no such attribute, so the value
-            // is the attribute's default and the else branch never reads it.
-            "in vec2 aCorner;\n" +
             "out vec2 vUv;\n" +
             // TWO UVs, and the split is the whole point of the mode. The colour is
             // sampled at the sample's own texel for all four corners of a card --
@@ -558,11 +554,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     // GLES3-only relief uniforms.
     private int uDepth = -1, uGrid = -1, uAspect = -1;
     /**
-     * GLES3-only splat uniforms: the mode switch, the card size, the camera
-     * distance the cards are placed against, and the photograph's camera as the
-     * effective focal plus the default it is measured against.
+     * GLES3-only splat uniforms: the mode switch, the card size and grid, the
+     * camera distance the cards are placed against, and the photograph's camera
+     * as the effective focal plus the default it is measured against.
      */
-    private int aCorner = -1;
     private int uSplat = -1, uSplatSize = -1, uCamDist = -1, uFocal = -1, uRefFocal = -1;
     private int uSplatGrid = -1;
 
@@ -2509,7 +2504,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uDepth = GLES20.glGetUniformLocation(program, "uDepth");
         uGrid = GLES20.glGetUniformLocation(program, "uGrid");
         uAspect = GLES20.glGetUniformLocation(program, "uAspect");
-        aCorner = GLES20.glGetAttribLocation(program, "aCorner");
         uSplat = GLES20.glGetUniformLocation(program, "uSplat");
         uSplatSize = GLES20.glGetUniformLocation(program, "uSplatSize");
         uSplatGrid = GLES20.glGetUniformLocation(program, "uSplatGrid");
@@ -2519,15 +2513,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uBackdrop = GLES20.glGetUniformLocation(program, "uBackdrop");
         uBackdropH = GLES20.glGetUniformLocation(program, "uBackdropH");
         uBlur = GLES20.glGetUniformLocation(program, "uBlur");
-        if (GLES3 && aCorner < 0) {
-            // The splat mode needs a third attribute; without it the draw path
-            // would silently fall back to the relief while the pref says
-            // otherwise. It cannot happen while the shader declares aCorner in a
-            // uniform branch (the compiler cannot drop it), which is exactly why
-            // it is worth one line to say it did not.
-            android.util.Log.w("Basrelief",
-                    "aCorner missing from the GLES3 program; the splat mode cannot draw");
-        }
 
         markerProgram = createProgram(GLES3 ? MARKER_VERT3 : MARKER_VERT,
                 GLES3 ? MARKER_FRAG3 : MARKER_FRAG);
@@ -2551,8 +2536,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // and the linker is free to hand out the same index to both. If it
         // does, drawing the marker overwrites a mesh pointer, so we re-bind
         // afterwards instead of assuming it cannot happen.
-        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV
-                || markerAPos == aCorner;
+        markerClobbersMesh = markerAPos == aPosition || markerAPos == aUV;
+
         if (markerClobbersMesh) {
             android.util.Log.w("Basrelief", "marker attribute index " + markerAPos
                     + " collides with a mesh attribute; re-binding after each marker draw");
@@ -3319,32 +3304,27 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // collision harmless rather than something to remember.
             GLES20.glUniform1f(uGrid, GRID);
             GLES20.glUniform1f(uAspect, r.aspect);
-            // The mode switch, uploaded for EVERY GLES3 draw so a stale 1 cannot
-            // outlive the pref being turned off. The relief's draw is otherwise
-            // untouched by this: same program, same buffers, same call, and the
-            // shader's else branch is the arithmetic it always was.
-            GLES20.glUniform1f(uSplat, render3d ? 1f : 0f);
-            // Set every draw, for the same reason uSplat is: a backdrop left on
-            // from the previous frame would draw the relief's plane as a blurred
-            // wash at the far end of the model.
+            // uSplat is set by the BRANCH THAT DRAWS, not here. It selects the
+            // shader's card arithmetic, so a value that disagreed with the geometry
+            // would run that arithmetic over the relief's vertices -- which is
+            // exactly what happened when the cards stopped reading aCorner: the
+            // compiler dropped the attribute, the old guard fell back to the
+            // relief, uSplat stayed 1, uSplatGrid was 0, sx / uSplatGrid was NaN,
+            // and every triangle was discarded with no error anywhere.
+            //
+            // uBackdrop stays here: it is 0 unless the backdrop draw sets it, and
+            // that draw clears it again before the cards.
             GLES20.glUniform1f(uBackdrop, 0f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
-            if (render3d && aCorner >= 0) {
-                // Built on the FIRST splat draw of this context, not with the
-                // relief grid: 18 MB of buffers for a mode that is off by default
-                // is memory the relief never asked for, and the lazy build cannot
-                // get the ordering wrong -- the pref is read in reloadFromPrefs,
-                // which runs after the grids are built in onSurfaceCreated.
+            if (render3d) {
                 // Before the cards, so every hole they open shows the photograph
                 // out of focus instead of showing black.
                 drawSplatBackdrop(r);
                 drawSplatGrid(r);
             } else {
-                // Leave aCorner off, so the relief draw cannot read the splat
-                // buffer through an attribute pointer that is still enabled.
-                if (aCorner >= 0) GLES20.glDisableVertexAttribArray(aCorner);
+                GLES20.glUniform1f(uSplat, 0f);
                 GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
                 GLES20.glEnableVertexAttribArray(aPosition);
                 GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
@@ -3400,7 +3380,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the hole this draw exists to fill, so a pair without a blur leaves the
         // mode as it was rather than failing a draw.
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureBlur > 0 ? r.textureBlur : 0);
-        if (aCorner >= 0) GLES20.glDisableVertexAttribArray(aCorner);
         GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, backdropVbo);
         GLES20.glEnableVertexAttribArray(aPosition);
         GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
@@ -3430,6 +3409,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * class rather than two.
      */
     private void drawSplatGrid(Render r) {
+        GLES20.glUniform1f(uSplat, 1f);
         GLES20.glUniform1f(uSplatGrid, splatGrid);
         GLES20.glUniform1f(uSplatSize, Splat.cardSize(splatGrid));
         GLES20.glUniform1f(uCamDist, CameraModel.CAM_DIST);
@@ -3446,7 +3426,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // driver that fetches anyway reads garbage.
         if (aPosition >= 0) GLES20.glDisableVertexAttribArray(aPosition);
         if (aUV >= 0) GLES20.glDisableVertexAttribArray(aUV);
-        if (aCorner >= 0) GLES20.glDisableVertexAttribArray(aCorner);
         int samples = (splatGrid + 1) * (splatGrid + 1);
         GLES20.glDrawArrays(GLES30.GL_TRIANGLES, 0, samples * 6);
         if (!splatLevelLogged) {

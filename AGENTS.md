@@ -330,6 +330,18 @@ already cost real time.
     which is what the inpainting pass in the plan is for; and it does not make the
     mode denser, which is the other half of why the demo's 3.7 M-point render has
     no dot screen where the phone's 148 k cards do.
+  - **The mode switch belongs to the branch that draws, not to a shared block above
+    it.** `uSplat` selects the shader's card arithmetic; the geometry it is drawn
+    with is chosen by the caller. While those were two conditions (`render3d` for
+    the uniform, `render3d && aCorner >= 0` for the geometry) they could disagree,
+    and they did: the cards stopped reading `aCorner`, the compiler dropped the
+    attribute, `glGetAttribLocation` answered -1, the guard fell back to the RELIEF
+    grid while `uSplat` stayed 1 — so the card maths ran over the relief's vertices
+    with `uSplatGrid` still 0, `sx / uSplatGrid` was NaN, and every triangle was
+    discarded. The screen was black in every mode with no error anywhere, and the
+    only tell was the marker still drawing. Each branch now sets its own mode, and
+    `aCorner` is gone from the app entirely: no shader reads it any more, so a
+    field that only ever answered -1 is a field that means nothing.
   - **The aspect goes on X and only on X, where the relief puts it.** The card's
     footprint is the cell it replaces — `aspect/GRID` wide and one grid cell tall — so the
     sample's position and the x half of the footprint carry `uAspect` and the y half
