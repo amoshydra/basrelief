@@ -23,16 +23,19 @@ helpers rather than an import: they are 20 lines of arithmetic and importing pri
 helpers from a file upstream rewrites on its own schedule is how a node breaks on
 someone else's release. `moge_model.infer` is the one upstream surface this relies on.
 
-The client contract: outputs are `basrelief_<tag>_depth.mp4`, `basrelief_<tag>_normal.mp4`
-and the sidecar `basrelief_<tag>.progress.json` (all fetchable through `/view`), the
-sidecar holds `{done, total, state, src_frames, src_fps, fps_out}` and is rewritten
-every window, and the run's UI payload in `/history` names the same files.
+The client contract: outputs are `basrelief_<tag>_depth.mp4`, `basrelief_<tag>_normal.mp4`,
+`basrelief_<tag>_color.mp4` and the sidecar `basrelief_<tag>.progress.json` (all
+fetchable through `/view`); the sidecar holds `{done, total, state, src_frames,
+src_fps, fps_out, color}` and is rewritten every window; the run's UI payload in
+`/history` names the same files. **`color` is absent/null when the source already
+fit the playback caps** -- then the app's own remux is the colour and no generation
+is lost. The generated tracks are always capped (`target_height` from the sheet chip,
+`max_long_side` for playback, the smaller wins), because measured, a 1440x2560@50
+source could not be held even by the colour stream alone on a Pixel 7 Pro.
 
-`fps_cap` (default 30) caps the rate the generated tracks are written at, never above
-the source. Output frame k is source frame `round_half_up(k * src/out)` -- same
-timeline, fewer samples -- which is what lets the app hold three decoders in lockstep
-on a phone (measured: three 1080p50 streams each ran ~39-40 fps and diverged). The
-colour clip is NOT produced here: it stays the app's own remux.
+`fps_cap` (default 30) caps the rate the clips are written at, never above the
+source. Output frame k is source frame `round_half_up(k * src/out)` -- same
+timeline, fewer samples.
 """
 
 import json
@@ -110,11 +113,11 @@ def _decoder(path):
         stdout=subprocess.PIPE, bufsize=10 ** 8)
 
 
-def _encoder(path, w, h, fps, gop):
+def _encoder(path, w, h, fps, gop, crf):
     return subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h), "-r", fps, "-i", "-",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
          # A short GOP is load-bearing for the player: it restarts a clip by seeking
          # to the nearest keyframe, and it bounds how far a decoder that fell behind
          # can be pulled forward. One second.
@@ -131,11 +134,13 @@ def _even(n):
 # ------------------------------------------------------------------------- the node
 
 class MoGeVideoStream:
-    """Run MoGe over a video range and write depth + normal clips, frame by frame.
+    """Run MoGe over a video range and write colour + depth + normal clips.
 
     The input is a path, NOT an IMAGE tensor, and that is the whole point: see the
     module docstring. Outputs are filenames in the ComfyUI output directory (fetch
-    them like any other produced video), plus the frame count actually written.
+    them like any other produced video) plus the frame count written. All three
+    clips are encoded from the SAME decoded frames, so they are aligned in time by
+    construction -- that is what removes the whole skew class for heavy sources.
     """
 
     @classmethod
@@ -155,6 +160,13 @@ class MoGeVideoStream:
                 # 0 = the source's own height. The old path's custom_height means
                 # the same thing, and the model sees the scaled frames either way.
                 "target_height": ("INT", {"default": 0, "min": 0, "max": 8192}),
+                # The playback tracks must be sized for the PHONE, not the camera:
+                # measured, a 1440x2560@50 source could not be decoded by even ONE
+                # of the three streams on a Pixel 7 Pro (the colour fell 0.4-2.4 s
+                # behind), while 1920x1080-class content held ~40 fps per stream.
+                # This caps the LONG side of both the generated tracks and the
+                # colour re-encode. 0 = no cap.
+                "max_long_side": ("INT", {"default": 1920, "min": 0, "max": 8192}),
                 # Frames per inference call. This is the memory knob: peak = model +
                 # window. 4 is the core node's default and keeps 4K windows small.
                 "batch_size": ("INT", {"default": 4, "min": 1, "max": 16}),
@@ -172,8 +184,8 @@ class MoGeVideoStream:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("depth_path", "normal_path", "frames")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("color_path", "depth_path", "normal_path", "frames")
     FUNCTION = "run"
     CATEGORY = "basrelief"
     # This node produces FILES, not a tensor anything downstream consumes, so it is
@@ -189,16 +201,28 @@ class MoGeVideoStream:
         return float("NaN")
 
     def run(self, moge_model, video, tag, start_frame, frame_count, target_height,
-            batch_size, fps_cap, resolution_level, refine_steps):
+            max_long_side, batch_size, fps_cap, resolution_level, refine_steps):
         src = folder_paths.get_annotated_filepath(video)
         if not src or not os.path.isfile(src):
             raise ValueError("video not found in the input directory: %r" % (video,))
 
         src_w, src_h, fps, src_frames = _probe(src)
-        out_h = src_h if target_height <= 0 else min(target_height, src_h)
-        scale = out_h / float(src_h)
-        out_w = _even(int(round(src_w * scale)))
-        out_h = _even(out_h)
+        # Two independent caps, and the smaller wins: the sheet's chip (a GENERATION
+        # choice, measured in height, as the old custom_height was) and the long side
+        # (a PLAYBACK choice -- the phone decodes these clips). Measured: a
+        # 1440x2560@50 source could not be held even by the colour stream alone on a
+        # Pixel 7 Pro, while 1920x1080-class content held ~40 fps per stream.
+        gen_scale = 1.0
+        if target_height > 0:
+            gen_scale = min(gen_scale, target_height / float(src_h))
+        play_scale = 1.0
+        if max_long_side > 0:
+            play_scale = min(play_scale, max_long_side / float(max(src_w, src_h)))
+        gen_scale = min(gen_scale, play_scale)
+        out_w = _even(int(round(src_w * gen_scale)))
+        out_h = _even(int(round(src_h * gen_scale)))
+        col_w = _even(int(round(src_w * play_scale)))
+        col_h = _even(int(round(src_h * play_scale)))
 
         total = src_frames - start_frame if frame_count <= 0 else frame_count
         if total <= 0:
@@ -230,12 +254,22 @@ class MoGeVideoStream:
         out_dir = folder_paths.get_output_directory()
         depth_name = "basrelief_%s_depth.mp4" % safe
         normal_name = "basrelief_%s_normal.mp4" % safe
+        color_name = "basrelief_%s_color.mp4" % safe
         progress_name = "basrelief_%s.progress.json" % safe
         depth_final = os.path.join(out_dir, depth_name)
         normal_final = os.path.join(out_dir, normal_name)
+        color_final = os.path.join(out_dir, color_name)
         depth_tmp = os.path.join(out_dir, depth_name[:-4] + ".tmp.mp4")
         normal_tmp = os.path.join(out_dir, normal_name[:-4] + ".tmp.mp4")
+        color_tmp = os.path.join(out_dir, color_name[:-4] + ".tmp.mp4")
         progress_path = os.path.join(out_dir, progress_name)
+
+        # The colour is re-encoded only when the source exceeds the playback caps,
+        # and at the PLAYBACK scale rather than the sheet chip: what the user looks
+        # at should be the best the phone can hold. When the source already fits,
+        # the app plays its own remux (a lossless sample copy) and no generation is
+        # thrown away -- `color` is absent from the sidecar and the ui.
+        need_color = (col_w, col_h) != (src_w, src_h) or capped
 
         def write_progress(done, state):
             # The app's progress channel AND its resume state. A websocket event dies
@@ -246,6 +280,7 @@ class MoGeVideoStream:
                 with open(progress_path, "w") as f:
                     json.dump({"done": done, "total": total_out, "state": state,
                                "depth": depth_name, "normal": normal_name,
+                               "color": color_name if need_color else None,
                                "progress": progress_name,
                                # The input side of the count, so the app can verify
                                # the exactness it planned instead of trusting it.
@@ -255,8 +290,12 @@ class MoGeVideoStream:
                 pass
 
         dec = _decoder(src)
-        dep_enc = _encoder(depth_tmp, out_w, out_h, enc_fps, gop)
-        nrm_enc = _encoder(normal_tmp, out_w, out_h, enc_fps, gop)
+        dep_enc = _encoder(depth_tmp, out_w, out_h, enc_fps, gop, 14)
+        # The normal is noise-like and was 16 MB for a 7 s clip at CRF 14; 17 is the
+        # same picture to the eye and roughly half the file and decode cost. The
+        # depth stays at 14 -- it is the geometry, and it is the smaller file.
+        nrm_enc = _encoder(normal_tmp, out_w, out_h, enc_fps, gop, 17)
+        col_enc = _encoder(color_tmp, col_w, col_h, enc_fps, gop, 16) if need_color else None
         frame_bytes = src_w * src_h * 3
         written = 0
         started = time.time()
@@ -291,11 +330,20 @@ class MoGeVideoStream:
                 if not window:
                     break
 
-                b = torch.from_numpy(np.stack(window)).float().div_(255.0)
-                b = b.permute(0, 3, 1, 2)
+                b_src = torch.from_numpy(np.stack(window)).float().div_(255.0)
+                b_src = b_src.permute(0, 3, 1, 2)
+                c_u8 = None
+                if col_enc is not None:
+                    b_col = b_src
+                    if (col_w, col_h) != (src_w, src_h):
+                        b_col = torch.nn.functional.interpolate(
+                            b_src, size=(col_h, col_w), mode="bilinear", antialias=True)
+                    c_u8 = (b_col.clamp(0, 1) * 255.0).round().to(torch.uint8)
+                    c_u8 = c_u8.permute(0, 2, 3, 1).cpu().numpy()
+                b = b_src
                 if (out_w, out_h) != (src_w, src_h):
                     b = torch.nn.functional.interpolate(
-                        b, size=(out_h, out_w), mode="bilinear", antialias=True)
+                        b_src, size=(out_h, out_w), mode="bilinear", antialias=True)
 
                 with torch.inference_mode():
                     geo = moge_model.infer(b, resolution_level=resolution_level,
@@ -317,6 +365,8 @@ class MoGeVideoStream:
                 for i in range(d_u8.shape[0]):
                     dep_enc.stdin.write(d_u8[i].tobytes())
                     nrm_enc.stdin.write(n_u8[i].tobytes())
+                    if c_u8 is not None:
+                        col_enc.stdin.write(c_u8[i].tobytes())
                     written += 1
                     pbar.update_absolute(written)
 
@@ -331,12 +381,14 @@ class MoGeVideoStream:
                 if comfy.model_management.processing_interrupted():
                     raise comfy.model_management.InterruptProcessingException()
         except BaseException:
-            for p in (dec, dep_enc, nrm_enc):
+            for p in (dec, dep_enc, nrm_enc, col_enc):
+                if p is None:
+                    continue
                 try:
                     p.kill()
                 except Exception:
                     pass
-            for f in (depth_tmp, normal_tmp):
+            for f in (depth_tmp, normal_tmp, color_tmp):
                 try:
                     os.remove(f)
                 except OSError:
@@ -349,28 +401,37 @@ class MoGeVideoStream:
             except Exception:
                 pass
 
-        for enc in (dep_enc, nrm_enc):
+        encoders = [dep_enc, nrm_enc] + ([col_enc] if col_enc is not None else [])
+        for enc in encoders:
             enc.stdin.close()
             enc.wait()
-        if dep_enc.returncode != 0 or nrm_enc.returncode != 0:
+        if any(enc.returncode != 0 for enc in encoders):
             # Never rename a broken file over the good name: the failure has to reach
             # the app as a failure, not as a clip that plays short.
-            for f in (depth_tmp, normal_tmp):
+            for f in (depth_tmp, normal_tmp, color_tmp):
                 try:
                     os.remove(f)
                 except OSError:
                     pass
             write_progress(written, "failed")
-            raise RuntimeError("encoder failed (depth rc=%s, normal rc=%s)"
-                               % (dep_enc.returncode, nrm_enc.returncode))
+            raise RuntimeError("encoder failed (rc=%s)"
+                               % ([enc.returncode for enc in encoders],))
         os.replace(depth_tmp, depth_final)
         os.replace(normal_tmp, normal_final)
+        if col_enc is not None:
+            os.replace(color_tmp, color_final)
         write_progress(written, "done")
         print("[basrelief] done: %d frames in %.1fs" % (written, time.time() - started),
               flush=True)
         # The ui payload is what /history carries after the run; the result tuple is
         # what a downstream node would consume. The app reads the ui names (and polls
-        # the sidecar mid-run), so both are stated rather than derived.
-        return {"ui": {"depth": [depth_name], "normal": [normal_name],
-                       "progress": [progress_name], "frames": [written]},
-                "result": (depth_name, normal_name, written)}
+        # the sidecar mid-run), so both are stated rather than derived. `color` is
+        # absent when the source already fit the playback caps and the app's own
+        # remux is the colour.
+        ui = {"depth": [depth_name], "normal": [normal_name],
+              "progress": [progress_name], "frames": [written]}
+        if col_enc is not None:
+            ui["color"] = [color_name]
+        return {"ui": ui,
+                "result": (color_name if col_enc is not None else "", depth_name,
+                           normal_name, written)}
