@@ -927,6 +927,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             clip = null;
             return false;
         }
+        // What the watchdog restarts from, recorded at the one moment it is true:
+        // the player started. See runningTracks.
+        runningTracks = tracks;
+        runningPreview = null;
+        runningDir = filesDir;
         return true;
     }
 
@@ -945,27 +950,31 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * <p>A failed preview start is a poster state, like a failed clip start: the
      * still pair stays on screen and the status line reports what actually happened.
      */
-    private void startPreview(java.io.File colour, java.io.File filesDir) {
-        if (clip != null && clip.isRunning() && clip.playsColour(colour)) return;
+    private boolean startPreview(java.io.File colour, java.io.File filesDir) {
+        if (clip != null && clip.isRunning() && clip.playsColour(colour)) return true;
         // The same pump window startClip has: this tears a player down before the new
         // one is running, and a poll landing inside it would end the frame chain.
         startingClip = true;
         try {
             stopClip();
-            if (colour == null || filesDir == null) return;
+            if (colour == null || filesDir == null) return false;
             // GLES3 only, for the same reason startClip is: the per-frame depth FIELD
             // is sampled by the vertex shader, which GLES2 cannot do. A preview is
             // colour-only, but it still draws through that shader.
             if (!GLES3) {
                 android.util.Log.w("Basrelief", "clip preview needs GLES3; drawing its poster instead");
-                return;
+                return false;
             }
             clip = new ClipPlayer();
             clip.setRate(speed);
             if (!clip.startPreview(colour, GRID)) {
                 android.util.Log.w("Basrelief", "clip preview not playable: " + clip.error());
                 clip = null;
+                return false;
             }
+            runningPreview = colour;
+            runningDir = filesDir;
+            return true;
         } finally {
             startingClip = false;
         }
@@ -994,6 +1003,26 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile java.io.File pendingPreview;
     private volatile java.io.File pendingFilesDir;
+
+    /**
+     * What the RUNNING clip actually plays, recorded where the start succeeded and
+     * cleared with the clip.
+     *
+     * <p>The watchdog restarts from this, and that is the whole reason it exists:
+     * starting a clip CLEARS the arm it was started from ({@link #stopClip} drops
+     * {@code pendingTracks}/{@code pendingPreview}), so a clip that stalled a second
+     * time had nothing left to restart from, the restart was skipped, and the stats
+     * line below then dereferenced the null player. Measured on the Pixel: eleven
+     * FATALs between 10-07 and 10-10, every one at that line, and a preview never had
+     * {@code pendingTracks} at all — so every preview stall took the same path.
+     *
+     * <p>Written only when the player actually started, per the rule that any state
+     * claiming "this is on screen" is recorded where the GL calls that put it there
+     * succeeded. GL thread only, like the player itself.
+     */
+    private com.amoshydra.basrelief.core.store.VideoTracks runningTracks;
+    private java.io.File runningPreview;
+    private java.io.File runningDir;
 
     /**
      * Ask for this clip — or this colour-only preview — to play on top of the pair.
@@ -1042,6 +1071,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         pendingTracks = null;
         pendingPreview = null;
         pendingFilesDir = null;
+        // The running record goes with the player it describes: a restart must never
+        // name a clip that is not the one that was playing. See runningTracks.
+        runningTracks = null;
+        runningPreview = null;
+        runningDir = null;
         clipRequested = false;
         if (clip != null) {
             clip.stop();
@@ -2694,37 +2728,62 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 } else if (nowMs - watchdogChangedAtMs > CLIP_STALL_MS) {
                     android.util.Log.w("Basrelief", "clip produced nothing for "
                             + (nowMs - watchdogChangedAtMs) + "ms -- restarting it");
-                    // The tracks BEFORE stopClip, which clears them. A forced restart,
-                    // because startClip is idempotent by identity and would decline
-                    // the very restart this needs.
-                    com.amoshydra.basrelief.core.store.VideoTracks t = pendingTracks;
-                    java.io.File dir = pendingFilesDir;
+                    // From what is RUNNING first, the armed request only as a
+                    // fallback. Starting a clip clears the arm it started from
+                    // (stopClip drops pendingTracks/pendingPreview), so a clip that
+                    // stalled twice had nothing left to restart from -- and a preview
+                    // never had pendingTracks at all. Both left `clip` null, and the
+                    // stats below then crashed on it: eleven FATALs on the Pixel
+                    // between 10-07 and 10-10, every one at this block.
+                    com.amoshydra.basrelief.core.store.VideoTracks t =
+                            runningTracks != null ? runningTracks : pendingTracks;
+                    java.io.File p = runningPreview != null ? runningPreview : pendingPreview;
+                    java.io.File dir = runningDir != null ? runningDir : pendingFilesDir;
                     stopClip();
-                    if (t != null && dir != null) startClip(t, dir);
+                    boolean restarted = false;
+                    if (t != null) restarted = startClip(t, dir);
+                    else if (p != null) restarted = startPreview(p, dir);
                     watchdogProduced = -1L;
+                    // A restart begins a new window, so the latch baseline starts
+                    // over with it: without this the next line reports a delta across
+                    // the restart, which is negative while the new player is younger
+                    // than the old baseline.
+                    lastLatch = 0;
+                    if (!restarted) {
+                        android.util.Log.w("Basrelief", "watchdog: nothing restarted ("
+                                + (t == null && p == null ? "no running medium" : "start refused") + ")");
+                    }
                 }
-                // Rolling counters for the next window, so the line reports per
-                // second rather than per process.
-                latchDelta = clip.latches() - lastLatch;
-                // `usingClip` is the whole question. A clip that DECODES and is never
-                // BOUND is indistinguishable from a frozen one -- both show one correct
-                // frame -- so the line says which texture the last draw actually used,
-                // and whether that was the clip's or the still's.
-                int cc = clipColour(displayed);
-                android.util.Log.i("Basrelief", "clip " + clip.stats(debugLayer != 0)
-                        + " produced=" + clip.producedCounts()
-                        + " texColour=" + cc
-                        + " clipTex=" + clip.colourTex()
-                        + " stillTex=" + (displayed == null ? -1 : displayed.textureColor)
-                        + " usingClip=" + (cc != 0 && cc == clip.colourTex())
-                        + " draws/s=" + (clipDraws - lastClipDraws)
-                        + " latch/s=" + latchDelta);
-                // AFTER the line: the next window's baseline. Doing it above the log
-                // made the line report the PREVIOUS window's draws, which is exactly
-                // the sort of off-by-one-window that reads as a pump running when it
-                // is not.
-                lastClipDraws = clipDraws;
-                lastLatch = clip.latches();
+                // THE GUARD, and the half of the fix that would have stopped the
+                // crash on its own. stopClip() above is allowed to leave no player
+                // running -- that is exactly what a refused start means -- and every
+                // read below dereferences `clip`: latches(), stats(),
+                // producedCounts(), colourTex(). A stopped clip has no stats to
+                // report, so there is nothing to say and nothing to crash on.
+                if (clip != null) {
+                    // Rolling counters for the next window, so the line reports per
+                    // second rather than per process.
+                    latchDelta = clip.latches() - lastLatch;
+                    // `usingClip` is the whole question. A clip that DECODES and is never
+                    // BOUND is indistinguishable from a frozen one -- both show one correct
+                    // frame -- so the line says which texture the last draw actually used,
+                    // and whether that was the clip's or the still's.
+                    int cc = clipColour(displayed);
+                    android.util.Log.i("Basrelief", "clip " + clip.stats(debugLayer != 0)
+                            + " produced=" + clip.producedCounts()
+                            + " texColour=" + cc
+                            + " clipTex=" + clip.colourTex()
+                            + " stillTex=" + (displayed == null ? -1 : displayed.textureColor)
+                            + " usingClip=" + (cc != 0 && cc == clip.colourTex())
+                            + " draws/s=" + (clipDraws - lastClipDraws)
+                            + " latch/s=" + latchDelta);
+                    // AFTER the line: the next window's baseline. Doing it above the log
+                    // made the line report the PREVIOUS window's draws, which is exactly
+                    // the sort of off-by-one-window that reads as a pump running when it
+                    // is not.
+                    lastClipDraws = clipDraws;
+                    lastLatch = clip.latches();
+                }
             }
         }
 
