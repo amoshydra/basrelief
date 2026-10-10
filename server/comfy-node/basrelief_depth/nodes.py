@@ -179,6 +179,14 @@ class MoGeVideoStream:
                 # two thirds of that load and lets the shared clock pin all three.
                 # 0 = the source's own rate.
                 "fps_cap": ("INT", {"default": 30, "min": 0, "max": 240}),
+                # Keep MoGe's sky/invalid mask, which renders the masked region as
+                # depth 0 -- a hard cutout. The measured failure of it: on a
+                # portrait against a blown-out sky the raised limbs read as
+                # "almost sky" and merge into the black hole, so the relief loses
+                # them. False keeps the raw predicted depth everywhere, which
+                # grades the background instead of deleting it. Default True is
+                # exactly what this node always did.
+                "apply_mask": ("BOOLEAN", {"default": True}),
                 "resolution_level": ("INT", {"default": 9, "min": 0, "max": 9}),
                 "refine_steps": ("INT", {"default": 3, "min": 0, "max": 8}),
             }
@@ -201,7 +209,7 @@ class MoGeVideoStream:
         return float("NaN")
 
     def run(self, moge_model, video, tag, start_frame, frame_count, target_height,
-            max_long_side, batch_size, fps_cap, resolution_level, refine_steps):
+            max_long_side, batch_size, fps_cap, apply_mask, resolution_level, refine_steps):
         src = folder_paths.get_annotated_filepath(video)
         if not src or not os.path.isfile(src):
             raise ValueError("video not found in the input directory: %r" % (video,))
@@ -347,6 +355,7 @@ class MoGeVideoStream:
 
                 with torch.inference_mode():
                     geo = moge_model.infer(b, resolution_level=resolution_level,
+                                           apply_mask=apply_mask,
                                            refine_steps=refine_steps)
 
                 depth = _normalize_disparity(geo["depth"].float())
