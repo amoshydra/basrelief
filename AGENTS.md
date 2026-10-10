@@ -307,6 +307,19 @@ already cost real time.
   reference plane tiles rather than screen-dooring, and a card's angular size is
   its footprint's at every depth because the size carries the same depth ratio the
   position does.
+  - **The aspect goes on X and only on X, where the relief puts it.** The card's
+    footprint is the cell it replaces — `aspect/GRID` wide and one grid cell tall — so the
+    sample's position and the x half of the footprint carry `uAspect` and the y half
+    does not. Written as `(aPosition + aCorner * uSplatSize) * uAspect` it squashed
+    every non-square photograph to its own aspect and stopped the cards tiling
+    vertically at all: a portrait 9:16 filled the screen's width and 56 % of its
+    height, reported as all 3D media looked shorter than it should. The invariant
+    to keep is the one the relief's own `else` branch states in one line: the
+    `h == 0` position must be *the relief's position*, x scaled and y not, because
+    that equality is the whole of "the picture does not move when the mode is
+    switched". No `:core` test can hold a GLSL expression, which is why this is
+    written down here rather than asserted — and it survived a full green gate with
+    the picture visibly wrong, so a splat change has to be looked at on a device.
   - **The focal does NOT go into the ray, and that is a decision with a measurement
     behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
     camera; drawing it through this renderer's camera — fixed 45°, because it is the

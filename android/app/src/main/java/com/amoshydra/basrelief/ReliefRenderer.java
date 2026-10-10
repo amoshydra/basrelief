@@ -386,7 +386,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "    if (denom > 1e-6) zOff = min(zOff, uCamDist - 0.15);\n" +
             "    float zEye = uCamDist - zOff;\n" +
             "    float hCard = denom > 1e-6 ? zOff / denom : 0.0;\n" +
-            "    vec2 q = (aPosition + aCorner * uSplatSize) * uAspect;\n" +
+            // THE IMAGE ASPECT GOES ON X AND ONLY ON X -- the same statement the
+            // relief branch makes below, and the one asymmetry the card has.
+            // Written as (aPosition + aCorner * uSplatSize) * uAspect it squashed
+            // every non-square photograph to its own aspect: a portrait 9:16 filled
+            // the screen's width and 56% of its height (all 3D media looked shorter than it should). The card's footprint is the cell it
+            // replaces, which is aspect/GRID wide and 1/GRID tall, so the aspect
+            // belongs to the position and to the x half of the footprint alike --
+            // applied to the whole vec2 the cards also stop tiling vertically.
+            "    vec2 q = vec2(aPosition.x * uAspect, aPosition.y)\n" +
+            "           + vec2(aCorner.x * uSplatSize * uAspect, aCorner.y * uSplatSize);\n" +
             "    a = vec3(q * (zEye / uCamDist), hCard);\n" +
             // THE COLOUR'S v IS NOT THE FIELD'S v, and this is the second
             // convention the relief also carries: the depth field is uploaded
