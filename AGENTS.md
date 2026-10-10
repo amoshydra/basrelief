@@ -100,6 +100,25 @@ migration reads so an upgraded user's photos keep the speed they had.
 state into numbers, because the two surfaces computing it themselves is how they
 came to disagree about the bundled item.
 
+**The index is parsed once per blob change, process-wide, and writers publish.** Measured
+on a 32-item gallery: one `AppState.load` costs **~1 s** — 165 ms of JSON parse, ~770 ms in
+**four** full `toJson()` serialisations used only for dirty-checks, and 66 ms re-inspecting
+the blob — and a single launch called it **eight to ten times** (onCreate, two onResume
+paths, `refreshSliders`, `applyFiles`, the strip/grid builders, the wallpaper engine's
+resolves) on the one main thread. That is the whole of the measured 3.2 s warm / 5.7–8 s
+hot launch, with `Choreographer: Skipped 304/316 frames` twice. `AppState` now keys the
+parsed state on the exact two blobs: a blob change fails the compare and the state is
+re-derived, so it cannot serve a stale index — the failure that matters is a wallpaper
+showing a photo the user deleted. Every writer publishes the blob it just stored
+(`LibraryStore.save`, `LibraryStore.saveNow`, `ConfigStore.save`), so a write does not force the next
+reader to re-parse; both halves are validated against the other blob before mixing, and a
+mismatch drops the cache rather than pairing a stale config with a fresh library. After:
+**warm 1.7 s, hot 0.56 s, no skipped frames.** The remaining cold-start cost is the single
+parse (and the dirty-check serialisations inside it); moving that off the UI thread is the
+next step. The wallpaper's per-resolve diagnostic write is `apply()`, not `commit()` — a
+diagnostic must not fsync on the main thread, and the studio reads it from memory-or-disk
+either way.
+
 **A render value lives on exactly one surface, and a surface's values are a set.**
 `LibraryItem`'s six fields are private and are the *home* surface's storage;
 `settings(Surface)` is the only read and `withSettings`/`editSettings` the only

@@ -343,7 +343,7 @@ public class DepthWallpaperService extends WallpaperService {
         private void note(String what) {
             android.util.Log.i("Basrelief", "wallpaper: " + what);
             if (prefs != null) {
-                prefs.edit().putString("wallpaper_debug", what).commit();
+                prefs.edit().putString("wallpaper_debug", what).apply();
             }
         }
 
@@ -823,7 +823,7 @@ public class DepthWallpaperService extends WallpaperService {
             // needs a cable and a filter; this needs only opening the app, which
             // is the difference between a diagnostic that gets read and one that
             // gets forgotten.
-            prefs.edit().putString("wallpaper_debug", diagnostic).commit();
+            prefs.edit().putString("wallpaper_debug", diagnostic).apply();
             // ONLY THE ENGINE THE USER IS LOOKING AT MAY APPLY.
             //
             // Both engines run this on becoming visible, and each resolves its OWN

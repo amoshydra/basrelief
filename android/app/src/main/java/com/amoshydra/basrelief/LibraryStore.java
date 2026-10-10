@@ -54,7 +54,12 @@ final class LibraryStore {
     }
 
     static synchronized void save(SharedPreferences prefs, Library library) {
-        prefs.edit().putString(Library.KEY, library.toJson()).apply();
+        String blob = library.toJson();
+        prefs.edit().putString(Library.KEY, blob).apply();
+        // Hand the parsed state to the process cache: the writer holds exactly what
+        // the next reader would re-parse, and that parse costs a second. See
+        // AppState.publishedLibrary.
+        AppState.publishedLibrary(prefs, library, blob);
     }
 
     /**
@@ -62,7 +67,9 @@ final class LibraryStore {
      * {@code apply()} on either could be reordered against the other.
      */
     static synchronized void saveNow(SharedPreferences prefs, Library library) {
-        prefs.edit().putString(Library.KEY, library.toJson()).commit();
+        String blob = library.toJson();
+        prefs.edit().putString(Library.KEY, blob).commit();
+        AppState.publishedLibrary(prefs, library, blob);
     }
 
     // ------------------------------------------------------------ operations

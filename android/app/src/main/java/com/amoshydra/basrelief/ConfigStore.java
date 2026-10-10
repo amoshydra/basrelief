@@ -40,7 +40,9 @@ final class ConfigStore {
     }
 
     static void save(SharedPreferences prefs, Config c) {
-        prefs.edit().putString(Config.KEY, c.toJson()).apply();
+        String blob = c.toJson();
+        prefs.edit().putString(Config.KEY, blob).apply();
+        AppState.publishedConfig(prefs, c, blob);
     }
 
 }

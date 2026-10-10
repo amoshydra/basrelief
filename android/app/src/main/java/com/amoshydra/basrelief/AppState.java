@@ -119,7 +119,86 @@ final class AppState {
      *                repair, and a first-run gallery that is seeded without a
      *                filename the very next load repairs. Never a crash.
      */
+
+    // ------------------------------------------------------------ the process cache
+
+    /**
+     * The last parsed state, keyed by the exact blobs it was parsed from.
+     *
+     * <p><b>Measured, and the reason the studio launched in three seconds: one
+     * {@code loadUncached} costs ~1 s on a 32-item gallery</b> -- 165 ms of JSON
+     * parse, ~770 ms in four full {@code toJson()} serialisations used only for
+     * dirty-checks, and 66 ms re-inspecting the blob in {@code needsMigration} --
+     * and a single launch called it EIGHT to TEN times: the studio's onCreate, its
+     * two onResume paths, refreshSliders, applyFiles, the strip/grid builders, and
+     * the wallpaper engine's resolves, all on the one main thread. The blobs are the
+     * cache key because they are exactly what the parse depends on: a pref write by
+     * any writer changes the blob, the compare fails, and the state is re-derived --
+     * so this can never serve a stale index, which is the failure that matters (a
+     * wallpaper showing a photo the user deleted).
+     *
+     * <p>Writers call the {@code published*} methods so a write does not force the
+     * next reader to re-parse: every in-app writer already holds the exact blob it
+     * stored, and the parse it would save is the second this class exists to avoid.
+     */
+    private static final Object CACHE_LOCK = new Object();
+    private static String cachedConfigBlob;
+    private static String cachedLibraryBlob;
+    private static AppState cachedState;
+
+    private static boolean eq(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
+
     static AppState load(Context context, SharedPreferences prefs, File filesDir) {
+        String configBlob = prefs.getString(Config.KEY, null);
+        String libraryBlob = prefs.getString(Library.KEY, null);
+        synchronized (CACHE_LOCK) {
+            if (cachedState != null && eq(cachedConfigBlob, configBlob)
+                    && eq(cachedLibraryBlob, libraryBlob)) {
+                return cachedState;
+            }
+            AppState fresh = loadUncached(context, prefs, filesDir);
+            cachedConfigBlob = configBlob;
+            cachedLibraryBlob = libraryBlob;
+            cachedState = fresh;
+            return fresh;
+        }
+    }
+
+    /**
+     * A library was just written with this exact blob; hold it as the cache.
+     *
+     * <p>Only when the config half is unchanged from what the cache holds: a stale
+     * config beside a fresh library is exactly the pair a blob-keyed cache must not
+     * mix, and dropping the cache costs one re-parse on the rare config write.
+     */
+    static void publishedLibrary(SharedPreferences prefs, Library library, String blob) {
+        String configBlob = prefs.getString(Config.KEY, null);
+        synchronized (CACHE_LOCK) {
+            if (cachedState == null || !eq(cachedConfigBlob, configBlob)) {
+                cachedState = null;
+                return;
+            }
+            cachedLibraryBlob = blob;
+            cachedState = new AppState(cachedState.config, library);
+        }
+    }
+
+    /** The config half of the same contract. See {@link #publishedLibrary}. */
+    static void publishedConfig(SharedPreferences prefs, Config config, String blob) {
+        String libraryBlob = prefs.getString(Library.KEY, null);
+        synchronized (CACHE_LOCK) {
+            if (cachedState == null || !eq(cachedLibraryBlob, libraryBlob)) {
+                cachedState = null;
+                return;
+            }
+            cachedConfigBlob = blob;
+            cachedState = new AppState(config, cachedState.library);
+        }
+    }
+
+    private static AppState loadUncached(Context context, SharedPreferences prefs, File filesDir) {
         // Read the raw config BEFORE anything can rewrite it. This is the only
         // point at which the v1 pair can still be seen.
         String configBlob = prefs.getString(Config.KEY, null);

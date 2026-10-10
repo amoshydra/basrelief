@@ -3420,7 +3420,7 @@ final class Gallery {
      */
     private static String playlistRowSignature(Playlist p) {
         StringBuilder sb = new StringBuilder();
-        sb.append(p.name).append(' ');
+        sb.append(p.name).append('\u0000');
         for (String id : p.itemIds) sb.append(id).append('');
         sb.append(' ').append(p.trigger).append(' ');
         for (Surface s : p.surfaces) sb.append(s.name()).append('');
