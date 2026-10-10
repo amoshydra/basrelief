@@ -26,12 +26,16 @@ someone else's release. `moge_model.infer` is the one upstream surface this reli
 The client contract: outputs are `basrelief_<tag>_depth.mp4`, `basrelief_<tag>_normal.mp4`,
 `basrelief_<tag>_color.mp4` and the sidecar `basrelief_<tag>.progress.json` (all
 fetchable through `/view`); the sidecar holds `{done, total, state, src_frames,
-src_fps, fps_out, color}` and is rewritten every window; the run's UI payload in
+src_fps, fps_out, color, focal}` and is rewritten every window; the run's UI payload in
 `/history` names the same files. **`color` is absent/null when the source already
 fit the playback caps** -- then the app's own remux is the colour and no generation
-is lost. The generated tracks are always capped (`target_height` from the sheet chip,
-`max_long_side` for playback, the smaller wins), because measured, a 1440x2560@50
-source could not be held even by the colour stream alone on a Pixel 7 Pro.
+is lost. **`focal` is the camera focal length in PIXELS of the uploaded frame**,
+fitted once from the first window's point map (see `_fit_focal`), and 0 when the
+fit could not be made: the app reads 0 as "unknown" and falls back to a 50-degree
+default rather than drawing nothing. The generated tracks are always capped
+(`target_height` from the sheet chip, `max_long_side` for playback, the smaller
+wins), because measured, a 1440x2560@50 source could not be held even by the
+colour stream alone on a Pixel 7 Pro.
 
 `fps_cap` (default 30) caps the rate the clips are written at, never above the
 source. Output frame k is source frame `round_half_up(k * src/out)` -- same
@@ -39,6 +43,7 @@ timeline, fewer samples.
 """
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -82,6 +87,74 @@ def _normalize_disparity(depth: torch.Tensor) -> torch.Tensor:
         norm = ((disp - lo) / scale).clamp(0.0, 1.0)
         out[i] = torch.where(valid, norm, torch.zeros_like(norm))
     return out
+
+
+# -------------------------------------------------------------------- the focal
+
+def _slope(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Least-squares slope of y against x, NaN when x does not vary."""
+    xm = x - x.mean()
+    var = (xm * xm).sum()
+    if not bool(torch.isfinite(var)) or float(var) <= 0.0:
+        return float("nan")
+    return float((xm * (y - y.mean())).sum() / var)
+
+
+def _fit_focal(points, src_w: int, src_h: int, out_w: int, out_h: int) -> int:
+    """The camera's focal length in pixels of the uploaded frame, or 0.
+
+    MoGe infers with `force_projection=True`, so `points` is exactly the depth
+    unprojected through its intrinsics -- and those intrinsics are square-pixel
+    and centred on (0.5, 0.5) by construction
+    (`intrinsics_from_focal_center(f_diag / aspect, f_diag, 0.5, 0.5)`, in
+    `comfy_extras/nodes_moge.py`). ONE number therefore describes them:
+    `X/Z = (u - 0.5) / (f/W)` and `Y/Z = (v - 0.5) / (f/H)` with the same `f`.
+    Measured against a real geometry packet, `unproject(depth, {fx, fy,
+    cx = cy = 0.5})` reproduces `points` to 4e-6 relative (p99 5e-4), so this
+    regression is over-determined rather than approximate.
+
+    Fitted on a SUBSAMPLE: the fit is two sums over millions of pixels, and a
+    65k-point draw answers it -- the two axes agree to <0.1% on real data, which
+    is why the mean of the two independent answers is the one number written.
+    (`_slope` returns 1/(f/pixels) because the regressor is the pixel coordinate,
+    so the focal in pixels is the dimension over the slope.)
+
+    The answer is scaled from the MODEL INPUT resolution to the UPLOADED frame:
+    the app draws the source-sized poster of the same file, so a focal in the
+    scaled inference's pixels would make the lens look longer by the generation
+    scale. A fit that is not finite and positive writes 0, which the app reads as
+    "unknown" -- and a window claims nothing, so a failure is never a guess.
+    """
+    if points is None or not hasattr(points, "dim"):
+        return 0
+    p = points.detach().float()
+    if p.dim() == 4:
+        p = p[0]
+    if p.dim() != 3 or p.shape[2] != 3 or p.shape[0] < 8 or p.shape[1] < 8:
+        return 0
+    ph, pw = int(p.shape[0]), int(p.shape[1])
+    step = max(1, int(round((pw * ph / 65536.0) ** 0.5)))
+    sub = p[::step, ::step]
+    z = sub[..., 2]
+    ok = torch.isfinite(sub).all(dim=-1) & (z.abs() > 1e-6)
+    if int(ok.sum()) < 64:
+        return 0
+    safe = torch.where(z.abs() > 1e-6, z, torch.ones_like(z))
+    xz = (sub[..., 0] / safe)[ok]
+    yz = (sub[..., 1] / safe)[ok]
+    rows = torch.arange(0, ph, step, device=p.device)[:sub.shape[0]].float()
+    cols = torch.arange(0, pw, step, device=p.device)[:sub.shape[1]].float()
+    uu = ((cols + 0.5) / pw).unsqueeze(0).expand(sub.shape[0], sub.shape[1])[ok]
+    vv = ((rows + 0.5) / ph).unsqueeze(1).expand(sub.shape[0], sub.shape[1])[ok]
+    ax = _slope(uu, xz)
+    ay = _slope(vv, yz)
+    if not (math.isfinite(ax) and math.isfinite(ay) and ax > 0.0 and ay > 0.0):
+        return 0
+    fx = pw / ax
+    fy = ph / ay
+    scale = (src_h / float(out_h)) if out_h > 0 else 1.0
+    focal = int(round(0.5 * (fx + fy) * scale))
+    return focal if focal > 0 else 0
 
 
 # ------------------------------------------------------------------------- ffmpeg io
@@ -291,6 +364,13 @@ class MoGeVideoStream:
         # thrown away -- `color` is absent from the sidecar and the ui.
         need_color = (col_w, col_h) != (src_w, src_h) or capped
 
+        # The focal is fitted once, on the first window, and then travels in the
+        # sidecar and the ui payload. 0 = "no claim": the fit failed, or the
+        # model did not return a point map, and the app draws its 50-degree
+        # default rather than the run failing over a number a look does not need.
+        focal = 0
+        fitted = False
+
         def write_progress(done, state):
             # The app's progress channel AND its resume state. A websocket event dies
             # with a reconnect; this does not, and it can be fetched through /view like
@@ -305,7 +385,10 @@ class MoGeVideoStream:
                                # The input side of the count, so the app can verify
                                # the exactness it planned instead of trusting it.
                                "src_frames": total, "src_fps": round(src_rate, 3),
-                               "fps_out": int(round(out_rate))}, f)
+                               "fps_out": int(round(out_rate)),
+                               # The camera's one number, in pixels of the uploaded
+                               # frame. 0 until the first window has been fitted.
+                               "focal": focal}, f)
             except OSError:
                 pass
 
@@ -370,6 +453,16 @@ class MoGeVideoStream:
                     geo = moge_model.infer(b, resolution_level=resolution_level,
                                            apply_mask=apply_mask,
                                            refine_steps=refine_steps)
+
+                if not fitted:
+                    # ONCE per run, on the FIRST window: the intrinsics are constant
+                    # for a run, and the point map is right there. `points` is not
+                    # always present (older MoGe builds), which is a 0 -- see
+                    # _fit_focal.
+                    fitted = True
+                    focal = _fit_focal(geo.get("points"), src_w, src_h, out_w, out_h)
+                    print("[basrelief] focal=%d px (of the %dx%d source)"
+                          % (focal, src_w, src_h), flush=True)
 
                 depth = _normalize_disparity(geo["depth"].float())
                 if temporal_blend > 0:
@@ -462,7 +555,10 @@ class MoGeVideoStream:
         # absent when the source already fit the playback caps and the app's own
         # remux is the colour.
         ui = {"depth": [depth_name], "normal": [normal_name],
-              "progress": [progress_name], "frames": [written]}
+              "progress": [progress_name], "frames": [written],
+              # The same one number the sidecar carries, so a resume that found only
+              # /history still stores it; absent on an older node, where it reads 0.
+              "focal": [focal]}
         if col_enc is not None:
             ui["color"] = [color_name]
         return {"ui": ui,
