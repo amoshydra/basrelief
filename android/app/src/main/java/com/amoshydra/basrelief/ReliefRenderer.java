@@ -105,13 +105,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /** Depth default: 90% of the maximum the camera allows at this zoom. */
     private static final int DEFAULT_DEPTH = 90;
     // Relief grid resolution: (GRID+1)^2 vertices, and the depth field's size.
-    // 384 rather than 256 is an experiment in sampling fidelity: the depth clips
-    // and stills are 1080p-class and were being thrown away down to 257 field
-    // points, which is the relief's real resolution ceiling (shading is already
-    // per-fragment). Costs scale quadratically: 2.25x the vertices, the pair's
-    // blur and the per-frame clip blit. Measured on the Pixel before shipping
-    // this constant.
-    private static final int GRID = 512;
+    // It is the relief's real resolution ceiling: the depth clips and stills are
+    // 1080p-class and were being thrown away down to 257 field points, while
+    // shading is already per-fragment. Measured on a Pixel 7 Pro (the same clip,
+    // all three decoders going):
+    //   grid 256 -- pair field ~93-235 ms, clip draws 33-60/s, skew 0
+    //   grid 384 -- pair field ~314-442 ms, clip draws 33-60/s, skew 0  <- here
+    //   grid 512 -- pair field ~413-455 ms, clip draws 33/s,    skew 0
+    // 384 buys 2.25x the sampling with the frame rate untouched and the pair's
+    // blur still off the UI thread (a photo lands ~0.2 s later); 512's extra
+    // 1.8x of per-frame field work buys facets ~1 px finer, so the battery it
+    // costs is the honest reason not to. The GLES2 fallback tessellates on the
+    // CPU and would want the old 256 back if that path ever matters again.
+    //
+    // The commit that claimed this value shipped 512 instead: a patch that failed
+    // to match printed success and the constant stayed. The numbers above are what
+    // was actually measured at each value.
+    private static final int GRID = 384;
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
