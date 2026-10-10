@@ -187,6 +187,17 @@ class MoGeVideoStream:
                 # grades the background instead of deleting it. Default True is
                 # exactly what this node always did.
                 "apply_mask": ("BOOLEAN", {"default": True}),
+                # The PREVIOUS frame's weight in an exponential blend of the depth:
+                # 0 = off (each frame independent, MoGe's raw output), 0.7 = mostly
+                # the previous frame. Measured need: on a portrait against a
+                # blown-out sky, six consecutive frames showed the leg silhouette
+                # and the bale edge morphing frame to frame -- per-frame inference
+                # has no reason to agree with itself -- while Video-Depth-Anything
+                # held them steady. A causal EMA is the cheap part of that win: it
+                # cannot invent detail, and fast motion ghosts if pushed too high,
+                # so the knob is explicit and defaults to off.
+                "temporal_blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.95,
+                                             "step": 0.05}),
                 "resolution_level": ("INT", {"default": 9, "min": 0, "max": 9}),
                 "refine_steps": ("INT", {"default": 3, "min": 0, "max": 8}),
             }
@@ -209,7 +220,8 @@ class MoGeVideoStream:
         return float("NaN")
 
     def run(self, moge_model, video, tag, start_frame, frame_count, target_height,
-            max_long_side, batch_size, fps_cap, apply_mask, resolution_level, refine_steps):
+            max_long_side, batch_size, fps_cap, apply_mask, temporal_blend,
+            resolution_level, refine_steps):
         src = folder_paths.get_annotated_filepath(video)
         if not src or not os.path.isfile(src):
             raise ValueError("video not found in the input directory: %r" % (video,))
@@ -297,6 +309,7 @@ class MoGeVideoStream:
             except OSError:
                 pass
 
+        prev_smooth = None
         dec = _decoder(src)
         dep_enc = _encoder(depth_tmp, out_w, out_h, enc_fps, gop, 14)
         # The normal is noise-like and was 16 MB for a 7 s clip at CRF 14; 17 is the
@@ -359,6 +372,17 @@ class MoGeVideoStream:
                                            refine_steps=refine_steps)
 
                 depth = _normalize_disparity(geo["depth"].float())
+                if temporal_blend > 0:
+                    # s = t*prev + (1-t)*raw, seeded on the range's first frame so a
+                    # clip starts at its own estimate rather than at a blend with
+                    # nothing. The state carries across windows; it is per RUN, and a
+                    # run is one range, so two clips cannot leak into each other.
+                    for i in range(depth.shape[0]):
+                        raw = depth[i]
+                        smoothed = raw if prev_smooth is None else (
+                                prev_smooth * temporal_blend + raw * (1.0 - temporal_blend))
+                        depth[i] = smoothed
+                        prev_smooth = smoothed.clone()
                 if "normal" in geo:
                     n = geo["normal"].float()
                 else:
