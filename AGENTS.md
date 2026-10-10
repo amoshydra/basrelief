@@ -316,20 +316,20 @@ already cost real time.
   a 15% margin, so the reference plane tiles rather than screen-dooring, and a card's
   angular size is its footprint's at every depth because the size carries the same
   depth ratio the position does.
-  - **The gaps are filled by a blurred backdrop, and it is a fill rather than a
-    reconstruction.** A single view has nothing behind the surface it saw, so every
-    tilt that translates the camera opens gaps between cards — black ones, which
-    read as a screen door over the photograph and is what the user reported as "all
-    3d media looks odd". The mode therefore draws the same photograph, at a
-    sixteenth of its size and sampled LINEAR, as one quad BEHIND the whole cloud,
-    so a gap shows the photograph out of focus. `Splat.BACKDROP_H` places it beyond
-    the field's own range (`[-0.5, 0.5]`, because h is `r/255 - 0.5`) and has the
-    test that keeps it there; the fragment shader keeps the shading, the brightness
-    and the shadow, so the fill belongs to the same picture. **It is deliberately
-    not a solution to the disocclusion** — the content in a gap is still a guess —
-    which is what the inpainting pass in the plan is for; and it does not make the
-    mode denser, which is the other half of why the demo's 3.7 M-point render has
-    no dot screen where the phone's 148 k cards do.
+  - **There is no backdrop, and that is a decision with two attempts behind it.** The
+    gaps a tilt opens are the clear colour — black — and they were twice filled and
+    twice rejected: first with a sixteenth-scale copy of the photograph, which is
+    still a legible picture and, behind a cloud whose depth spread is most of the
+    camera distance, lands tens of pixels from the surface it stands in for — a
+    hole at a silhouette showed a second, soft edge of the subject, reported as a
+    double exposure that was clear as day. Then with row-median bands (the palette,
+    no edges, flat lit so the normal map could not put the silhouette back), which
+    removed the doubling and was rejected on sight as not nice. The honest
+    conclusion is that a fill with no content in it is not something to look at:
+    **the gaps are for the inpainting pass to fill, and until then black is the
+    truthful thing to show.** What the mode does keep from the first attempt is
+    nothing at all — the code, the texture, the quad and the `:core` constant are
+    gone rather than left behind a flag.
   - **The mode switch belongs to the branch that draws, not to a shared block above
     it.** `uSplat` selects the shader's card arithmetic; the geometry it is drawn
     with is chosen by the caller. While those were two conditions (`render3d` for
@@ -757,7 +757,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 558 tests across thirty-one classes:
+it**. 557 tests across thirty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -796,16 +796,10 @@ one.
   applied to a number. The card size is held to a RANGE at every grid rather than a
   value: at least the cell it replaces, or the reference plane is a screen door,
   and under two cells, or the picture smears into itself. Its fourth is the
-  **backdrop's height** (`BACKDROP_H`), asserted against the field's own range rather
-  than against a drawing of it: the cards' h is `r/255 - 0.5`, so every card lies
-  inside `[-0.5, 0.5]`, and a backdrop that moved inside that range would hide the
-  deepest cards instead of filling the gaps between them — the failure it would
-  cause is an occluded photograph, not a missing backdrop, which is why it is worth
-  a test that can fail. Its fifth is the **level ladder**: every level must be a
-  real index, the grids must not go backwards, and anything that is not a level —
-  a negative, an index past the end, a value a newer build wrote — answers the
-  default, because that default is the look the mode shipped with and an upgrade
-  must not move it.
+  **level ladder**: every level must be a real index, the grids must not go
+  backwards, and anything that is not a level — a negative, an index past the end,
+  a value a newer build wrote — answers the default, because that default is the
+  look the mode shipped with and an upgrade must not move it.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

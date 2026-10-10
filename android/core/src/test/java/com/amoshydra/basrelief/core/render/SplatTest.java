@@ -113,29 +113,6 @@ public class SplatTest {
     }
 
     /**
-     * The backdrop is behind every card, and that is the whole of its contract: a
-     * plane in front of the deepest cards hides them instead of filling the gaps
-     * between them, and the picture loses the surface it is most proud of.
-     *
-     * <p>The cards' range is fixed by the field being 8-bit and read as
-     * {@code r/255 - 0.5}: every h, including the farthest a photograph can
-     * produce, lies inside {@code [-0.5, 0.5]}. So the assertion is against that
-     * range rather than against a drawing of it -- the boundary is the arithmetic,
-     * not a value this test measures.
-     */
-    @Test
-    public void theBackdropSitsBehindEveryCard() {
-        float deepest = -0.5f;     // r == 0, the far end of the 8-bit field
-        assertTrue("the backdrop must be BEHIND the deepest card, not in front of it",
-                Splat.BACKDROP_H < deepest);
-        // ...and not so far that it stops parallaxing with the scene at all: the
-        // depth offset is proportional to h, so a plane 100x the model's range out
-        // would be a distant billboard rather than the photograph's own background.
-        assertTrue("the backdrop must stay within a few model depths",
-                Splat.BACKDROP_H > 4f * deepest);
-    }
-
-    /**
      * The level is an index into {@link Splat#GRID_LEVELS} and nothing else: the
      * two ways to get it wrong are an index off the end and a stored value that was
      * never a level at all, and both answer the default rather than a grid nobody

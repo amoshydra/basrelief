@@ -328,11 +328,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // Splat.DEFAULT_FOV_DEG.
             "uniform float uFocal;\n" +
             "uniform float uRefFocal;\n" +
-            // The backdrop: the switch, the height it sits at (Splat's own tested
-            // constant), and the blurred copy of the photograph it samples. Set to
-            // 0 for every relief draw, so a stale 1 cannot outlive the mode.
-            "uniform float uBackdrop;\n" +
-            "uniform float uBackdropH;\n" +
             "in vec2 aPosition;\n" +   // (u-0.5, v-0.5); x is scaled by uAspect here
             "in vec2 aUV;\n" +
             "out vec2 vUv;\n" +
@@ -356,16 +351,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // of the mode rather than an artifact of it.
             "  float h = textureLod(uDepth, duv, 0.0).r / 255.0 - 0.5;\n" +
             "  vec3 a;\n" +
-            "  if (uBackdrop > 0.5) {\n" +
-            // THE BACKDROP: the same photograph as one quad at the far end of the
-            // model's depth, drawn before the cards so the gaps they open show it
-            // instead of showing black. uBackdropH is Splat.BACKDROP_H, behind
-            // every card by construction -- a backdrop the deepest surface could
-            // hide behind would be worse than the holes it exists to fill.
-            "    a = vec3(aPosition.x * uAspect, aPosition.y, uBackdropH);\n" +
-            "    vUv = aUV;\n" +
-            "    vNormalUv = aUV;\n" +
-            "  } else if (uSplat > 0.5) {\n" +
+            "  if (uSplat > 0.5) {\n" +
             // EVERY CARD IS DERIVED FROM gl_VertexID, and there is no buffer at
             // all: one sample is six vertices -- two triangles, corners 0,1,2 then
             // 1,3,2 -- so the sample is gl_VertexID / 6 and its corner is that
@@ -489,9 +475,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "in vec3 vWorldPos;\n" +
             "uniform sampler2D uColor;\n" +
             "uniform sampler2D uNormal;\n" +
-            // The backdrop's out-of-focus copy, and the switch that chooses it.
-            "uniform sampler2D uBlur;\n" +
-            "uniform float uBackdrop;\n" +
             "uniform float uHasNormal;\n" +
             "uniform float uIntensity;\n" +
             "uniform float uFade;\n" +
@@ -513,12 +496,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "  }\n" +
             "  vec3 l = normalize(uLightDir);\n" +
             "  float diff = max(dot(n, l), 0.0);\n" +
-            // The backdrop reads the blurred copy instead: the shading, the
-            // brightness and the shadow all still apply, so a gap shows the same
-            // photograph out of focus rather than a flat wash that would read as a
-            // rendering fault of its own.
-            "  vec3 color = uBackdrop > 0.5 ? texture(uBlur, vUv).rgb\n" +
-            "                                : texture(uColor, vUv).rgb;\n" +
+            "  vec3 color = texture(uColor, vUv).rgb;\n" +
             "  color *= uBrightnessGain;\n" +
             "  color += uShadowLift * (1.0 - color);\n" +
             "  color *= 1.0 + 0.25 * diff;\n" +
@@ -570,18 +548,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private int splatGrid = Splat.DEFAULT_FIELD_GRID;
     private boolean splatLevelLogged;
-
-    /**
-     * The splat's backdrop: the two uniforms that place and choose it, the blurred
-     * copy of the photograph it samples, and the four vertices it is drawn as.
-     *
-     * <p>See {@link Splat#BACKDROP_H} for what it is for and why its height is
-     * behind every card. It is drawn only in the splat mode: the relief's surface is
-     * continuous, so it has no holes to fill -- the holes and the shear are two
-     * sides of the same single-view reconstruction.
-     */
-    private int uBackdrop = -1, uBackdropH = -1, uBlur = -1;
-    private int backdropVbo = 0;
 
     /**
      * The static relief grid for the GLES3 path: a {@code (GRID+1)^2} vertex
@@ -661,15 +627,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
          * -- like texture name 0 for colour -- is never a success.
          */
         int textureDepth = -1;
-        /**
-         * The splat's backdrop: the same photograph at a sixteenth of its size,
-         * sampled LINEAR -- an out-of-focus copy for the gaps the cards leave, so
-         * a tilt shows blurred photograph rather than black. 0 means it was not
-         * uploaded (a context-less call) or failed, which draws black and is
-         * therefore not a failure of the pair -- see {@link #textureNormal} for the
-         * same treatment, one level down.
-         */
-        int textureBlur = -1;
         int vertexCount;
         FloatBuffer posBuffer, uvBuffer;
         /** Image width / height, baked into the mesh's x and the camera's aspect. */
@@ -2510,9 +2467,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uCamDist = GLES20.glGetUniformLocation(program, "uCamDist");
         uFocal = GLES20.glGetUniformLocation(program, "uFocal");
         uRefFocal = GLES20.glGetUniformLocation(program, "uRefFocal");
-        uBackdrop = GLES20.glGetUniformLocation(program, "uBackdrop");
-        uBackdropH = GLES20.glGetUniformLocation(program, "uBackdropH");
-        uBlur = GLES20.glGetUniformLocation(program, "uBlur");
 
         markerProgram = createProgram(GLES3 ? MARKER_VERT3 : MARKER_VERT,
                 GLES3 ? MARKER_FRAG3 : MARKER_FRAG);
@@ -2526,8 +2480,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         gridVbo = 0;
         gridIbo = 0;
         gridIndexCount = 0;
-        backdropVbo = 0;
-        buildBackdropQuad();
         if (GLES3) buildGrid();
 
         // The mesh attribute pointers are bound once per install, not per frame
@@ -3312,16 +3264,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // relief, uSplat stayed 1, uSplatGrid was 0, sx / uSplatGrid was NaN,
             // and every triangle was discarded with no error anywhere.
             //
-            // uBackdrop stays here: it is 0 unless the backdrop draw sets it, and
-            // that draw clears it again before the cards.
-            GLES20.glUniform1f(uBackdrop, 0f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
             if (render3d) {
-                // Before the cards, so every hole they open shows the photograph
-                // out of focus instead of showing black.
-                drawSplatBackdrop(r);
                 drawSplatGrid(r);
             } else {
                 GLES20.glUniform1f(uSplat, 0f);
@@ -3348,47 +3294,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, r.vertexCount);
         }
         return f;
-    }
-
-    /**
-     * Draw the splat's backdrop: the photograph, blurred, as one quad at the far
-     * end of the model's depth.
-     *
-     * <p>It exists because the cards are one view of the scene: tilting moves the
-     * camera through it and opens gaps where surface was never recorded, and those
-     * gaps used to be black -- a screen door over a photograph. This is the same
-     * photograph out of focus behind them, so a gap reads as the background rather
-     * than as a hole. It is a FILL, not a reconstruction: {@link Splat#BACKDROP_H}
-     * has why it sits behind every card, and the inpainting pass in the plan is
-     * what will eventually put honest content in the gaps instead.
-     *
-     * <p>Drawn with the relief's own program and uniforms -- the camera, the
-     * light, the brightness and the shadow are already uploaded by
-     * {@link #drawRender}, and {@code uBackdrop} only swaps the plane's height and
-     * the colour source. The fragment shader keeps the shading and the adjustments,
-     * so a gap shows the same photograph out of focus rather than a flat wash that
-     * would read as a rendering fault of its own.
-     */
-    private void drawSplatBackdrop(Render r) {
-        GLES20.glUniform1f(uBackdrop, 1f);
-        GLES20.glUniform1f(uBackdropH, Splat.BACKDROP_H);
-        // Unit 3: colour, depth and normal take 0, 1 and 2 on this path, and GLES3
-        // guarantees at least sixteen.
-        GLES20.glUniform1i(uBlur, 3);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + 3);
-        // A name of 0 here is the default texture -- no image, black -- which is
-        // the hole this draw exists to fill, so a pair without a blur leaves the
-        // mode as it was rather than failing a draw.
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, r.textureBlur > 0 ? r.textureBlur : 0);
-        GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, backdropVbo);
-        GLES20.glEnableVertexAttribArray(aPosition);
-        GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 16, 0);
-        GLES20.glEnableVertexAttribArray(aUV);
-        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, 16, 8);
-        GLES20.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
-        // Off again for the cards, which are the ones that must not be overridden.
-        GLES20.glUniform1f(uBackdrop, 0f);
-        GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
     }
 
     /**
@@ -3539,18 +3444,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             r.textureColor = -1;
             return false;
         }
-        // The splat's backdrop: the same photograph at a sixteenth of its size,
-        // sampled LINEAR. A sixteenth is a heavy low-pass, so "blurred" costs one
-        // small texture and one LINEAR tap rather than a kernel per pixel, and the
-        // backdrop can be redrawn every frame for nothing. A name of 0 here is not
-        // a failure of the pair -- it is a backdrop that draws black, which is
-        // exactly what the holes showed before it existed.
-        Bitmap tiny = Bitmap.createScaledBitmap(upright,
-                Math.max(24, upright.getWidth() / 16),
-                Math.max(24, upright.getHeight() / 16), true);
-        r.textureBlur = upload(tiny);
-        if (r.textureBlur == 0) r.textureBlur = -1;
-        tiny.recycle();
         // The supplied normal, if any. Optional by design: a failed normal upload
         // degrades to flat lit rather than failing a pair that has depth, and 0 is
         // never treated as a normal -- it is the default texture, no image, black.
@@ -3576,7 +3469,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 // A field that did not upload is not installed either. Release the
                 // colour and normal textures too, so the pair that failed leaves
                 // nothing behind and the previous pair stays on screen.
-                releaseTextures(r.textureColor, r.textureNormal, r.textureBlur);
+                releaseTextures(r.textureColor, r.textureNormal);
                 r.textureColor = -1;
                 r.textureNormal = -1;
                 return false;
@@ -3673,7 +3566,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // All present textures in one call: they were created together and leaving
         // the depth field or the normal behind would leak one texture per pair
         // change. The normal is optional, so it is filtered out rather than assumed.
-        releaseTextures(r.textureColor, r.textureDepth, r.textureNormal, r.textureBlur);
+        releaseTextures(r.textureColor, r.textureDepth, r.textureNormal);
         r.textureColor = -1;
         r.textureDepth = -1;
         r.textureNormal = -1;
@@ -3866,32 +3759,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0);
         gridIndexCount = idx.length;
-    }
-
-    /**
-     * The splat's backdrop quad: {@code (x, y, u, v)} per corner, drawn as a
-     * strip. Two triangles, and the only buffer the splat has left -- the cards
-     * themselves are derived from {@code gl_VertexID} in the vertex shader, which
-     * is what makes the resolution a uniform and the mode's memory zero.
-     *
-     * <p>Every context needs it whether or not the mode is on: 32 bytes, against
-     * the 18 MB the card grid used to cost, and the reason there is no lazy build
-     * left to get wrong.
-     */
-    private void buildBackdropQuad() {
-        float[] quad = {-0.5f, -0.5f, 0f, 0f, 0.5f, -0.5f, 1f, 0f,
-                -0.5f, 0.5f, 0f, 1f, 0.5f, 0.5f, 1f, 1f};
-        int[] backdrop = new int[1];
-        GLES30.glGenBuffers(1, backdrop, 0);
-        backdropVbo = backdrop[0];
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, backdropVbo);
-        // toBuffer leaves position at the end; glBufferData reads from the current
-        // position, so rewind first.
-        FloatBuffer qb = toBuffer(quad);
-        qb.position(0);
-        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, quad.length * 4, qb,
-                GLES30.GL_STATIC_DRAW);
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0);
     }
 
 

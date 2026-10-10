@@ -61,27 +61,6 @@ public final class Splat {
     public static final float COVERAGE = 1.15f;
 
     /**
-     * The model-space height the splat's backdrop plane sits at.
-     *
-     * <p>The depth field is 8-bit and the shader reads it as {@code r/255 - 0.5},
-     * so every card lies in {@code [-0.5, 0.5]} and the backdrop has to be BEYOND
-     * the far end of that range or it hides the deepest cards instead of filling
-     * the gaps between them — a backdrop in front is a hole that never opens and a
-     * photograph that loses its deepest surface. It is a quarter of the range
-     * behind, which is enough margin for the depth buffer at this scale and small
-     * enough that the plane still parallaxes with the scene rather than reading as
-     * a distant billboard.
-     *
-     * <p>What it is FOR: the cards are one view, so tilting opens gaps where the
-     * surface moved and nothing was ever recorded behind it. The backdrop fills
-     * them with the same photograph, blurred and shaded the same way, so a gap
-     * reads as out-of-focus background rather than as black. It is a fill, not a
-     * reconstruction — the content in a gap is still a guess, which is why the
-     * inpainting pass exists in the plan.
-     */
-    public static final float BACKDROP_H = -0.75f;
-
-    /**
      * The splat grids a level can select, smallest first: the field's own sampling
      * and multiples of it.
      *
