@@ -151,6 +151,43 @@ public final class ReliefMesh {
         return blur(resample(depth, dw, dh, n, grid), n, n);
     }
 
+    /**
+     * The height of a blurred field under a point given in the camera's plane
+     * fractions — the same {@code orbitX}/{@code orbitY} the pivot is placed at
+     * ({@code x} right, {@code y} up, both in {@code [-0.5, 0.5]}).
+     *
+     * <p>This is how the renderer turns "the origin is here" into the surface
+     * depth the camera aims at. The field is the MODEL-SPACE height field — the
+     * unit {@link #build}'s own {@code field} is in, one value per grid sample —
+     * which is the form the renderer retains: the GLES3 install converts its
+     * copy once, after the texture has taken the raw 0..255 values, and the
+     * GLES2 mesh's field is already in it. The convention that IS a trap is the
+     * row order: the field is row-major with row 0 the image's TOP row
+     * ({@link #build} writes {@code y = 0.5} there), which is why the sample row
+     * is {@code (0.5 - y) * grid}.
+     *
+     * <p>Bilinear between the field's own samples and clamped at the edge, so an
+     * origin at or beyond the picture reads the edge it is nearest rather than
+     * wrapping. A missing or short field answers 0 — the plane — because a
+     * window claims nothing, and 0 is the safe aim.
+     */
+    public static float heightAt(float[] field, int grid, float orbitX, float orbitY) {
+        if (field == null || grid < 1) return 0f;
+        int n = grid + 1;
+        if (field.length < n * n) return 0f;
+        float gx = Math.max(0f, Math.min(grid, (orbitX + 0.5f) * grid));
+        float gy = Math.max(0f, Math.min(grid, (0.5f - orbitY) * grid));
+        int x0 = Math.min((int) gx, grid - 1);
+        int y0 = Math.min((int) gy, grid - 1);
+        float tx = gx - x0;
+        float ty = gy - y0;
+        int i = y0 * n + x0;
+        float v00 = field[i], v10 = field[i + 1];
+        float v01 = field[i + n], v11 = field[i + n + 1];
+        return (v00 * (1f - tx) + v10 * tx) * (1f - ty)
+                + (v01 * (1f - tx) + v11 * tx) * ty;
+    }
+
     private static void addFace(float[] nrm, float[] pos, int a, int b, int c) {
         float ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
         float bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];

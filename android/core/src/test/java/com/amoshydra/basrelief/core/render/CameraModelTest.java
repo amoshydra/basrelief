@@ -60,7 +60,15 @@ public class CameraModelTest {
     private void assertRoundTrip(float ndcX, float ndcY,
                                  float tiltX, float tiltY,
                                  float panX, float panY) {
+        assertRoundTrip(ndcX, ndcY, tiltX, tiltY, panX, panY, 0f);
+    }
+
+    private void assertRoundTrip(float ndcX, float ndcY,
+                                 float tiltX, float tiltY,
+                                 float panX, float panY,
+                                 float pivotHeight) {
         CameraModel m = model();
+        m.setPivotHeight(pivotHeight);
         float[] orbit = new float[2];
         assertTrue("tap at " + ndcX + "," + ndcY + " should hit the plane",
                 m.screenToOrbit(ndcX, ndcY, SURFACE_W, SURFACE_H,
@@ -78,6 +86,21 @@ public class CameraModelTest {
     }
 
     /**
+     * A tap still resolves to the plane point under the finger when the pivot
+     * is at depth: the unprojection runs through the camera that drew the
+     * frame, which aims at the surface under the CURRENT origin, and
+     * re-projecting the resolved plane point through that same camera must
+     * land back on the tap. The new centre is on the plane; its height is the
+     * field's, which is the renderer's half and not this class's.
+     */
+    @Test
+    public void tapRoundTripsWithAPivotAtDepth() {
+        assertRoundTrip(0.3f, -0.2f, 0f, 0f, 0f, 0f, 0.45f);
+        assertRoundTrip(-0.45f, 0.35f, 0.3f, -0.25f, 40f, -90f, -0.4f);
+        assertRoundTrip(0.6f, 0.1f, -0.5f, 0.4f, -120f, 60f, 0.2f);
+    }
+
+    /**
      * One whole Origin unit must move the picture by exactly the number of
      * pixels {@code screenToOrbit} says a drag of that many pixels resolves to
      * — the two are inverses, and that identity is the whole basis of the
@@ -86,24 +109,35 @@ public class CameraModelTest {
      * <p>Deliberately a round-trip through the real unprojection rather than a
      * restatement of the formula: a formula can be re-derived to match itself,
      * the round-trip cannot.
+     *
+     * <p>The pivot-height loop is the same property with the camera aiming at a
+     * surface point: at rest the eye sits directly above the pivot, so the view
+     * matrix is the plane's own and the identity is untouched by the depth. It
+     * is pinned here rather than left to the at-rest picture test because this
+     * is the value the Origin slider actually reads.
      */
     @Test
     public void originTravelIsTheInverseOfTapUnprojection() {
         for (float zoom : new float[]{0.25f, 0.7f, 1f, 2f}) {
             for (boolean horizontal : new boolean[]{true, false}) {
-                CameraModel m = model();
-                m.setZoom(zoom);
-                float d = 100f; // pixels from the screen centre
-                float ndcX = horizontal ? 2f * d / SURFACE_W : 0f;
-                float ndcY = horizontal ? 0f : 2f * d / SURFACE_H;
-                float[] orbit = new float[2];
-                assertTrue("tap should hit the plane at zoom " + zoom,
-                        m.screenToOrbit(ndcX, ndcY, SURFACE_W, SURFACE_H,
-                                0f, 0f, 0f, 0f, 0f, 0f, orbit));
-                float moved = horizontal ? orbit[0] : orbit[1];
-                float expected = d / m.screenPixelsPerOrbit(horizontal, SURFACE_H);
-                assertEquals("zoom " + zoom + (horizontal ? " x" : " y"),
-                        expected, moved, 1e-4f);
+                for (float pivotHeight : new float[]{0f, 0.45f, -0.45f}) {
+                    CameraModel m = model();
+                    m.setZoom(zoom);
+                    m.setPivotHeight(pivotHeight);
+                    float d = 100f; // pixels from the screen centre
+                    float ndcX = horizontal ? 2f * d / SURFACE_W : 0f;
+                    float ndcY = horizontal ? 0f : 2f * d / SURFACE_H;
+                    float[] orbit = new float[2];
+                    assertTrue("tap should hit the plane at zoom " + zoom
+                                    + " with pivot " + pivotHeight,
+                            m.screenToOrbit(ndcX, ndcY, SURFACE_W, SURFACE_H,
+                                    0f, 0f, 0f, 0f, 0f, 0f, orbit));
+                    float moved = horizontal ? orbit[0] : orbit[1];
+                    float expected = d / m.screenPixelsPerOrbit(horizontal, SURFACE_H);
+                    assertEquals("zoom " + zoom + " pivot " + pivotHeight
+                                    + (horizontal ? " x" : " y"),
+                            expected, moved, 1e-4f);
+                }
             }
         }
     }
@@ -221,5 +255,149 @@ public class CameraModelTest {
         org.junit.Assert.assertArrayEquals("mvp must be deterministic", first, b.mvp, 0f);
         assertEquals("zScale", firstZ, b.zScale, 0f);
         assertEquals("eyeX", firstEx, b.eyeX, 0f);
+    }
+
+    /** Project a world point through a frame — the plane-only project() cannot. */
+    private static float[] projectWorld(CameraModel.Frame f, float x, float y, float z) {
+        float[] v = {x, y, z, 1f};
+        Mat4.multiplyMV(v, 0, f.viewProjection, 0, v, 0);
+        return new float[]{v[0] / v[3], v[1] / v[3]};
+    }
+
+    /**
+     * THE AT-REST INVARIANT, and the whole reason the pivot can have a depth at
+     * all: at rest the camera keeps the fixed camera distance and the pivot's
+     * own x/y, so it sits DIRECTLY ABOVE the pivot and {@code lookAt}'s
+     * direction is still straight down. The view matrix is therefore exactly
+     * the plane point's own, and the picture is the photograph for every origin
+     * and every pivot height — no model-scale compensation, and no zoom of the
+     * photo as the origin moves from a near subject to a far background.
+     *
+     * <p>This is the sweep the splat's own commit measured: 4 aspects x 3
+     * surfaces x 3 zooms x 3 depths x 3 origins x 3 heights, comparing the
+     * projection of the same plane points against the pivot-at-zero camera.
+     */
+    @Test
+    public void pivotAtDepthLeavesTheAtRestPictureUnchanged() {
+        float[][] surfaces = {{1440, 3120}, {1080, 1080}, {2400, 1080}};
+        float[] aspects = {9f / 16f, 1f, 1400f / 2560f, 16f / 9f};
+        float[] zooms = {0.25f, 1f, 2f};
+        float[] depths = {0f, 0.5f, 1f};
+        float[] origins = {-0.45f, 0f, 0.3f};
+        float[] heights = {0f, 0.5f, -0.5f};
+        for (float[] surface : surfaces) {
+            for (float aspect : aspects) {
+                for (float zoom : zooms) {
+                    for (float depth : depths) {
+                        for (float origin : origins) {
+                            for (float h : heights) {
+                                CameraModel plane = model();
+                                plane.setAspect(aspect);
+                                plane.setSurfaceAspect(surface[0] / surface[1]);
+                                plane.setZoom(zoom);
+                                plane.setDepth(depth);
+                                CameraModel surfaced = model();
+                                surfaced.setAspect(aspect);
+                                surfaced.setSurfaceAspect(surface[0] / surface[1]);
+                                surfaced.setZoom(zoom);
+                                surfaced.setDepth(depth);
+                                surfaced.setPivotHeight(h);
+
+                                CameraModel.Frame a = plane.frame(surface[0], surface[1],
+                                        0f, 0f, origin, -origin, 0f, 0f);
+                                CameraModel.Frame b = surfaced.frame(surface[0], surface[1],
+                                        0f, 0f, origin, -origin, 0f, 0f);
+                                // The eye does not move with the pivot: that is the
+                                // construction, not a coincidence of the sweep.
+                                assertEquals("eyeX h=" + h, a.eyeX, b.eyeX, 0f);
+                                assertEquals("eyeY h=" + h, a.eyeY, b.eyeY, 0f);
+                                assertEquals("eyeZ h=" + h, a.eyeZ, b.eyeZ, 0f);
+                                // The plane's own points project identically.
+                                for (float px : new float[]{-0.5f, 0f, 0.5f}) {
+                                    for (float py : new float[]{-0.5f, 0f, 0.5f}) {
+                                        float[] na = projectWorld(a,
+                                                px * aspect * a.scale, py * a.scale, 0f);
+                                        float[] nb = projectWorld(b,
+                                                px * aspect * b.scale, py * b.scale, 0f);
+                                        assertEquals("plane point " + px + "," + py
+                                                        + " moved at rest (h=" + h + ")",
+                                                na[0], nb[0], 1e-4f);
+                                        assertEquals("plane point " + px + "," + py
+                                                        + " moved at rest (h=" + h + ")",
+                                                na[1], nb[1], 1e-4f);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * What the pivot at depth buys: under a tilt the camera aims at the surface
+     * point under the origin, so THAT point holds the screen centre while the
+     * plane behind it swings — the user's orbit around the subject rather than the background. With the pivot on the plane the old behaviour stands:
+     * the plane point is the fixed one.
+     */
+    @Test
+    public void thePivotHoldsAndThePlaneMovesUnderTilt() {
+        for (float h : new float[]{0.45f, 0.2f, -0.45f}) {
+            for (float[] tilt : new float[][]{{0.16f, 0f}, {0f, -0.16f}, {0.12f, 0.09f}}) {
+                CameraModel m = model();
+                m.setPivotHeight(h);
+                CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
+                        0.2f, -0.1f, tilt[0], tilt[1]);
+                float[] pivot = projectWorld(f, f.pivotX, f.pivotY, f.pivotZ);
+                assertEquals("the pivot must hold the centre (h=" + h + ")", 0f, pivot[0], 1e-4f);
+                assertEquals("the pivot must hold the centre (h=" + h + ")", 0f, pivot[1], 1e-4f);
+                // The plane point behind it is where the old pivot was: with the
+                // aim on the surface it must MOVE, and that motion is the reveal.
+                float[] plane = projectWorld(f, f.pivotX, f.pivotY, 0f);
+                assertTrue("the plane behind the pivot must swing (h=" + h + ")",
+                        Math.hypot(plane[0], plane[1]) > 1e-3f);
+            }
+        }
+        CameraModel m = model();
+        CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
+                0.2f, -0.1f, 0.16f, 0f);
+        float[] plane = projectWorld(f, f.pivotX, f.pivotY, 0f);
+        assertEquals("pivot on the plane: the plane point is the fixed one", 0f, plane[0], 1e-4f);
+        assertEquals("pivot on the plane: the plane point is the fixed one", 0f, plane[1], 1e-4f);
+    }
+
+    /**
+     * The pivot's world z is the field height through the SAME model-to-world
+     * factor {@code uMVP} applies ({@code S(scale, scale, scale * zScale)}), so
+     * the camera aims at the drawn surface point rather than at some other
+     * depth. The clamp and the non-finite case are pinned here too, because
+     * either one being wrong puts the aim behind the eye and the picture
+     * upside down.
+     */
+    @Test
+    public void pivotWorldZIsTheFieldHeightThroughTheModelScale() {
+        CameraModel m = model();
+        for (float h : new float[]{-0.5f, -0.2f, 0f, 0.35f, 0.5f}) {
+            for (float depth : new float[]{0f, 0.5f, 1f}) {
+                m.setDepth(depth);
+                m.setPivotHeight(h);
+                CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
+                        0.1f, -0.2f, 0f, 0f);
+                assertEquals("h=" + h + " depth=" + depth,
+                        h * f.scale * f.zScale, f.pivotZ, 1e-6f);
+                assertEquals("pivot x", 0.1f * IMAGE_ASPECT * f.scale, f.pivotX, 1e-6f);
+                assertEquals("pivot y", -0.2f * f.scale, f.pivotY, 1e-6f);
+            }
+        }
+        // Beyond the model's own depth axis clamps; a non-finite height is the
+        // plane -- a window claims nothing, and NaN in the view matrix is a
+        // black screen.
+        m.setDepth(1f);
+        m.setPivotHeight(2f);
+        CameraModel.Frame clamped = m.frame(SURFACE_W, SURFACE_H, 0f, 0f, 0f, 0f, 0f, 0f);
+        assertEquals(0.5f * clamped.scale * clamped.zScale, clamped.pivotZ, 1e-6f);
+        m.setPivotHeight(Float.NaN);
+        assertEquals(0f, m.frame(SURFACE_W, SURFACE_H, 0f, 0f, 0f, 0f, 0f, 0f).pivotZ, 0f);
     }
 }

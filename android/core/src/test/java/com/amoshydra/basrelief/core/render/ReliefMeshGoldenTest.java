@@ -103,6 +103,62 @@ public class ReliefMeshGoldenTest {
         }
     }
 
+    /**
+     * The pivot is the surface point under the origin, so the renderer samples
+     * the field it retains at the origin's IMAGE position. The field is in the
+     * MODEL-SPACE height unit (the renderer converts its GLES3 copy once, after
+     * the texture took the raw values), and the trap pinned here is the row
+     * order: row 0 is the image's TOP row (plane y = +0.5). A row or column
+     * flipped by accident would put the pivot on the opposite side of the
+     * picture, which no camera test can see.
+     */
+    @Test
+    public void fieldHeightIsSampledAtTheOriginsImagePosition() {
+        int grid = 2;
+        // row-major, top row first, in model units
+        float[] field = {-0.40f, -0.30f, -0.20f,
+                         -0.10f, 0.00f, 0.10f,
+                         0.20f, 0.30f, 0.40f};
+
+        // corners: plane y = +0.5 is the image top, plane x = -0.5 the left
+        assertEquals("top-left", -0.40f,
+                ReliefMesh.heightAt(field, grid, -0.5f, 0.5f), 1e-6f);
+        assertEquals("top-right", -0.20f,
+                ReliefMesh.heightAt(field, grid, 0.5f, 0.5f), 1e-6f);
+        assertEquals("bottom-left", 0.20f,
+                ReliefMesh.heightAt(field, grid, -0.5f, -0.5f), 1e-6f);
+        assertEquals("bottom-right", 0.40f,
+                ReliefMesh.heightAt(field, grid, 0.5f, -0.5f), 1e-6f);
+
+        // exact samples, and one bilinear point between four of them:
+        // (0.25, 0.25) is the middle of the -0.30/-0.20/0.00/0.10 cell
+        assertEquals("centre sample", 0.00f,
+                ReliefMesh.heightAt(field, grid, 0f, 0f), 1e-6f);
+        assertEquals("bilinear between samples", -0.10f,
+                ReliefMesh.heightAt(field, grid, 0.25f, 0.25f), 1e-6f);
+    }
+
+    /**
+     * An origin at or beyond the picture reads the edge it is nearest rather
+     * than wrapping, and no field at all answers the plane: 0 is the safe aim,
+     * because a window claims nothing and a pivot that guessed would be a
+     * camera aimed at a point nobody asked for.
+     */
+    @Test
+    public void fieldHeightClampsOffThePictureAndClaimsNothingWithoutAField() {
+        float[] field = {-0.40f, -0.30f, -0.20f,
+                         -0.10f, 0.00f, 0.10f,
+                         0.20f, 0.30f, 0.40f};
+        assertEquals("left of the picture reads the left column", -0.10f,
+                ReliefMesh.heightAt(field, 2, -1f, 0f), 1e-6f);
+        assertEquals("below the picture reads the bottom row", 0.30f,
+                ReliefMesh.heightAt(field, 2, 0f, -1f), 1e-6f);
+        assertEquals("no field", 0f, ReliefMesh.heightAt(null, 2, 0f, 0f), 0f);
+        assertEquals("no grid", 0f, ReliefMesh.heightAt(field, 0, 0f, 0f), 0f);
+        assertEquals("short field", 0f,
+                ReliefMesh.heightAt(new float[]{1f}, 2, 0f, 0f), 0f);
+    }
+
     // ---------------------------------------------------------------- golden IO
     //
     // File layout, matching the capture tool: a 4-byte big-endian ELEMENT

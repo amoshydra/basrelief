@@ -670,6 +670,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
          */
         float focal;
         float imageH;
+        /**
+         * The blurred depth field, kept from the install so the camera can aim
+         * at the surface under the origin: model-space height per sample,
+         * {@code (GRID+1)^2}, top-first. The texture keeps the raw 0..255
+         * values; this retained copy is converted once, after the upload, to the
+         * unit the pivot is resolved in — the same unit {@code ReliefMesh}'s own
+         * field is in, so the sampler does not have to know which path built it.
+         * See {@link ReliefMesh#heightAt}.
+         *
+         * <p><b>For a clip this is the STILL POSTER's field.</b> A clip's live
+         * depth is GPU-side: the blitter rewrites the field texture every frame
+         * and no CPU copy exists to sample. The poster is a still of the clip's
+         * own first frame, so the pivot is the surface of the photograph the
+         * row was cut from -- one number per pair, the same lifetime every other
+         * framing value has, rather than a pivot that chases the moving subject.
+         */
+        float[] field;
         /** The framing this render is drawn with while it is on screen or fading. */
         Framing framing;
         /** The light, resolved once per framing capture so no draw does trigonometry. */
@@ -2451,6 +2468,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
         recomputeScale();
+        // The camera on screen aims at the surface under the CURRENT origin, so
+        // the unprojection must use the same pivot depth the draw did -- resolved
+        // from the displayed render's field and the live orbit, which is what
+        // the steady state is drawing. A tap resolved through the plane's camera
+        // would land where the picture is not.
+        camera.setPivotHeight(ReliefMesh.heightAt(displayed.field, GRID, orbitX, orbitY));
         if (!camera.screenToOrbit(ndcX, ndcY, w, h, panX, panY,
                 orbitX, orbitY, smoothX, smoothY, tapOrbit)) return false;
         orbitX = tapOrbit[0];
@@ -3176,14 +3199,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // render's own frozen framing instead; see pairChangePending.
             if (!pairChangePending) captureFraming(displayed);
             CameraModel.Frame f = drawRender(displayed, 1f);
-            if (showOrbitMarker) drawOrbitMarker(displayed, f);
+            if (showOrbitMarker) drawOrbitMarker(f);
             if (debugLayer != 0) drawDebugQuad(displayed);
         } else {
             float t = (now - fadeStartNanos) / 1_000_000f / CROSS_FADE_MS;
             if (t >= 1f) {
                 finishFadeNow();
                 CameraModel.Frame f = drawRender(displayed, 1f);
-                if (showOrbitMarker) drawOrbitMarker(displayed, f);
+                if (showOrbitMarker) drawOrbitMarker(f);
             } else {
                 // Two complete reliefs, blended. The outgoing pair draws
                 // opaque, the incoming over it at alpha t, so the glass shows
@@ -3202,7 +3225,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                         GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
                 CameraModel.Frame f = drawRender(incoming, t);
                 GLES20.glDisable(GLES20.GL_BLEND);
-                if (showOrbitMarker) drawOrbitMarker(incoming, f);
+                if (showOrbitMarker) drawOrbitMarker(f);
                 // RENDERMODE_WHEN_DIRTY: nobody else is guaranteeing frames
                 // for the span, so the fade pumps itself through the host's own
                 // requester -- the same mechanism install() uses, and NOT a
@@ -3238,6 +3261,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         camera.setZoom(fr.zoom);
         camera.setDepth(fr.depth);
         camera.setMotion(fr.motion);
+        // The pivot is the surface under the origin: the render's own field,
+        // sampled at the origin's image position. It must be set before frame(),
+        // which resolves the pivot's world z with the scale and zScale it is
+        // about to compute. The render's field is used rather than the live one
+        // for the same reason the framing is: during a fade two photographs are
+        // on screen and each aims at its own subject.
+        camera.setPivotHeight(ReliefMesh.heightAt(r.field, GRID, fr.orbitX, fr.orbitY));
         // One shared reusable Frame, so this allocates nothing; its values must
         // be consumed before the next call, which the uniform uploads do.
         CameraModel.Frame f = camera.frame(surfaceW, surfaceH, fr.panX, fr.panY,
@@ -3345,16 +3375,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uSplatSize, Splat.cardSize(splatGrid));
         // THE REFERENCE EYE IS THE CAMERA AT REST, NOT THE MOVING ONE, and it is
         // the same two terms CameraModel.frame builds the eye from with the tilt
-        // left out: the pivot's world x and y -- which is why the marker's own
-        // crosshair uses exactly this expression -- and the camera distance.
-        // The splat branch places every card on a ray from this eye, so it must
-        // be the camera the photograph is pinned to. Feeding it the moving eye
-        // instead lands every card on its own pixel's ray and the depth stops
-        // being visible at all: no parallax, no gaps, at any Depth or tilt.
-        GLES20.glUniform3f(uSplatEye,
-                r.framing.orbitX * r.aspect * f.scale,
-                r.framing.orbitY * f.scale,
-                CameraModel.CAM_DIST);
+        // left out: the pivot's world x and y -- taken from the frame, so the
+        // eye, the aim point and the marker cannot name different pivots -- and
+        // the fixed camera distance. The splat branch places every card on a ray
+        // from this eye, so it must be the camera the photograph is pinned to.
+        // Feeding it the moving eye instead lands every card on its own pixel's
+        // ray and the depth stops being visible at all: no parallax, no gaps, at
+        // any Depth or tilt.
+        GLES20.glUniform3f(uSplatEye, f.pivotX, f.pivotY, CameraModel.CAM_DIST);
         // The row's focal, or the documented default when it has none, and the
         // default itself as the reference the shader divides by. Both resolved in
         // :core, where the fallback is a tested function of the image height
@@ -3380,20 +3408,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * The studio's orbit crosshair, drawn over a render.
      *
-     * <p>Takes the render rather than reading the live orbit, so the marker sits
-     * on the photograph that was actually drawn: during a pending pair change or
-     * a cross-fade the live values already belong to the incoming photo while
-     * the outgoing one is still on the glass.
+     * <p>Takes the FRAME the render was drawn with rather than reading the live
+     * orbit, so the marker sits on the photograph that was actually drawn:
+     * during a pending pair change or a cross-fade the live values already
+     * belong to the incoming photo while the outgoing one is still on the
+     * glass, and the frame's pivot is that render's own aim point.
      */
-    private void drawOrbitMarker(Render render, CameraModel.Frame f) {
+    private void drawOrbitMarker(CameraModel.Frame f) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(markerProgram);
 
-        float cx = render.framing.orbitX * render.aspect * f.scale;
-        float cy = render.framing.orbitY * f.scale;
+        // The pivot's world point, from the frame: the same point the camera
+        // aims at and the splat's reference eye sits above, so the crosshair,
+        // the aim and the cards cannot name different pivots. It is the surface
+        // under the origin, not the plane point behind it -- which is what makes
+        // the crosshair the point the picture will hold under a tilt.
         float r = 0.035f * f.scale;
         Matrix.setIdentityM(markerMat, 0);
-        Matrix.translateM(markerMat, 0, cx, cy, 0f);
+        Matrix.translateM(markerMat, 0, f.pivotX, f.pivotY, f.pivotZ);
         Matrix.scaleM(markerMat, 0, r, r, 1f);
         Matrix.multiplyMM(markerMvp, 0, f.viewProjection, 0, markerMat, 0);
         GLES20.glUniformMatrix4fv(markerUMVP, 1, false, markerMvp, 0);
@@ -3511,11 +3543,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 r.textureNormal = -1;
                 return false;
             }
+            // The texture has copied the field, so the retained copy is
+            // converted IN PLACE to the model-space height the pivot is resolved
+            // in (h = v/255 - 0.5) -- the same unit ReliefMesh.build's own field
+            // is in, so the sampler does not have to know which path built it.
+            // In place deliberately: the retained copy costs no second 0.6 MB
+            // buffer, and nothing else reads the 0..255 form after the upload.
+            for (int i = 0; i < field.length; i++) field[i] = field[i] / 255f - 0.5f;
+            r.field = field;
         } else {
             ReliefMesh surf = ReliefMesh.build(p.gray, p.w, p.h, GRID, r.aspect);
             r.vertexCount = surf.vertexCount;
             r.posBuffer = toBuffer(surf.positions);
             r.uvBuffer = toBuffer(surf.uvs);
+            // The mesh's own field is already the model-space height the pivot
+            // is sampled in; keeping the reference is what the GLES2 path pays
+            // for the pivot, where GLES3 pays for the retained blurred field.
+            r.field = surf.field;
             // surf.normals is deliberately not uploaded: shading is the supplied
             // normal map or the flat plane, and the CPU mesh's derived normals are
             // no longer read by anything. ReliefMesh still builds them because its

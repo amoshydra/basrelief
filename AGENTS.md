@@ -358,10 +358,10 @@ already cost real time.
     the picture visibly wrong, so a splat change has to be looked at on a device.
   - **The card is placed on a ray from the camera AT REST, not from the moving one,
     and that is what makes Origin mean the same thing in both modes.** `uSplatEye` is
-    the tilt-free eye — `(orbitX * aspect * scale, orbitY * scale, CAM_DIST)`, the two
-    terms `CameraModel.frame` builds the eye from and the same expression the orbit
-    marker uses — and each card sits on the ray from it through its own
-    reference-plane point, closer by its own depth. Scaling the sample's position about
+    the tilt-free eye — the frame's pivot x/y at the fixed `CAM_DIST`, i.e. the same
+    pivot `CameraModel.frame` aims the camera at and the marker is drawn on — and
+    each card sits on the ray from it through its own reference-plane point, closer
+    by its own depth. Scaling the sample's position about
     the MODEL CENTRE (`q * (zEye / uCamDist)`, what the branch did) is that same
     construction with the eye assumed to sit on the model's z axis, and the assumption
     stopped being true the moment Origin moved the camera: with Origin at a corner the
@@ -381,6 +381,37 @@ already cost real time.
     being left as a uniform nothing reads; the 0.15 margin is now the ray's distance
     (`closer = max(dist - zOff, 0.15)`), and the `h == 0` position is still exactly the
     relief's.
+  - **The pivot is the SURFACE point under the origin, not the plane point behind
+    it, and the aim is what carries it.** `CameraModel.setPivotHeight` takes the
+    blurred field's height under the origin's image position (`ReliefMesh.heightAt`,
+    in model units), and `frame` aims at `(px, py, h * scale * zScale)` — the plane
+    point lifted through the same model-to-world factor `uMVP` applies. The plane
+    point was the old pivot: it held the centre while everything nearer swung,
+    which the user reported as an orbit defined only on the 2D plane, and the pivot belongs on the subject's nose rather than the
+    background. **The eye does not move
+    with the pivot's depth**: it keeps the fixed `CAM_DIST` and the pivot's own
+    x/y, so at rest it sits directly above the pivot, `lookAt`'s direction is
+    still straight down, and the view matrix is exactly the plane point's own.
+    Measured off-device over 4 aspects x 3 surfaces x 3 zooms x 4 depths x 4
+    origins x 3 tilts: the at-rest projection of the plane differs from the
+    pivot-at-zero camera by 0 (double precision), the splat card still lands on
+    its own reference pixel (7e-15), the pivot holds the centre under tilt
+    (2e-15) while the plane point under the origin swings up to 0.21 NDC, and
+    every visible card corner still moves under tilt (min 8e-6, max 1.13 NDC).
+    That is what keeps "at rest the picture is exactly the photograph" true for
+    every origin and every pivot height with NO model-scale compensation. The
+    naive `eye = pivot + CAM_DIST` would move the eye off the plane's distance
+    and shrink the picture (0.5 * 0.9 * `CAM_DIST` of pivot is a 31% zoom-out),
+    and scaling the model to compensate would zoom the whole photo as the origin
+    moved from a near subject to a far background. The pivot is the RELIEF's
+    surface; the splat's focal depth gain is deliberately not folded in, so the
+    aim is one camera for both modes and the mode toggle does not jump. A clip's
+    pivot comes from the still POSTER's field — the live depth is a GPU texture
+    with no CPU copy — so it is one number per pair, like every other framing
+    value. The marker and `uSplatEye` both read the frame's pivot — the marker at
+    the pivot itself, the eye at the fixed camera distance above it — so they
+    cannot name different pivots, and `screenToOrbit` resolves the tap through
+    the same pivot depth the draw used.
   - **The focal does NOT go into the ray, and that is a decision with a measurement
     behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
     camera; drawing it through this renderer's camera — fixed 45°, because it is the
@@ -783,7 +814,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 557 tests across thirty-one classes:
+it**. 563 tests across thirty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -809,7 +840,10 @@ one.
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
-  the v convention and dropping a face normal each fail it.
+  the v convention and dropping a face normal each fail it. It also pins
+  `heightAt`, the field sampling the pivot is resolved from: row 0 is the
+  image's top (plane y = +0.5), the value becomes `v/255 - 0.5`, bilinear
+  between samples, clamped at the edge, and 0 without a field.
 - `SplatTest` — the splat mode's two numbers, each with the one wrong answer that
   a screenshot cannot tell from the right one. The fallback focal is asserted by
   INVERTING it: the implied field of view is 50 degrees for every image height, and
@@ -1138,7 +1172,13 @@ one.
   exactly what the gesture will write" holds only while both sides call the same
   function, and two derivations of one value agree until the day one is edited.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
-  step is live at every zoom" and "Depth 0% is flat at every zoom".
+  step is live at every zoom" and "Depth 0% is flat at every zoom". Its third
+  theme is the pivot at depth: the at-rest picture is unchanged for every origin
+  and every pivot height (the eye sits directly above the pivot, so the view
+  matrix is the plane's own), the pivot holds the centre under tilt while the
+  plane behind it swings, the pivot's world z is `h * scale * zScale`, and the
+  Origin tracking identity survives a pivot height because it is measured at
+  rest.
 - `PrefFilesTest` — the restore case, which silently costs users their image.
 - `PrefFilesContentTest` — that two files are the same image, which is what stops
   a re-share from adding another identical gallery row. The traps it pins are the

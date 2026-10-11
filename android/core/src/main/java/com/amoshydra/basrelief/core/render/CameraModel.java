@@ -2,7 +2,8 @@ package com.amoshydra.basrelief.core.render;
 
 /**
  * The camera model: how the relief plane is scaled to the viewport, where the
- * camera sits as a function of tilt/orbit, and how a screen tap unprojects
+ * camera sits as a function of tilt/orbit, how the pivot's surface depth aims
+ * the camera at the subject under the origin, and how a screen tap unprojects
  * back to a new orbit centre.
  *
  * <p>Extracted from {@code ReliefRenderer} (which used android.opengl.Matrix and
@@ -31,6 +32,14 @@ public final class CameraModel {
         /** {@code projPanned * view} — the plane marker is transformed by this. */
         public final float[] viewProjection = new float[16];
         public float eyeX, eyeY, eyeZ;
+        /**
+         * The pivot's world position: the surface point under the origin, which
+         * is what the camera aims at. The eye sits directly above it in z at the
+         * fixed camera distance (at rest), so {@code pivotX}/{@code pivotY} are
+         * also the reference eye's x/y and the splat cards are placed from
+         * {@code (pivotX, pivotY, CAM_DIST)}.
+         */
+        public float pivotX, pivotY, pivotZ;
         public float zScale;
         public float scale;
     }
@@ -40,6 +49,12 @@ public final class CameraModel {
     private float zoom = 1f;
     private float depth = 1f;    // 0..1 fraction of maxZScale()
     private float motion = 1f;
+    /**
+     * The surface height under the origin, in model units: the blurred depth
+     * field's value at the origin's image position, {@code h = v/255 - 0.5}, the
+     * same quantity the vertex shader displaces by. 0 is the plane.
+     */
+    private float pivotHeight;
 
     private final Frame frame = new Frame();
     private final float[] proj = new float[16];
@@ -71,6 +86,37 @@ public final class CameraModel {
 
     public void setMotion(float motion) {
         this.motion = motion;
+    }
+
+    /**
+     * The surface height under the origin, in model units (the depth field's
+     * {@code v/255 - 0.5}, so in {@code [-0.5, 0.5]}).
+     *
+     * <p><b>Why the camera wants it.</b> {@link #frame} aims at the pivot: with
+     * the height at 0 that aim point is on the reference plane, so a tilt holds
+     * the PLANE fixed and everything nearer swings -- the user's it orbited around the background. With the field's height under the origin, the aim
+     * point is the SURFACE under the origin, so the subject holds and the
+     * background swings.
+     *
+     * <p><b>What it must not change.</b> The at-rest picture. The eye keeps the
+     * fixed camera distance and the pivot's own x/y, so it sits directly above
+     * the pivot at any height; {@code lookAt}'s direction is then still straight
+     * down and the view matrix is exactly the plane point's own. That is the
+     * whole reason this construction needs no model-scale compensation, and it
+     * is what keeps "at rest the picture is exactly the photograph" true for
+     * every origin and every pivot height.
+     *
+     * <p>The value is clamped to the model's own depth axis ({@code [-0.5, 0.5]},
+     * which {@code ReliefMesh} defines), and a non-finite value is the plane,
+     * because a window claims nothing. The clamp is also what guarantees the
+     * pivot stays in front of the camera: the model's own depth limit
+     * ({@link #maxZScale}) is {@code 0.9 * CAM_DIST / scale}, so a pivot at the
+     * extreme is {@code 0.45 * CAM_DIST} at most and the eye can never end up
+     * behind its own aim point.
+     */
+    public void setPivotHeight(float pivotHeight) {
+        if (!Float.isFinite(pivotHeight)) pivotHeight = 0f;
+        this.pivotHeight = Math.max(-0.5f, Math.min(0.5f, pivotHeight));
     }
 
     public float getAspect() {
@@ -106,13 +152,18 @@ public final class CameraModel {
      * mistrack one of them by the image's aspect, which is the kind of quiet
      * wrongness {@code CameraModelTest} exists to catch.
      *
-     * <p><b>What deliberately does not enter.</b> Depth only displaces the
-     * relief in z and the pivot plane is z = 0. Tilt does change the answer by
-     * up to ~14% at the maximum Motion (the eye-to-pivot distance grows while
-     * the lateral offset does not), and it is left out on purpose: the value is
-     * read once per gesture and a value that moved with the gyro would make the
-     * same drag change speed while the phone is in the hand. The caller applies
-     * its own margin over tracking anyway.
+     * <p><b>What deliberately does not enter.</b> The pivot's own depth. The
+     * value is the PLANE's rate at the rest camera, and that is exact wherever
+     * it matters: at rest the camera aims at the surface point under the origin
+     * but the eye sits directly above the pivot, so the view matrix is the plane
+     * point's own and the unprojection this is the inverse of is unchanged by
+     * the pivot's height. Tilt does move the answer, and it is left out on
+     * purpose: the value is read once per gesture, and a value that moved with
+     * the gyro -- or with the surface under the origin as the slider moves --
+     * would make the same drag change speed while the phone is in the hand.
+     * Measured on the local rate (two taps 10 px apart) over the reachable
+     * sweep: 3.9% at the extremes with the pivot at depth, against 2.6% with it
+     * on the plane. The caller applies its own margin over tracking anyway.
      *
      * @param horizontal true for the X axis, false for Y
      * @param surfaceH   the drawing surface's height in pixels, as handed to
@@ -167,14 +218,26 @@ public final class CameraModel {
      * order; getting it backwards is a real historical bug, and
      * {@code CameraModelTest} asserts the round-trip rather than trusting a
      * comment here.
+     *
+     * <p><b>The aim point is the pivot, and the pivot has a depth.</b> The
+     * camera translates laterally with the tilt and aims at the surface point
+     * under the origin -- {@code (px, py, pivotHeight * scale * zScale)}, the
+     * plane point lifted through the same model-to-world factor {@code uMVP}
+     * applies -- so the subject under the origin holds while the background
+     * swings around it. The eye does NOT move with the pivot's depth: it stays
+     * at the fixed camera distance with the pivot's own x/y, directly above the
+     * pivot, which is what makes the at-rest view matrix exactly the plane's
+     * own at every height. See {@link #setPivotHeight}.
      */
     public Frame frame(float surfaceW, float surfaceH,
                        float panX, float panY,
                        float orbitX, float orbitY,
                        float tiltX, float tiltY) {
         float scale = computeScale();
+        float zScale = computeZScale(scale);
         float px = orbitX * aspect * scale;
         float py = orbitY * scale;
+        float pz = pivotHeight * scale * zScale;
         float range = TILT_RANGE * motion;
 
         Mat4.perspective(proj, 0, FOV_DEG, surfaceAspect, NEAR, FAR);
@@ -187,11 +250,14 @@ public final class CameraModel {
         frame.eyeX = px + tiltX * range;
         frame.eyeY = py - tiltY * range;
         frame.eyeZ = CAM_DIST;
-        Mat4.lookAt(view, 0, frame.eyeX, frame.eyeY, frame.eyeZ, px, py, 0f, 0f, 1f, 0f);
+        Mat4.lookAt(view, 0, frame.eyeX, frame.eyeY, frame.eyeZ, px, py, pz, 0f, 1f, 0f);
 
         Mat4.multiplyMM(frame.viewProjection, 0, projPanned, 0, view, 0);
+        frame.pivotX = px;
+        frame.pivotY = py;
+        frame.pivotZ = pz;
         frame.scale = scale;
-        frame.zScale = computeZScale(scale);
+        frame.zScale = zScale;
         System.arraycopy(frame.viewProjection, 0, frame.mvp, 0, 16);
         Mat4.scaleM(frame.mvp, 0, scale, scale, scale * frame.zScale);
         return frame;
@@ -200,6 +266,12 @@ public final class CameraModel {
     /**
      * Unproject a screen tap to a new orbit centre, in the same plane as the
      * current orbit pivot (z = 0 in plane space).
+     *
+     * <p>The unprojection runs through the camera AS IT IS, including the
+     * current pivot height, so the plane point it resolves is the one that was
+     * under the finger on screen. The new centre is on the plane, exactly as
+     * before; its surface height -- and therefore the new pivot's depth -- is
+     * read from the field under it, which is the renderer's half.
      *
      * @param out receives {x, y} orbit in [-0.5, 0.5]
      * @return false if the tap missed the plane (no orbit change)
