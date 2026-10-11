@@ -810,6 +810,9 @@ final class SplatRenderer {
             "precision highp sampler2D;\n" +
             "precision highp usampler2D;\n" +
             "\n" +
+            // See the note at its use: a floor on the 2D covariance, not a blur.
+            "const float SPLAT_EPS_2D = 2.5;\n" +
+            "\n" +
             "uniform mat4 uProj;\n" +
             "uniform mat4 uView;\n" +
             "uniform mat3 uViewRot;\n" +
@@ -889,8 +892,21 @@ final class SplatRenderer {
             "  float cov00 = u00 * jx0 + u02 * jx2;\n" +
             "  float cov01 = u01 * jy1 + u02 * jy2;\n" +
             "  float cov11 = u11 * jy1 + u12 * jy2;\n" +
-            "  cov00 += 0.3;\n" +
-            "  cov11 += 0.3;\n" +
+            // The 2D low-pass floor, gsplat's eps2d. It is a FLOOR, not a blur:
+            // it lifts the splats whose screen covariance is too small to sample
+            // and leaves the well-sampled ones alone, so a far field of ~2 px
+            // splats at 2 px spacing stops reading as a screen-door fog. Measured
+            // on the cloud that showed the striping (sky high-frequency energy /
+            // subject high-frequency energy / black holes): 0.3 -> 10.08 / 1.68 /
+            // 9.6%; 1.5 -> 5.26 / 1.46 / 1.8%; 2.5 -> 2.98 / 1.35 / 0.2%; 4.0 ->
+            // 1.27 / 1.26 / 0.0%. 2.5 is the knee: the stripes are gone and the
+            // subject is visually unchanged. 4.0 is the cleaner-sky option at a
+            // small subject cost, and is deliberately not shipped. This is the
+            // only place the floor lives -- :core's SplatProjection::conic has no
+            // equivalent (its MIN_DET is a singularity guard, not a floor), so
+            // there is nothing to keep in step.
+            "  cov00 += SPLAT_EPS_2D;\n" +
+            "  cov11 += SPLAT_EPS_2D;\n" +
             "\n" +
             "  float det = cov00 * cov11 - cov01 * cov01;\n" +
             "  if (det <= 1e-9) {\n" +
