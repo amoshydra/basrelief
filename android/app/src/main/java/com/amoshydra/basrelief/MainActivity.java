@@ -1597,8 +1597,18 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 renderer.reloadFromPrefs();
+                // Resume a clip the pause suspended, IN PLACE, after the reload
+                // above has re-armed what should be on screen: resumeClip only
+                // resumes when the suspended player is still what the arm names.
+                // Inside this event rather than beside it because the arm is
+                // written by reloadFromPrefs itself.
+                renderer.resumeClip();
             }
         });
+        // And the frame pump, which onPause stopped: a resumed clip must have
+        // something asking for frames. Unconditional like onCreate's -- the poll
+        // idles at 10 Hz when nothing wants frames.
+        startClipPump();
         // The renderer writes to whatever surface it is told to. Never told, it
         // defaults to Home, which is right until the user picks Lock -- and wrong from
         // then on, silently: the segment says Lock, the numbers move, and Home is what
@@ -1613,6 +1623,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         sensorPolicy.setVisible(false);
+        // The studio's clip must not decode while the studio is not on screen.
+        // glView.onPause() stops the GL thread draining its queue, so a stop
+        // posted there would sit undelivered; suspendClip runs here, on the UI
+        // thread, and holds the clip time for onResume to continue from.
+        if (renderer != null) renderer.suspendClip();
+        // The pump never stops itself, and a paused studio has nothing to pump.
+        // onDestroy removes it too; this is the foreground/background pair the
+        // wallpaper's engine keeps with its visibility handler.
+        glidePump.removeCallbacks(clipTick);
         glView.onPause();
         super.onPause();
     }

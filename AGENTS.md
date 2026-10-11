@@ -1155,6 +1155,24 @@ one.
     completes would then have named a medium the screen never reached. Two fields on
     purpose: conflating a request with a fact about the screen would let a late decode
     rename the medium of the pair already being displayed.
+  - **A clip must not decode while its engine is hidden, and the stop cannot ride
+    the GL queue.** `onVisibilityChanged(false)` pauses the GL view, and a paused
+    `GLSurfaceView` does not drain `queueEvent`, so a stop posted there sits
+    undelivered for as long as the engine stays hidden — measured as a clip player
+    created by the LOCK engine ~11 minutes earlier, three `clip-decode-*` threads
+    and three `MediaCodec_loop` threads burning most of a core behind a dark
+    screen, the battery-stats decode counter up 5m42s in 6 minutes of wall clock.
+    So the host calls `suspendClip()` on the thread the visibility change ran on:
+    the decoders stop, the clock is HELD at the clip time they reached, and
+    `resumeClip()` seeds all three back to it — the same `startAt` seeding a grow
+    uses — so waking continues the picture instead of rewinding it. Identity checks
+    use `isLive()` (running OR suspended), because treating a suspended player as
+    gone is what tears it down and rebuilds it; the pump and the watchdog stay on
+    `isRunning()`, because a suspended player wants no frames and cannot stall. A
+    `clipSuspendWanted` flag closes the race where a start lands after the hide, and
+    the resume is gated on `PowerManager.isInteractive()` so an AOD doze pulse —
+    visible but not interactive — does not rebuild three decoders for a screen
+    nobody sees.
 - `FramingRowValueTest` — the three numbers a framing row *prints*, and above all
   that Origin and Pan cannot be converted by one rule. It is the display half of the
   rule `ConfigTest` and `PerItemSettingsTest` pin on the stored half: **pan is in

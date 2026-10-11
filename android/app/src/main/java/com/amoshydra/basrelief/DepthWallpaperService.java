@@ -1195,8 +1195,38 @@ public class DepthWallpaperService extends WallpaperService {
                 // Becoming visible is the one moment at which the answer cannot
                 // be a cached guess, so it is the moment to ask.
                 if (renderer != null && prefs != null) applyFromPrefs(prefs);
+                // Resume a clip the hide suspended, IN PLACE, but only for a screen
+                // that is interactive: a doze pulse is visible without being
+                // interactive, and rebuilding three decoders for a screen nobody
+                // sees is exactly the second-order waste this path exists to stop.
+                //
+                // Queued BEHIND applyFromPrefs, because the arm lives inside its GL
+                // event and resumeClip only resumes when the suspended player is
+                // still what the arm names -- and the interactivity is read when
+                // this RUNS, not when it is queued, so a screen that goes dark in
+                // between cannot resume it.
+                if (renderer != null) {
+                    glView.queueEvent(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (isInteractive()) renderer.resumeClip();
+                        }
+                    });
+                }
             } else {
                 holdLockFrameForUnlock();
+                // A clip must not decode behind a hidden engine, and this stop
+                // cannot be posted to the GL thread: glView.onPause() is about to
+                // stop that thread draining its queue, so a queued stop would sit
+                // undelivered for as long as the engine stays hidden -- the
+                // measured eleven-minute leak. suspendClip runs HERE, on the
+                // visibility thread, and suspends in place so the resume continues
+                // the clip rather than rewinding it.
+                if (renderer != null) renderer.suspendClip();
+                // The pump never stops itself, and a hidden engine has nothing to
+                // pump: left posted it is a 10 Hz wakeup for a clip that is not even
+                // decoding. The next resolve restarts it.
+                clipHandler.removeCallbacks(clipTick);
                 glView.onPause();
             }
             sensorPolicy.setVisible(visible); // screen off / other app on top

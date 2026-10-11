@@ -931,6 +931,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile ClipPlayer clip;
 
     /**
+     * Whether the host has hidden this engine and a clip must not decode behind it.
+     *
+     * <p><b>A flag as well as a call, because a start can land after the hide.</b>
+     * The hide suspends the player that exists, but a decode already in flight can
+     * finish afterwards and start a clip on the paused GL thread -- and a running
+     * player on a hidden engine is the measured leak this whole path exists to
+     * end. So {@link #suspendClip()} sets the flag and the places a start lands
+     * ({@code startClipInner}, {@code startPreview}) suspend the new player at
+     * once instead of leaving it decoding.
+     *
+     * <p>Cleared by {@link #resumeClip()}, which the hosts only call for a screen
+     * that is actually interactive; a doze pulse leaves it set. Volatile because
+     * the hosts write it from their visibility threads while the GL thread reads
+     * it where a start lands.
+     */
+    private volatile boolean clipSuspendWanted;
+
+    /**
      * Debug layer drawn over the relief: 0 off, 1 colour, 2 depth field, 3 normal.
      *
      * <p>A debug view, because alignment questions -- is the depth field flipped,
@@ -1102,6 +1120,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *       decode gap's worth, then silence.
      *   </li>
      * </ul>
+     *
+     * <p>{@code isRunning}, not {@code isLive}, for that last term: a player a hide
+     * suspended wants no frames -- it is holding its time, not advancing it -- and it
+     * cannot stall, so the pump may idle while the screen is dark and the watchdog has
+     * nothing to watch. The host's resume and its pump restart are what start frames
+     * again.
      */
     public boolean clipWantsFrames() {
         return startingClip || pendingTracks != null || pendingPreview != null
@@ -1133,14 +1157,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      *       a photograph re-selected keeps its cheap no-op and a clip still playing
      *       behind a photograph forces the load that stops it.</li>
      * </ul>
+     *
+     * <p>{@code isLive}, not {@code isRunning}, in all three branches: a player a
+     * hide suspended is still the clip this request names, and answering "not
+     * running" would make the resolve reload the pair and rebuild three decoders
+     * over it -- the rewind this method exists to prevent.
      */
     public boolean clipMatches(com.amoshydra.basrelief.core.store.VideoTracks t,
                                java.io.File previewColour) {
-        if (t != null) return clip != null && clip.isRunning() && clip.isSameClips(t);
+        if (t != null) return clip != null && clip.isLive() && clip.isSameClips(t);
         if (previewColour != null) {
-            return clip != null && clip.isRunning() && clip.playsColour(previewColour);
+            return clip != null && clip.isLive() && clip.playsColour(previewColour);
         }
-        return clip == null || !clip.isRunning();
+        return clip == null || !clip.isLive();
     }
 
     /**
@@ -1166,11 +1195,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // rewinds the clip to frame 0. A video that rewinds on every resolve is a
         // photograph, which is exactly what was reported.
         //
-        // So the running clip's IDENTITY is compared, not "is one running". The
+        // So the LIVE clip's IDENTITY is compared, not "is one running" -- live,
+        // not running, because a player a hide suspended is still this clip and
+        // rebuilding it is the same rewind from the other direction. The
         // three filenames are the identity: two VideoTracks naming the same files are
         // the same clip, and comparing the object would restart a clip that had merely
         // been rebuilt from the same JSON.
-        if (clip != null && clip.isRunning() && clip.isSameClips(tracks)) {
+        if (clip != null && clip.isLive() && clip.isSameClips(tracks)) {
             return true;
         }
         // A GROW, not a stop-then-start. The colour currently playing is the file these
@@ -1182,8 +1213,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the reported defect this path exists to prevent. Only when the depth is
         // actually resolvable: a grow that cannot get depth would leave the row naming
         // tracks nothing can play, where the ordinary path degrades to the poster and
-        // retries on the next resolve.
-        if (clip != null && clip.isRunning() && tracks != null && filesDir != null) {
+        // retries on the next resolve. A SUSPENDED player grows too (isLive): the
+        // tracks can arrive while the engine is hidden, and the identity has to move
+        // to them or every later resolve would grow the same player again.
+        if (clip != null && clip.isLive() && tracks != null && filesDir != null) {
             java.io.File cf = tracks.colorFile(filesDir);
             java.io.File df = tracks.depthFile(filesDir);
             if (clip.playsColour(cf) && df != null && df.exists()) {
@@ -1214,6 +1247,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         runningTracks = tracks;
         runningPreview = null;
         runningDir = filesDir;
+        // A start that lands while the engine is hidden must not leave a running
+        // player behind it. The hide set clipSuspendWanted and suspended whatever
+        // existed THEN; this player did not exist yet, and the GL thread it just
+        // started on is the paused one. Suspending here closes that window, so no
+        // path leaves decoders running on a hidden engine. The held time is this
+        // player's own start, so a later resume begins where it would have -- which
+        // is right for a player that never got a visible frame.
+        if (clipSuspendWanted) clip.suspend();
         return true;
     }
 
@@ -1233,7 +1274,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * still pair stays on screen and the status line reports what actually happened.
      */
     private boolean startPreview(java.io.File colour, java.io.File filesDir) {
-        if (clip != null && clip.isRunning() && clip.playsColour(colour)) return true;
+        if (clip != null && clip.isLive() && clip.playsColour(colour)) return true;
         // The same pump window startClip has: this tears a player down before the new
         // one is running, and a poll landing inside it would end the frame chain.
         startingClip = true;
@@ -1256,6 +1297,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             }
             runningPreview = colour;
             runningDir = filesDir;
+            // Same window as startClipInner's: a preview that starts while the
+            // engine is hidden suspends at once rather than decoding behind it.
+            if (clipSuspendWanted) clip.suspend();
             return true;
         } finally {
             startingClip = false;
@@ -1366,6 +1410,50 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
+     * Stop a clip decoding while its engine is hidden. Any thread; no GL calls.
+     *
+     * <p><b>The stop cannot ride the GL queue.</b> The host that hides is about to
+     * pause the {@code GLSurfaceView}, and a paused GL thread does not drain
+     * {@code queueEvent}: a stop posted there sits undelivered for as long as the
+     * engine stays hidden -- measured as three decoder threads and three codec
+     * loops burning most of a core for eleven minutes behind a dark screen. So the
+     * player is suspended HERE, on the thread the visibility change ran on, and
+     * the flag makes any start that lands later suspend itself too. The player
+     * holds its clip time, so {@link #resumeClip()} continues rather than rewinds.
+     */
+    public void suspendClip() {
+        clipSuspendWanted = true;
+        ClipPlayer c = clip;
+        if (c != null) c.suspend();
+    }
+
+    /**
+     * Resume a suspended clip, if the arm still names it. Any thread; no GL calls.
+     *
+     * <p><b>In place, never a restart.</b> {@link ClipPlayer#resume()} seeds the
+     * decoders back to the clip time the suspension held, so the picture continues
+     * where it was; tearing the player down and starting it again would rewind it,
+     * which is the reported "a video that rewinds is a photograph".
+     *
+     * <p><b>Only when the arm still names it.</b> The arm is what the last resolve
+     * asked to be on screen. If it names a still or a different clip, this player
+     * is about to be replaced by that resolve's load, and resuming it would run
+     * decoders the next {@code applyPending}/{@code stopClip} is about to release
+     * -- so the match is the guard, and a non-match is not a failure. A null arm
+     * with a suspended player is the same non-match: nothing has claimed the
+     * screen, so nothing may claim the decoders.
+     */
+    public void resumeClip() {
+        clipSuspendWanted = false;
+        ClipPlayer c = clip;
+        if (c == null || !c.isSuspended()) return;
+        boolean stillWanted = (pendingTracks != null && c.isSameClips(pendingTracks))
+                || (pendingPreview != null && c.playsColour(pendingPreview));
+        if (!stillWanted) return;
+        c.resume();
+    }
+
+    /**
      * The colour texture to draw: the clip's while one plays, this render's own
      * otherwise.
      *
@@ -1375,6 +1463,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * property of the render being drawn, not a field. Closing over one would have
      * drawn the incoming photo with the outgoing photo's pixels for the length of a
      * decode, which is the reported "depth arrives before the image" all over again.
+     *
+     * <p><b>A suspended clip falls back to the still poster here, deliberately.</b>
+     * While the engine is hidden there is nothing to draw; on the frames that do
+     * happen -- a doze pulse -- the poster is the honest picture rather than a frozen
+     * clip frame presented as live. The fallback changes what is DRAWN, not what the
+     * decoders do next: the resume seeds them at the held clip time, so the picture
+     * continues from where it stopped rather than rewinding.
      */
     private int clipColour(Render r) {
         if (clip != null && clip.isRunning() && clip.colourTex() > 0) return clip.colourTex();

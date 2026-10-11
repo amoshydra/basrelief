@@ -26,6 +26,15 @@ import java.io.File;
  * order. A decoder released the other way round hands a frame to a
  * {@link SurfaceTexture} whose GL name has already been deleted, which is a black
  * surface and no exception anywhere.
+ *
+ * <p><b>A hidden engine SUSPENDS a clip in place; it does not stop it.</b> The
+ * decoders stop (their threads join) but the clock is held at the clip time they
+ * reached, so {@link #resume()} seeds them back to that time and the picture
+ * continues where it was rather than rewinding -- "a video that rewinds is a
+ * photograph" applies to a screen-off just as much as to a resolve. Both
+ * operations are host-thread work with no GL calls in them, because the host that
+ * must do this has just paused its {@code GLSurfaceView} and that thread no longer
+ * drains its queue; see {@link #suspend()}.
  */
 final class ClipPlayer {
 
@@ -62,7 +71,15 @@ final class ClipPlayer {
     private ClipDecoder color, depth, normal;
     private ClipBlitter blit;
 
-    private long clockStartNanos;
+    /**
+     * The clock's anchor: {@code nowUs() = (nanoTime - clockStartNanos) / 1000}.
+     *
+     * <p>Volatile because {@link #resume()} re-anchors it on the host thread while
+     * the decoders' gate reads it on theirs: suspending freezes the clip time, so
+     * resuming moves the anchor rather than letting the held time drift with wall
+     * clock.
+     */
+    private volatile long clockStartNanos;
     /**
      * The shared clock. A FIELD because a grow hands the SAME object to the decoders
      * that arrive late — two clock objects is not a sync mechanism, it is two
@@ -102,7 +119,25 @@ final class ClipPlayer {
     }
     private int videoW, videoH;
     private boolean fullRange = true;
-    private boolean running;
+    /**
+     * Whether the decoders are decoding right now.
+     *
+     * <p>Volatile because {@link #suspend()}/{@link #resume()} write it from the
+     * host thread -- the one a visibility change runs on -- while the GL thread
+     * reads it every frame. "Decoding right now" is deliberately NOT the question
+     * identity checks ask; see {@link #isLive()}.
+     */
+    private volatile boolean running;
+    /**
+     * Whether a hide suspended this player and it is holding its clip time.
+     *
+     * <p>{@link #isLive()} is the field the rest of the app wants: a suspended
+     * player is still "the clip we want", it is simply not decoding, and treating
+     * it as gone is what would tear it down and rebuild it -- a rewind.
+     */
+    private volatile boolean suspended;
+    /** The clip time {@link #suspend()} stopped at; where {@link #resume()} seeds. */
+    private volatile long suspendedAtUs;
     private volatile boolean framesArrived;
     /** Frames newly latched since start; the once-a-second line reports its delta. */
     private volatile int latches;
@@ -129,6 +164,31 @@ final class ClipPlayer {
 
     boolean isRunning() {
         return running;
+    }
+
+    /** Whether a hide suspended this player; see {@link #isLive()}. */
+    boolean isSuspended() {
+        return suspended;
+    }
+
+    /**
+     * Whether this player is the clip we want: decoding, or suspended in place
+     * holding its time.
+     *
+     * <p><b>The question every identity check must ask instead of
+     * {@link #isRunning()}.</b> A suspended player whose three files still match
+     * is the clip that should be on screen; calling it "not running" would make
+     * {@code clipMatches} answer false, the resolve would reload the pair, and
+     * {@code startClip} would stop the suspended player and build three new
+     * decoders -- a rewind to frame 0, the reported "a video that rewinds is a
+     * photograph", arriving from the safe-looking comparison.
+     *
+     * <p>{@link #isRunning()} stays for the questions about decoding itself: the
+     * frame pump (a suspended clip wants no frames) and the watchdog (a suspended
+     * clip cannot stall).
+     */
+    boolean isLive() {
+        return running || suspended;
     }
 
     /**
@@ -378,7 +438,12 @@ final class ClipPlayer {
      * each time stopping the depth decoder it just created.
      */
     void growTo(VideoTracks tracks, File filesDir) {
-        if (!running || blit == null || color == null) return;
+        // isLive, not isRunning: a grow can land while the clip is SUSPENDED -- the
+        // tracks arrive while the engine is hidden -- and the identity still has to
+        // move to them, or the next resolve would grow the same player again. The
+        // new decoders are built and NOT started in that case; resume seeds all
+        // three. See the start block below.
+        if (!isLive() || blit == null || color == null) return;
         final File cf = tracks.colorFile(filesDir);
         final File df = tracks.depthFile(filesDir);
         final File nf = tracks.hasNormalTrack() ? tracks.normalFile(filesDir) : null;
@@ -425,19 +490,90 @@ final class ClipPlayer {
         // The rate BEFORE startAt: the seed target is the wall clock scaled by the
         // rate, which is the same arithmetic the gate releases against.
         setRate(playingRate);
-        long now = clock == null ? 0L : clock.nowUs();
+        if (!suspended) {
+            long now = clock == null ? 0L : clock.nowUs();
+            if (depth != null) {
+                depth.startAt(now);
+                depth.start();
+            }
+            if (normal != null) {
+                normal.startAt(now);
+                normal.start();
+            }
+            android.util.Log.i(TAG, "clip grew in place depth=" + (depth != null)
+                    + " normal=" + (normal != null) + " at=" + now
+                    + "us -- colour untouched");
+        } else {
+            // Suspended: the colour is stopped too, and the clock is held rather
+            // than live, so there is no "now" to seed to. resume() seeds all three
+            // at the held time -- the same time the colour continues from -- so
+            // the grown tracks join one clip time like every other start.
+            android.util.Log.i(TAG, "clip grew in place while suspended depth="
+                    + (depth != null) + " normal=" + (normal != null)
+                    + " -- resume seeds all three");
+        }
+        playingJson = tracks.toJson();
+    }
+
+    /**
+     * Stop decoding and hold the clip time. Any thread; no GL calls.
+     *
+     * <p><b>This is what a hidden engine must do, and it cannot be a stop.</b> The
+     * host that hides has just paused the {@code GLSurfaceView}: its event queue is
+     * no longer being drained, so anything that would stop the clip by being posted
+     * there sits undelivered for as long as the engine is hidden -- measured as
+     * three {@code clip-decode-*} threads and three {@code MediaCodec_loop} threads
+     * burning most of a core for eleven minutes behind a dark screen. The decoders
+     * are not tied to visibility; this is the tie.
+     *
+     * <p><b>The clock is held, not reset.</b> The decoders stop at the clip time
+     * they reached, and {@link #resume()} seeds all three back to it through
+     * {@link ClipDecoder#startAt} -- the same seeding {@link #growTo} uses -- so
+     * waking continues the picture instead of rewinding it. Idempotent, so a hide
+     * that fires twice costs nothing.
+     */
+    void suspend() {
+        if (!running) return;
+        if (color != null) color.stop();
+        if (depth != null) depth.stop();
+        if (normal != null) normal.stop();
+        // AFTER the joins: the decoders stop at the clip time they reached, and
+        // that time is what resume seeds to. Reading it first would rewind by the
+        // join's own few milliseconds.
+        suspendedAtUs = clock == null ? 0L : clock.nowUs();
+        running = false;
+        suspended = true;
+        android.util.Log.i(TAG, "clip suspended at " + suspendedAtUs + "us");
+    }
+
+    /**
+     * Resume a suspended clip IN PLACE. Any thread; no GL calls.
+     *
+     * <p>The clock is re-anchored to the held clip time before anything starts --
+     * the decoders gate on {@code nowUs()}, so without this the held time would
+     * have drifted with wall clock while suspended and every decoder would be
+     * seeded to a time the picture never reached. Then every decoder is seeded to
+     * the same held time and started, which is one clip time for all three by
+     * construction. Idempotent.
+     */
+    void resume() {
+        if (!suspended) return;
+        clockStartNanos = System.nanoTime() - suspendedAtUs * 1000L;
+        if (color != null) {
+            color.startAt(suspendedAtUs);
+            color.start();
+        }
         if (depth != null) {
-            depth.startAt(now);
+            depth.startAt(suspendedAtUs);
             depth.start();
         }
         if (normal != null) {
-            normal.startAt(now);
+            normal.startAt(suspendedAtUs);
             normal.start();
         }
-        playingJson = tracks.toJson();
-        android.util.Log.i(TAG, "clip grew in place depth=" + (depth != null)
-                + " normal=" + (normal != null) + " at=" + now
-                + "us -- colour untouched");
+        suspended = false;
+        running = true;
+        android.util.Log.i(TAG, "clip resumed at " + suspendedAtUs + "us");
     }
 
     /**
@@ -449,9 +585,13 @@ final class ClipPlayer {
      * TRUE for the file it grew from, which is exactly what keeps the resolve that
      * brought the tracks from tearing the grown clip down and starting a preview of
      * it — the one restart this feature must never do.
+     *
+     * <p>{@code isLive}, not {@code isRunning}: a suspended player is still the clip
+     * this colour names, and answering "not playing" would let the resolve that is
+     * supposed to resume it start a preview over it instead.
      */
     boolean playsColour(File f) {
-        return running && f != null && colourFile != null
+        return isLive() && f != null && colourFile != null
                 && colourFile.getPath().equals(f.getPath());
     }
 
@@ -613,6 +753,11 @@ final class ClipPlayer {
         }
 
         running = false;
+        // The suspension goes with the player: a stopped clip has no held time to
+        // resume to, and leaving the flag set would make the NEXT player report
+        // itself suspended before it ever ran.
+        suspended = false;
+        suspendedAtUs = 0L;
         framesArrived = false;
         // The identity goes with the clip. Leaving it behind would make a later
         // isSameClips answer for a player that is not running -- harmless only because

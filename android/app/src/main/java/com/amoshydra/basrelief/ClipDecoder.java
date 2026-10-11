@@ -324,6 +324,14 @@ final class ClipDecoder {
     }
 
     void start() {
+        // A fresh thread gets a fresh codec (loop0 creates one), so a key-frame
+        // wait the previous thread was in died with it: the flag is about THIS
+        // decoder's references, and a new codec's first decoded frame is a sync
+        // sample. Left set, a suspend landing exactly on a loop seam would make
+        // the resumed stream drop up to keyframeDropBudget frames before it
+        // showed anything.
+        awaitingKeyframe = false;
+        keyframeDropBudget = 8;
         running = true;
         thread = new Thread(new Runnable() {
             @Override
