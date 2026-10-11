@@ -814,7 +814,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 609 tests across thirty-four classes:
+it**. 622 tests across thirty-five classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -879,6 +879,26 @@ one.
   The spherical-splat invariance is the transpose check — an isotropic
   covariance cannot change under a view rotation, so a transposed `V` passes on
   an elongated splat and fails here.
+- `SplatCameraTest` — the splat cloud's camera, which used to exist only inside
+  `SplatRenderer` and so could only be judged by eye on a device. It pins the
+  same at-rest invariant `CameraModelTest` pins for the relief, one medium over:
+  **at rest the picture is exactly the photograph, translated by Origin and Pan,
+  at every origin and every pivot depth** — asserted as a projection through the
+  real `Mat4` chain, never a restatement of the maths. The splat's version of
+  "the eye does not move with the pivot" is that two clouds resolving very
+  different pivots project every probe point identically; the eye is the source
+  eye in both. Its second theme is the turntable: the tilt is a ROTATION about
+  the cloud's own surface under the origin, so the pivot holds the screen centre
+  while a point off it swings, the eye keeps its distance to the pivot, and the
+  signs are the relief's (positive tiltX moves the eye right, positive tiltY
+  down in the cloud's y-down frame — a flipped axis is the parallax running the
+  wrong way, which no screenshot at rest shows). Its third is the pivot pick:
+  the FRONTMOST splat under the ray, not the nearest in image space (a background
+  splat can project to the same pixel as the subject), a real splat used when the
+  ray's radius holds none, and the reference-plane point on the ray only when the
+  cloud has nothing in front of the camera — the `DepthSource` "a window claims
+  nothing" rule applied to an orbit centre. Zoom is a crop of the same camera and
+  Pan is a screen-pixel shift at every depth, both pinned.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

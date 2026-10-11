@@ -534,7 +534,24 @@ public class MainActivity extends Activity {
      * {@code refreshSliders}; see {@link RendererRows}.
      */
     private RendererRows rendererRows;
-    /** The Light group, hidden in splat mode: the cloud's shading is baked in. */
+    /**
+     * The Light group, hidden in splat mode.
+     *
+     * <p><b>Not because the row is unimplemented — because the cloud has no
+     * normals to light.</b> The cheap option is a per-splat diffuse from the minor
+     * axis of the Gaussian's covariance ("a flattened Gaussian's minor axis is its
+     * surface normal"), and it fails twice. Measured on the shipped demo cloud
+     * (149,504 splats, the bale): the median ratio of the smallest to largest axis
+     * is <b>0.32</b> — an ellipsoid about 3:1, not a surface disc — and only
+     * <b>7.6%</b> are flatter than 0.1, where the minor axis is actually a normal.
+     * The other 92% would be lit by a near-arbitrary axis. And a diffuse term has
+     * no identity at the default direction: {@code max(0, dot(n, L0))} is not 1 for
+     * every {@code n}, so the moment the row were shown, the default look would
+     * change — the reconstruction relit by a quantity its colours already encode.
+     * The honest fix is a real SH relight, which is deliberately out of scope. So
+     * the row stays hidden and the cloud keeps its baked shading; Brightness and
+     * Shadow, which ARE grades and ARE identity at 0, stay and are applied.
+     */
     private SheetSection lightSection;
     private TextView fixText;
     private LinearLayout fixActions;
@@ -4224,9 +4241,13 @@ public class MainActivity extends Activity {
         // The renderer row and the controls that only apply in relief mode. A
         // control nothing reads is a bug, not a greyed row: in splat mode the Depth
         // slider has nothing to displace and the light has nothing to shade -- the
-        // cloud's shape is reconstructed and its colours are baked in -- so both are
-        // hidden. The shared six (Zoom, Origin, Pan, Motion, Brightness, Shadow)
-        // carry their values across the toggle and stay.
+        // cloud's shape is reconstructed, and SHARP's Gaussians carry no usable
+        // surface normal (measured: median minor/major axis 0.32, only 7.6% flat
+        // enough to name one), so a per-splat diffuse would relight the
+        // reconstruction with a quantity its colours already encode. See
+        // lightSection. The shared six (Zoom, Origin, Pan, Motion, Brightness,
+        // Shadow) carry their values across the toggle and stay -- and all six are
+        // read by the splat now.
         boolean splatMode = item != null && item.isSplatMode();
         if (depthBarRow != null) {
             depthBarRow.setVisibility(splatMode ? View.GONE : View.VISIBLE);

@@ -2651,9 +2651,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /** Returns true if the tap landed on the quad and the orbit was set. */
     public boolean screenToOrbit(float sx, float sy, int w, int h) {
-        if (w == 0 || h == 0 || displayed == null || !displayed.isDrawable()) return false;
+        if (w == 0 || h == 0) return false;
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
+        // In SPLAT mode the Origin IS the screen fraction: the camera shifts the
+        // projection so the point at NDC (2*originX, 2*originY) lands at the
+        // centre, so a tap sets the origin to where it landed. There is no plane
+        // to miss and no unprojection to run -- the tapped point is centred by
+        // construction. (The cloud's pivot, and therefore the orbit centre, is
+        // resolved from that origin by SplatCamera on the next draw.)
+        if (useSplat()) {
+            orbitX = Math.max(-0.5f, Math.min(0.5f, ndcX * 0.5f));
+            orbitY = Math.max(-0.5f, Math.min(0.5f, ndcY * 0.5f));
+            return true;
+        }
+        if (displayed == null || !displayed.isDrawable()) return false;
         recomputeScale();
         // The camera on screen aims at the surface under the CURRENT origin, so
         // the unprojection must use the same pivot depth the draw did -- resolved
@@ -3528,7 +3540,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // model. Stopped once, when it is running; the next resolve re-arms it
             // if the switch goes back off.
             if (clip != null && clip.isRunning()) stopClip();
-            splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom, splatRenderScale);
+            splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
+                    orbitX, orbitY, panX, panY,
+                    pendingBrightnessGain, pendingShadowLift, splatRenderScale);
             captureLockFrameIfWanted();
             return;
         }
@@ -4043,8 +4057,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // own values so the UI thread cannot derive a second, drifting answer.
         // Both axes in one place, so the pair cannot be half-updated; see the
         // fields' note. Cheap enough for the per-frame call: two multiplies.
-        orbitPixelsPerUnitX = camera.screenPixelsPerOrbit(true, surfaceH);
-        orbitPixelsPerUnitY = camera.screenPixelsPerOrbit(false, surfaceH);
+        //
+        // In SPLAT mode the Origin row's fraction IS a viewport fraction -- the
+        // camera shifts the projection so NDC (2*originX, 2*originY) lands at the
+        // centre -- so one whole Origin unit is the whole surface, and the row
+        // tracks the finger 1:1 the same way it does in relief mode. The relief's
+        // camera answer would be the wrong number here; the mode is the switch.
+        if (renderMode == Framing.RENDER_SPLAT) {
+            orbitPixelsPerUnitX = surfaceW;
+            orbitPixelsPerUnitY = surfaceH;
+        } else {
+            orbitPixelsPerUnitX = camera.screenPixelsPerOrbit(true, surfaceH);
+            orbitPixelsPerUnitY = camera.screenPixelsPerOrbit(false, surfaceH);
+        }
     }
 
     private Bitmap decodeRaw(int resId) {

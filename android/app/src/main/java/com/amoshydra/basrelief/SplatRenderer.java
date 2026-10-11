@@ -1,7 +1,6 @@
 package com.amoshydra.basrelief;
 
 import android.opengl.GLES30;
-import android.opengl.Matrix;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,6 +10,7 @@ import java.util.Arrays;
 import java.util.Locale;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.SplatCamera;
 import com.amoshydra.basrelief.core.splat.SplatCloud;
 import com.amoshydra.basrelief.core.splat.SplatProjection;
 
@@ -40,14 +40,19 @@ import com.amoshydra.basrelief.core.splat.SplatProjection;
  * the shader does {@code floatBitsToUint} to unpack the colour and the
  * quaternion. No CPU repack, no per-frame allocation.
  *
- * <p><b>The camera is the photograph's own.</b> The demo cloud is in the frame of
- * the still SHARP ran on (x right, y down, z forward, principal point at the
- * centre), so the source view is the eye at the origin looking down +z with the
- * still's vertical field of view. Stage 0 stores no camera on the item, so these
- * are the demo's constants; see {@link #SOURCE_TARGET_Z} and {@link #SOURCE_FOVY}.
- * Tilt displaces the eye perpendicular to the view, exactly as
- * {@link CameraModel} does for the relief, and zoom narrows the field of view
- * (a crop of the same camera, which is what zoom means for a photograph).
+ * <p><b>The camera is the photograph's own, and it is a camera.</b> The demo cloud
+ * is in the frame of the still SHARP ran on (x right, y down, z forward,
+ * principal point at the centre), so the source view is the eye at the origin
+ * looking down +z with the still's vertical field of view. At rest — no tilt, no
+ * Origin, no Pan — the view is exactly that source view, so the picture is the
+ * photograph. Zoom narrows the field of view (a crop of the same camera, which is
+ * what zoom means for a photograph), Origin sets the point the tilt orbits about
+ * (the cloud's own surface under the origin's ray) and shifts the picture to it,
+ * and Pan is a screen-pixel view offset. All three mean here what they mean for
+ * the relief, and the whole construction lives in
+ * {@link com.amoshydra.basrelief.core.render.SplatCamera} so the at-rest invariant
+ * is asserted without a device. The source camera's constants are the demo's; see
+ * {@link #SOURCE_TARGET_Z} and {@link #SOURCE_FOVY}.
  */
 final class SplatRenderer {
 
@@ -89,7 +94,7 @@ final class SplatRenderer {
 
     // Uniform locations.
     private int uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW, uNear, uFudge,
-            uFocal, uViewport;
+            uFocal, uViewport, uBrightnessGain, uShadowLift;
 
     // The cloud's CPU mirror.
     private int count;
@@ -114,8 +119,17 @@ final class SplatRenderer {
     /** NDC per unit of (right . p) / depth — the projection matrix's own factors. */
     private float camFocalX, camFocalY;
 
+    /**
+     * The camera, as pure math in {@code :core}: the source view, the Origin/Pan
+     * shift, and the turntable about the cloud's surface under the origin. It
+     * lives there so the at-rest invariant is asserted without a device; see
+     * {@link SplatCamera}.
+     */
+    private final SplatCamera splatCamera = new SplatCamera();
+
     // The sort gate: the camera state the current order was derived from.
     private float sortedTiltX = Float.NaN, sortedTiltY = Float.NaN, sortedZoom = Float.NaN;
+    private float sortedOrbitX = Float.NaN, sortedOrbitY = Float.NaN;
     private boolean sortPrimed;
     private int lastCulled;
     /** NDC beyond this is certainly off-screen; the CPU cull count uses it. */
@@ -241,6 +255,8 @@ final class SplatRenderer {
         sortedTiltX = Float.NaN;
         sortedTiltY = Float.NaN;
         sortedZoom = Float.NaN;
+        sortedOrbitX = Float.NaN;
+        sortedOrbitY = Float.NaN;
         lastFrameNanos = System.nanoTime();
         windowStartNanos = 0;
         framesInWindow = 0;
@@ -285,12 +301,15 @@ final class SplatRenderer {
      *
      * <p>{@code tiltX}/{@code tiltY} are already smoothed by the host (the same
      * values {@link CameraModel#frame} is given), and {@code motion} scales them
-     * so Motion 0 parks the camera exactly as it parks the relief's.
+     * so Motion 0 parks the camera exactly as it parks the relief's. Origin and
+     * Pan are the relief's own values, meaning the same thing here: the point the
+     * orbit turns about, and a screen-pixel view offset.
      *
      * @param zoom the framing's zoom in [0.25, 2]; 1 is the source view
      */
     void draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
-              float zoom, float renderScale) {
+              float zoom, float orbitX, float orbitY, float panX, float panY,
+              float brightnessGain, float shadowLift, float renderScale) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
@@ -303,14 +322,35 @@ final class SplatRenderer {
         float fovy = SOURCE_FOVY / Math.max(0.25f, Math.min(2f, zoom));
         fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy));
 
-        float dist = SOURCE_TARGET_Z;
-        float range = dist * (CameraModel.TILT_RANGE / CameraModel.CAM_DIST) * motion;
-        buildCamera(vw, vh, fovy, tiltX, tiltY, range);
+        // The camera, all of it in :core: the source view, the Origin/Pan shift,
+        // and the turntable about the cloud's own surface under the origin. See
+        // SplatCamera for why the origin is a shift and not a lateral move.
+        SplatCamera.Frame cam = splatCamera.frame(surfaceW, surfaceH, fovy,
+                orbitX, orbitY, panX, panY, tiltX, tiltY, motion,
+                pos, count, SOURCE_TARGET_Z);
+        System.arraycopy(cam.view, 0, view, 0, 16);
+        // uProj gets the PANNED projection: the shift is what makes the at-rest
+        // picture the photograph moved by Origin and Pan, at every depth.
+        System.arraycopy(cam.projPanned, 0, proj, 0, 16);
+        eye[0] = cam.eyeX; eye[1] = cam.eyeY; eye[2] = cam.eyeZ;
+        forward[0] = cam.forwardX; forward[1] = cam.forwardY; forward[2] = cam.forwardZ;
+        camFocalX = proj[0];
+        camFocalY = proj[5];
+        // The world-to-view rotation, in the layout GLSL's mat3 wants: the array
+        // uploaded with transpose=false becomes the mat3 column by column, so
+        // arr[0..2] must be V's column 0 — which, from the view matrix's
+        // column-major storage, is (view[0], view[1], view[2]). The shader then
+        // has V (world to view) and computes SigmaV = V Sigma3D V^T.
+        viewRot[0] = view[0]; viewRot[1] = view[1]; viewRot[2] = view[2];
+        viewRot[3] = view[4]; viewRot[4] = view[5]; viewRot[5] = view[6];
+        viewRot[6] = view[8]; viewRot[7] = view[9]; viewRot[8] = view[10];
 
-        if (needsSort(tiltX, tiltY, zoom)) {
+        if (needsSort(tiltX, tiltY, orbitX, orbitY, zoom)) {
             sort();
             sortedTiltX = tiltX;
             sortedTiltY = tiltY;
+            sortedOrbitX = orbitX;
+            sortedOrbitY = orbitY;
             sortedZoom = zoom;
             sortPrimed = true;
         }
@@ -349,6 +389,8 @@ final class SplatRenderer {
         GLES30.glUniform1i(uOrderW, ORDER_W);
         GLES30.glUniform1f(uNear, NEAR);
         GLES30.glUniform1f(uFudge, 1f);
+        GLES30.glUniform1f(uBrightnessGain, brightnessGain);
+        GLES30.glUniform1f(uShadowLift, shadowLift);
         GLES30.glUniform2f(uFocal, 0.5f * vw * proj[0], 0.5f * vh * proj[5]);
         GLES30.glUniform2f(uViewport, vw, vh);
         GLES30.glUniformMatrix4fv(uProj, 1, false, proj, 0);
@@ -382,65 +424,15 @@ final class SplatRenderer {
 
     private static final int SORT_BUCKETS = 8192;
 
-    // ---------------------------------------------------------------- camera
-
-    /**
-     * The photograph's own camera, tilted and zoomed.
-     *
-     * <p>The eye starts at the origin — the still's camera centre — and is
-     * displaced perpendicular to the view by the tilt, the same swing
-     * {@link CameraModel} applies: {@code TILT_RANGE} at {@code CAM_DIST},
-     * scaled to this camera's distance so the feel is angle-based rather than
-     * distance-based. The target stays on the optical axis.
-     */
-    private void buildCamera(int w, int h, float fovy, float tiltX, float tiltY,
-                             float range) {
-        float tx = 0f, ty = 0f, tz = SOURCE_TARGET_Z;
-        // forward = target - eye, eye at the origin.
-        float fl = (float) Math.sqrt(tx * tx + ty * ty + tz * tz);
-        if (fl < 1e-6f) fl = 1f;
-        float fx = tx / fl, fy = ty / fl, fz = tz / fl;
-        // right = normalize(cross(forward, worldUp)), worldUp = (0,-1,0)
-        float rx = fz, ry = 0f, rz = -fx;
-        float rl = (float) Math.sqrt(rx * rx + rz * rz);
-        if (rl < 1e-6f) { rx = 1f; rz = 0f; rl = 1f; }
-        rx /= rl; rz /= rl;
-        // down = cross(forward, right)
-        float dx = fy * rz - fz * ry;
-        float dy = fz * rx - fx * rz;
-        float dz = fx * ry - fy * rx;
-
-        float ex = (rx * tiltX + dx * tiltY) * range;
-        float ey = (ry * tiltX + dy * tiltY) * range;
-        float ez = (rz * tiltX + dz * tiltY) * range;
-        eye[0] = ex; eye[1] = ey; eye[2] = ez;
-
-        Matrix.setLookAtM(view, 0, ex, ey, ez, tx, ty, tz, 0f, -1f, 0f);
-        Matrix.perspectiveM(proj, 0, fovy, (float) w / h, NEAR, FAR);
-        // NDC per unit of (right . p) / depth — the projection matrix's own
-        // factors, not a focal in pixels (using that made every splat read as
-        // off-screen in the spike).
-        camFocalX = proj[0];
-        camFocalY = proj[5];
-
-        // The world-to-view rotation, in the layout GLSL's mat3 wants: the array
-        // uploaded with transpose=false becomes the mat3 column by column, so
-        // arr[0..2] must be V's column 0 — which, from the view matrix's
-        // column-major storage, is (view[0], view[1], view[2]). The shader then
-        // has V (world to view) and computes SigmaV = V Sigma3D V^T.
-        viewRot[0] = view[0]; viewRot[1] = view[1]; viewRot[2] = view[2];
-        viewRot[3] = view[4]; viewRot[4] = view[5]; viewRot[5] = view[6];
-        viewRot[6] = view[8]; viewRot[7] = view[9]; viewRot[8] = view[10];
-
-        forward[0] = fx; forward[1] = fy; forward[2] = fz;
-    }
-
     // ------------------------------------------------------------------ sort
 
-    private boolean needsSort(float tiltX, float tiltY, float zoom) {
+    private boolean needsSort(float tiltX, float tiltY, float orbitX, float orbitY,
+                              float zoom) {
         if (!sortPrimed) return true;
         return Math.abs(tiltX - sortedTiltX) > 1e-3f
                 || Math.abs(tiltY - sortedTiltY) > 1e-3f
+                || Math.abs(orbitX - sortedOrbitX) > 1e-3f
+                || Math.abs(orbitY - sortedOrbitY) > 1e-3f
                 || Math.abs(zoom - sortedZoom) > 1e-3f;
     }
 
@@ -624,8 +616,10 @@ final class SplatRenderer {
         uFudge = GLES30.glGetUniformLocation(prog, "uFudge");
         uFocal = GLES30.glGetUniformLocation(prog, "uFocal");
         uViewport = GLES30.glGetUniformLocation(prog, "uViewport");
+        uBrightnessGain = GLES30.glGetUniformLocation(prog, "uBrightnessGain");
+        uShadowLift = GLES30.glGetUniformLocation(prog, "uShadowLift");
         for (int loc : new int[] { uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW,
-                uNear, uFudge, uFocal, uViewport }) {
+                uNear, uFudge, uFocal, uViewport, uBrightnessGain, uShadowLift }) {
             if (loc < 0) android.util.Log.e(TAG, "splat uniform dropped in silence");
         }
     }
@@ -933,6 +927,9 @@ final class SplatRenderer {
             "#version 300 es\n" +
             "precision highp float;\n" +
             "\n" +
+            "uniform float uBrightnessGain;\n" +
+            "uniform float uShadowLift;\n" +
+            "\n" +
             "in vec4 vColor;\n" +
             "in vec2 vQ;\n" +
             "in vec2 vCenterPx;\n" +
@@ -952,6 +949,14 @@ final class SplatRenderer {
             "  if (a < 0.00392156862) {\n" +
             "    discard;\n" +
             "  }\n" +
-            "  outColor = vec4(vColor.rgb, a);\n" +
+            // The picture grade, the same one multiply and one mix the relief's
+            // fragment shader applies (Picture.brightnessGain / shadowLift). It is
+            // a grade on the baked colour, which is exactly what Brightness and
+            // Shadow mean, and 0 is the identity for both — the rule the class
+            // states. The two rows are visible in splat mode and this is what makes
+            // them real rather than controls nothing reads.
+            "  vec3 c = vColor.rgb * uBrightnessGain;\n" +
+            "  c += uShadowLift * (1.0 - c);\n" +
+            "  outColor = vec4(c, a);\n" +
             "}\n";
 }
