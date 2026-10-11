@@ -253,36 +253,52 @@ final class SplatImport {
     private static void poll(ComfyApi api, String promptId, String tag, String itemId,
                              Listener listener) throws Exception {
         long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+        int misses = 0;
         while (System.currentTimeMillis() < deadline) {
-            // The sidecar first: it is the run's own state, written while it runs.
-            byte[] side = api.viewIfPresent(ComfyWorkflow.sharpSidecarName(tag), "", "output");
-            if (side != null) {
-                JSONObject sc = new JSONObject(new String(side, StandardCharsets.UTF_8));
-                String state = sc.optString("state", "running");
-                if ("done".equals(state)) return;
-                if ("failed".equals(state)) {
-                    throw new ServerFailure(sc.optString("error", "the run failed on the server"));
-                }
-            }
-            // The history: an execution error is reported there, and `completed`
-            // is the one thing that says the run is over. Outputs alone do NOT --
-            // a running entry can already carry them, and treating that as done
-            // is the bug the clip import's status read exists to prevent.
-            JSONObject entry = null;
             try {
-                JSONObject hist = new JSONObject(api.getHistory(promptId));
-                entry = hist.optJSONObject(promptId);
-            } catch (Exception ignored) {
-                // A blip; the sidecar and the next poll are the retry.
-            }
-            if (entry != null) {
-                JSONObject status = entry.optJSONObject("status");
-                if (status != null) {
-                    if (status.optBoolean("completed", false)) return;
-                    String s = status.optString("status_str", "");
-                    if ("error".equals(s)) {
-                        throw new ServerFailure(ComfyWorkflow.extractExecutionError(status));
+                // The sidecar first: it is the run's own state, written while it runs.
+                byte[] side = api.viewIfPresent(ComfyWorkflow.sharpSidecarName(tag), "",
+                        "output");
+                if (side != null) {
+                    JSONObject sc = new JSONObject(new String(side, StandardCharsets.UTF_8));
+                    String state = sc.optString("state", "running");
+                    if ("done".equals(state)) return;
+                    if ("failed".equals(state)) {
+                        throw new ServerFailure(
+                                sc.optString("error", "the run failed on the server"));
                     }
+                }
+                // The history: an execution error is reported there, and `completed`
+                // is the one thing that says the run is over. Outputs alone do NOT --
+                // a running entry can already carry them, and treating that as done
+                // is the bug the clip import's status read exists to prevent.
+                JSONObject entry = null;
+                try {
+                    JSONObject hist = new JSONObject(api.getHistory(promptId));
+                    entry = hist.optJSONObject(promptId);
+                } catch (Exception ignored) {
+                    // A blip; the sidecar and the next poll are the retry.
+                }
+                if (entry != null) {
+                    JSONObject status = entry.optJSONObject("status");
+                    if (status != null) {
+                        if (status.optBoolean("completed", false)) return;
+                        String s = status.optString("status_str", "");
+                        if ("error".equals(s)) {
+                            throw new ServerFailure(ComfyWorkflow.extractExecutionError(status));
+                        }
+                    }
+                }
+                misses = 0;
+            } catch (ServerFailure e) {
+                throw e;
+            } catch (Exception e) {
+                // A blip must not mark a live run FAILED: a FAILED record is one the
+                // resume pass skips, so one dropped poll would strand a result the
+                // server went on to finish. Five in a row is a phone-side failure --
+                // the same tolerance the clip import uses.
+                if (++misses >= 5) {
+                    throw new ServerFailure("the server is unreachable: " + e.getMessage());
                 }
             }
             Thread.sleep(POLL_MS);
