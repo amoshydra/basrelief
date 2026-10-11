@@ -113,10 +113,15 @@ consistency check.
   optical axis at the bale's front surface). There is no camera on the item, so a
   different cloud would not frame correctly — Stage 1/2 must carry the generation
   camera (as `focal` does for the relief).
-- **Tilt and zoom only.** The splat responds to the gyro (the product's
-  `TiltController` semantics, `motion` scaling included) and to Zoom as a field-of-
-  view crop. Orbit, Pan and Depth are relief concepts and are not mapped; a tap
-  still orbits the relief's camera underneath.
+- **Tilt, zoom, Origin and Pan.** The splat responds to the gyro (the product's
+  `TiltController` semantics, `motion` scaling included), to Zoom as a field-of-
+  view crop, to **Origin** as the point the tilt's turntable turns about (the
+  cloud's own surface under the origin's ray, with the picture shifted to it) and
+  to **Pan** as a screen-pixel view offset — the relief's own values, meaning the
+  same thing. Depth is still a relief concept and is not mapped: the cloud's shape
+  is reconstructed, so there is nothing to displace, and the row stays hidden. The
+  camera lives in `:core` as `SplatCamera`, with its at-rest invariant asserted by
+  `SplatCameraTest`.
 - **A transient "could not load (upload failed)" on a fresh engine.** A queued
   upload can run before the GL thread has a current context; `upload` now refuses
   it (rather than building against nothing) and the next resolve retries — observed

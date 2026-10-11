@@ -39,7 +39,7 @@ two agents in those files is how a schema gets half-applied).
 | control | relief | splat |
 |---|---|---|
 | **Depth** | how far the surface is displaced | **hidden** — nothing to displace; the cloud's shape is reconstructed |
-| **Light direction** | lights the displaced surface | **hidden** — the shading is baked into the cloud's colours |
+| **Light direction** | lights the displaced surface | **hidden** — SHARP's Gaussians carry no usable surface normal (measured: the covariance's minor axis is dominated by the view ray, ~11° from it at the image centre and ~28° at the edge), and no per-splat diffuse is identity at the default direction, so a real relight is an SH problem |
 | **Zoom** | the camera | same value, same meaning |
 | **Origin** | the point the orbit turns about | same value — the pivot rides the cloud's surface depth |
 | **Pan** | the view | same value |

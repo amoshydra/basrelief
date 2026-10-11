@@ -538,19 +538,23 @@ public class MainActivity extends Activity {
      * The Light group, hidden in splat mode.
      *
      * <p><b>Not because the row is unimplemented — because the cloud has no
-     * normals to light.</b> The cheap option is a per-splat diffuse from the minor
-     * axis of the Gaussian's covariance ("a flattened Gaussian's minor axis is its
-     * surface normal"), and it fails twice. Measured on the shipped demo cloud
-     * (149,504 splats, the bale): the median ratio of the smallest to largest axis
-     * is <b>0.32</b> — an ellipsoid about 3:1, not a surface disc — and only
-     * <b>7.6%</b> are flatter than 0.1, where the minor axis is actually a normal.
-     * The other 92% would be lit by a near-arbitrary axis. And a diffuse term has
-     * no identity at the default direction: {@code max(0, dot(n, L0))} is not 1 for
-     * every {@code n}, so the moment the row were shown, the default look would
-     * change — the reconstruction relit by a quantity its colours already encode.
-     * The honest fix is a real SH relight, which is deliberately out of scope. So
-     * the row stays hidden and the cloud keeps its baked shading; Brightness and
-     * Shadow, which ARE grades and ARE identity at 0, stay and are applied.
+     * usable normals to light.</b> The cheap option is a per-splat diffuse from
+     * the minor axis of the Gaussian's covariance ("a flattened Gaussian's minor
+     * axis is its surface normal"), and the premise is false for SHARP's
+     * single-image output. Measured on the bale PLY (1,179,648 Gaussians, the
+     * demo's source): the minor axis is dominated by the VIEW RAY, not the
+     * surface — its angle to the ray is 11° at the image centre and 28° at the
+     * edge (median 21°), where a real surface normal would fan out toward 90° at
+     * the silhouette. It is locally coherent (per-cell mean resultant ~0.99), so
+     * it is not noise; it is simply the viewing direction with a small surface
+     * component. A diffuse from it would shade the cloud by the camera angle, not
+     * by its shape. The Gaussians are only moderately flattened too (median
+     * minor/major axis 0.32, only 7.6% below 0.1). And a plain diffuse has no
+     * identity at the default direction: {@code max(0, dot(n, L0))} is not 1 for
+     * every {@code n}, so showing the row would change the default look. A real
+     * relight needs SH radiance, which is deliberately out of scope. So the row
+     * stays hidden and the cloud keeps its baked shading; Brightness and Shadow,
+     * which ARE grades and ARE identity at 0, stay and are applied.
      */
     private SheetSection lightSection;
     private TextView fixText;
@@ -4242,12 +4246,12 @@ public class MainActivity extends Activity {
         // control nothing reads is a bug, not a greyed row: in splat mode the Depth
         // slider has nothing to displace and the light has nothing to shade -- the
         // cloud's shape is reconstructed, and SHARP's Gaussians carry no usable
-        // surface normal (measured: median minor/major axis 0.32, only 7.6% flat
-        // enough to name one), so a per-splat diffuse would relight the
-        // reconstruction with a quantity its colours already encode. See
-        // lightSection. The shared six (Zoom, Origin, Pan, Motion, Brightness,
-        // Shadow) carry their values across the toggle and stay -- and all six are
-        // read by the splat now.
+        // surface normal (measured: the minor axis is dominated by the view ray,
+        // 11 deg from it at the image centre and 28 deg at the edge, where a real
+        // normal would fan out toward 90), so a per-splat diffuse would shade by
+        // the camera angle rather than by the shape. See lightSection. The shared
+        // six (Zoom, Origin, Pan, Motion, Brightness, Shadow) carry their values
+        // across the toggle and stay -- and all six are read by the splat now.
         boolean splatMode = item != null && item.isSplatMode();
         if (depthBarRow != null) {
             depthBarRow.setVisibility(splatMode ? View.GONE : View.VISIBLE);
