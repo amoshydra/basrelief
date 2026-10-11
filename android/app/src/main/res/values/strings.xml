@@ -562,12 +562,9 @@
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
     <!--
-      The 3D mode. It sits in About rather than in a group of its own: Settings is
-      four groups by design (SettingsSheet says why), and this is a device-wide
-      rendering mode with no group of its own to belong to.
+      The 3D mode used to sit here. It is per item now — the sheet's
+      "Renderer — Relief | Splat" row — so this screen names no 3D key.
     -->
-    <string name="settings_render_3d">3D mode</string>
-    <string name="settings_render_3d_sub">photo as a point cloud; tilt for true parallax</string>
     <!-- The level slider's name column, resolved by BasreliefSlider.labelFor. -->
     <string name="slider_splat_detail">3D detail</string>
     <string name="settings_licence">MIT</string>
