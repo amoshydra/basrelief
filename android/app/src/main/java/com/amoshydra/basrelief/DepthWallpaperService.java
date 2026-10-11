@@ -933,6 +933,12 @@ public class DepthWallpaperService extends WallpaperService {
                     renderer.setSpeed(framing.speed);
                     renderer.requestClip(active == null ? null : active.video,
                             preview, getFilesDir());
+                    // The splat cloud, resolved on every resolve for the same
+                    // reason the medium is: a gallery selection changes no pref, so
+                    // it never reaches reloadFromPrefs, and a cloud that is only
+                    // resolved at engine creation would follow the row a frame late
+                    // -- or never. GL thread, like every other renderer call here.
+                    renderer.setSplatForItem(active == null ? null : active.splatName);
 
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own

@@ -6163,10 +6163,16 @@ public class MainActivity extends Activity {
         final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm, focal) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
+        final String splatName = active == null ? null : active.splatName;
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
                 renderer.apply(framing, why);
+                // The splat cloud is resolved HERE as well as in reloadFromPrefs: a
+                // gallery selection is a pair change and does not go through the cold
+                // load, so without this the cloud would only follow the row after a
+                // resume. GL thread, like every other call that touches GL state.
+                renderer.setSplatForItem(splatName);
             }
         });
         // GUARDED, and this was the bug that made a clip show one frozen frame.

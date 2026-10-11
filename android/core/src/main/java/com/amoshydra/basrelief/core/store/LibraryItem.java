@@ -137,6 +137,32 @@ public final class LibraryItem {
      */
     public final float focal;
 
+    /**
+     * The Gaussian splat cloud's filename, or null when this row has none.
+     *
+     * <p><b>A second medium on the row, and deliberately not a second row.</b>
+     * The index owns the selection and only the index, so a splat is one more
+     * nullable filename on the photograph — exactly the shape {@link #normalName}
+     * and {@link #video} already have — rather than a separate container that
+     * could disagree with the pointer. A row with a splat is still a photograph
+     * for every other rule in this class: the same six per-surface settings, the
+     * same {@code settings(Surface)} read, and {@code hasDepth()} still asks about
+     * the still files, because the still is the poster and the fallback.
+     *
+     * <p><b>A bare filename, never a path</b>, for the reason every name here is:
+     * with {@code allowBackup="true"} a stored absolute path survives a restore
+     * and names the previous device's {@code filesDir}, so the splat would not
+     * degrade to the relief — it would be a row that renders nothing.
+     *
+     * <p><b>0-or-absent in the blob.</b> Written only when present, so a library
+     * of ordinary photographs is byte-identical to one this build never touched —
+     * the {@code normal}/{@code video}/{@code focal} argument, and why this needed
+     * no schema bump either. Every mutator carries it, because a splat is exactly
+     * the shape of value that was added after the writers existed: the
+     * {@code withDepth} scar one field over.
+     */
+    public final String splatName;
+
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
 
@@ -257,13 +283,13 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, false, null);
+                home, lockSettings, false, null, null, 0f, null);
     }
 
     private LibraryItem(String id, String imageName, String depthName,
                         String normalName, String label, long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                SurfaceSettings.defaults(), null, false, normalName, null, 0f);
+                SurfaceSettings.defaults(), null, false, normalName, null, 0f, null);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
@@ -271,7 +297,7 @@ public final class LibraryItem {
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, archived, normalName, null, 0f);
+                home, lockSettings, archived, normalName, null, 0f, null);
     }
 
     /**
@@ -291,7 +317,7 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName, VideoTracks video,
-                        float focal) {
+                        float focal, String splatName) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -346,6 +372,11 @@ public final class LibraryItem {
         // unprojection it drives, and a NaN one poisons every vertex it touches.
         // Clamped here, in the one constructor, so no writer can store one.
         this.focal = (Float.isFinite(focal) && focal > 0f) ? focal : 0f;
+        // The splat is reduced to a basename like every other name, and for the
+        // same restore reason. Not gated on anything: a splat with no still files
+        // is inert, and dropping it here would lose a value a later repair could
+        // still pair with a photograph.
+        this.splatName = normaliseName(splatName);
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -562,6 +593,19 @@ public final class LibraryItem {
     }
 
     /**
+     * The splat cloud's filename for a new item. See {@link #imageFileName} for
+     * why it derives from the id.
+     *
+     * <p>{@code .splat} beside the stills, not instead of them: the poster frame
+     * stays {@link #imageName}, so a row whose cloud is missing or whose 3D switch
+     * is off degrades to the relief rather than to nothing — the same relationship
+     * {@link #videoFileName} has to the still.
+     */
+    public static String splatFileName(String id) {
+        return requireValidId(id, "item-" + id + ".splat");
+    }
+
+    /**
      * The node's re-encoded colour clip's filename. See {@link #videoFileName}.
      *
      * <p><b>A name of its own, because the remux must stay the upload.</b> When a
@@ -609,6 +653,21 @@ public final class LibraryItem {
      */
     public boolean hasSuppliedNormals() {
         return normalName != null && depthName != null;
+    }
+
+    /**
+     * Whether this row names a Gaussian splat cloud. One question, one answer,
+     * on the row itself — the same rule {@link #isVideo} follows, and for the
+     * same reason: the index owns the selection, so a reader holding the row must
+     * be able to ask without a second container.
+     *
+     * <p>What this does <b>not</b> say: whether the cloud is here, or whether the
+     * renderer will use it. The file read is {@code PrefFiles.resolve}'s answer
+     * and the 3D switch is the renderer's, exactly as a clip's playability is
+     * {@code VideoSource}'s.
+     */
+    public boolean hasSplat() {
+        return splatName != null;
     }
 
     /**
@@ -672,7 +731,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived, normalName, video, focal);
+                archived, normalName, video, focal, splatName);
     }
 
     /**
@@ -794,7 +853,8 @@ public final class LibraryItem {
         // replaces the depth and its normal -- the two things a run derives from
         // that colour. A still's regenerated depth is the same photograph; a clip's
         // regenerate goes through withFilesAndVideo, which does name the focal.
-        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video, focal);
+        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video, focal,
+                splatName);
     }
 
     /**
@@ -867,7 +927,8 @@ public final class LibraryItem {
      */
     public LibraryItem withFilesAndVideo(String image, String depth, String normal,
                                          VideoTracks clips, float focal) {
-        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips, focal);
+        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips, focal,
+                splatName);
     }
 
     /**
@@ -898,17 +959,40 @@ public final class LibraryItem {
         if (isBundled()) {
             throw new IllegalArgumentException("the bundled demo is a still trio");
         }
-        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips, focal);
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips, focal,
+                splatName);
+    }
+
+    /**
+     * Attach a splat cloud to this row, or clear it with null.
+     *
+     * <p><b>Null is accepted here, unlike {@link #withVideo}.</b> A splat is an
+     * optional reconstruction, not a medium the row is: a clip's removal is a
+     * delete of three frame-locked files, while a splat's reference can simply be
+     * dropped and the row degrades to the relief on the spot. The file cleanup is
+     * the app shell's, the same split {@link #withVideo} documents.
+     *
+     * <p><b>A caller that replaces the COLOUR image must clear this</b>, because
+     * the cloud is a reconstruction of that image: a splat of one photograph
+     * rendered under another is the {@code withDepth} scar in three dimensions.
+     * The file writers carry it rather than clearing it themselves because
+     * {@link #withFiles} is also the bundled repair, which rewrites the demo's own
+     * files and must not drop the demo's cloud.
+     */
+    public LibraryItem withSplat(String splat) {
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, video,
+                focal, splat);
     }
 
     public LibraryItem withLabel(String newLabel) {
         return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt,
-                video, focal);
+                video, focal, splatName);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return copy(id, imageName, depthName, normalName, label, addedAt, when, video, focal);
+        return copy(id, imageName, depthName, normalName, label, addedAt, when, video, focal,
+                splatName);
     }
 
     /**
@@ -923,7 +1007,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on, normalName, video, focal);
+                home, lock, on, normalName, video, focal, splatName);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -947,9 +1031,9 @@ public final class LibraryItem {
      */
     private LibraryItem copy(String id, String imageName, String depthName, String normalName,
                              String label, long addedAt, long lastUsedAt,
-                             VideoTracks video, float focal) {
+                             VideoTracks video, float focal, String splatName) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived, normalName, video, focal);
+                home, lock, archived, normalName, video, focal, splatName);
     }
 
     // ---------------------------------------------------------- serialise
@@ -988,6 +1072,11 @@ public final class LibraryItem {
             // is never stored, because a stored 0 and an absent key would be two
             // spellings of one state.
             if (focal > 0f) o.put("focal", focal);
+            // The splat, only when there is one: a library of ordinary
+            // photographs stays byte-identical to one this build never touched,
+            // which is why this needed no schema bump. The same argument the
+            // normal, video, archived flag and focal already make.
+            if (splatName != null) o.put("splat", splatName);
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -1122,7 +1211,11 @@ public final class LibraryItem {
                     // 0 = unknown, and the constructor is what refuses a negative
                     // or NaN value: one place, so a hand-edited "focal": "NaN"
                     // cannot reach the vertex shader and poison a whole cloud.
-                    (float) o.optDouble("focal", 0d));
+                    (float) o.optDouble("focal", 0d),
+                    // The splat cloud, read through str() like every other name,
+                    // so JSON null and the literal "null" both become null. Absent
+                    // is null, which is the correct degradation: the relief.
+                    str(o, "splat"));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -1132,6 +1225,7 @@ public final class LibraryItem {
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + (normalName != null ? " +normal" : "")
+                + (splatName != null ? " +splat" : "")
                 + (video != null ? " " + video : "")
                 + (focal > 0f ? " focal=" + focal : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt

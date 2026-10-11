@@ -31,6 +31,7 @@ import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 import com.amoshydra.basrelief.core.render.Splat;
+import com.amoshydra.basrelief.core.splat.SplatCloud;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -151,6 +152,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the mode shipped with, so an absent key draws exactly that.
      */
     static final String KEY_RENDER_3D_LEVEL = "render_3d_level";
+
+    /**
+     * The Gaussian splat's render scale: the fraction of the surface the cloud is
+     * drawn at before a blit up. A Stage-0 knob, read in {@link #reloadFromPrefs}
+     * and not exposed in the UI yet; 1.0 draws straight to the surface.
+     */
+    static final String KEY_SPLAT_SCALE = "splat_scale";
+
+    /**
+     * <b>Stage-0 debug path, and deliberately a pref so it is easy to remove.</b>
+     * A bare filename in {@code filesDir} used as the splat when the selected
+     * item names none. Its default is the demo cloud, so pushing
+     * {@code demo.splat} into the app's files dir and turning the 3D switch on
+     * renders it without any item ever being edited. Stage 1 replaces this with
+     * the bundled demo (a splat in {@code res/raw}, copied by the ordinary seed)
+     * and deletes the pref.
+     */
+    static final String KEY_SPLAT_FILE = "splat_file";
+    static final String SPLAT_DEBUG_DEFAULT = "demo.splat";
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
@@ -605,6 +625,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * renderer rather than a mode.
      */
     private volatile boolean render3d = false;
+
+    /**
+     * The Gaussian splat cloud, when the active item names one.
+     *
+     * <p><b>Stage 0, and a debug path.</b> The item's own nullable {@code splat}
+     * filename is the product shape; the {@link #KEY_SPLAT_FILE} pref is the
+     * Stage-0 fallback that lets a pushed demo cloud render without editing the
+     * index. Both resolve through {@link PrefFiles}, both are bare filenames, and
+     * the cloud is drawn only when the 3D switch ({@link #render3d}) is on — so
+     * the switch is the one control that selects the splat, exactly as it selects
+     * the relief's card mode for a row with no cloud.
+     *
+     * <p>{@code splatWantedPath} is the resolve's answer (written on whatever
+     * thread {@link #reloadFromPrefs} ran on); {@code splatLoadedPath} is what the
+     * GL context actually holds. The two must agree before the cloud draws, which
+     * is the {@code hasInstalled} rule one medium over: a path that has been
+     * requested but not uploaded is not on screen.
+     */
+    private SplatRenderer splat;
+    private volatile String splatWantedPath;
+    private String splatLoadedPath;
+    private String splatPendingPath;
+    private int splatSeq;
+    private volatile float splatRenderScale = 1f;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -2681,6 +2725,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // context routinely, because the system tears the engine down and rebuilds it.
         stopClip();
 
+        // The splat's GL names belong to the old context too. Clearing the loaded
+        // path is what makes the next reloadFromPrefs re-upload: without it the
+        // renderer would believe the cloud it wants is already on the GPU, in a
+        // context that holds no texture -- the hasInstalled rule, one medium over.
+        if (splat != null) splat.onContextLost();
+        splatLoadedPath = null;
+        splatPendingPath = null;
+        // A load in flight when the context died must be dropped: its upload would
+        // run against a GL context that is gone (the empty-log "compile failed"
+        // this now avoids), and the reload below re-requests it anyway.
+        splatSeq++;
+
         reloadFromPrefs();
     }
 
@@ -3118,10 +3174,100 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.depthName);
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
+        splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
+        setSplatForItem(active == null ? null : active.splatName);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
                 nrm == null ? null : nrm.getAbsolutePath(),
                 focal);
+    }
+
+    /**
+     * Resolve and (re)load the splat for one item's stored filename. GL thread.
+     *
+     * <p>The item's own nullable filename is the product shape; the
+     * {@link #KEY_SPLAT_FILE} pref is the Stage-0 debug fallback, used only when
+     * the item names none, so a pushed demo cloud renders without editing the
+     * index. Both resolve through {@link PrefFiles}, so both are bare filenames
+     * and a restore onto another device still finds them.
+     *
+     * <p>Only when the 3D switch is on: the switch is the one selector between the
+     * relief and the cloud, so a row with a cloud and the switch off still renders
+     * its relief, exactly as a row with no cloud does.
+     */
+    void setSplatForItem(String itemSplatName) {
+        if (!render3d) {
+            splatWantedPath = null;
+            return;
+        }
+        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), itemSplatName);
+        if (spf == null) {
+            SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+            spf = PrefFiles.resolve(context.getFilesDir(),
+                    p.getString(KEY_SPLAT_FILE, SPLAT_DEBUG_DEFAULT));
+        }
+        splatWantedPath = spf == null ? null : spf.getAbsolutePath();
+        requestSplat(splatWantedPath);
+    }
+
+    /**
+     * Load a splat cloud off the GL thread and upload it on it.
+     *
+     * <p>The same shape as {@link #loadPairAsync}: the file read and the position
+     * mirror are the expensive part and must not sit between two frames of a live
+     * wallpaper, so they run on the {@code Io} executor and only the texture upload
+     * is queued to the GL thread. A result whose sequence is stale is dropped, the
+     * same rule the still pair follows, because two loads can finish out of order.
+     *
+     * <p>{@code splatLoadedPath} is written only after a successful upload, so a
+     * request that fails or is still in flight leaves the previous cloud — or the
+     * relief — on screen rather than claiming a cloud that is not there.
+     */
+    private void requestSplat(final String path) {
+        if (path == null) return;
+        if (path.equals(splatLoadedPath) || path.equals(splatPendingPath)) return;
+        splatPendingPath = path;
+        final int seq = ++splatSeq;
+        final java.util.concurrent.Executor glThread = glDispatch;
+        Io.run(new java.util.concurrent.Callable<SplatCloud>() {
+            @Override
+            public SplatCloud call() throws Exception {
+                return SplatCloud.read(new java.io.File(path));
+            }
+        }, new Io.Callback<SplatCloud>() {
+            @Override
+            public void onDone(SplatCloud cloud, Exception error) {
+                final SplatCloud c = error != null ? null : cloud;
+                if (glThread == null) {
+                    applySplat(path, c, seq);
+                    return;
+                }
+                glThread.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        applySplat(path, c, seq);
+                    }
+                });
+            }
+        }, glThread);
+    }
+
+    /** Upload a loaded cloud on the GL thread, unless a newer request superseded it. */
+    private void applySplat(String path, SplatCloud cloud, int seq) {
+        if (seq != splatSeq) return;
+        // This request is resolved either way, so it must stop blocking a retry:
+        // requestSplat skips a path that is already pending, and a failed upload
+        // that stayed "pending" would never be re-asked.
+        splatPendingPath = null;
+        if (splat == null) splat = new SplatRenderer();
+        if (cloud == null || !splat.upload(cloud)) {
+            android.util.Log.w("Basrelief", "splat: could not load " + path
+                    + (cloud == null ? " (read failed)" : " (upload failed)"));
+            splatLoadedPath = null;
+            return;
+        }
+        splatLoadedPath = path;
+        android.util.Log.i("Basrelief", "splat: loaded " + path + " count=" + splat.count());
     }
 
     /**
@@ -3173,6 +3319,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         setPan(panX, panY);
         surfaceAspect = (float) width / height;
         recomputeScale();
+    }
+
+    /**
+     * Whether the Gaussian cloud, rather than the relief, is what should draw.
+     *
+     * <p>Three facts, and all three must hold: the 3D switch resolved a cloud for
+     * this row ({@code splatWantedPath}), the GL context holds exactly that cloud
+     * ({@code splatLoadedPath}), and the upload reported success
+     * ({@code splat.isReady}). The middle one is the {@code hasInstalled} rule: a
+     * request that is still in flight, or that failed, must not be treated as on
+     * screen — the failure the wallpaper paid for twice, once as a black surface
+     * and once as a cloud that never retried.
+     */
+    private boolean useSplat() {
+        String want = splatWantedPath;
+        return want != null && splat != null && splat.isReady() && want.equals(splatLoadedPath);
     }
 
     @Override
@@ -3279,6 +3441,24 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         smoothY = approach(smoothY, targetY, alpha);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+
+        // The Gaussian cloud draws INSTEAD of the relief when the 3D switch is on
+        // and this row names a cloud that is actually uploaded. The relief's pair
+        // is still loaded underneath, so the switch is instant to flip back and a
+        // cloud that fails to load falls back to the picture with no error path.
+        if (useSplat()) {
+            // The cloud is the picture, so the relief's medium must not keep
+            // decoding behind it: a clip would otherwise run its three decoders
+            // for a frame nobody sees, and its pump would drive the surface at the
+            // clip's rate instead of the gyro's -- which is not the wallpaper's
+            // model. Stopped once, when it is running; the next resolve re-arms it
+            // if the switch goes back off.
+            if (clip != null && clip.isRunning()) stopClip();
+            splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom, splatRenderScale);
+            captureLockFrameIfWanted();
+            return;
+        }
+
         if (displayed == null || !displayed.isDrawable()) {
             // Nothing to draw yet. The readback is still offered so a lock-frame
             // request is not silently dropped on an empty surface; it will
@@ -3417,7 +3597,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
-            if (render3d) {
+            if (render3d && splatWantedPath == null) {
                 drawSplatGrid(r, f);
             } else {
                 GLES20.glUniform1f(uSplat, 0f);

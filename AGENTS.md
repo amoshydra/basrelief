@@ -814,7 +814,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 563 tests across thirty-one classes:
+it**. 590 tests across thirty-three classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -860,6 +860,25 @@ one.
   backwards, and anything that is not a level — a negative, an index past the end,
   a value a newer build wrote — answers the default, because that default is the
   look the mode shipped with and an upgrade must not move it.
+- `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
+  projector, the two things a shader cannot be checked for off-device. The
+  container test pins the 32-byte record field for field, including that the
+  colour and quaternion bytes read back as the little-endian floats the shader's
+  `floatBitsToUint` unpacks (the record IS the two `RGBA32F` texels the renderer
+  uploads), and that a partial trailing record is dropped rather than read past.
+  The projection test pins the chain the plan states — `Sigma3D = R S S^T R^T`,
+  `SigmaV = V Sigma3D V^T`, the perspective Jacobian, `Sigma2D = J SigmaV J^T`,
+  the conic, the eigen extents — and above all the relation that makes the quad's
+  edge the Gaussian's edge: at the 3-sigma extent the exponent is exactly `-4.5`
+  on BOTH principal axes, whatever the covariance, and `exp` of it is
+  `exp(-4.5)`. A chain that put the extent at two sigma, or dropped the half,
+  would still draw a plausible ellipse; this is what a screenshot cannot tell.
+  Its second trap is the degenerate covariance: zero, rank-one and zero-area 2x2s
+  are refused (both `conic` and `extents` return false and zero their output)
+  rather than inverted to infinities that poison every vertex reading the conic.
+  The spherical-splat invariance is the transpose check — an isotropic
+  covariance cannot change under a view rotation, so a transposed `V` passes on
+  an elongated splat and fails here.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

@@ -164,6 +164,7 @@ public class VideoLibraryTest {
                         VideoTracks.of("item-a.mp4", "item-a-depth.mp4",
                                 "item-a-normal.mp4"), 2643f)
                 .withDepthAndNormal("item-a-depth.png", "item-a-normal.png")
+                .withSplat("item-a.splat")
                 .withIntensity(Surface.HOME, 66)
                 .withZoom(Surface.HOME, 133)
                 .withMotion(Surface.HOME, 44)
@@ -209,6 +210,7 @@ public class VideoLibraryTest {
         assertEquals(what + " must keep the normal clip",
                 LibraryItem.videoNormalFileName("a"), item.video.normal);
         assertEquals(what + " must keep the camera", 2643f, item.focal, 0f);
+        assertEquals(what + " must keep the splat", "item-a.splat", item.splatName);
     }
 
     /**
