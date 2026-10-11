@@ -938,7 +938,8 @@ public class DepthWallpaperService extends WallpaperService {
                     // it never reaches reloadFromPrefs, and a cloud that is only
                     // resolved at engine creation would follow the row a frame late
                     // -- or never. GL thread, like every other renderer call here.
-                    renderer.setSplatForItem(active == null ? null : active.splatName);
+                    renderer.setSplatForItem(active == null ? null : active.id,
+                            active == null ? null : active.splatName);
 
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own

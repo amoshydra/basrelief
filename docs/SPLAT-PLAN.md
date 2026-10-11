@@ -55,31 +55,59 @@ texture plus an order texture, sorted alpha, one `gl_VertexID`-derived quad per 
 - [x] The wallpaper draws it when present; the studio's 3D switch selects it
       (`render_3d`; the splat replaces the relief only when a cloud is actually
       uploaded, and the relief's card mode is skipped while one is expected).
-- [x] One budgeted demo cloud (147,456 splats) generated offline, pushed, and
-      verified on the home screen: tilt moves it, ~60 fps, GPU ~15 ms, wallpaper
-      component intact.
+- [x] One budgeted demo cloud (149,955 splats) generated offline by a **uniform
+      (u,v) re-sample** (`scripts/make-demo-splat.py`), pushed, and verified on the
+      home screen: tilt moves it, ~31 fps, GPU ~40 ms, wallpaper component intact.
 - [x] Gate: `./podman-build.sh build-apk`, `node scripts/check-shaders.mjs`,
-      `node scripts/check-parity.mjs` (AGENTS.md counts updated: 590 tests / 33
+      `node scripts/check-parity.mjs` (AGENTS.md counts updated: 591 tests / 33
       classes).
 
 **What shipped, measured on a Pixel 7 Pro (Mali-G710, 1440×3120, release build +
-`cmd package compile -m speed -f`).** 147,456 splats, wallpaper engine: ~55–60 fps
-(sensor-driven), `frameMs` 16.6–17.2, GPU 14–18 ms, CPU sort 2–9 ms per camera
-move (0 when still), draw submit 0.13–0.24 ms, frustum cull dropping 0–14 k of
-147 k as the camera moves. The `:core` probe runs once per load on device and
-reads `powerAtR1 = −4.5000`, the chain's own consistency check.
+`cmd package compile -m speed -f`).** 151,552 splats (149,955 + 2048-pad) in the
+wallpaper engine: ~30–32 fps, `frameMs` 31–33, GPU 38–45 ms, CPU sort 7–11 ms per
+camera move (0 when still), draw submit 0.21–0.32 ms. That is the bale's honest
+cost: the spike measured 147 k raw SHARP at 42–55 ms GPU, so a hole-free cloud of
+this scene is fill-bound at ~40 ms on this phone — the plan's 50–60 fps budget is
+for smaller-splat clouds (the fused static layer), not the bale. The `:core` probe
+runs once per load on device and reads `powerAtR1 = −4.5000`, the chain's own
+consistency check.
+
+**Two defects found in the first Stage-0 drop, both fixed here:**
+
+- **Every item showed the splat.** The debug pref applied to any row that named no
+  cloud, which is not a debug path but a regression: selecting a photo replaced it
+  with the demo. The rule is now `Library.splatNameFor` in `:core` (unit tested):
+  a row's own filename wins, and the debug filename is reachable from the
+  **reserved `BUNDLED_ID` row alone**. Every other row renders its own media.
+- **The demo cloud was a 1-D stride, and it showed.** Stride 8 over SHARP's
+  storage order leaves the kept points unevenly spaced in image space — rendered,
+  that is the vertical striping the user reported (off-device renders of the same
+  cloud: `cap150` and stride-8 stripe, the grid does not). Measured off-device on
+  the same cloud: stride 8 covers **59.5 %** of the subject's 2-px cells, the
+  uniform grid **100 %**. The demo is now a (u,v)-cell re-sample at SHARP's own
+  lens (cell 5.6 px, highest-opacity point per cell) with a **per-splat**
+  compensation — `√(cell multiplier)`, the multiplier being the cell's area over
+  the splat's own screen footprint, grown by a margin for the alpha falloff.
+  Measured on the phone at 150 k: the **global** `√(visible/kept) = ×2.80` (the
+  shipped stride cap's `√step`) reaches 100 % coverage at **110 ms GPU ≈ 10 fps**,
+  while the per-splat rule reaches it at **~40 ms ≈ 31 fps** — the global factor
+  inflates the big near splats by the same amount as the small far ones, and the
+  renderer is fill-bound. That is the deviation from the literal global factor, and
+  it is why the count target is met at a reviewable frame rate rather than 10 fps.
+  The script is `scripts/make-demo-splat.py` (`--comp global` reproduces the
+  shipped cap's factor for comparison).
 
 **Deliberately deferred, and labelled in the code:**
 
-- **The item field is real; the demo delivery is a debug pref.** The index change
-  (`splatName`, `withSplat`, `PrefFiles`, 0-or-absent, every mutator) is the
-  product shape and is unit tested. But nothing in Stage 0 *writes* it — there is
-  no import UI — so the demo is delivered by `KEY_SPLAT_FILE` (`splat_file`,
-  default `demo.splat`): a bare filename in `filesDir` used when the item names
-  none. Stage 1 replaces it with a splat in `res/raw` copied by the ordinary seed
-  and deletes the pref. This is the "clearly-labelled debug pref path" the task
-  allows, and it is why the demo shows for **any** active row, not just the
-  bundled one.
+- **The item field is real; the demo delivery is a debug pref, gated to the bundled
+  row.** The index change (`splatName`, `withSplat`, `PrefFiles`, 0-or-absent,
+  every mutator) is the product shape and is unit tested. But nothing in Stage 0
+  *writes* it — there is no import UI — so the demo is delivered by
+  `KEY_SPLAT_FILE` (`splat_file`, default `demo.splat`): a bare filename in
+  `filesDir` used **only when the active item is the reserved `BUNDLED_ID` row**.
+  Stage 1 replaces it with a splat in `res/raw` copied by the ordinary seed and
+  deletes the pref. It cannot hijack a normal photo: no string a normal item can
+  carry reaches it.
 - **The splat's camera is hard-coded to the demo's.** The source view is SHARP's
   own camera for a 1440×2560 still (`f = 2036.6 px`, `FOVY = 64.3°`, target on the
   optical axis at the bale's front surface). There is no camera on the item, so a
@@ -96,8 +124,9 @@ reads `powerAtR1 = −4.5000`, the chain's own consistency check.
 - **The sort runs on the GL thread.** ~3–9 ms in release, but ~140 ms on the first
   sort in a debug build (the documented Java penalty). Fine at this budget; the
   Stage 1 LOD policy is where a cheaper order would live.
-- **No budget/LOD at load.** The demo is pre-budgeted offline (uniform stride 8
-  from SHARP's 1.18 M). Stage 1 owns emit-to-budget and distance-adaptive LOD.
+- **No budget/LOD at load.** The demo is pre-budgeted offline by a uniform (u,v)
+  re-sample of SHARP's 1.18 M (`scripts/make-demo-splat.py`, cell 5.6 px, ~150 k).
+  Stage 1 owns emit-to-budget and distance-adaptive LOD.
 - **The render-scale knob is a pref, not a control** (`splat_scale`, 0.25–1.0,
   default 1.0). Measured unnecessary at 147 k, so it stays out of the UI.
 

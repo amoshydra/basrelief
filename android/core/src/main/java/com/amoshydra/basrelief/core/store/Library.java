@@ -95,6 +95,31 @@ public final class Library {
      */
     public static final String BUNDLED_ID = "bundled";
 
+    /**
+     * Which stored splat filename a row should use.
+     *
+     * <p><b>The item drives it, and the debug fallback is the bundled row's
+     * alone.</b> A row that names a cloud uses it, always. A row that names none
+     * uses the debug filename <i>only</i> when it is the reserved
+     * {@link #BUNDLED_ID} row, where Stage 1 will ship the real cloud; every other
+     * row answers null and renders its own media. The alternative — the fallback
+     * applying to any row that names none — is not a debug path but a regression:
+     * it replaces every photograph with one cloud, which is exactly what shipped
+     * and was reported.
+     *
+     * <p>Pure and here rather than in the renderer so the rule is one function a
+     * test can hold, the same reason {@link SurfaceResolver} and
+     * {@code DepthSource} live in {@code :core}. The caller resolves the returned
+     * name through {@code PrefFiles} like any other stored filename.
+     *
+     * @param debugSplatName the Stage-0 pref's value, or null when there is none
+     */
+    public static String splatNameFor(String itemId, String itemSplatName,
+                                      String debugSplatName) {
+        if (itemSplatName != null) return itemSplatName;
+        return BUNDLED_ID.equals(itemId) ? debugSplatName : null;
+    }
+
     /** The single SharedPreferences key the blob lives under. */
     public static final String KEY = "library";
 

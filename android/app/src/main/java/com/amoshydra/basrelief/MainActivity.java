@@ -6163,6 +6163,7 @@ public class MainActivity extends Activity {
         final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm, focal) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
+        final String splatId = active == null ? null : active.id;
         final String splatName = active == null ? null : active.splatName;
         glView.queueEvent(new Runnable() {
             @Override
@@ -6172,7 +6173,7 @@ public class MainActivity extends Activity {
                 // gallery selection is a pair change and does not go through the cold
                 // load, so without this the cloud would only follow the row after a
                 // resume. GL thread, like every other call that touches GL state.
-                renderer.setSplatForItem(splatName);
+                renderer.setSplatForItem(splatId, splatName);
             }
         });
         // GUARDED, and this was the bug that made a clip show one frozen frame.

@@ -26,6 +26,7 @@ import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.render.Picture;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
+import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
@@ -162,12 +163,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /**
      * <b>Stage-0 debug path, and deliberately a pref so it is easy to remove.</b>
-     * A bare filename in {@code filesDir} used as the splat when the selected
-     * item names none. Its default is the demo cloud, so pushing
+     * A bare filename in {@code filesDir} used as the splat <b>for the bundled
+     * item only</b> — the reserved {@link Library#BUNDLED_ID} row — when that row
+     * names no cloud of its own. Its default is the demo cloud, so pushing
      * {@code demo.splat} into the app's files dir and turning the 3D switch on
-     * renders it without any item ever being edited. Stage 1 replaces this with
-     * the bundled demo (a splat in {@code res/raw}, copied by the ordinary seed)
-     * and deletes the pref.
+     * renders it on the bundled row without editing the index.
+     *
+     * <p><b>The bundled id is the gate, and that is the whole point.</b> A pref
+     * that applied to every row is not a debug path — it replaces the user's
+     * photographs with one cloud, which is the regression this gating fixes. Every
+     * other row renders its own media, and there is no string a normal item can
+     * carry that reaches this pref. Stage 1 replaces it with the bundled demo's
+     * real cloud in {@code res/raw}, copied by the ordinary seed, and deletes the
+     * pref.
      */
     static final String KEY_SPLAT_FILE = "splat_file";
     static final String SPLAT_DEBUG_DEFAULT = "demo.splat";
@@ -3175,7 +3183,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
         splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
-        setSplatForItem(active == null ? null : active.splatName);
+        setSplatForItem(active == null ? null : active.id,
+                active == null ? null : active.splatName);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
                 nrm == null ? null : nrm.getAbsolutePath(),
@@ -3183,29 +3192,34 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Resolve and (re)load the splat for one item's stored filename. GL thread.
+     * Resolve and (re)load the splat for one item. GL thread.
      *
-     * <p>The item's own nullable filename is the product shape; the
-     * {@link #KEY_SPLAT_FILE} pref is the Stage-0 debug fallback, used only when
-     * the item names none, so a pushed demo cloud renders without editing the
-     * index. Both resolve through {@link PrefFiles}, so both are bare filenames
+     * <p><b>The rule: a splat renders only when the ITEM names one.</b> The item's
+     * own nullable filename is the product shape. The {@link #KEY_SPLAT_FILE} pref
+     * is the Stage-0 debug fallback, and it is reachable from <b>the reserved
+     * bundled id alone</b> — so selecting any other photo renders that photo's own
+     * media, and there is no string a normal item can carry that reaches the pref.
+     * The regression this fixes: the fallback applied to every row, so every
+     * selection showed the demo cloud.
+     *
+     * <p>Both paths resolve through {@link PrefFiles}, so both are bare filenames
      * and a restore onto another device still finds them.
      *
      * <p>Only when the 3D switch is on: the switch is the one selector between the
      * relief and the cloud, so a row with a cloud and the switch off still renders
      * its relief, exactly as a row with no cloud does.
      */
-    void setSplatForItem(String itemSplatName) {
+    void setSplatForItem(String itemId, String itemSplatName) {
         if (!render3d) {
             splatWantedPath = null;
             return;
         }
-        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), itemSplatName);
-        if (spf == null) {
-            SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-            spf = PrefFiles.resolve(context.getFilesDir(),
-                    p.getString(KEY_SPLAT_FILE, SPLAT_DEBUG_DEFAULT));
-        }
+        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
+        // The rule lives in :core so it is one function a test holds: the item's
+        // own filename, else the debug filename for the bundled row alone.
+        String name = Library.splatNameFor(itemId, itemSplatName,
+                p.getString(KEY_SPLAT_FILE, SPLAT_DEBUG_DEFAULT));
+        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), name);
         splatWantedPath = spf == null ? null : spf.getAbsolutePath();
         requestSplat(splatWantedPath);
     }
