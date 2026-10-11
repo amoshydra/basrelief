@@ -301,9 +301,10 @@ already cost real time.
   "isn't responding"), and 71 MB at the top one. The card grid is independent of the
   field's: the field is built at `GRID = 384` and a finer card grid interpolates it
   rather than reading detail it does not hold. The vertex shader's `uSplat` branch
-  places every card on the ray the DRAWING camera gives its pixel, at a camera
-  distance of `uCamDist` minus the card's own depth, with the card's size scaled by
-  the same depth ratio. The colour is sampled at the sample's own texel for all four
+  places every card on the ray from the eye the picture is PINNED to — the camera at
+  rest, `uSplatEye` — through its own reference-plane point, closer to that eye than
+  the point by the card's own depth, with the card's size scaled by the same depth
+  ratio. The colour is sampled at the sample's own texel for all four
   corners — **flat**, which is what removes the shear, because a card's colour cannot
   stretch across it however the card is placed — while the normal keeps a per-corner
   UV — **a gradient**, because a flat normal per card makes a cloud of cards read as
@@ -355,6 +356,31 @@ already cost real time.
     switched". No `:core` test can hold a GLSL expression, which is why this is
     written down here rather than asserted — and it survived a full green gate with
     the picture visibly wrong, so a splat change has to be looked at on a device.
+  - **The card is placed on a ray from the camera AT REST, not from the moving one,
+    and that is what makes Origin mean the same thing in both modes.** `uSplatEye` is
+    the tilt-free eye — `(orbitX * aspect * scale, orbitY * scale, CAM_DIST)`, the two
+    terms `CameraModel.frame` builds the eye from and the same expression the orbit
+    marker uses — and each card sits on the ray from it through its own
+    reference-plane point, closer by its own depth. Scaling the sample's position about
+    the MODEL CENTRE (`q * (zEye / uCamDist)`, what the branch did) is that same
+    construction with the eye assumed to sit on the model's z axis, and the assumption
+    stopped being true the moment Origin moved the camera: with Origin at a corner the
+    whole cloud was placed as if the origin were still the image's centre, whatever the
+    user set. Measured, at rest, Origin at the bottom-left, Depth 0.9 on a portrait
+    surface: a near layer is offset **bodily** by 0.54 NDC — over a quarter of the
+    screen's width, and the same offset at every sample — while the offset is zero only
+    when the origin is the image's centre, which is what the user reported as relief orbited around the bottom-left while 3D stayed centred. With the reference
+    eye the at-rest picture is exactly the photograph at every origin (the card lands
+    on its own reference pixel to float noise), and the reveal is untouched: the tilt
+    still moves the depth, as parallax and as disocclusion. **Feeding it the MOVING eye
+    is not the fix and would destroy the mode**: a point on the eye's ray projects to
+    that eye's pixel whatever its depth, so every card would land exactly on its own
+    pixel and the render would be identical at every Depth and every tilt — no
+    parallax, no gaps, no reveal at all. The depth has to be fixed in world space and
+    the camera has to move through it. `uCamDist` went with the old form rather than
+    being left as a uniform nothing reads; the 0.15 margin is now the ray's distance
+    (`closer = max(dist - zOff, 0.15)`), and the `h == 0` position is still exactly the
+    relief's.
   - **The focal does NOT go into the ray, and that is a decision with a measurement
     behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
     camera; drawing it through this renderer's camera — fixed 45°, because it is the

@@ -203,13 +203,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // fragment shader that sampled a different varying on each path
             // would be two shaders to keep in step instead of one.
             "varying vec2 vNormalUv;\n" +
-            "varying vec3 vWorldPos;\n" +
             "void main() {\n" +
             "  vUv = aUV;\n" +
             "  vNormalUv = aUV;\n" +
-            "  vec3 p = aPosition * uModelScale;\n" +
-            "  p.z *= uIntensity;\n" +
-            "  vWorldPos = p;\n" +
             "  gl_Position = uMVP * vec4(aPosition, 1.0);\n" +
             "}\n";
 
@@ -217,7 +213,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "precision highp float;\n" +
             "varying vec2 vUv;\n" +
             "varying vec2 vNormalUv;\n" +
-            "varying vec3 vWorldPos;\n" +
             "uniform sampler2D uColor;\n" +
             // The supplied normal map, or nothing. uHasNormal is 0 for a photo with
             // depth and no normals, which is the flat-lit state -- a deliberate
@@ -229,7 +224,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uIntensity;\n" +
             "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
-            "uniform vec3 uCamPos;\n" +
             "uniform float uBrightnessGain;\n" +
             "uniform float uShadowLift;\n" +
             "void main() {\n" +
@@ -311,15 +305,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform sampler2D uDepth;\n" +
             "uniform float uGrid;\n" +
             "uniform float uAspect;\n" +
-            // The splat mode's switch and its four numbers. One PROGRAM for both
-            // modes on purpose: the relief must be the same program, the same
-            // buffers and the same draws when the flag is off, and a second
-            // program would be a second copy of the relief's maths to keep in
-            // step with this one. uSplat is 0 for the relief, 1 for the cards.
+            // The splat mode's switch and the numbers it is placed with. One
+            // PROGRAM for both modes on purpose: the relief must be the same
+            // program, the same buffers and the same draws when the flag is off,
+            // and a second program would be a second copy of the relief's maths
+            // to keep in step with this one. uSplat is 0 for the relief, 1 for
+            // the cards.
             "uniform float uSplat;\n" +
             "uniform float uSplatSize;\n" +
             "uniform float uSplatGrid;\n" +
-            "uniform float uCamDist;\n" +
+            // The eye the cards are placed against: the camera at REST -- tilt
+            // dropped, origin and zoom kept. See the splat branch below; it is
+            // deliberately not the moving camera, which is passed to nothing at
+            // all here.
+            "uniform vec3 uSplatEye;\n" +
             // The photograph's camera, as two numbers that are both already
             // resolved in :core (Splat, with its own test): the effective focal in
             // pixels -- the row's own, or the 50-degree default when it has none --
@@ -338,7 +337,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // across the card and a cloud of cards reads as a model rather than as
             // facets. On the relief path both are aUV, exactly as before.
             "out vec2 vNormalUv;\n" +
-            "out vec3 vWorldPos;\n" +
             "void main() {\n" +
             "  float n = uGrid + 1.0;\n" +
             "  float gx = aUV.x * uGrid;\n" +
@@ -379,13 +377,32 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "    float fgy = (1.0 - cuv.y) * uGrid;\n" +
             "    vec2 duv = vec2(fgx + 0.5, fgy + 0.5) / (uGrid + 1.0);\n" +
             "    float h = textureLod(uDepth, duv, 0.0).r / 255.0 - 0.5;\n" +
-            // The card is placed on the ray the DRAWING CAMERA gives its pixel, at
-            // a camera distance of uCamDist minus the card's own depth. Position
-            // and card size both carry the depth ratio, so a card's angular size
-            // is its footprint's at any depth: the coverage constant tiles the
-            // reference plane (h == 0 lands exactly where the relief drew it, so
-            // the picture does not move when the mode is switched), and the gaps
-            // that open elsewhere are the scene genuinely disoccluding.
+            // THE CARD IS PLACED ON THE RAY FROM THE EYE THE PICTURE IS PINNED
+            // TO -- uSplatEye, the camera at rest -- through its own
+            // reference-plane point, closer to that eye by the card's own depth.
+            // That is "the card sits at camera distance minus its own depth"
+            // generalised: the old line scaled the sample's position about the
+            // MODEL CENTRE, which is the same construction with the eye assumed
+            // to sit on the model's z axis. It does not, once Origin moves the
+            // camera -- Origin aims the camera at a point on the plane and puts
+            // it there -- so the whole cloud used to be placed as if the origin
+            // were still the image's centre, whatever the user set. The
+            // reference eye is therefore the camera the picture is the
+            // photograph for: tilt dropped, origin and zoom kept.
+            //
+            // THE MOVING EYE IS NOT IT, and the difference is the whole mode. A
+            // point on the eye's ray projects to that eye's pixel whatever its
+            // depth, so placing every card on the MOVING eye's rays would make
+            // the render identical at every Depth and every tilt: no parallax,
+            // no gaps, no reveal. The depth has to be fixed in world space and
+            // the camera has to move through it.
+            //
+            // Position and card size both carry the depth ratio, so a card's
+            // angular size is its footprint's at any depth: the coverage constant
+            // tiles the reference plane (h == 0 lands exactly where the relief
+            // drew it, so the picture does not move when the mode is switched),
+            // and the gaps that open elsewhere are the scene genuinely
+            // disoccluding.
             //
             // A card off the reference plane moves along ITS OWN RAY, which is
             // why the picture at rest is the photograph whatever the depth: only
@@ -408,19 +425,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // implementation and not two ideas.
             "    float depthGain = uRefFocal > 0.0 ? uFocal / uRefFocal : 1.0;\n" +
             // uModelScale * uIntensity IS the world depth of h == 1: the MVP
-            // carries S(scale, scale, scale * zScale), so a model z of hCard
-            // becomes a world offset of hCard * scale * zScale. Computed here
-            // because the camera distance is in world units and the model z is
+            // carries S(scale, scale, scale * zScale), so a model z of
+            // zOff / denom becomes a world offset of zOff. Computed here
+            // because the eye distance is in world units and the model z is
             // not.
             "    float denom = uModelScale * uIntensity;\n" +
             "    float zOff = h * denom * depthGain;\n" +
-            // A card must stay in front of the eye. Pushed past it the card
-            // renders mirrored and inside out, and it is a whole card appearing in
-            // the middle of the picture, so the offset is clamped here rather than
-            // left to the near plane to decide.
-            "    if (denom > 1e-6) zOff = min(zOff, uCamDist - 0.15);\n" +
-            "    float zEye = uCamDist - zOff;\n" +
-            "    float hCard = denom > 1e-6 ? zOff / denom : 0.0;\n" +
             // THE IMAGE ASPECT GOES ON X AND ONLY ON X -- the same statement the
             // relief branch makes below, and the one asymmetry the card has.
             // Written as (position + corner * uSplatSize) * uAspect it squashed
@@ -432,7 +442,28 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // vertically.
             "    vec2 q = vec2((cuv.x - 0.5) * uAspect, cuv.y - 0.5)\n" +
             "           + vec2(corner.x * uSplatSize * uAspect, corner.y * uSplatSize);\n" +
-            "    a = vec3(q * (zEye / uCamDist), hCard);\n" +
+            // q already carries the corner, so every one of the four corners is
+            // placed on its OWN ray and the card covers exactly the cell it
+            // replaces at rest.
+            "    vec3 refWorld = vec3(q.x * uModelScale, q.y * uModelScale, 0.0);\n" +
+            "    vec3 toRef = refWorld - uSplatEye;\n" +
+            "    float dist = max(length(toRef), 1e-4);\n" +
+            // A card must stay in front of that eye. Pushed past it the card
+            // renders mirrored and inside out, and it is a whole card appearing in
+            // the middle of the picture, so the distance is clamped here rather
+            // than left to the near plane to decide. The margin is the 0.15 world
+            // units the fixed camera distance used to leave, and it must be
+            // applied to the RAY's distance now that the eye is not a constant.
+            "    float closer = max(dist - zOff, 0.15);\n" +
+            "    vec3 cardWorld = uSplatEye + toRef * (closer / dist);\n" +
+            // Back to model space: x and y are the world position over the model
+            // scale, and z is over the world depth of h == 1 -- the same
+            // uModelScale * uIntensity the MVP will scale it by. denom == 0 is
+            // Depth 0, where there is no depth axis to divide by and the card
+            // belongs on the reference plane; it lands there because zOff is 0
+            // and cardWorld.z is exactly 0 -- only the division has to be guarded.
+            "    a = vec3(cardWorld.x / uModelScale, cardWorld.y / uModelScale,\n" +
+            "             denom > 1e-6 ? cardWorld.z / denom : 0.0);\n" +
             // THE COLOUR'S v IS NOT THE FIELD'S v, and this is the second
             // convention the relief also carries: the depth field is uploaded
             // top-first (t = 0 is the image's top row, which is why duv is small
@@ -454,9 +485,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // uMVP carries S(scale, scale, scale*zScale), exactly as the GLES2
             // path's uMVP does. x carries the image aspect here so one static
             // grid fits every photo.
-            "  vec3 p = a * uModelScale;\n" +
-            "  p.z *= uIntensity;\n" +
-            "  vWorldPos = p;\n" +
             "  gl_Position = uMVP * vec4(a, 1.0);\n" +
             "}\n";
 
@@ -472,14 +500,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "precision highp float;\n" +
             "in vec2 vUv;\n" +
             "in vec2 vNormalUv;\n" +
-            "in vec3 vWorldPos;\n" +
             "uniform sampler2D uColor;\n" +
             "uniform sampler2D uNormal;\n" +
             "uniform float uHasNormal;\n" +
             "uniform float uIntensity;\n" +
             "uniform float uFade;\n" +
             "uniform vec3 uLightDir;\n" +
-            "uniform vec3 uCamPos;\n" +
             "uniform float uBrightnessGain;\n" +
             "uniform float uShadowLift;\n" +
             "out vec4 fragColor;\n" +
@@ -524,7 +550,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private final Context context;
 
     private int program;
-    private int aPosition, aUV, uMVP, uModelScale, uIntensity, uColor, uLightDir, uCamPos;
+    private int aPosition, aUV, uMVP, uModelScale, uIntensity, uColor, uLightDir;
     private int uFade = -1;
     private int uBrightnessGain = -1, uShadowLift = -1;
     /** The supplied normal map and whether there is one; both backends use these. */
@@ -532,11 +558,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     // GLES3-only relief uniforms.
     private int uDepth = -1, uGrid = -1, uAspect = -1;
     /**
-     * GLES3-only splat uniforms: the mode switch, the card size and grid, the
-     * camera distance the cards are placed against, and the photograph's camera
-     * as the effective focal plus the default it is measured against.
+     * GLES3-only splat uniforms: the mode switch, the card size and grid, the eye
+     * the cards are placed against (the camera at REST, so the origin's pivot is
+     * the reference the depth is placed around), and the photograph's camera as
+     * the effective focal plus the default it is measured against.
      */
-    private int uSplat = -1, uSplatSize = -1, uCamDist = -1, uFocal = -1, uRefFocal = -1;
+    private int uSplat = -1, uSplatSize = -1, uSplatEye = -1, uFocal = -1, uRefFocal = -1;
     private int uSplatGrid = -1;
 
     /**
@@ -2454,7 +2481,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uNormal = GLES20.glGetUniformLocation(program, "uNormal");
         uHasNormal = GLES20.glGetUniformLocation(program, "uHasNormal");
         uLightDir = GLES20.glGetUniformLocation(program, "uLightDir");
-        uCamPos = GLES20.glGetUniformLocation(program, "uCamPos");
         uFade = GLES20.glGetUniformLocation(program, "uFade");
         uBrightnessGain = GLES20.glGetUniformLocation(program, "uBrightnessGain");
         uShadowLift = GLES20.glGetUniformLocation(program, "uShadowLift");
@@ -2464,7 +2490,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         uSplat = GLES20.glGetUniformLocation(program, "uSplat");
         uSplatSize = GLES20.glGetUniformLocation(program, "uSplatSize");
         uSplatGrid = GLES20.glGetUniformLocation(program, "uSplatGrid");
-        uCamDist = GLES20.glGetUniformLocation(program, "uCamDist");
+        uSplatEye = GLES20.glGetUniformLocation(program, "uSplatEye");
         uFocal = GLES20.glGetUniformLocation(program, "uFocal");
         uRefFocal = GLES20.glGetUniformLocation(program, "uRefFocal");
 
@@ -3221,7 +3247,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniformMatrix4fv(uMVP, 1, false, f.mvp, 0);
         GLES20.glUniform1f(uModelScale, f.scale);
         GLES20.glUniform1f(uIntensity, f.zScale);
-        GLES20.glUniform3f(uCamPos, f.eyeX, f.eyeY, f.eyeZ);
         GLES20.glUniform3f(uLightDir, r.lightX, r.lightY, r.lightZ);
         GLES20.glUniform1f(uBrightnessGain, fr.brightnessGain);
         GLES20.glUniform1f(uShadowLift, fr.shadowLift);
@@ -3268,7 +3293,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
             if (render3d) {
-                drawSplatGrid(r);
+                drawSplatGrid(r, f);
             } else {
                 GLES20.glUniform1f(uSplat, 0f);
                 GLES20.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo);
@@ -3311,13 +3336,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * -- {@code uMVP}, {@code uModelScale} and {@code uIntensity} are already
      * uploaded by {@link #drawRender} -- so pan, orbit, tilt and zoom drive the
      * cloud exactly as they drive the surface, and there is one camera in the
-     * class rather than two.
+     * class rather than two. The one extra uniform is the eye the cards are
+     * placed against, which is that same frame's camera with the TILT dropped.
      */
-    private void drawSplatGrid(Render r) {
+    private void drawSplatGrid(Render r, CameraModel.Frame f) {
         GLES20.glUniform1f(uSplat, 1f);
         GLES20.glUniform1f(uSplatGrid, splatGrid);
         GLES20.glUniform1f(uSplatSize, Splat.cardSize(splatGrid));
-        GLES20.glUniform1f(uCamDist, CameraModel.CAM_DIST);
+        // THE REFERENCE EYE IS THE CAMERA AT REST, NOT THE MOVING ONE, and it is
+        // the same two terms CameraModel.frame builds the eye from with the tilt
+        // left out: the pivot's world x and y -- which is why the marker's own
+        // crosshair uses exactly this expression -- and the camera distance.
+        // The splat branch places every card on a ray from this eye, so it must
+        // be the camera the photograph is pinned to. Feeding it the moving eye
+        // instead lands every card on its own pixel's ray and the depth stops
+        // being visible at all: no parallax, no gaps, at any Depth or tilt.
+        GLES20.glUniform3f(uSplatEye,
+                r.framing.orbitX * r.aspect * f.scale,
+                r.framing.orbitY * f.scale,
+                CameraModel.CAM_DIST);
         // The row's focal, or the documented default when it has none, and the
         // default itself as the reference the shader divides by. Both resolved in
         // :core, where the fallback is a tested function of the image height
