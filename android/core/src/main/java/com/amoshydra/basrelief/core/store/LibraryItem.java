@@ -163,6 +163,30 @@ public final class LibraryItem {
      */
     public final String splatName;
 
+    /**
+     * How this row is drawn: the relief, or the splat cloud.
+     *
+     * <p><b>A render value like Depth and Motion, and the item is its home.</b> It
+     * used to be one global {@code render_3d} pref, so a gallery drew every
+     * photograph the same way whichever the single switch last said — a global
+     * render value is the wrong home, which is why the pref is now only the
+     * migration source (see {@link Library}'s v3 to v4 migration, the
+     * Motion-in-{@code Config} precedent one version later).
+     *
+     * <p><b>SPLAT is a request, not a fact about what is on screen.</b> A row can
+     * ask for the cloud and have none yet — that is the "press Splat, the offer
+     * follows" flow — and it renders its relief until one exists. Whether the cloud
+     * is actually drawn is {@link SplatSource}'s answer plus the renderer's own
+     * on-screen identity, the same split its siblings make.
+     *
+     * <p>Stored as {@link RenderMode#key()} and written only when it is not
+     * {@link RenderMode#RELIEF}, so a library of ordinary photographs is
+     * byte-identical to one this build never touched — the {@code normal}/{@code video}/
+     * {@code focal} argument, and why this needed no schema bump of its own (the
+     * v4 bump is for the migration, not the field).
+     */
+    public final RenderMode renderMode;
+
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
 
@@ -283,13 +307,14 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, false, null, null, 0f, null);
+                home, lockSettings, false, null, null, 0f, null, RenderMode.RELIEF);
     }
 
     private LibraryItem(String id, String imageName, String depthName,
                         String normalName, String label, long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                SurfaceSettings.defaults(), null, false, normalName, null, 0f, null);
+                SurfaceSettings.defaults(), null, false, normalName, null, 0f, null,
+                RenderMode.RELIEF);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
@@ -297,7 +322,7 @@ public final class LibraryItem {
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, archived, normalName, null, 0f, null);
+                home, lockSettings, archived, normalName, null, 0f, null, RenderMode.RELIEF);
     }
 
     /**
@@ -317,7 +342,7 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName, VideoTracks video,
-                        float focal, String splatName) {
+                        float focal, String splatName, RenderMode renderMode) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -377,6 +402,10 @@ public final class LibraryItem {
         // is inert, and dropping it here would lose a value a later repair could
         // still pair with a photograph.
         this.splatName = normaliseName(splatName);
+        // Null from a hand-written blob, or a value this build does not know, is the
+        // relief: a render value read on the path to drawing must degrade to
+        // something that renders. See RenderMode.parse.
+        this.renderMode = renderMode == null ? RenderMode.RELIEF : renderMode;
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -423,8 +452,22 @@ public final class LibraryItem {
      *                   inventing a normal nothing on disk backs.
      */
     public static LibraryItem bundled(String imageName, String depthName, String normalName) {
-        return new LibraryItem(Library.BUNDLED_ID, imageName, depthName, normalName,
+        return bundled(imageName, depthName, normalName, null);
+    }
+
+    /**
+     * The bundled demo, with the shipped normal and splat cloud.
+     *
+     * @param splatName the copied cloud's bare filename, or null when the asset was
+     *                  not copied. Null is a deliberate state: the demo then renders
+     *                  its relief (or the Stage-0 card grid) rather than claiming a
+     *                  cloud that is not on disk.
+     */
+    public static LibraryItem bundled(String imageName, String depthName, String normalName,
+                                      String splatName) {
+        LibraryItem demo = new LibraryItem(Library.BUNDLED_ID, imageName, depthName, normalName,
                 "Marble bust", 0L, 0L);
+        return splatName == null ? demo : demo.withSplat(splatName);
     }
 
     // ------------------------------------------------------------- identity
@@ -731,7 +774,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived, normalName, video, focal, splatName);
+                archived, normalName, video, focal, splatName, renderMode);
     }
 
     /**
@@ -984,6 +1027,25 @@ public final class LibraryItem {
                 focal, splat);
     }
 
+    /**
+     * Set how this row is drawn. <b>The only writer of {@link #renderMode}.</b>
+     *
+     * <p>A null mode is refused rather than read as the relief: the value is a
+     * choice the sheet makes, and a caller that has no mode has nothing to say
+     * about it — the {@code withVideo} refusal, one field over. The relief is
+     * spelled {@link RenderMode#RELIEF}.
+     */
+    public LibraryItem withRenderMode(RenderMode mode) {
+        if (mode == null) throw new IllegalArgumentException("a render mode is required");
+        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
+                home, lock, archived, normalName, video, focal, splatName, mode);
+    }
+
+    /** Whether this row asks for the cloud. See {@link #renderMode}. */
+    public boolean isSplatMode() {
+        return renderMode.isSplat();
+    }
+
     public LibraryItem withLabel(String newLabel) {
         return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt,
                 video, focal, splatName);
@@ -1007,7 +1069,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on, normalName, video, focal, splatName);
+                home, lock, on, normalName, video, focal, splatName, renderMode);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -1033,7 +1095,7 @@ public final class LibraryItem {
                              String label, long addedAt, long lastUsedAt,
                              VideoTracks video, float focal, String splatName) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived, normalName, video, focal, splatName);
+                home, lock, archived, normalName, video, focal, splatName, renderMode);
     }
 
     // ---------------------------------------------------------- serialise
@@ -1077,6 +1139,10 @@ public final class LibraryItem {
             // which is why this needed no schema bump. The same argument the
             // normal, video, archived flag and focal already make.
             if (splatName != null) o.put("splat", splatName);
+            // Only when it is not the relief, so a library of ordinary photographs
+            // stays byte-identical to one this build never touched -- the same
+            // argument the normal, video, archived flag, focal and splat make.
+            if (renderMode != RenderMode.RELIEF) o.put("render", renderMode.key());
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -1215,7 +1281,11 @@ public final class LibraryItem {
                     // The splat cloud, read through str() like every other name,
                     // so JSON null and the literal "null" both become null. Absent
                     // is null, which is the correct degradation: the relief.
-                    str(o, "splat"));
+                    str(o, "splat"),
+                    // Absent is the relief, which is what every row written before the
+                    // mode existed is. RenderMode.parse also absorbs a value from a
+                    // newer build rather than throwing on the path to drawing.
+                    RenderMode.parse(str(o, "render")));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -1226,6 +1296,7 @@ public final class LibraryItem {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + (normalName != null ? " +normal" : "")
                 + (splatName != null ? " +splat" : "")
+                + (renderMode != RenderMode.RELIEF ? " " + renderMode : "")
                 + (video != null ? " " + video : "")
                 + (focal > 0f ? " focal=" + focal : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt

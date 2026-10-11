@@ -43,7 +43,7 @@ public class JobsTest {
     }
 
     /**
-     * The whole blob is v4: one prompt per job, and NO count.
+     * The whole blob is v5: one prompt per job, a kind, and NO count.
      *
      * <p>Pinned as an exact key set because the count moving to the sidecar is the
      * decision this version made: a "done" or "frames" field written back into the
@@ -55,12 +55,39 @@ public class JobsTest {
         org.json.JSONObject blob = new org.json.JSONObject(
                 Jobs.empty().with(job("a", "p1")).toJson());
         org.json.JSONObject entry = blob.getJSONArray("jobs").getJSONObject(0);
-        assertEquals(4, blob.getInt("version"));
+        assertEquals(5, blob.getInt("version"));
         assertTrue(entry.getString("prompt").equals("p1"));
         for (String forbidden : new String[] {"chunks", "done", "height", "frames"}) {
             assertFalse("v4 must not carry '" + forbidden + "': the sidecar owns progress",
                     entry.has(forbidden));
         }
+    }
+
+    /**
+     * A splat record says so, and a clip record stays byte-identical to before.
+     *
+     * <p>Absent is a clip import — every record written before the field existed —
+     * so adding the kind must not touch an existing blob's keys. A splat record that
+     * lost its kind on the round trip would be resumed as a clip and fetch depth
+     * clips that were never written.
+     */
+    @Test
+    public void aSplatJobSaysSoAndAClipJobCarriesNoKey() throws Exception {
+        org.json.JSONObject clipBlob = new org.json.JSONObject(
+                Jobs.empty().with(job("a", "p1")).toJson());
+        assertFalse("a clip record must not grow a kind key",
+                clipBlob.getJSONArray("jobs").getJSONObject(0).has("kind"));
+
+        org.json.JSONObject splatBlob = new org.json.JSONObject(
+                Jobs.empty().with(new Jobs.Job("b", "p2", "http://h:8188", 1000L,
+                        Jobs.Kind.SPLAT)).toJson());
+        assertEquals("splat", splatBlob.getJSONArray("jobs").getJSONObject(0)
+                .getString("kind"));
+        assertEquals(Jobs.Kind.SPLAT,
+                Jobs.parse(splatBlob.toString()).pending().get(0).kind);
+        // An old blob (no kind) reads as a clip.
+        assertEquals(Jobs.Kind.CLIP,
+                Jobs.parse(clipBlob.toString()).pending().get(0).kind);
     }
 
     /**

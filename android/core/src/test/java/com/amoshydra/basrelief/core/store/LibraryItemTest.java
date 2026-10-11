@@ -828,4 +828,91 @@ public class LibraryItemTest {
         assertNull(old.splatName);
         assertFalse(old.hasSplat());
     }
+
+    // ------------------------------------------------------------ render mode
+
+    /**
+     * The render mode survives the round trip, and the relief — the default — writes
+     * no key, so a library of ordinary photographs is byte-identical to one this
+     * build never touched.
+     */
+    @Test
+    public void renderModeSurvivesARoundTripAndReliefIsAbsent() {
+        LibraryItem cloud = sample().withRenderMode(RenderMode.SPLAT);
+        assertTrue(cloud.isSplatMode());
+        assertTrue("a splat row writes the key", cloud.toJson().contains("\"render\""));
+        LibraryItem back = LibraryItem.fromJson(json(cloud.toJson()));
+        assertNotNull(back);
+        assertEquals(RenderMode.SPLAT, back.renderMode);
+
+        LibraryItem relief = sample();
+        assertEquals(RenderMode.RELIEF, relief.renderMode);
+        assertFalse(relief.isSplatMode());
+        assertFalse("a relief row must not write a key", relief.toJson().contains("render"));
+        assertEquals(RenderMode.RELIEF,
+                LibraryItem.fromJson(json(relief.toJson())).renderMode);
+    }
+
+    /** A null mode is refused, not read as the relief; an unknown one degrades. */
+    @Test
+    public void aNullModeIsRefusedAndAnUnknownOneIsTheRelief() {
+        try {
+            sample().withRenderMode(null);
+            org.junit.Assert.fail("a null render mode must be refused");
+        } catch (IllegalArgumentException expected) {
+            // the point
+        }
+        LibraryItem future = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"render\":\"hologram\"}"));
+        assertNotNull(future);
+        assertEquals(RenderMode.RELIEF, future.renderMode);
+    }
+
+    /**
+     * <b>The {@code withDepth} scar one field over.</b> A render mode added after the
+     * writers existed is exactly the shape of value a writer forgets, and forgetting
+     * it would silently switch a user's cloud back to the relief with no error.
+     */
+    @Test
+    public void everyMutatorCarriesTheRenderMode() {
+        LibraryItem base = sample()
+                .withRenderMode(RenderMode.SPLAT)
+                .withSplat("a.splat")
+                .withDepthAndNormal("d.png", "n.png")
+                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        LibraryItem[] results = new LibraryItem[] {
+                base.withIntensity(Surface.HOME, 70),
+                base.withZoom(Surface.HOME, 140),
+                base.withMotion(Surface.HOME, 55),
+                base.withSpeed(Surface.HOME, 150),
+                base.withOrigin(Surface.HOME, 0.2f, -0.3f),
+                base.withPan(Surface.HOME, 12f, -8f),
+                base.withAdjust(Surface.HOME, 5, -5),
+                base.withLight(Surface.HOME, 200f, 40f),
+                base.withSettings(Surface.HOME, base.settings(Surface.HOME)),
+                base.withDepth("b-depth.png"),
+                base.withFiles("b.png", "b-depth.png"),
+                base.withFilesAndVideo("b.png", "b-depth.png", null, null, 500f),
+                base.withVideo(VideoTracks.of("b.mp4", "b-depth.mp4")),
+                base.withSplat(null),
+                base.withLabel("Beach"),
+                base.withLastUsedAt(99L),
+                base.withArchived(true),
+                base.copySettingsFrom(sample(), Surface.LOCK),
+        };
+        for (LibraryItem r : results) {
+            assertEquals("a mutator dropped the render mode: " + r,
+                    RenderMode.SPLAT, r.renderMode);
+            assertTrue(r.isSplatMode());
+        }
+    }
+
+    /** Switching back to the relief keeps the cloud: the mode is not the asset. */
+    @Test
+    public void switchingToReliefKeepsTheCloud() {
+        LibraryItem cloud = sample().withSplat("a.splat").withRenderMode(RenderMode.SPLAT);
+        LibraryItem relief = cloud.withRenderMode(RenderMode.RELIEF);
+        assertEquals("a.splat", relief.splatName);
+        assertFalse(relief.isSplatMode());
+    }
 }

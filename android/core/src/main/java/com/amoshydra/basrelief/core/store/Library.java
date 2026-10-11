@@ -65,10 +65,14 @@ public final class Library {
 
     /** Bump when the meaning of a stored field changes, and add a migration. */
     /**
-     * v2: per-item settings. v1 items had none, so they load with the defaults
-     * in {@link LibraryItem} -- which is why the migration below is a no-op.
+     * v2: per-item settings. v3: per-surface settings and Motion on the item.
+     * v4: the render mode ({@link RenderMode}) moved off the global {@code render_3d}
+     * pref onto each item, exactly as Motion moved off {@link Config} in v3 — see
+     * {@link #migrate}. A v1 or v2 blob is still readable; an item with no settings
+     * of its own loads with the defaults in {@link LibraryItem}, which is why the
+     * v0-v1 steps are a no-op.
      */
-    public static final int VERSION = 3;
+    public static final int VERSION = 4;
 
     /**
      * The id of the bundled marble bust, the demo every install starts with.
@@ -95,30 +99,13 @@ public final class Library {
      */
     public static final String BUNDLED_ID = "bundled";
 
-    /**
-     * Which stored splat filename a row should use.
-     *
-     * <p><b>The item drives it, and the debug fallback is the bundled row's
-     * alone.</b> A row that names a cloud uses it, always. A row that names none
-     * uses the debug filename <i>only</i> when it is the reserved
-     * {@link #BUNDLED_ID} row, where Stage 1 will ship the real cloud; every other
-     * row answers null and renders its own media. The alternative — the fallback
-     * applying to any row that names none — is not a debug path but a regression:
-     * it replaces every photograph with one cloud, which is exactly what shipped
-     * and was reported.
-     *
-     * <p>Pure and here rather than in the renderer so the rule is one function a
-     * test can hold, the same reason {@link SurfaceResolver} and
-     * {@code DepthSource} live in {@code :core}. The caller resolves the returned
-     * name through {@code PrefFiles} like any other stored filename.
-     *
-     * @param debugSplatName the Stage-0 pref's value, or null when there is none
-     */
-    public static String splatNameFor(String itemId, String itemSplatName,
-                                      String debugSplatName) {
-        if (itemSplatName != null) return itemSplatName;
-        return BUNDLED_ID.equals(itemId) ? debugSplatName : null;
-    }
+    // `splatNameFor` lived here: the rule that a row's own cloud wins and the
+    // Stage-0 `splat_file` debug filename was reachable from the bundled row alone.
+    // Stage 1 retired both halves -- the demo's cloud ships in res/raw and the
+    // ordinary seed names it on the row, so the bundled row is an ordinary 3D row
+    // with its own filename and there is no fallback left to gate. The function is
+    // gone rather than kept "for a migration": there is nothing to migrate, because
+    // the asset IS the migration.
 
     /** The single SharedPreferences key the blob lives under. */
     public static final String KEY = "library";
@@ -498,8 +485,30 @@ public final class Library {
      *                   so, rather than inventing a normal nothing backs
      */
     public Library withBundled(String imageName, String depthName, String normalName) {
+        return withBundled(imageName, depthName, normalName, null, null);
+    }
+
+    /** As {@link #withBundled(String, String, String)}, with the demo's cloud. */
+    public Library withBundled(String imageName, String depthName, String normalName,
+                               String splatName) {
+        return withBundled(imageName, depthName, normalName, splatName, null);
+    }
+
+    /**
+     * The full seed: the demo's four files and its render mode.
+     *
+     * <p>The mode is for a fresh install whose legacy {@code render_3d} pref was on:
+     * the seed inherits it, so the demo shows the cloud it was showing before the mode
+     * moved onto the rows — the same one-time inheritance {@link #parse}'s migration
+     * gives an existing library. {@link RenderMode#RELIEF} is the default and changes
+     * nothing.
+     */
+    public Library withBundled(String imageName, String depthName, String normalName,
+                               String splatName, RenderMode mode) {
         if (!items.isEmpty()) return this;
-        return withItem(LibraryItem.bundled(imageName, depthName, normalName));
+        LibraryItem demo = LibraryItem.bundled(imageName, depthName, normalName, splatName);
+        return withItem(mode == null || mode == RenderMode.RELIEF
+                ? demo : demo.withRenderMode(mode));
     }
 
     /**
@@ -529,37 +538,54 @@ public final class Library {
      *                  not there would let the next cleanup pass drop the demo
      */
     public Library withBundledFiles(String imageName, String depthName) {
-        return withBundledFiles(imageName, depthName, null);
+        return withBundledFiles(imageName, depthName, null, null);
     }
 
     /**
      * As {@link #withBundledFiles(String, String)}, and also give the demo its
      * shipped normal if it is missing one.
      *
-     * <p><b>Three files, and the repair decides each from the row's own contents.</b>
+     * <p><b>Four files, and the repair decides each from the row's own contents.</b>
      * A row with no image is the pre-migration or failed-copy state and gets all
      * three named in one write; a row that already has an image is only missing a
-     * normal the build has just started shipping, and gets that one repaired
-     * without touching a depth map the user may since have regenerated. The repair
-     * never adds a row and never replaces a normal the row already has, so it stays
-     * idempotent on the read path.
+     * normal or a cloud the build has just started shipping, and gets that one
+     * repaired without touching a depth map the user may since have regenerated. The
+     * repair never adds a row and never replaces a normal or cloud the row already
+     * has, so it stays idempotent on the read path.
      *
      * @param normalName the copied normal, or null when the copy did not happen
      */
     public Library withBundledFiles(String imageName, String depthName, String normalName) {
+        return withBundledFiles(imageName, depthName, normalName, null);
+    }
+
+    /**
+     * The full repair, with the demo's cloud.
+     *
+     * @param splatName the copied cloud, or null when the copy did not happen. Like
+     *                  the normal, a missing cloud is a degraded demo (the relief),
+     *                  not a reason to refuse the pair.
+     */
+    public Library withBundledFiles(String imageName, String depthName, String normalName,
+                                    String splatName) {
         if (imageName == null) return this;
         LibraryItem demo = find(BUNDLED_ID);
         if (demo == null) return this;
+        LibraryItem repaired = demo;
         if (demo.imageName == null) {
-            return withItem(demo.withFiles(imageName, depthName, normalName));
+            repaired = demo.withFiles(imageName, depthName, normalName);
+        } else if (demo.normalName == null && normalName != null) {
+            // Already file-backed: only a normal the row is missing is new
+            // information. Written through the three-file paired write so the depth
+            // it belongs to is named in the same call.
+            repaired = demo.withFiles(demo.imageName, demo.depthName, normalName);
         }
-        // Already file-backed: only a normal the row is missing is new information.
-        // Written through the three-file paired write so the depth it belongs to is
-        // named in the same call.
-        if (demo.normalName == null && normalName != null) {
-            return withItem(demo.withFiles(demo.imageName, demo.depthName, normalName));
+        // The cloud is repaired independently, for the same reason the normal is: an
+        // install that predates the asset gains it without disturbing anything else.
+        if (repaired.splatName == null && splatName != null) {
+            repaired = repaired.withSplat(splatName);
         }
-        return this;
+        return repaired == demo ? this : withItem(repaired);
     }
 
     /**
@@ -885,7 +911,7 @@ public final class Library {
      * @param raw the stored string, or null if nothing has been written yet
      */
     public static Library parse(String raw) {
-        return parse(raw, Config.DEFAULT_MOTION);
+        return parse(raw, Config.DEFAULT_MOTION, false);
     }
 
     /**
@@ -991,6 +1017,27 @@ public final class Library {
     }
 
     public static Library parse(String raw, int legacyMotion) {
+        return parse(raw, legacyMotion, false);
+    }
+
+    /**
+     * As {@link #parse(String, int)}, told what the global render mode was before it
+     * became per-item.
+     *
+     * <p>The {@code render_3d} pref was one value for the whole app, so the library
+     * blob never held it. Moving it onto every item is a migration that has to be
+     * told the old value — the same shape as {@code legacyMotion}, one version later
+     * and for the same reason: a global render value is the wrong home. A caller
+     * with the pref in hand (which in this app means every production caller) must
+     * use this form, or a user who had the cloud on silently gets the relief back on
+     * every row.
+     *
+     * @param raw          the stored string, or null if nothing has been written
+     * @param legacyMotion the global Motion to copy onto each item on upgrade
+     * @param legacySplat  the global {@code render_3d} to copy onto each item on
+     *                     upgrade
+     */
+    public static Library parse(String raw, int legacyMotion, boolean legacySplat) {
         if (raw == null || raw.trim().isEmpty()) return empty();
         JSONObject o;
         try {
@@ -1005,7 +1052,7 @@ public final class Library {
             return empty();
         }
         if (version < VERSION) {
-            o = migrate(o, version, legacyMotion);
+            o = migrate(o, version, legacyMotion, legacySplat);
         }
 
         List<LibraryItem> parsed = new ArrayList<LibraryItem>();
@@ -1054,7 +1101,8 @@ public final class Library {
      * @param fromVersion the version the blob was written at
      * @param motion      the old GLOBAL Motion, copied onto every item
      */
-    private static JSONObject migrate(JSONObject o, int fromVersion, int motion) {
+    private static JSONObject migrate(JSONObject o, int fromVersion, int motion,
+                                      boolean legacySplat) {
         if (fromVersion < 3) {
             // v2 -> v3: the six flat render values move under surfaces.home, and
             // Motion -- which was GLOBAL, in Config -- is copied onto every item so
@@ -1085,6 +1133,27 @@ public final class Library {
                         // One unreadable item is one item at its flat defaults, not
                         // a failed migration for the whole library. These puts
                         // cannot actually throw.
+                    }
+                }
+            }
+        }
+        if (fromVersion < 4 && legacySplat) {
+            // v3 -> v4: the render mode moved off the global `render_3d` pref onto
+            // each item. Copying it rather than dropping it is the whole point: a
+            // wallpaper that silently lost its cloud on upgrade is a change nobody
+            // can file a bug about. An item that already carries a mode keeps it --
+            // this is a migration, not an overwrite -- and an item with no key and
+            // no legacy value reads as the relief, which is the default.
+            JSONArray items = o.optJSONArray("items");
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.optJSONObject(i);
+                    if (it == null || it.has("render")) continue;
+                    try {
+                        it.put("render", RenderMode.SPLAT.key());
+                    } catch (JSONException ignored) {
+                        // One unreadable item is one item at its default, not a
+                        // failed migration for the whole library.
                     }
                 }
             }

@@ -814,7 +814,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 591 tests across thirty-three classes:
+it**. 609 tests across thirty-four classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -898,7 +898,7 @@ one.
   with the same values, and without a value comparison the renderer cannot tell "a different
   picture" from "the picture I am gliding towards" — so the second resolve painted the
   destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
-  **twelve** fields is compared, and the field count is asserted, because a thirteenth added
+  **fourteen** fields is compared, and the field count is asserted, because a field added
   without teaching `sameAs` about it would make a real frame silently a no-op. The reflection
   that drives it **excludes static fields**, which it had to start doing when the twelfth
   arrived: `SOURCE_STILL`/`SOURCE_VIDEO` are `public static final float`, so counting every
@@ -909,7 +909,11 @@ one.
   the same numbers are the same picture, while the medium says what the *pixels* are, so a
   still and a clip at identical depth, zoom and light are two pictures. It is a float rather
   than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
-  `ofValues` cannot reproduce is a field the no-op-paint guard cannot see.
+  `ofValues` cannot reproduce is a field the no-op-paint guard cannot see. The fourteenth is
+  `renderMode` (relief or splat cloud), compared for the same reason the medium is: a relief
+  and a cloud at identical numbers are two pictures, so a toggle must paint rather than
+  answer "already showing". It is read from the item, so the two surfaces and the renderer's
+  own snapshot cannot disagree about it.
   - **`aPreviewRowNamesTheMediumOfItsPixels` — the preview's medium is video, and the
     ROW cannot say so.** An import's preview row is deliberately a photograph (nothing
     half a clip is ever stored), while the pixels on screen are the colour clip's — so
@@ -1295,10 +1299,13 @@ one.
   exists for: a record that does not survive the round trip is the loss this
   class was written to end, a blob that throws on read is worse than a lost
   record because it is read on the path to drawing, and a record naming a photo
-  that is gone must not be resurrected. **v4 is one prompt again**, and the
-  tests pin the record's key set as exactly item/host/started/prompt/error — a
-  `done` or `frames` field written back would be a second, staler answer to the
-  question the node's sidecar answers. The migrations are the older half: a v1
+  that is gone must not be resurrected. **v4 is one prompt again, and v5 adds the
+  `Kind`** (clip or splat), so the
+  tests pin the record's key set as exactly item/host/started/prompt/error for a
+  clip job — a `done` or `frames` field written back would be a second, staler answer to the
+  question the node's sidecar answers — and pin that a SPLAT job writes its kind
+  while a clip job stays byte-identical to one written before the field existed
+  (absent is a clip import). The migrations are the older half: a v1
   prompt and a v2/v3 chunk list both MIGRATE rather than being dropped (the
   first prompt is the handle the old run answers to, and dropping the record
   would strand a finished server result), and a v3 failure message survives, so
@@ -1588,6 +1595,17 @@ one.
   there. The kind enumeration iterates `Kind.values()` rather than a hand-written
   answer list, because a hand-written list is exactly the guard that goes stale: a
   fifth kind could arrive and the old test would keep passing.
+- `SplatSourceTest` — the fourth "where did this come from" vocabulary: a row's
+  Gaussian splat cloud, beside `DepthSource`/`NormalSource`/`VideoSource`. The trap
+  is the one its three siblings carry, and it is why the class has three kinds
+  rather than two: **a window claims nothing.** The index says a row *names* a
+  cloud; whether the bytes are here is a file read, so answering `NONE` during that
+  window would put "no cloud yet — make one?" over a row that already has one — the
+  confident wrong answer `DepthSource` was written to remove, with a different noun.
+  It pins that a row with no cloud is answered from the index alone (so no still
+  flickers through the window on selection), that `FILE` requires the file to be
+  here, that only `NONE` may say "no cloud", and that every kind is reachable
+  through `Kind.values()` rather than a hand-written list that would go stale.
 - `VideoTracksTest` — the clip's three files, and the invariant that makes them one
   thing. §2 says *"never store one without the other"* — colour without depth renders
   **flat, with no relief and no error** — and three loose `String`s could each be null

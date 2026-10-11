@@ -107,6 +107,31 @@ public final class Framing {
     public final float sourceKind;
 
     /**
+     * Whether this picture is drawn as the relief or as a Gaussian splat cloud.
+     *
+     * <p><b>Compared by {@link #sameAs}, like {@link #sourceKind} and unlike
+     * {@link #bundled}.</b> The mode is a discrete draw-path selection — a relief and
+     * a cloud at the same depth, zoom and light are two different pictures — so a
+     * resolve that conflated them would leave the previous one on screen while the
+     * state said otherwise. It is a float for the same reason {@code sourceKind} is:
+     * {@link #ofValues} has to be able to reproduce it, or a snapshot that could not
+     * would compare unequal to the frame on screen on every resolve and defeat the
+     * no-op-paint guard.
+     *
+     * <p><b>Discrete, and not eased by a glide</b>, exactly as the medium is: the
+     * mode on the other side of a surface boundary is whatever the other surface's
+     * row names. Easing it would make every frame of a glide differ from the one
+     * before, which is the same defect {@code sourceKind} has a note about.
+     */
+    public final float renderMode;
+
+    /** The relief: the displaced surface. See {@link #renderMode}. */
+    public static final float RENDER_RELIEF = 0f;
+
+    /** The Gaussian splat cloud. See {@link #renderMode}. */
+    public static final float RENDER_SPLAT = 1f;
+
+    /**
      * Playback speed, 1 = normal; a clip's own rate, and a render value like Motion.
      *
      * <p><b>Compared by {@code sameAs}, unlike {@code bundled}.</b> It changes what
@@ -176,6 +201,7 @@ public final class Framing {
                 && near(lightAzimuth, other.lightAzimuth)
                 && near(lightElevation, other.lightElevation)
                 && near(sourceKind, other.sourceKind)
+                && near(renderMode, other.renderMode)
                 && near(speed, other.speed);
         // `bundled` is deliberately NOT compared, and the reason is structural rather
         // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
@@ -259,6 +285,15 @@ public final class Framing {
         // the PIXELS, and the pixels are video either way.
         this.sourceKind = (item != null && (item.video != null || previewing))
                 ? SOURCE_VIDEO : SOURCE_STILL;
+
+        // The draw path, off the row. A row with no item (nothing selected) is the
+        // relief: there is no id to name a cloud, and the packaged trio is a still.
+        // A row that asks for the cloud while it has none yet is still RELIEF here --
+        // this value says what the MODE is, not whether the bytes are here; the
+        // renderer's own on-screen identity settles that, exactly as it does for a
+        // clip whose files are missing.
+        this.renderMode = (item != null && item.renderMode.isSplat())
+                ? RENDER_SPLAT : RENDER_RELIEF;
 
         // Everything comes from the item for one surface, INCLUDING THE BUNDLED
         // DEMO. Nothing arrives from two places: a value that comes from two
@@ -382,10 +417,29 @@ public final class Framing {
                                    float orbitX, float orbitY, float panX, float panY,
                                    float brightnessGain, float shadowLift,
                                    float lightAzimuth, float lightElevation,
-                                   float sourceKind, float speed) {
+                                   float sourceKind, float renderMode, float speed) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
-                speed);
+                renderMode, speed);
+    }
+
+    /**
+     * @deprecated The form that <b>cannot say the render mode</b> — it always says the
+     * relief — for the same reason the eleven-argument form cannot say the medium: a
+     * snapshot that cannot reproduce a field compares unequal to the frame on screen
+     * and repaints. A renderer handing back what it is drawing must use the
+     * fourteen-argument form above. It is correct for every relief row, and kept only
+     * because a caller that has not moved yet can still compile against it.
+     */
+    @Deprecated
+    public static Framing ofValues(float depth, float zoom, float motion,
+                                   float orbitX, float orbitY, float panX, float panY,
+                                   float brightnessGain, float shadowLift,
+                                   float lightAzimuth, float lightElevation,
+                                   float sourceKind, float speed) {
+        return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
+                RENDER_RELIEF, speed);
     }
 
     /**
@@ -416,7 +470,7 @@ public final class Framing {
                     float orbitX, float orbitY, float panX, float panY,
                     float brightnessGain, float shadowLift,
                     float lightAzimuth, float lightElevation, float sourceKind,
-                    float speed) {
+                    float renderMode, float speed) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -429,6 +483,7 @@ public final class Framing {
         this.lightAzimuth = lightAzimuth;
         this.lightElevation = lightElevation;
         this.sourceKind = sourceKind;
+        this.renderMode = renderMode;
         this.speed = speed;
         this.bundled = false;
     }

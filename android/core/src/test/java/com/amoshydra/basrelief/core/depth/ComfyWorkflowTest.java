@@ -759,4 +759,101 @@ public class ComfyWorkflowTest {
         assertEquals("MoGe 2 ViT-L normal fp16",
                 ComfyWorkflow.friendlyName("moge_2_vitl_normal_fp16.safetensors"));
     }
+
+    // ================= the SHARP still shape =================
+
+    /**
+     * The server's answer for the cloud shape: {@code LoadImage} plus the
+     * {@code SharpStill} custom node.
+     *
+     * <p>The schema is copied from the node's own README. <b>The fixture's
+     * {@code budget} and {@code internal_size} defaults are deliberately NOT the
+     * app's</b> (999999 and 512, against 150000 and 1536), so an assertion reading
+     * them can only pass when the builder STATES the constant -- a fixture carrying
+     * the app's values would make "the app stated it" indistinguishable from "the
+     * builder inherited the default", which is a guard that cannot fail.
+     */
+    private static JSONObject sharpServerInfo() throws JSONException {
+        return new JSONObject("{"
+                + "\"LoadImage\": {\"input\": {\"required\": {"
+                + "  \"image\": [\"COMBO\", {\"options\": [\"a.png\"]}]}}},"
+                + "\"SharpStill\": {"
+                + "  \"input\": {\"required\": {"
+                + "    \"image\": [\"IMAGE\", {}],"
+                + "    \"internal_size\": [\"INT\", {\"default\": 512, \"min\": 384, \"max\": 4032}],"
+                + "    \"budget\": [\"INT\", {\"default\": 999999, \"min\": 0}],"
+                + "    \"tag\": [\"STRING\", {\"default\": \"\"}],"
+                + "    \"focal_px\": [\"FLOAT\", {\"default\": 0.0}],"
+                + "    \"checkpoint\": [\"STRING\", {\"default\": \"\"}],"
+                + "    \"keep_loaded\": [\"BOOLEAN\", {\"default\": true}]}},"
+                + "  \"output\": [\"STRING\", \"STRING\", \"INT\", \"INT\", \"INT\"]}"
+                + "}");
+    }
+
+    private static JSONObject sharpWf(float focalPx) throws JSONException {
+        return new JSONObject(ComfyWorkflow.sharpStillWorkflow(
+                sharpServerInfo(), "up.png", "item-1", focalPx));
+    }
+
+    /** Two nodes, one wire: {@code LoadImage -> SharpStill}. */
+    @Test
+    public void theSharpGraphIsTwoNodesAndOneWire() throws Exception {
+        JSONObject wf = sharpWf(0f);
+        assertEquals("a loader and the node, nothing else", 2, wf.length());
+        assertEquals("LoadImage", wf.getJSONObject("1").getString("class_type"));
+        assertEquals(ComfyWorkflow.SHARP_STILL, wf.getJSONObject("2").getString("class_type"));
+        assertLink("the node reads LoadImage's image",
+                "2", "1", 0, wf, "image");
+    }
+
+    /**
+     * The run's own inputs travel as scalars, exactly as given, and the ones the app
+     * owns are stated rather than discovered.
+     */
+    @Test
+    public void theSharpNodeCarriesTheRunsOwnInputs() throws Exception {
+        JSONObject in = sharpWf(1411.2f).getJSONObject("2").getJSONObject("inputs");
+        assertEquals("item-1", in.getString("tag"));
+        assertEquals("the budget is the app's constant, not the node's default",
+                ComfyWorkflow.SHARP_BUDGET, in.getInt("budget"));
+        assertEquals("the inference size is the app's constant",
+                ComfyWorkflow.SHARP_INTERNAL_SIZE, in.getInt("internal_size"));
+        assertEquals("the lens rides with the run", 1411.2, in.getDouble("focal_px"), 1e-3);
+        assertFalse("the predictor hands its VRAM back", in.getBoolean("keep_loaded"));
+        assertNotEquals("the fixture's budget default must differ, or the assertion "
+                        + "above cannot tell the app's budget from the discovered default",
+                ComfyWorkflow.SHARP_BUDGET,
+                sharpServerInfo().getJSONObject("SharpStill").getJSONObject("input")
+                        .getJSONObject("required").getJSONArray("budget")
+                        .getJSONObject(1).getInt("default"));
+        assertNotEquals("the fixture's internal_size default must differ too",
+                ComfyWorkflow.SHARP_INTERNAL_SIZE,
+                sharpServerInfo().getJSONObject("SharpStill").getJSONObject("input")
+                        .getJSONObject("required").getJSONArray("internal_size")
+                        .getJSONObject(1).getInt("default"));
+    }
+
+    /** An unknown focal is passed as 0, which is the node's own fallback. */
+    @Test
+    public void anUnknownFocalIsZeroRatherThanNegative() throws Exception {
+        assertEquals(0.0,
+                sharpWf(-3f).getJSONObject("2").getJSONObject("inputs")
+                        .getDouble("focal_px"), 1e-9);
+    }
+
+    /** The filenames the fetch and resume paths address, derived from the tag. */
+    @Test
+    public void sharpFileNamesMatchTheNodesRule() {
+        assertEquals("basrelief_item-1.splat", ComfyWorkflow.sharpSplatName("item-1"));
+        assertEquals("basrelief_item-1.splat.json",
+                ComfyWorkflow.sharpSidecarName("item-1"));
+    }
+
+    /** The node's presence is a predicate over {@code /object_info}. */
+    @Test
+    public void hasSharpStillNamesTheNode() throws Exception {
+        assertTrue(ComfyWorkflow.hasSharpStill(sharpServerInfo()));
+        assertFalse(ComfyWorkflow.hasSharpStill(new JSONObject(objectInfo())));
+        assertFalse(ComfyWorkflow.hasSharpStill(null));
+    }
 }

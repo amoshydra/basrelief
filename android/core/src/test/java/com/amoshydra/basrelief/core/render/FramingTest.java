@@ -121,31 +121,34 @@ public class FramingTest {
             }
         }
         assertEquals("sameAs must compare every float field, and there are this many",
-                13, numeric.size());
+                14, numeric.size());
 
         // One call per field: the same vector with exactly one component moved.
         float[][] varied = {
-                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // depth
-                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // zoom
-                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // motion
-                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // orbitX
-                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // orbitY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 1f},   // panX
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 1f},   // panY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 1f},   // brightness
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 1f},   // shadow
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 1f},   // azimuth
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 1f},   // elevation
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 1f},   // sourceKind
+                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // depth
+                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // zoom
+                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // motion
+                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // orbitX
+                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // orbitY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // panX
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // panY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 0f, 1f},   // brightness
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 0f, 1f},   // shadow
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 0f, 1f},   // azimuth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 0f, 1f},   // elevation
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 0f, 1f},   // sourceKind
+                // The fourteenth: the draw path. Compared where `bundled` is not,
+                // because a relief and a cloud at identical numbers are two pictures.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f, 1f},   // renderMode
                 // The thirteenth: a CLIP's rate. It is compared where `bundled` is
                 // not, because it changes what is drawn -- a frame at 0.5x is a
                 // different picture from the same frame at 1x.
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0.5f}, // speed
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 0.5f}, // speed
         };
         assertEquals("one varied vector per float field", numeric.size(), varied.length);
         for (float[] v : varied) {
             Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
-                    v[7], v[8], v[9], v[10], v[11], v[12]);
+                    v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
             assertFalse("a moving value must make sameAs false", a.sameAs(moved));
         }
     }
@@ -315,6 +318,32 @@ public class FramingTest {
         // before and the frame during a glide differ, which is exactly why the
         // renderer must hold the medium whole rather than easing it.
         assertFalse(still.sameAs(half));
+    }
+
+    /**
+     * A relief and a cloud at identical numbers are two different pictures.
+     *
+     * <p>The {@code sourceKind} lesson one axis over: the draw path is discrete and
+     * compared by {@code sameAs}, so toggling Splat must make the renderer paint
+     * rather than answer "already showing". And the mode is read from the item, so
+     * the two surfaces and the renderer's own snapshot cannot disagree about it.
+     */
+    @Test
+    public void aReliefAndASplatOfIdenticalNumbersAreDifferentPictures() {
+        Framing relief = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
+                0f, 0f, 125f, 51f, Framing.SOURCE_STILL, Framing.RENDER_RELIEF, 1f);
+        Framing cloud = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f,
+                0f, 0f, 125f, 51f, Framing.SOURCE_STILL, Framing.RENDER_SPLAT, 1f);
+        assertFalse("a cloud is not the relief at the same numbers",
+                relief.sameAs(cloud));
+        assertTrue("and it is itself", cloud.sameAs(cloud));
+
+        LibraryItem photo = demo();
+        assertEquals(Framing.RENDER_RELIEF, Framing.of(photo, Surface.HOME).renderMode, 0f);
+        assertEquals(Framing.RENDER_SPLAT,
+                Framing.of(photo.withRenderMode(
+                        com.amoshydra.basrelief.core.store.RenderMode.SPLAT), Surface.HOME)
+                        .renderMode, 0f);
     }
 
     /**

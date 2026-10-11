@@ -436,6 +436,41 @@ public class PerItemSettingsTest {
     }
 
     /**
+     * A v3 blob's items adopt the global render mode, once.
+     *
+     * <p>The Motion precedent one version later: the mode used to be one
+     * {@code render_3d} pref, so the library blob has no copy of it and the migration
+     * has to be handed it. Dropping it would silently switch every user's 3D photos
+     * back to the relief — a change nobody can file a bug about, because the photo
+     * still renders.
+     *
+     * <p>Three halves, because each is a way to get it wrong: the value must be
+     * copied when it was on, must be the relief when it was off, and an item that
+     * already carries a mode must keep its own (this is a migration, not an
+     * overwrite).
+     */
+    @Test
+    public void theGlobalRenderModeIsCopiedOntoEveryItemOnUpgrade() {
+        String v3 = "{\"version\":3,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1},"
+                + "{\"id\":\"b\",\"image\":\"b.png\",\"added_at\":2}]}";
+        Library on = Library.parse(v3, 33, true);
+        assertEquals(RenderMode.SPLAT, on.find("a").renderMode);
+        assertEquals("the second photo too", RenderMode.SPLAT, on.find("b").renderMode);
+
+        Library off = Library.parse(v3, 33, false);
+        assertEquals(RenderMode.RELIEF, off.find("a").renderMode);
+
+        String withOwn = "{\"version\":3,\"items\":[{\"id\":\"a\",\"image\":\"a.png\","
+                + "\"added_at\":1,\"render\":\"relief\"}]}";
+        assertEquals("an item's own mode is not overwritten",
+                RenderMode.RELIEF, Library.parse(withOwn, 33, true).find("a").renderMode);
+
+        // The migrated form is v4, so the migration does not re-run on every load.
+        assertFalse(Library.needsMigration(on.toJson()));
+    }
+
+    /**
      * A v3 item with no lock entry inherits the home screen.
      *
      * <p>Migration deliberately writes no lock entry. A photo that never had

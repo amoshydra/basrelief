@@ -199,6 +199,123 @@ public final class ComfyWorkflow {
         return STREAM_FILE_PREFIX + tag + STREAM_PROGRESS_SUFFIX;
     }
 
+    // ---- the SHARP still shape: one still -> one budgeted cloud.
+
+    /**
+     * The custom node that turns one still into a Gaussian splat cloud.
+     *
+     * <p>Two nodes, one wire: {@code LoadImage -> SharpStill}. The node does the
+     * reconstruction (Apple's SHARP) and writes the cloud in the phone's 32 B record
+     * format plus a sidecar JSON; see
+     * {@code server/comfy-node/basrelief_depth/README.md}. The app addresses both
+     * outputs by name from the tag it submitted, so a run can be fetched without
+     * having seen a response — the same contract the stream node's files have.
+     */
+    public static final String SHARP_STILL = "SharpStill";
+
+    /** {@code LoadImage} for the still shape. Every shape starts from it. */
+    private static final String SHARP_LOAD_ID = "1";
+    /** {@code SharpStill}: the one node that makes the cloud. */
+    private static final String SHARP_ID = "2";
+
+    /**
+     * The cloud's default budget, in splats: a <b>ceiling on the file</b>, and the
+     * one number this flow states rather than discovers.
+     *
+     * <p>150,000 is the node's own conservative default and the count the
+     * performance work measured the phone holding: ~55 fps with culling, ~48 without.
+     * The count is the cost, so the LOD ladder and a one-off measured pick come
+     * later; v1 ships the flat budget. The node rounds it down to a whole
+     * 2048-splat block, so the written count can never exceed it (measured:
+     * 150000 -> 149504).
+     */
+    public static final int SHARP_BUDGET = 150_000;
+
+    /**
+     * SHARP's inference size. It accepts only {@code 384 + 288k}; the node snaps
+     * anything else to the nearest and logs it, so this is a request rather than a
+     * promise. 1536 is the size the node's own reference run used.
+     */
+    public static final int SHARP_INTERNAL_SIZE = 1536;
+
+    /** The cloud's server-side suffix: {@code basrelief_<tag>.splat}. */
+    public static final String SHARP_SPLAT_SUFFIX = ".splat";
+    /** The sidecar's server-side suffix: {@code basrelief_<tag>.splat.json}. */
+    public static final String SHARP_SIDECAR_SUFFIX = ".splat.json";
+
+    /** {@code basrelief_<tag>.splat}, the cloud's server-side name. */
+    public static String sharpSplatName(String tag) {
+        return STREAM_FILE_PREFIX + tag + SHARP_SPLAT_SUFFIX;
+    }
+
+    /** {@code basrelief_<tag>.splat.json}, the run's sidecar. */
+    public static String sharpSidecarName(String tag) {
+        return STREAM_FILE_PREFIX + tag + SHARP_SIDECAR_SUFFIX;
+    }
+
+    /** Whether the server has the node this flow submits. */
+    public static boolean hasSharpStill(JSONObject objectInfo) {
+        return objectInfo != null && objectInfo.optJSONObject(SHARP_STILL) != null;
+    }
+
+    /**
+     * Assemble the cloud graph: {@code LoadImage -> SharpStill}.
+     *
+     * <pre>
+     * LoadImage(image=&lt;uploaded name&gt;)
+     *   └─▶ SharpStill(image, internal_size, budget, tag, focal_px, checkpoint, keep_loaded)
+     *         ──▶ basrelief_&lt;tag&gt;.splat
+     *             basrelief_&lt;tag&gt;.splat.json
+     * </pre>
+     *
+     * <p>Every scalar except the ones this class owns is discovered from
+     * {@code /object_info}, so a server that adds or retunes an input is honoured —
+     * the same rule the MoGe and stream builders follow. The caller-owned ones are
+     * stated rather than defaulted: {@code image} is wired to {@code LoadImage}
+     * output 0, {@code tag} is the sanitised item id the filenames derive from, and
+     * {@code budget} is {@link #SHARP_BUDGET}.
+     *
+     * <p><b>{@code focal_px} is passed, not computed.</b> The node cannot read EXIF
+     * through {@code LoadImage}, so it falls back to a 30 mm lens; a row that already
+     * knows its camera (a MoGe run fitted one) hands the number in and the cloud's
+     * grid is uniform in that lens instead. 0 is "unknown" and is the node's own
+     * fallback.
+     *
+     * @param info         the parsed {@code /object_info} body
+     * @param uploadedName the name ComfyUI gave the uploaded still
+     * @param tag          the sanitised run tag; see {@link #streamTag}
+     * @param focalPx      the lens in pixels of the uploaded frame, or 0 for the
+     *                     node's fallback
+     */
+    public static String sharpStillWorkflow(JSONObject info, String uploadedName, String tag,
+                                            float focalPx) throws JSONException {
+        JSONObject nodeInfo = info.getJSONObject(SHARP_STILL);
+
+        JSONObject load = loadImageNode(uploadedName);
+
+        JSONObject sharp = new JSONObject();
+        sharp.put("class_type", SHARP_STILL);
+        // `image` is a link and every other input is discovered and then overridden
+        // with the value this class owns, so a scalar the node adds still reaches it
+        // while the ones the flow depends on are stated rather than defaulted.
+        JSONObject in = discoveredInputs(nodeInfo, "image");
+        in.put("image", link(SHARP_LOAD_ID));
+        in.put("internal_size", SHARP_INTERNAL_SIZE);
+        in.put("budget", SHARP_BUDGET);
+        in.put("tag", tag);
+        in.put("focal_px", (double) Math.max(0f, focalPx));
+        // Hand the predictor's VRAM back at the end: the phone runs one still at a
+        // time, and a resident 2.8 GB beside whatever the server already caches is
+        // exactly what the proxy's unload exists to avoid.
+        in.put("keep_loaded", false);
+        sharp.put("inputs", in);
+
+        JSONObject wf = new JSONObject();
+        wf.put(SHARP_LOAD_ID, load);
+        wf.put(SHARP_ID, sharp);
+        return wf.toString();
+    }
+
 
     /**
      * The {@code MoGeRender.output} the still path asks for.
