@@ -767,4 +767,30 @@
     <string name="gallery_importing">Importing — the server is generating depth and normals</string>
     <string name="gallery_import_failed">Import stopped</string>
     <string name="gallery_import_warning_glyph">⚠︎</string>
+
+    <!-- Make 3D: the sheet's Renderer row, the cloud's asset row, and the offer. -->
+    <string name="renderer_caption">Renderer</string>
+    <string name="renderer_relief">Relief</string>
+    <string name="renderer_splat">Splat</string>
+    <string name="splat_row_none">no cloud yet — make one?</string>
+    <string name="splat_row_building">reconstructs this photo · about 10 s</string>
+    <string name="splat_row_built">%1$s splats · %2$s</string>
+    <string name="splat_row_failed">failed — %1$s</string>
+    <string name="splat_generator">SHARP</string>
+    <string name="splat_estimate">~10 s · ~4.8 MB</string>
+    <string name="splat_action_make">Make one</string>
+    <string name="action_rebuild">Rebuild</string>
+    <string name="splat_action_delete">Delete</string>
+    <string name="splat_confirm_grip">Close the 3D question</string>
+    <string name="splat_confirm_title">Make this photo 3D?</string>
+    <string name="splat_confirm_rebuild_title">Rebuild the 3D cloud?</string>
+    <string name="splat_confirm_body">%1$s on the configured server · %2$s splats · %3$s</string>
+    <string name="splat_confirm_not_now">Not now</string>
+    <string name="splat_phase_uploading">Uploading</string>
+    <string name="splat_phase_generating">Reconstructing…</string>
+    <string name="splat_phase_fetching">Fetching</string>
+    <string name="splat_failed">That 3D cloud could not be made</string>
+    <string name="splat_no_node">The server has no SharpStill node</string>
+    <string name="gallery_splat_glyph">3D</string>
+    <string name="gallery_has_splat">Has a 3D cloud</string>
 </resources>

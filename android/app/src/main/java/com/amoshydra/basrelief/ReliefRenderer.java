@@ -138,14 +138,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final int GRID = 384;
 
     /**
-     * The pref that selects the point-splat mode. Off by default, and read in
-     * {@link #reloadFromPrefs}; see {@link #render3d}.
+     * The legacy {@code render_3d} pref, and the <b>migration source</b> for the
+     * per-item render mode.
      *
-     * <p>Package-private because the Settings screen's switch writes it: the key
-     * is declared once, next to the one reader, and no other class spells the
-     * string out -- the same rule the three switches in {@link Settings} follow.
+     * <p>It used to be the app's one 3D switch. A global render value is the wrong
+     * home — a gallery would draw every photograph the same way whichever the single
+     * switch last said — so {@code Library}'s v3 to v4 migration reads this once and
+     * copies it onto every item, exactly as Motion moved out of {@code Config} in v3
+     * and for the same reason. It is read <b>only</b> there now: the product's mode is
+     * per-item, and the Stage-0 card grid it also selected has its own dev key
+     * ({@link #KEY_SPLAT_GRID}) so that a user who had this on does not get the card
+     * mode over every photograph they have not made a cloud for — the doc's rule is
+     * that Splat without a cloud shows the relief.
+     *
+     * <p>Package-private because {@code AppState} reads it for the migration; no
+     * other class spells the string out -- the same rule the three switches in
+     * {@link Settings} follow.
      */
     static final String KEY_RENDER_3D = "render_3d";
+
+    /**
+     * The Stage-0 card grid, as a dev pref: one card per depth-field sample, GLES3
+     * only. Off by default and not in the UI. See {@link #splatGridMode}.
+     *
+     * <p>A key of its own rather than {@code render_3d}, and that is a decision: the
+     * latter is the migration source, and letting it also select the card mode would
+     * make every SPLAT row with no cloud draw the card grid instead of its relief —
+     * which is exactly the look the product's "Splat without a cloud shows the
+     * relief" rule forbids.
+     */
+    static final String KEY_SPLAT_GRID = "splat_grid";
 
     /**
      * The 3D mode's detail level: an index into {@link Splat#GRID_LEVELS}, written
@@ -161,24 +183,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     static final String KEY_SPLAT_SCALE = "splat_scale";
 
-    /**
-     * <b>Stage-0 debug path, and deliberately a pref so it is easy to remove.</b>
-     * A bare filename in {@code filesDir} used as the splat <b>for the bundled
-     * item only</b> — the reserved {@link Library#BUNDLED_ID} row — when that row
-     * names no cloud of its own. Its default is the demo cloud, so pushing
-     * {@code demo.splat} into the app's files dir and turning the 3D switch on
-     * renders it on the bundled row without editing the index.
-     *
-     * <p><b>The bundled id is the gate, and that is the whole point.</b> A pref
-     * that applied to every row is not a debug path — it replaces the user's
-     * photographs with one cloud, which is the regression this gating fixes. Every
-     * other row renders its own media, and there is no string a normal item can
-     * carry that reaches this pref. Stage 1 replaces it with the bundled demo's
-     * real cloud in {@code res/raw}, copied by the ordinary seed, and deletes the
-     * pref.
-     */
-    static final String KEY_SPLAT_FILE = "splat_file";
-    static final String SPLAT_DEBUG_DEFAULT = "demo.splat";
+    // The Stage-0 `splat_file` debug pref lived here: a bare filename used as the
+    // splat for the bundled row when that row named no cloud. Stage 1 retired it --
+    // the demo's cloud ships in res/raw, the ordinary seed copies it and names it on
+    // the row, and `setSplatForItem` resolves the item's own filename and nothing
+    // else. A key with no reader is dead, so it is gone rather than kept "for a
+    // migration": there is nothing to migrate, because the asset is the migration.
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
@@ -619,31 +629,54 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private int gridIndexCount = 0;
 
     /**
-     * The point-splat mode, off unless the {@code render_3d} pref says otherwise.
+     * The Stage-0 <b>card grid</b>: one card per depth-field sample, GLES3 only.
      *
-     * <p>Read in {@link #reloadFromPrefs}, which is the one cold-load path both
-     * surfaces converge on, so it can be A/B-tested on a device without a rebuild
-     * -- and it is OFF by default because it is a different look, not a bug fix:
-     * a screenshot of the relief is what every existing row was framed against.
-     * The setter exists for tests.
+     * <p><b>A dev mode now, not the product's 3D selector.</b> Stage 0 shipped this
+     * as the "3D mode" because there was no cloud to draw yet; the real Gaussian
+     * cloud ({@link #splatWantedPath}) superseded it, and the product's per-item
+     * {@code RenderMode} is the live selector. This flag is reachable only through
+     * the {@link #KEY_SPLAT_GRID} dev pref, which is not in the UI — it is kept
+     * because the card mode is a documented experiment worth A/B-ing on a device,
+     * exactly as {@link #KEY_SPLAT_SCALE} and {@link #KEY_RENDER_3D_LEVEL} are.
      *
-     * <p><b>GLES3 only.</b> The mode draws a static grid that only the GPU path
-     * builds; the legacy GLES2 path has no such buffer and ignores the flag
-     * rather than falling back to a CPU-built cloud, which would be a third
-     * renderer rather than a mode.
+     * <p><b>Its own key, not {@code render_3d}.</b> That pref is the migration source
+     * for the per-item mode, and letting it also select the card grid would make every
+     * SPLAT row with no cloud draw the card grid instead of its relief — which is the
+     * look the product's "Splat without a cloud shows the relief" rule forbids. So the
+     * card mode has a key of its own and is off unless someone asks for it by adb.
+     *
+     * <p>It draws only when there is no real cloud ({@code splatWantedPath == null}),
+     * so a row that has one always shows the cloud. The mode a normal install sees is
+     * per-item: SPLAT with a cloud draws the cloud, SPLAT without one draws the
+     * relief, and RELIEF always draws the relief.
      */
-    private volatile boolean render3d = false;
+    private volatile boolean splatGridMode = false;
+
+    /**
+     * The draw path the last applied {@link Framing} asked for, as
+     * {@code Framing.RENDER_RELIEF} or {@code RENDER_SPLAT}.
+     *
+     * <p><b>A field because {@link #snapshot()} has to be able to say it</b> — the
+     * {@code sourceKind} rule one axis over. It is written by {@link #apply(Framing,
+     * Apply)} from the resolved framing, so the renderer's snapshot of what it is
+     * drawing carries the mode the host asked for, and a relief↔cloud toggle makes
+     * {@code sameAs} report a different picture rather than a no-op. It is NOT the
+     * draw decision: whether the cloud actually draws is {@link #useSplat()}, which
+     * needs the bytes to be here. The two are deliberately separate, exactly as the
+     * clip's medium is a fact about the screen while the clip's playability is a
+     * file question.
+     */
+    private volatile float renderMode = Framing.RENDER_RELIEF;
 
     /**
      * The Gaussian splat cloud, when the active item names one.
      *
-     * <p><b>Stage 0, and a debug path.</b> The item's own nullable {@code splat}
-     * filename is the product shape; the {@link #KEY_SPLAT_FILE} pref is the
-     * Stage-0 fallback that lets a pushed demo cloud render without editing the
-     * index. Both resolve through {@link PrefFiles}, both are bare filenames, and
-     * the cloud is drawn only when the 3D switch ({@link #render3d}) is on — so
-     * the switch is the one control that selects the splat, exactly as it selects
-     * the relief's card mode for a row with no cloud.
+     * <p><b>The item's own nullable {@code splat} filename is the whole shape.</b>
+     * It resolves through {@link PrefFiles} like every other stored name, and the
+     * cloud is drawn when the item's mode is SPLAT and the file is here — see
+     * {@link #setSplatForItem} and {@link #useSplat}. The Stage-0 {@code splat_file}
+     * debug pref is gone: the demo's cloud ships in {@code res/raw} and the ordinary
+     * seed names it on the row, so there is no fallback to reach.
      *
      * <p>{@code splatWantedPath} is the resolve's answer (written on whatever
      * thread {@link #reloadFromPrefs} ran on); {@code splatLoadedPath} is what the
@@ -1623,16 +1656,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Select the point-splat mode without the pref. For a test, and for a host
-     * that ever wants a per-surface mode.
+     * Turn the Stage-0 card grid on or off without the pref. For a test, and for a
+     * host that ever wants to A/B it.
      *
      * <p>A volatile write and nothing else, per the threading rule: what it
      * changes is read once per draw on the GL thread, and the geometry that
      * difference needs (the splat grid) is built with every other GL name in
      * {@link #onSurfaceCreated}.
      */
-    public void setRender3d(boolean on) {
-        this.render3d = on;
+    public void setSplatGridMode(boolean on) {
+        this.splatGridMode = on;
     }
 
     private FloatBuffer ringBuffer;
@@ -1729,6 +1762,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * in {@link #glide} for why a lerp here is the instant-paint snap.
      */
     private volatile float glideSourceKind;
+    /**
+     * The draw path {@link #glideTo} names, held for the same reason
+     * {@link #glideSourceKind} is: the mode is discrete, so a glide switches it when
+     * it lands rather than easing it frame by frame — an eased mode would make every
+     * frame differ from the one before and defeat the no-op-paint guard.
+     */
+    private volatile float glideRenderMode;
     private volatile long glideStartNanos;
     private volatile float glideSpanMs;
 
@@ -2833,6 +2873,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // so that if a glide IS armed across a medium boundary it degrades to a
         // switch at the end rather than to a frame-by-frame lie.
         glideSourceKind = to.sourceKind;
+        // The draw path, held whole for the same reason. A glide across a mode
+        // boundary is unusual -- a toggle arrives as a resolve -- but if one is armed
+        // it must land as a switch rather than spend its duration naming a picture
+        // that is neither.
+        glideRenderMode = to.renderMode;
         // apply(from) above may have ended an earlier glide; this assignment comes
         // after it so a cancelled glide cannot leave this one pointing at a pair that
         // is no longer on screen. Same reason the values are applied before the glide
@@ -2896,6 +2941,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // is armed it must land as a switch rather than spend its duration
             // naming a picture that is neither.
             sourceKind = glideSourceKind;
+            renderMode = glideRenderMode;
             glideFrom = null;
             glideTo = null;
             apply(end);
@@ -2941,22 +2987,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // The light goes back as angles so the glide interpolates the way the
         // stored value does; setLight's vector is derived, not the source.
         //
-        // THIRTEEN arguments now, and the thirteenth is the SPEED -- added for the
-        // same reason the twelfth was: a snapshot that cannot reproduce a field
-        // compares unequal to the frame on screen, and the no-op-paint guard then
-        // repaints on every resolve. A speed change is a different picture, so it
-        // must be in here or changing the Speed slider snaps. This was the last caller
-        // of the eleven-argument form, which cannot name it — so a snapshot of a
-        // playing clip came back saying "still", compared unequal to the frame on
-        // screen, and apply(RESOLVE)'s no-op guard repainted on every resolve. That
-        // is the instant-paint snap, and it would have shipped the moment a clip
-        // existed rather than as a visible bug. AGENTS.md: a field ofValues cannot
-        // reproduce is a field the no-op-paint guard cannot see.
+        // FOURTEEN arguments now, and the fourteenth is the RENDER MODE -- added for
+        // the same reason the twelfth and thirteenth were: a snapshot that cannot
+        // reproduce a field compares unequal to the frame on screen, and the
+        // no-op-paint guard then repaints on every resolve. A relief and a cloud are
+        // different pictures, so the mode must be in here or toggling Splat snaps.
+        // (The thirteenth was the SPEED; the twelve-argument form was the last caller
+        // of the eleven-argument one, which cannot name the medium either.) AGENTS.md:
+        // a field ofValues cannot reproduce is a field the no-op-paint guard cannot see.
         return com.amoshydra.basrelief.core.render.Framing.ofValues(
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
                 pendingBrightnessGain, pendingShadowLift,
                 lightAzimuth, lightElevation,
-                sourceKind, speed);
+                sourceKind, renderMode, speed);
     }
 
     /**
@@ -3055,6 +3098,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // Set here as well as in the setters, so a resolve always wins. The light
         // is one call because its angles and vector must never be updated apart.
         setLight(f.lightAzimuth, f.lightElevation);
+        // The draw path, carried from the framing so the snapshot can name it. A
+        // toggle to Splat therefore makes sameAs report a different picture and the
+        // apply is not a no-op; the cloud's own bytes are still a separate question
+        // (useSplat), so the relief draws for the frame or two before it loads.
+        renderMode = f.renderMode;
         // An explicit apply ends any glide in flight: it is the caller saying where
         // the view IS, and a tween arguing with that is a smear, not an ease.
         glideFrom = null;
@@ -3092,13 +3140,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        // The 3D mode. Read HERE, with the other cold-load state, because this is
-        // the one path both surfaces converge on -- the studio's cold start and
-        // the wallpaper's engine rebuild -- so the pref can be flipped and the app
-        // restarted to A/B the two looks without a rebuild. OFF by default: the
-        // relief is what every existing row was framed against, and this mode is a
-        // different reconstruction, not a fix.
-        render3d = p.getBoolean(KEY_RENDER_3D, false);
+        // The Stage-0 card grid, dev-only now (see the field): read HERE, with the
+        // other cold-load state, because this is the one path both surfaces converge
+        // on, so it can be flipped by adb and A/B-ed without a rebuild. OFF by
+        // default, and it draws only when the row has no real cloud. Its key is NOT
+        // `render_3d`: that is the migration source for the per-item mode, and
+        // reading it here would draw the card grid over every SPLAT row with no cloud.
+        splatGridMode = p.getBoolean(KEY_SPLAT_GRID, false);
         // The level, read here with it: an index into Splat.GRID_LEVELS, and any
         // stored value that is not one draws the default (the field's own
         // sampling). Reset per context in onSurfaceCreated, because the log line
@@ -3183,8 +3231,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
         splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
-        setSplatForItem(active == null ? null : active.id,
-                active == null ? null : active.splatName);
+        setSplatForItem(active == null ? null : active.splatName,
+                active != null && active.isSplatMode());
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
                 nrm == null ? null : nrm.getAbsolutePath(),
@@ -3195,31 +3243,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * Resolve and (re)load the splat for one item. GL thread.
      *
      * <p><b>The rule: a splat renders only when the ITEM names one.</b> The item's
-     * own nullable filename is the product shape. The {@link #KEY_SPLAT_FILE} pref
-     * is the Stage-0 debug fallback, and it is reachable from <b>the reserved
-     * bundled id alone</b> — so selecting any other photo renders that photo's own
-     * media, and there is no string a normal item can carry that reaches the pref.
-     * The regression this fixes: the fallback applied to every row, so every
-     * selection showed the demo cloud.
+     * own nullable filename is the whole shape, and it resolves through
+     * {@link PrefFiles}, so it is a bare filename and a restore onto another device
+     * still finds it. There is no fallback: the Stage-0 {@code splat_file} pref is
+     * gone, because the demo's cloud ships in {@code res/raw} and the ordinary seed
+     * names it on the bundled row like any other photo's cloud.
      *
      * <p>Both paths resolve through {@link PrefFiles}, so both are bare filenames
      * and a restore onto another device still finds them.
      *
-     * <p>Only when the 3D switch is on: the switch is the one selector between the
-     * relief and the cloud, so a row with a cloud and the switch off still renders
-     * its relief, exactly as a row with no cloud does.
+     * <p><b>The mode is the ITEM's, not a global.</b> {@code splatMode} is
+     * {@code LibraryItem.isSplatMode()} — a render value on the row, migrated once
+     * from the legacy {@code render_3d} pref. A row with a cloud and the mode set to
+     * Relief renders its relief, exactly as a row with no cloud does; a row asking
+     * for Splat but with no cloud yet also renders its relief, which is what makes
+     * "press Splat and the offer follows" honest.
      */
-    void setSplatForItem(String itemId, String itemSplatName) {
-        if (!render3d) {
+    void setSplatForItem(String itemSplatName, boolean splatMode) {
+        // The mode is the ITEM's, and a row that asks for the relief wants no cloud
+        // even if it has one -- a switch back to Relief must stop the cloud drawing
+        // on the next frame, which clearing the wanted path is what does.
+        if (!splatMode) {
             splatWantedPath = null;
             return;
         }
-        SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        // The rule lives in :core so it is one function a test holds: the item's
-        // own filename, else the debug filename for the bundled row alone.
-        String name = Library.splatNameFor(itemId, itemSplatName,
-                p.getString(KEY_SPLAT_FILE, SPLAT_DEBUG_DEFAULT));
-        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), name);
+        // The item's own filename, and nothing else. The bundled demo used to be the
+        // one exception, delivered by a `splat_file` debug pref because Stage 0 had no
+        // import UI; Stage 1 ships the demo's cloud in res/raw and the ordinary seed
+        // names it on the row, so the pref and its fallback are gone -- the demo is an
+        // ordinary 3D row now.
+        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), itemSplatName);
         splatWantedPath = spf == null ? null : spf.getAbsolutePath();
         requestSplat(splatWantedPath);
     }
@@ -3282,6 +3335,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
         splatLoadedPath = path;
         android.util.Log.i("Basrelief", "splat: loaded " + path + " count=" + splat.count());
+        // PAINT IT. The upload runs on a GL event that the host queued, and the
+        // host's own requestRender() may already have been consumed before the file
+        // read finished — so without this a cloud at Motion 0 (sensor parked, no
+        // clip pump) would load and never appear until the next tilt. The loaded
+        // path is the on-screen identity, and this is the frame that makes it true.
+        Runnable r = renderRequester;
+        if (r != null) r.run();
     }
 
     /**
@@ -3338,7 +3398,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Whether the Gaussian cloud, rather than the relief, is what should draw.
      *
-     * <p>Three facts, and all three must hold: the 3D switch resolved a cloud for
+     * <p>Three facts, and all three must hold: the item's mode resolved a cloud for
      * this row ({@code splatWantedPath}), the GL context holds exactly that cloud
      * ({@code splatLoadedPath}), and the upload reported success
      * ({@code splat.isReady}). The middle one is the {@code hasInstalled} rule: a
@@ -3611,7 +3671,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
-            if (render3d && splatWantedPath == null) {
+            if (splatGridMode && splatWantedPath == null) {
                 drawSplatGrid(r, f);
             } else {
                 GLES20.glUniform1f(uSplat, 0f);

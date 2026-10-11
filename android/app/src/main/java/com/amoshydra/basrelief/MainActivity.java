@@ -528,6 +528,14 @@ public class MainActivity extends Activity {
      * screen.
      */
     private SheetSection mapSection;
+    /**
+     * The "Renderer — Relief | Splat" row and its cloud asset row, in the geometry
+     * group. Built once and refreshed from the live index on every
+     * {@code refreshSliders}; see {@link RendererRows}.
+     */
+    private RendererRows rendererRows;
+    /** The Light group, hidden in splat mode: the cloud's shading is baked in. */
+    private SheetSection lightSection;
     private TextView fixText;
     private LinearLayout fixActions;
     /**
@@ -1024,6 +1032,12 @@ public class MainActivity extends Activity {
         // Immediately after the caption it belongs under, derived here rather than
         // saved: see depthInsertIndex for the bug a saved index caused.
         if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
+        // The renderer row, in the same geometry group: the depth group already
+        // answers "what is this item's geometry", and a cloud is the same question
+        // answered in 3D. Placed directly under the depth row (or under the caption
+        // when there is none) so it reads as the group's other axis.
+        rendererRows = new RendererRows(this);
+        sheetContent.addView(rendererRows.view(), rendererInsertIndex());
         motionCaption = sectionLabel(
                 heading(R.string.group_motion, R.string.group_motion_surface));
         // The launch state of the first-caption rule: without a depth row the caption
@@ -1073,6 +1087,7 @@ public class MainActivity extends Activity {
         // clamp at, it is the same light as 0, which the other end already offers.
         SheetSection light = addSection(
                 heading(R.string.group_light, R.string.group_light_surface));
+        lightSection = light;
         light.body().addView(addSlider("light_azimuth",
                 azimuthForSlider(s == null
                         ? SurfaceSettings.DEFAULT_LIGHT_AZIMUTH : s.lightAzimuth),
@@ -3755,6 +3770,15 @@ public class MainActivity extends Activity {
         return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
 
+    /** Where the renderer row belongs: directly under the depth row, or the caption. */
+    private int rendererInsertIndex() {
+        if (depthBarRow != null) {
+            int at = sheetContent.indexOfChild(depthBarRow);
+            if (at >= 0) return at + 1;
+        }
+        return depthInsertIndex();
+    }
+
     /**
      * What the Picture sliders currently show.
      *
@@ -4197,6 +4221,20 @@ public class MainActivity extends Activity {
         refreshSurfaceNote(state);
         syncDepthRow(state);
         refreshMapSection(state);
+        // The renderer row and the controls that only apply in relief mode. A
+        // control nothing reads is a bug, not a greyed row: in splat mode the Depth
+        // slider has nothing to displace and the light has nothing to shade -- the
+        // cloud's shape is reconstructed and its colours are baked in -- so both are
+        // hidden. The shared six (Zoom, Origin, Pan, Motion, Brightness, Shadow)
+        // carry their values across the toggle and stay.
+        boolean splatMode = item != null && item.isSplatMode();
+        if (depthBarRow != null) {
+            depthBarRow.setVisibility(splatMode ? View.GONE : View.VISIBLE);
+        }
+        if (lightSection != null) {
+            lightSection.setVisibility(splatMode ? View.GONE : View.VISIBLE);
+        }
+        if (rendererRows != null) rendererRows.refresh();
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
@@ -4916,6 +4954,9 @@ public class MainActivity extends Activity {
         final Jobs.Job job = activeJob(item.id);
         final VideoImport.Live live = VideoImport.live(item.id);
         if (job == null && live == null) return false;
+        // A cloud build is not a clip import: its progress lives on the Renderer row,
+        // and this line's "Frame k of N" and Regenerate are clip concepts.
+        if (job != null && job.kind != Jobs.Kind.CLIP) return false;
 
         if (job != null && job.isFailed()) {
             // The server's own words, kept until the user acts. Amber, like the
@@ -5761,6 +5802,183 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ------------------------------------------------------------ the Make 3D flow
+
+    /** This row's cloud-build record, or null. Keyed by kind: a clip job is not one. */
+    Jobs.Job splatJob(String itemId) {
+        if (itemId == null) return null;
+        for (Jobs.Job j : JobsStore.load(prefs).pending()) {
+            if (itemId.equals(j.itemId) && j.kind == Jobs.Kind.SPLAT) return j;
+        }
+        return null;
+    }
+
+    /** Repaint the renderer row without touching storage. */
+    void refreshRendererRows() {
+        if (rendererRows != null) rendererRows.refresh();
+    }
+
+    /**
+     * Set one row's draw path. The item is the home of the value, so this is the one
+     * write; {@code applyFiles} then resolves the new mode and the renderer follows.
+     */
+    void setRenderMode(String id, final com.amoshydra.basrelief.core.store.RenderMode mode) {
+        if (id == null) return;
+        LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem item) {
+                return item.withRenderMode(mode);
+            }
+        });
+        applyFiles();
+        refreshSliders();
+    }
+
+    /**
+     * The confirm that states what a cloud build will run and cost.
+     *
+     * <p>The depth dialog's shape: what runs (SHARP, on the configured server), the
+     * budget (150,000 splats) and the estimate (~10 s, ~4.8 MB). Not now / Make one.
+     * A rebuild asks the same question because it runs the same thing, and it must
+     * not silently replace a cloud the user already has.
+     */
+    void offerMakeCloud(final LibraryItem item, final boolean rebuild) {
+        if (item == null) return;
+        final ModalSheet sheet = new ModalSheet(this, 0.6f, ModalSheet.SCRIM, false);
+        sheet.grip(getString(R.string.splat_confirm_grip));
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(ModalSheet.title(this, getString(rebuild
+                ? R.string.splat_confirm_rebuild_title : R.string.splat_confirm_title)));
+        body.addView(ModalSheet.subtitle(this, getString(R.string.splat_confirm_body,
+                getString(R.string.splat_generator),
+                String.format(java.util.Locale.US, "%,d",
+                        com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET),
+                getString(R.string.splat_estimate))));
+        sheet.body(body);
+        Button notNow = ModalSheet.button(this, getString(R.string.splat_confirm_not_now),
+                false, true);
+        Button go = ModalSheet.button(this, getString(rebuild
+                ? R.string.action_rebuild : R.string.splat_action_make), true, false);
+        notNow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sheet.dismiss();
+            }
+        });
+        go.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sheet.dismiss();
+                startCloudBuild(item);
+            }
+        });
+        sheet.footerRow(notNow, go);
+        sheet.show(this);
+    }
+
+    /**
+     * Run the Make 3D build for one row, off the UI thread.
+     *
+     * <p>The same shape as {@link #regenerateClip}: a server round on the LONG worker
+     * so the filmstrip does not wait behind it, phases posted to the UI thread, and
+     * the finished row patched into the strip with {@code Gallery.itemUpdated} rather
+     * than a reindex (a rebuild re-decodes every thumbnail).
+     */
+    void startCloudBuild(final LibraryItem item) {
+        if (item == null) return;
+        String host = prefs.getString("comfy_url", "");
+        if (host == null || host.trim().isEmpty()) {
+            Toast.makeText(MainActivity.this, R.string.video_import_no_server,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ComfyApi api = new ComfyApi(host.trim());
+        // Show the building state at once, before the worker starts: the row's ring
+        // and line are the user's answer to whether the tap had done anything.
+        refreshRendererRows();
+        Io.runLong(this, new Callable<LibraryItem>() {
+            @Override
+            public LibraryItem call() throws Exception {
+                final LibraryItem[] holder = new LibraryItem[1];
+                final String[] problem = new String[1];
+                SplatImport.run(MainActivity.this, prefs, item, api,
+                        new SplatImport.Listener() {
+                            @Override
+                            public void phase(final String message) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        refreshRendererRows();
+                                    }
+                                });
+                            }
+
+                            @Override
+                            public void done(LibraryItem updated) {
+                                holder[0] = updated;
+                            }
+
+                            @Override
+                            public void failed(final String message) {
+                                problem[0] = message;
+                            }
+                        });
+                if (problem[0] != null) throw new Exception(problem[0]);
+                return holder[0];
+            }
+        }, new Io.Callback<LibraryItem>() {
+            @Override
+            public void onDone(LibraryItem updated, Exception error) {
+                if (isFinishing() || isDestroyed()) return;
+                if (updated == null) {
+                    String why = (error == null || error.getMessage() == null)
+                            ? getString(R.string.splat_failed) : error.getMessage();
+                    refreshRendererRows();
+                    Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                // One row repainted, and the pair identity changed (the cloud name),
+                // so the renderer loads it rather than answering "already showing".
+                gallery.itemUpdated(updated);
+                applyFiles();
+                refreshSliders();
+            }
+        });
+    }
+
+    /**
+     * Delete a row's cloud: the reference and the file, in that order.
+     *
+     * <p>The reference first, then the file, so a crash in between leaves an orphan
+     * file (invisible) rather than an index naming a cloud that is gone (a row that
+     * renders nothing). The row degrades to the relief on the spot, which is what
+     * makes a delete of the active row's cloud safe.
+     */
+    void deleteCloud(final LibraryItem item) {
+        if (item == null || item.splatName == null) return;
+        final String name = item.splatName;
+        LibraryStore.editItem(prefs, item.id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem it) {
+                return it.withSplat(null);
+            }
+        });
+        final File dir = getFilesDir();
+        Io.run(new Callable<Void>() {
+            @Override
+            public Void call() {
+                File f = PrefFiles.resolve(dir, name);
+                if (f != null) f.delete();
+                return null;
+            }
+        });
+        LibraryItem now = state().activeItem();
+        if (now != null) gallery.itemUpdated(now);
+        applyFiles();
+        refreshSliders();
+    }
+
     private void importSharedVideo(final Uri uri, final String label) {
         // The host the user already configured for depth generation, read from the
         // same pref that panel writes. NOT a second host setting: a clip import that
@@ -6163,8 +6381,8 @@ public class MainActivity extends Activity {
         final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm, focal) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
-        final String splatId = active == null ? null : active.id;
         final String splatName = active == null ? null : active.splatName;
+        final boolean splatMode = active != null && active.isSplatMode();
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -6173,7 +6391,10 @@ public class MainActivity extends Activity {
                 // gallery selection is a pair change and does not go through the cold
                 // load, so without this the cloud would only follow the row after a
                 // resume. GL thread, like every other call that touches GL state.
-                renderer.setSplatForItem(splatId, splatName);
+                // The MODE rides with it, so the relief/Splat toggle repaints on the
+                // next frame -- the item is the mode's home, and this is the one
+                // resolve a toggle goes through.
+                renderer.setSplatForItem(splatName, splatMode);
             }
         });
         // GUARDED, and this was the bug that made a clip show one frozen frame.
@@ -6242,6 +6463,40 @@ public class MainActivity extends Activity {
                 @Override
                 public LibraryItem call() {
                     final LibraryItem[] out = new LibraryItem[1];
+                    if (job.kind == Jobs.Kind.SPLAT) {
+                        // A cloud build's resume fetches a .splat, not depth clips.
+                        SplatImport.resume(MainActivity.this, prefs, job,
+                                new SplatImport.Listener() {
+                                    @Override
+                                    public void phase(final String message) {
+                                        runOnUiThread(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                refreshRendererRows();
+                                            }
+                                        });
+                                    }
+
+                                    @Override
+                                    public void done(LibraryItem item) {
+                                        out[0] = item;
+                                    }
+
+                                    @Override
+                                    public void failed(final String message) {
+                                        runOnUiThread(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                if (isFinishing() || isDestroyed()) return;
+                                                refreshImportUi();
+                                                Toast.makeText(MainActivity.this, message,
+                                                        Toast.LENGTH_LONG).show();
+                                            }
+                                        });
+                                    }
+                                });
+                        return out[0];
+                    }
                     VideoImport.resume(MainActivity.this, prefs, job,
                             new VideoImport.Listener() {
                                 @Override

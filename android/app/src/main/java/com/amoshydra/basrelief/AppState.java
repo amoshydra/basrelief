@@ -251,7 +251,14 @@ final class AppState {
         }
 
         Config config = Config.parse(configBlob);
-        Library library = Library.parse(libraryBlob, config.motion);
+        // The legacy global render mode, read ONCE here as the migration source for
+        // the per-item mode. It used to be the app's one 3D switch; a global render
+        // value is the wrong home, so Library's v3->v4 migration copies it onto every
+        // item, exactly as Motion moved out of Config in v3. Read from the pref rather
+        // than the blob because it never lived in one -- the same reason Config.motion
+        // is read from its own key.
+        boolean legacySplat = prefs.getBoolean(ReliefRenderer.KEY_RENDER_3D, false);
+        Library library = Library.parse(libraryBlob, config.motion, legacySplat);
         boolean libraryDirty = false;
 
         // 1. Adopt whatever a pre-gallery build was showing, but only when there
@@ -290,6 +297,9 @@ final class AppState {
         // predates the asset, or a copy that failed. That is the flat-lit demo,
         // which is a real state and not a reason to refuse the pair.
         String demoNormal = demo == null ? null : demo[2];
+        // The cloud is the fourth, and like the normal it may be null while the pair
+        // is present: a copy that failed leaves a real demo that renders its relief.
+        String demoSplat = demo == null || demo.length < 4 ? null : demo[3];
         // Repairing a row that was stored with no filename.
         //
         // Dirty is set HERE rather than left to the cleaned-vs-library comparison
@@ -300,7 +310,7 @@ final class AppState {
         // device, where the files appeared and the index kept saying the demo had
         // none.
         if (demoImage != null) {
-            Library named = library.withBundledFiles(demoImage, demoDepth, demoNormal);
+            Library named = library.withBundledFiles(demoImage, demoDepth, demoNormal, demoSplat);
             if (!named.toJson().equals(library.toJson())) libraryDirty = true;
             library = named;
         }
@@ -317,7 +327,12 @@ final class AppState {
         //    key, so the load after it sees null here and the demo comes back.
         //    See Library.withBundled for why the caller owns this question.
         if (absent) {
-            cleaned = cleaned.withBundled(demoImage, demoDepth, demoNormal);
+            // The fresh seed inherits the legacy global mode too, so a Stage-0 user
+            // whose 3D switch was on keeps the look they had. The same one-time
+            // inheritance the migration gives an existing library.
+            cleaned = cleaned.withBundled(demoImage, demoDepth, demoNormal, demoSplat,
+                    legacySplat ? com.amoshydra.basrelief.core.store.RenderMode.SPLAT
+                            : com.amoshydra.basrelief.core.store.RenderMode.RELIEF);
         }
         if (!cleaned.toJson().equals(library.toJson())) {
             library = cleaned;
