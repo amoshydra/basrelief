@@ -689,6 +689,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private String splatLoadedPath;
     private String splatPendingPath;
     private int splatSeq;
+    /**
+     * The wanted cloud's own lens, as {@code focal / height}, or 0 for unknown.
+     *
+     * <p>It rides beside {@code splatWantedPath} because it describes the same
+     * thing: the cloud the item names. Volatile and read on the GL thread at draw,
+     * exactly as the path is; a row that gains a lens is not a new cloud FILE, so it
+     * needs no reload — the next frame simply draws the loaded cloud through the
+     * new lens. A new cloud (a new filename) is the identity change, and that is
+     * {@code splatWantedPath}'s job.
+     */
+    private volatile float splatWantedLens;
     private volatile float splatRenderScale = 1f;
 
     /**
@@ -3244,7 +3255,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.normalName);
         splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
         setSplatForItem(active == null ? null : active.splatName,
-                active != null && active.isSplatMode());
+                active != null && active.isSplatMode(),
+                active == null ? 0f : active.splatLens);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
                 nrm == null ? null : nrm.getAbsolutePath(),
@@ -3271,7 +3283,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * for Splat but with no cloud yet also renders its relief, which is what makes
      * "press Splat and the offer follows" honest.
      */
-    void setSplatForItem(String itemSplatName, boolean splatMode) {
+    void setSplatForItem(String itemSplatName, boolean splatMode, float cloudLens) {
+        // The lens rides with the path, before the mode gate: it is a fact about
+        // the row, and a row that asks for the relief has one too. 0 is "unknown"
+        // and draws at the demo lens.
+        splatWantedLens = cloudLens;
         // The mode is the ITEM's, and a row that asks for the relief wants no cloud
         // even if it has one -- a switch back to Relief must stop the cloud drawing
         // on the next frame, which clearing the wanted path is what does.
@@ -3311,7 +3327,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         Io.run(new java.util.concurrent.Callable<SplatCloud>() {
             @Override
             public SplatCloud call() throws Exception {
-                return SplatCloud.read(new java.io.File(path));
+                SplatCloud c = SplatCloud.read(new java.io.File(path));
+                // Warm the median depth HERE, on the IO thread, where the file was
+                // already read: the upload reads it for the pivot fallback, and a
+                // sort on the GL thread is the kind of stall this whole path exists
+                // to avoid.
+                c.medianDepth();
+                return c;
             }
         }, new Io.Callback<SplatCloud>() {
             @Override
@@ -3542,7 +3564,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             if (clip != null && clip.isRunning()) stopClip();
             splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
                     orbitX, orbitY, panX, panY,
-                    pendingBrightnessGain, pendingShadowLift, splatRenderScale);
+                    pendingBrightnessGain, pendingShadowLift, splatRenderScale,
+                    splatWantedLens);
             captureLockFrameIfWanted();
             return;
         }

@@ -46,6 +46,9 @@ public final class SplatCloud {
 
     private final byte[] data;
 
+    /** Memoised {@link #medianDepth}; NaN until it is asked for. */
+    private float medianDepth = Float.NaN;
+
     private SplatCloud(byte[] data, int count) {
         this.data = data;
         this.count = count;
@@ -130,6 +133,43 @@ public final class SplatCloud {
             out[j + 1] = f32(data, o + 4);
             out[j + 2] = f32(data, o + 8);
         }
+    }
+
+    /**
+     * The cloud's median depth ({@code z}), or 0 for an empty cloud.
+     *
+     * <p><b>This is the cloud's own centre, and it is what the splat camera's
+     * pivot falls back to.</b> The source camera sits at the origin looking down
+     * {@code +z}, so a cloud's median {@code z} is the depth its bulk sits at --
+     * the number the renderer used to hard-code as the demo cloud's front
+     * surface ({@code SplatRenderer.SOURCE_TARGET_Z}). It is only reached when
+     * the origin's ray finds no splat in front of the camera, so it is a
+     * fallback rather than the answer, but it must be the loaded cloud's own or
+     * an empty-ish cloud orbits about a depth that is not its.
+     *
+     * <p>Memoised, because the sort is {@code O(n log n)} over every record and
+     * the value is read on the GL thread at upload: the caller warms it on the IO
+     * thread where the file was already read. A benign race would compute it
+     * twice to the same answer; the field write is atomic.
+     */
+    public float medianDepth() {
+        float m = medianDepth;
+        if (Float.isNaN(m)) {
+            m = computeMedianDepth();
+            medianDepth = m;
+        }
+        return m;
+    }
+
+    private float computeMedianDepth() {
+        if (count <= 0) return 0f;
+        float[] z = new float[count];
+        for (int i = 0, o = 8; i < count; i++, o += RECORD_BYTES) {
+            z[i] = f32(data, o);
+        }
+        java.util.Arrays.sort(z);
+        int mid = count / 2;
+        return (count & 1) == 1 ? z[mid] : 0.5f * (z[mid - 1] + z[mid]);
     }
 
     /**

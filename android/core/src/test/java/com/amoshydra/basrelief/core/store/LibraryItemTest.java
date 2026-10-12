@@ -730,6 +730,64 @@ public class LibraryItemTest {
         assertNull(LibraryItem.fromJson(json(none.toJson())).splatName);
     }
 
+    /**
+     * The cloud's lens survives the round trip and a row with none writes no key.
+     *
+     * <p>It is a dimensionless {@code focal / height}, so the units are in the name
+     * and it is deliberately a separate field from {@link LibraryItem#focal} — which
+     * is in pixels and belongs to the colour image the relief reads its depth scale
+     * from. Folding the two into one number would put two units in one value and let
+     * a clip's focal overwrite a cloud's.
+     */
+    @Test
+    public void splatLensSurvivesARoundTripAndIsAbsentWhenUnknown() {
+        LibraryItem cloud = sample().withSplat("item-a1b2c3d4.splat", 0.8647f);
+        assertEquals(0.8647f, cloud.splatLens, 0f);
+        assertTrue("a known lens is written", cloud.toJson().contains("splat_lens"));
+        LibraryItem back = LibraryItem.fromJson(json(cloud.toJson()));
+        assertNotNull(back);
+        assertEquals("the cloud's lens must survive the round trip",
+                0.8647f, back.splatLens, 0f);
+
+        LibraryItem none = sample().withSplat("item-a1b2c3d4.splat");
+        assertEquals(0f, none.splatLens, 0f);
+        assertFalse("an unknown lens must not write a key",
+                none.toJson().contains("splat_lens"));
+        assertEquals(0f, LibraryItem.fromJson(json(none.toJson())).splatLens, 0f);
+    }
+
+    /**
+     * A stored value that cannot be a lens ratio is "unknown", not a ratio. The
+     * constructor is what refuses it, so a hand-edited blob cannot put a negative
+     * or NaN value into the projection the cloud is drawn through.
+     */
+    @Test
+    public void aLensThatCannotBeARatioIsUnknown() {
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":-0.5}")).splatLens, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":\"NaN\"}")).splatLens, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":0}")).splatLens, 0f);
+    }
+
+    /**
+     * The two-arg writer is the one that sets the lens with the cloud it describes;
+     * the one-arg form carries whatever lens the row already has, so a caller
+     * attaching a cloud whose camera it does not know cannot erase a measured one.
+     */
+    @Test
+    public void withSplatCarriesTheLensAndThePairedFormSetsIt() {
+        LibraryItem measured = sample().withSplat("a.splat", 0.8f);
+        LibraryItem renamed = measured.withSplat("b.splat");
+        assertEquals("the one-arg form carries the lens", 0.8f, renamed.splatLens, 0f);
+        LibraryItem reset = measured.withSplat("b.splat", 0f);
+        assertEquals("the paired form can clear it", 0f, reset.splatLens, 0f);
+    }
+
     /** The restore rule, one name over: a path is reduced to its basename. */
     @Test
     public void aSplatPathIsStoredAsABareFilename() {
@@ -778,7 +836,7 @@ public class LibraryItemTest {
     @Test
     public void everyMutatorCarriesTheSplat() {
         LibraryItem base = sample()
-                .withSplat("a.splat")
+                .withSplat("a.splat", 0.8f)
                 .withDepthAndNormal("d.png", "n.png")
                 .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
         LibraryItem[] results = new LibraryItem[] {
@@ -803,6 +861,7 @@ public class LibraryItemTest {
         };
         for (LibraryItem r : results) {
             assertEquals("a mutator dropped the splat: " + r, "a.splat", r.splatName);
+            assertEquals("a mutator dropped the cloud's lens: " + r, 0.8f, r.splatLens, 0f);
             assertTrue(r.hasSplat());
         }
     }
@@ -877,7 +936,7 @@ public class LibraryItemTest {
     public void everyMutatorCarriesTheRenderMode() {
         LibraryItem base = sample()
                 .withRenderMode(RenderMode.SPLAT)
-                .withSplat("a.splat")
+                .withSplat("a.splat", 0.8f)
                 .withDepthAndNormal("d.png", "n.png")
                 .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
         LibraryItem[] results = new LibraryItem[] {
@@ -903,6 +962,7 @@ public class LibraryItemTest {
         for (LibraryItem r : results) {
             assertEquals("a mutator dropped the render mode: " + r,
                     RenderMode.SPLAT, r.renderMode);
+            assertEquals("a mutator dropped the cloud's lens: " + r, 0.8f, r.splatLens, 0f);
             assertTrue(r.isSplatMode());
         }
     }

@@ -116,4 +116,31 @@ public class SplatCloudTest {
         assertTrue(SplatCloud.parse(new byte[320]).count == 10);
         assertFalse(SplatCloud.parse(new byte[32]).raw().length == 0);
     }
+
+    /**
+     * The cloud's centre is its median depth: the fallback the splat camera's pivot
+     * uses when the origin's ray finds no splat. An odd count takes the middle
+     * record, an even count averages the two middle records, and an empty cloud
+     * claims nothing rather than answering a depth it does not have.
+     */
+    @Test
+    public void theMedianDepthIsTheCloudsCentre() {
+        byte[] a = oneRecord(0, 0, 3f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] b = oneRecord(0, 0, 1f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] c = oneRecord(0, 0, 2f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] three = new byte[96];
+        System.arraycopy(a, 0, three, 0, 32);
+        System.arraycopy(b, 0, three, 32, 32);
+        System.arraycopy(c, 0, three, 64, 32);
+        assertEquals(2f, SplatCloud.parse(three).medianDepth(), 0f);
+
+        byte[] two = new byte[64];
+        System.arraycopy(b, 0, two, 0, 32);
+        System.arraycopy(a, 0, two, 32, 32);
+        assertEquals("an even count averages the two middle records",
+                2f, SplatCloud.parse(two).medianDepth(), 0f);
+
+        assertEquals("an empty cloud claims nothing", 0f,
+                SplatCloud.parse(new byte[0]).medianDepth(), 0f);
+    }
 }

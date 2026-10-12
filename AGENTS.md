@@ -445,6 +445,40 @@ already cost real time.
     `normal`/`video` rule) and every mutator carries it; `VideoLibraryTest`'s
     `everyMutatorCarriesTheClip` walk asserts it beside the clip, because it is the
     same shape of value: added after the writers existed.
+  - **A cloud carries its OWN lens, and it is a different number in a different
+    unit from the row's `focal`.** A Gaussian's screen size is proportional to the
+    focal it was reconstructed through, and every `.splat` was built at its own —
+    the node reports it in the sidecar (`focal`, `height`, both in pixels of the
+    frame it was handed) and `SplatRenderer` draws the cloud through the source
+    camera that focal implies. The row's `focal` beside it is a MoGe measurement in
+    pixels of the COLOUR image and drives the relief's depth scale; a cloud is built
+    from the poster still, so the two can be different ratios and folding them into
+    one field would let the clip path and the cloud path overwrite each other's
+    units. The cloud's lens is therefore stored as the dimensionless
+    `LibraryItem.splatLens` = `focal / height` (`Splat.focalOverHeight`), because a
+    focal in pixels is only meaningful against the frame it was measured on and the
+    phone may decode the still at a different height and draw it on a different
+    surface; the ratio is the lens itself. `Splat.fovyForFocalOverHeight` converts
+    it to the camera's field of view.
+    - **The fallback is the demo cloud's constant, and that is deliberate.**
+      `SplatRenderer.SOURCE_FOVY`/`SOURCE_TARGET_Z` are the bale's 30 mm lens and
+      front surface, and a row with no stored lens (every cloud generated before
+      this field existed) draws at exactly those — so those clouds keep the look they
+      have and change only on a regeneration, which reads the sidecar. `0` is
+      unknown and omitted from the blob, the `normal`/`video`/`focal` rule, so no
+      schema bump; `SplatImport.fetch` is the one finish line that writes the lens
+      with the cloud it describes, through `withSplat(String, float)`, and the
+      one-argument form carries the lens rather than clearing it (the `withFiles`
+      rule for `focal`).
+    - **The pivot's fallback is the cloud's own centre, not the bale's 2.4.**
+      `SplatCloud.medianDepth` is the loaded cloud's median `z`, warmed on the IO
+      thread at load and read on the GL thread at upload; the frontmost splat under
+      the origin's ray remains the real pivot, and the demo target answers only when
+      there is no cloud at all.
+    - **The lens is not part of the pair identity.** It is read at draw time from
+      the wanted row, so a row that gains a lens repaints through the loaded cloud
+      with no re-decode; a new cloud FILE (a new filename) is the identity change,
+      exactly as it was before.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -814,7 +848,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 622 tests across thirty-five classes:
+it**. 628 tests across thirty-five classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for

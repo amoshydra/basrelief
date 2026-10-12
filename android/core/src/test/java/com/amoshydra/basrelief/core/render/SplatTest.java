@@ -93,6 +93,51 @@ public class SplatTest {
     }
 
     /**
+     * The stored lens is a RATIO and not a pixel count: the same lens on a smaller
+     * frame is the same number, which is the whole reason it is stored
+     * dimensionless. The renderer's surface, the decoded bitmap's height and the
+     * node's uploaded frame height can all differ; the ratio cannot.
+     */
+    @Test
+    public void aCloudsLensIsADimensionlessFocalOverHeight() {
+        float f = 1411.2f, h = 1632f;
+        assertEquals(f / h, Splat.focalOverHeight(f, h), 1e-6f);
+        // The same lens on a smaller frame is the same ratio.
+        assertEquals(Splat.focalOverHeight(f, h),
+                Splat.focalOverHeight(f * 0.5f, h * 0.5f), 1e-6f);
+        // Scaling only the frame is a different lens.
+        assertTrue(Splat.focalOverHeight(f, h * 2f) < Splat.focalOverHeight(f, h));
+        // A missing focal or height claims nothing, rather than dividing.
+        assertEquals(0f, Splat.focalOverHeight(0f, h), 0f);
+        assertEquals(0f, Splat.focalOverHeight(f, 0f), 0f);
+        assertEquals(0f, Splat.focalOverHeight(-3f, h), 0f);
+        assertEquals(0f, Splat.focalOverHeight(Float.NaN, h), 0f);
+        assertEquals(0f, Splat.focalOverHeight(f, Float.NaN), 0f);
+    }
+
+    /**
+     * The field of view the camera is drawn at is the pinhole relation inverted: a
+     * lens ratio implies exactly the vertical fov a frame of height h and focal f
+     * implies. A ratio that claims nothing answers 0, which the caller reads as
+     * "use the fallback lens" rather than inverting.
+     */
+    @Test
+    public void theFovyInvertsThePinholeRelation() {
+        for (float[] fh : new float[][] {{1411.2f, 1632f}, {2036.5f, 2560f}, {500f, 4000f}}) {
+            float f = fh[0], h = fh[1];
+            assertEquals("f=" + f + " h=" + h, impliedFovDeg(f, h),
+                    Splat.fovyForFocalOverHeight(Splat.focalOverHeight(f, h)), 1e-3);
+        }
+        // The demo cloud's own lens is the fallback constant the renderer keeps
+        // (SplatRenderer.SOURCE_FOVY), so the conversion agrees with the look every
+        // cloud generated before this field existed still gets.
+        assertEquals(64.3, Splat.fovyForFocalOverHeight(2036.5f / 2560f), 0.1);
+        assertEquals(0f, Splat.fovyForFocalOverHeight(0f), 0f);
+        assertEquals(0f, Splat.fovyForFocalOverHeight(-0.5f), 0f);
+        assertEquals(0f, Splat.fovyForFocalOverHeight(Float.NaN), 0f);
+    }
+
+    /**
      * The coverage constant's one job: a card must be at least the cell it
      * replaces, or the reference plane is a screen door. It is asserted as a
      * range, because a card much larger than its cell is a different defect --

@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.Locale;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.Splat;
 import com.amoshydra.basrelief.core.render.SplatCamera;
 import com.amoshydra.basrelief.core.splat.SplatCloud;
 import com.amoshydra.basrelief.core.splat.SplatProjection;
@@ -40,19 +41,20 @@ import com.amoshydra.basrelief.core.splat.SplatProjection;
  * the shader does {@code floatBitsToUint} to unpack the colour and the
  * quaternion. No CPU repack, no per-frame allocation.
  *
- * <p><b>The camera is the photograph's own, and it is a camera.</b> The demo cloud
- * is in the frame of the still SHARP ran on (x right, y down, z forward,
- * principal point at the centre), so the source view is the eye at the origin
- * looking down +z with the still's vertical field of view. At rest — no tilt, no
- * Origin, no Pan — the view is exactly that source view, so the picture is the
- * photograph. Zoom narrows the field of view (a crop of the same camera, which is
- * what zoom means for a photograph), Origin sets the point the tilt orbits about
- * (the cloud's own surface under the origin's ray) and shifts the picture to it,
- * and Pan is a screen-pixel view offset. All three mean here what they mean for
- * the relief, and the whole construction lives in
+ * <p><b>The camera is the photograph's own, and it is a camera.</b> A cloud is in
+ * the frame of the still SHARP ran on (x right, y down, z forward, principal point
+ * at the centre), so the source view is the eye at the origin looking down +z with
+ * that still's vertical field of view — the row's own lens, read from its sidecar
+ * and stored as {@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens};
+ * see {@link #SOURCE_FOVY} for the demo constant a row without one falls back to.
+ * At rest — no tilt, no Origin, no Pan — the view is exactly that source view, so
+ * the picture is the photograph. Zoom narrows the field of view (a crop of the same
+ * camera, which is what zoom means for a photograph), Origin sets the point the
+ * tilt orbits about (the cloud's own surface under the origin's ray) and shifts the
+ * picture to it, and Pan is a screen-pixel view offset. All three mean here what
+ * they mean for the relief, and the whole construction lives in
  * {@link com.amoshydra.basrelief.core.render.SplatCamera} so the at-rest invariant
- * is asserted without a device. The source camera's constants are the demo's; see
- * {@link #SOURCE_TARGET_Z} and {@link #SOURCE_FOVY}.
+ * is asserted without a device.
  */
 final class SplatRenderer {
 
@@ -66,10 +68,24 @@ final class SplatRenderer {
     private static final float FAR = 4000f;
 
     /**
-     * The source camera of the demo cloud: SHARP's fallback 30 mm lens on a
-     * 1440x2560 still gives {@code f = 2036.6 px}, so the vertical field of view
-     * is 64.3 degrees; the target sits on the optical axis at the bale's front
-     * surface. Same numbers as the WebGL reference viewer's source view.
+     * The FALLBACK source camera: the demo cloud's own lens and target, used only
+     * when the row has no measured lens (every cloud generated before the sidecar's
+     * {@code focal} was stored) or no cloud at all.
+     *
+     * <p><b>The demo cloud is the bale, and these are its numbers.</b> SHARP's
+     * fallback 30 mm lens on a 1440x2560 still gives {@code f = 2036.6 px}, so the
+     * vertical field of view is 64.3 degrees; the target sits on the optical axis at
+     * the bale's front surface. They were the constants for EVERY cloud until the
+     * item's own lens ({@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens},
+     * resolved through {@link Splat#fovyForFocalOverHeight}) arrived, which is the
+     * bug this pair now only bounds: a Gaussian's screen size is proportional to the
+     * focal it was reconstructed through, so drawing a cloud built at 1514..2375 px
+     * through the bale's 2036.6 px made every splat the wrong size.
+     *
+     * <p><b>The fallback is deliberate, not a leftover.</b> A row with no lens keeps
+     * exactly the look it had, so the clouds already on disk do not change until a
+     * regeneration reads their sidecar and stores the lens. Same numbers as the
+     * WebGL reference viewer's source view.
      */
     private static final float SOURCE_FOVY = (float) (2 * Math.toDegrees(
             Math.atan(2560.0 / 2 / (30.0 * Math.hypot(1440, 2560) / Math.hypot(36, 24)))));
@@ -104,6 +120,19 @@ final class SplatRenderer {
     private int[] counts = new int[0];
     private int dataRows;
     private int orderRows;
+
+    /**
+     * The depth the pivot falls back to when the cloud has nothing in front of the
+     * camera: the loaded cloud's own median depth, or {@link #SOURCE_TARGET_Z} when
+     * there is no cloud.
+     *
+     * <p>It is the cloud's CENTRE rather than the bale's front surface, because the
+     * fallback has to be about the cloud that is actually on screen. Written at
+     * upload (where the positions are), read at draw. The frontmost splat under the
+     * origin's ray remains the real pivot; this is only what an empty-ish cloud
+     * falls back to, so an orbit cannot vanish.
+     */
+    private float refDepth = SOURCE_TARGET_Z;
 
     // Offscreen target: the picture is drawn at `renderScale` of the surface and
     // blitted up. Fragment work is what scales with pixels and splats are soft.
@@ -185,6 +214,7 @@ final class SplatRenderer {
         queryOpen = false;
         queryInFlight = false;
         count = 0;
+        refDepth = SOURCE_TARGET_Z;
     }
 
     /**
@@ -245,6 +275,11 @@ final class SplatRenderer {
         // them once per camera move, and the GPU reads everything else.
         pos = new float[n * 3];
         cloud.positions(pos);
+        // The cloud's own centre, for the pivot fallback. `medianDepth` is warmed
+        // on the IO thread (see ReliefRenderer.requestSplat), so this is a read of a
+        // memo rather than a sort on the GL thread; a cloud that was not warmed
+        // computes it here, which is why it is memoised at all.
+        refDepth = cloud.medianDepth() > 0f ? cloud.medianDepth() : SOURCE_TARGET_Z;
         depths = new float[n];
         order = new int[n];
         counts = new int[SORT_BUCKETS + 1];
@@ -278,6 +313,7 @@ final class SplatRenderer {
         texData = 0;
         texOrder = 0;
         releaseOffscreen();
+        refDepth = SOURCE_TARGET_Z;
         ready = false;
     }
 
@@ -306,10 +342,13 @@ final class SplatRenderer {
      * orbit turns about, and a screen-pixel view offset.
      *
      * @param zoom the framing's zoom in [0.25, 2]; 1 is the source view
+     * @param cloudLens the cloud's own lens, as {@code focal / height}, or 0 for
+     *                  unknown. See {@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens};
+     *                  0 draws at {@link #SOURCE_FOVY}, the demo cloud's lens.
      */
     void draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
-              float brightnessGain, float shadowLift, float renderScale) {
+              float brightnessGain, float shadowLift, float renderScale, float cloudLens) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
@@ -319,7 +358,15 @@ final class SplatRenderer {
         int vw = fbo != 0 ? renderW : surfaceW;
         int vh = fbo != 0 ? renderH : surfaceH;
 
-        float fovy = SOURCE_FOVY / Math.max(0.25f, Math.min(2f, zoom));
+        // The cloud's OWN lens, not the demo's. The row stores the dimensionless
+        // focal/height the node measured in its sidecar, and a Gaussian's screen
+        // size is proportional to the focal it was reconstructed through -- so the
+        // bale's constant was drawing every cloud's splats at the wrong size. 0 is
+        // "unknown" and keeps that constant, which is what every cloud generated
+        // before the lens was stored gets: those keep exactly the look they have.
+        float lensFovy = Splat.fovyForFocalOverHeight(cloudLens);
+        float sourceFovy = lensFovy > 0f ? lensFovy : SOURCE_FOVY;
+        float fovy = sourceFovy / Math.max(0.25f, Math.min(2f, zoom));
         fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy));
 
         // The camera, all of it in :core: the source view, the Origin/Pan shift,
@@ -327,7 +374,7 @@ final class SplatRenderer {
         // SplatCamera for why the origin is a shift and not a lateral move.
         SplatCamera.Frame cam = splatCamera.frame(surfaceW, surfaceH, fovy,
                 orbitX, orbitY, panX, panY, tiltX, tiltY, motion,
-                pos, count, SOURCE_TARGET_Z);
+                pos, count, refDepth);
         System.arraycopy(cam.view, 0, view, 0, 16);
         // uProj gets the PANNED projection: the shift is what makes the at-rest
         // picture the photograph moved by Origin and Pan, at every depth.

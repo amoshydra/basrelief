@@ -127,6 +127,49 @@ public final class Splat {
     }
 
     /**
+     * A cloud's lens as the dimensionless ratio {@code focal / height}, or 0 when
+     * either number cannot claim one.
+     *
+     * <p><b>This is the form a cloud's lens is stored in, and it is dimensionless
+     * on purpose.</b> The node measures a focal in pixels of <i>its</i> uploaded
+     * frame ({@code basrelief_<tag>.splat.json}'s {@code focal}, {@code height}),
+     * and the phone may decode that same still at a different height and draw it
+     * on a different surface; a focal in pixels is only meaningful against the
+     * one frame it was measured on, so the two numbers would have to travel
+     * together and could disagree. {@code focal / height} is the lens itself --
+     * the image plane's distance in image heights -- and is the same number
+     * whatever the frame's pixel size. It is deliberately a different field from
+     * {@link com.amoshydra.basrelief.core.store.LibraryItem#focal}, which is in
+     * pixels and belongs to the colour image the relief's depth scale is read
+     * from; reusing that one would have put two units in one number.
+     *
+     * <p>A missing or non-positive focal or height is 0 -- "no lens" -- rather
+     * than a division, the same rule {@link #fallbackFocalPx} follows. The
+     * caller reads 0 as "use the fallback look", not as a value to invert.
+     */
+    public static float focalOverHeight(float focalPx, float heightPx) {
+        if (!Float.isFinite(focalPx) || focalPx <= 0f) return 0f;
+        if (!Float.isFinite(heightPx) || heightPx <= 0f) return 0f;
+        return focalPx / heightPx;
+    }
+
+    /**
+     * The vertical field of view a lens ratio subtends, in degrees:
+     * {@code 2 * atan(1 / (2 * focalOverHeight))}, the pinhole relation inverted.
+     *
+     * <p>It is the inverse of {@link #focalOverHeight} in the one direction the
+     * splat camera needs, and it is here rather than in the renderer for the
+     * reason {@link #effectiveFocalPx} is: the mapping is arithmetic that a
+     * screenshot cannot check once it is a projection matrix. A ratio that
+     * claims nothing (0, negative, non-finite) answers 0, which the caller reads
+     * as "the fallback lens" rather than dividing by it.
+     */
+    public static float fovyForFocalOverHeight(float focalOverHeight) {
+        if (!Float.isFinite(focalOverHeight) || focalOverHeight <= 0f) return 0f;
+        return (float) (2.0 * Math.toDegrees(Math.atan(0.5 / focalOverHeight)));
+    }
+
+    /**
      * One card's size in the model's plane units: the cell it replaces plus
      * {@link #COVERAGE}.
      *

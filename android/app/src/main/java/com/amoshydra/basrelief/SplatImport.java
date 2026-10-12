@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
+import com.amoshydra.basrelief.core.render.Splat;
 import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
@@ -337,18 +338,43 @@ final class SplatImport {
         // superseded run finishing cannot clear the record of the submission that
         // replaced it.
         JobsStore.clear(prefs, job.promptId);
-        // The row's own mode is already SPLAT (pressing Splat set it); this only
-        // names the cloud. A rebuild replaces the name, so the renderer's path
-        // identity changes and the new file loads.
-        LibraryItem updated = item.withSplat(target.getName());
+        // THE LENS, from the run's own sidecar. The node measured a focal in pixels
+        // of the frame it was handed and states that frame's width and height; the
+        // ratio is the lens itself, so it survives the phone decoding the still at a
+        // different size. A sidecar that cannot be read or that carries no focal is
+        // "no lens" -- the cloud still loads and draws at the demo lens, exactly as
+        // every cloud written before this field existed.
+        float lens = 0f;
+        int lensFocal = 0, lensW = 0, lensH = 0;
+        try {
+            byte[] side = api.viewIfPresent(ComfyWorkflow.sharpSidecarName(tag), "", "output");
+            if (side != null) {
+                JSONObject sc = new JSONObject(new String(side, StandardCharsets.UTF_8));
+                lensFocal = (int) Math.round(sc.optDouble("focal", 0d));
+                lensW = sc.optInt("width", 0);
+                lensH = sc.optInt("height", 0);
+                lens = Splat.focalOverHeight(lensFocal, lensH);
+            }
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "splat: no lens from the sidecar: " + e);
+        }
+        // The row's own mode is already SPLAT (pressing Splat set it); this names the
+        // cloud and stores the camera it was reconstructed through. A rebuild replaces
+        // the name, so the renderer's path identity changes and the new file loads.
+        final float cloudLens = lens;
+        LibraryItem updated = item.withSplat(target.getName(), cloudLens);
         LibraryStore.editItem(prefs, item.id, new LibraryStore.Editor() {
             @Override
             public LibraryItem edit(LibraryItem it) {
-                return it.withSplat(target.getName());
+                return it.withSplat(target.getName(), cloudLens);
             }
         });
         android.util.Log.i(TAG, "splat: " + item.id + " -> " + target.getName()
-                + " " + (bytes.length / 32) + " splats");
+                + " " + (bytes.length / 32) + " splats"
+                + (cloudLens > 0f
+                        ? " lens=" + cloudLens + " (" + lensFocal + "px/" + lensH
+                                + " of " + lensW + "x" + lensH + ")"
+                        : " lens=unknown"));
         return updated;
     }
 

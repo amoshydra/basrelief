@@ -6408,6 +6408,11 @@ public class MainActivity extends Activity {
                 : ReliefRenderer.Apply.PAIR_CHANGE;
         final String splatName = active == null ? null : active.splatName;
         final boolean splatMode = active != null && active.isSplatMode();
+        // The cloud's own lens, beside its name: it describes the same asset, so a
+        // row that gains one draws the cloud through it without a reload -- the lens
+        // is read at draw, not baked into the file. 0 is "unknown" and is the demo
+        // lens, which is what every cloud generated before the field existed gets.
+        final float splatLens = active == null ? 0f : active.splatLens;
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -6419,7 +6424,7 @@ public class MainActivity extends Activity {
                 // The MODE rides with it, so the relief/Splat toggle repaints on the
                 // next frame -- the item is the mode's home, and this is the one
                 // resolve a toggle goes through.
-                renderer.setSplatForItem(splatName, splatMode);
+                renderer.setSplatForItem(splatName, splatMode, splatLens);
             }
         });
         // GUARDED, and this was the bug that made a clip show one frozen frame.
