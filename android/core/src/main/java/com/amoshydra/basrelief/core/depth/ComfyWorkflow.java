@@ -232,6 +232,28 @@ public final class ComfyWorkflow {
     public static final int SHARP_BUDGET = 150_000;
 
     /**
+     * The dev BUDGET range, in splats: the ladder the user compares by eye.
+     *
+     * <p>150k is the shipped default and the bottom of the range; 1.2M is the top
+     * of the ladder (the measured verdict is 150k soft, 741k right, 1.05M
+     * indistinguishable from full -- and on this phone 741k ≈ 18 fps, 1.05M ≈ 13).
+     * A stored value is clamped here rather than trusted, the same rule
+     * {@link com.amoshydra.basrelief.core.render.Splat#clampEps2d} follows: a pref
+     * that cannot claim a count answers the default rather than the node's own
+     * 999999 fallback, which is a number this app never chose.
+     */
+    public static final int SHARP_BUDGET_MIN = 150_000;
+    public static final int SHARP_BUDGET_MAX = 1_200_000;
+
+    /** The budget a stored value means. Non-positive and absurd values answer the default. */
+    public static int clampSharpBudget(int budget) {
+        if (budget <= 0) return SHARP_BUDGET;
+        if (budget < SHARP_BUDGET_MIN) return SHARP_BUDGET_MIN;
+        if (budget > SHARP_BUDGET_MAX) return SHARP_BUDGET_MAX;
+        return budget;
+    }
+
+    /**
      * SHARP's inference size. It accepts only {@code 384 + 288k}; the node snaps
      * anything else to the nearest and logs it, so this is a request rather than a
      * promise. 1536 is the size the node's own reference run used.
@@ -289,6 +311,21 @@ public final class ComfyWorkflow {
      */
     public static String sharpStillWorkflow(JSONObject info, String uploadedName, String tag,
                                             float focalPx) throws JSONException {
+        return sharpStillWorkflow(info, uploadedName, tag, focalPx, SHARP_BUDGET);
+    }
+
+    /**
+     * The same graph with the budget stated, for the dev BUDGET knob.
+     *
+     * <p>A budget is a ceiling on the file, and the whole point of the dev ladder is
+     * to regenerate one item at a different one and look at it -- so the value has
+     * to be the caller's, read from the pref at the moment of submission. The
+     * one-argument-lighter form above keeps {@link #SHARP_BUDGET}, so nothing that
+     * does not opt in changes; the clamp is here so a pref that cannot claim a
+     * count reaches the node as the default rather than as the node's own fallback.
+     */
+    public static String sharpStillWorkflow(JSONObject info, String uploadedName, String tag,
+                                            float focalPx, int budget) throws JSONException {
         JSONObject nodeInfo = info.getJSONObject(SHARP_STILL);
 
         JSONObject load = loadImageNode(uploadedName);
@@ -301,7 +338,7 @@ public final class ComfyWorkflow {
         JSONObject in = discoveredInputs(nodeInfo, "image");
         in.put("image", link(SHARP_LOAD_ID));
         in.put("internal_size", SHARP_INTERNAL_SIZE);
-        in.put("budget", SHARP_BUDGET);
+        in.put("budget", clampSharpBudget(budget));
         in.put("tag", tag);
         in.put("focal_px", (double) Math.max(0f, focalPx));
         // Hand the predictor's VRAM back at the end: the phone runs one still at a

@@ -60,6 +60,69 @@ public final class Splat {
      */
     public static final float COVERAGE = 1.15f;
 
+    // ------------------------------------------------------ the tuning knobs
+    //
+    // The three values a dev tunes by eye on the phone. They are NOT in the
+    // persisted per-item schema (SurfaceSettings / LibraryItem / Framing's counted
+    // fields) -- deliberately, until the look they settle on is known, because a
+    // field added to the counted chain is a field every writer must carry and a
+    // schema bump for a number that is still being chosen. They live as plain
+    // prefs read at draw, exactly as the Stage-0 `splat_grid` and `splat_scale`
+    // dev keys do, so the product defaults below are what a user who never opens
+    // the dev group sees. Their clamps are here, in :core, so a pref written by a
+    // newer build, restored from another device or typed by adb cannot put the
+    // shader in a state no test can name.
+
+    /**
+     * The product default 2D low-pass floor, gsplat's {@code eps2d}: it lifts only
+     * the splats whose screen covariance is too small to sample, so a far field of
+     * ~2 px splats at 2 px spacing stops reading as a screen-door fog. The measured
+     * knee is 2.5 (the stripes are gone, the subject visually unchanged); see
+     * {@link com.amoshydra.basrelief.core.splat.SplatProjection} and the shader's
+     * own record for the numbers.
+     */
+    public static final float EPS_2D_DEFAULT = 2.5f;
+
+    /** The bottom of the dev SIZE range: the value the artifact first appeared at. */
+    public static final float EPS_2D_MIN = 0.3f;
+
+    /** The top of the dev SIZE range: the cleaner-sky option at a small subject cost. */
+    public static final float EPS_2D_MAX = 8f;
+
+    /**
+     * The floor a stored value means. A non-finite value, or one below the range,
+     * answers the default rather than the floor: a pref that cannot claim a value
+     * must not be read as one -- the "a window claims nothing" rule applied to a
+     * number, so a NaN cannot reach the shader as a NaN.
+     */
+    public static float clampEps2d(float value) {
+        if (!Float.isFinite(value)) return EPS_2D_DEFAULT;
+        if (value < EPS_2D_MIN) return EPS_2D_MIN;
+        if (value > EPS_2D_MAX) return EPS_2D_MAX;
+        return value;
+    }
+
+    /** The product default post-blur radius, in pixels: 0 is the identity. */
+    public static final float BLUR_DEFAULT = 0f;
+
+    /**
+     * The top of the dev BLUR range, in render-target pixels. Six is where the
+     * speckle is gone several times over and the detail cost is obvious; a larger
+     * radius is a different effect (a defocus), not a cleaner version of this one.
+     */
+    public static final float BLUR_MAX = 6f;
+
+    /**
+     * The radius a stored value means. Negative and non-finite answer the identity,
+     * not the magnitude: a blur is a one-sided quantity and a NaN radius must not
+     * reach the shader's loop bound.
+     */
+    public static float clampBlurPx(float value) {
+        if (!Float.isFinite(value) || value < 0f) return BLUR_DEFAULT;
+        if (value > BLUR_MAX) return BLUR_MAX;
+        return value;
+    }
+
     /**
      * The splat grids a level can select, smallest first: the field's own sampling
      * and multiples of it.

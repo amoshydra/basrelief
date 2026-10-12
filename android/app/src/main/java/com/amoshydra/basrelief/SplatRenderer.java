@@ -110,7 +110,7 @@ final class SplatRenderer {
 
     // Uniform locations.
     private int uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW, uNear, uFudge,
-            uFocal, uViewport, uBrightnessGain, uShadowLift;
+            uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d;
 
     // The cloud's CPU mirror.
     private int count;
@@ -137,8 +137,29 @@ final class SplatRenderer {
     // Offscreen target: the picture is drawn at `renderScale` of the surface and
     // blitted up. Fragment work is what scales with pixels and splats are soft.
     private int fbo, fboColour, fboDepth;
+    // The blur ping-pong target: the horizontal pass writes here, the vertical
+    // pass writes back into `fbo`. Allocated only while the dev BLUR knob is on.
+    private int fboB, fboBColour;
     private int renderW = 1, renderH = 1;
     private float scaleInUse = 1f;
+    /** Whether the last ensureOffscreen armed the FBO path (scale < 1 or blur on). */
+    private boolean offscreenActive;
+    /** Whether the last ensureOffscreen armed the blur passes. */
+    private boolean blurActive;
+
+    // The blur program and its uniforms. GLES3 only, like everything here.
+    private int blurProg;
+    private int uBlurTex, uBlurTexel, uBlurDir, uBlurRadius;
+
+    /**
+     * The two dev values the last frame actually drew with, for the stats line.
+     *
+     * <p>Written in {@link #draw} from the arguments, so the per-second log states
+     * the numbers the frame used rather than the prefs -- a screenshot of the log
+     * is then self-describing without a second adb call.
+     */
+    private float eps2dInUse = Splat.EPS_2D_DEFAULT;
+    private float blurPxInUse = Splat.BLUR_DEFAULT;
 
     private final float[] eye = new float[3];
     private final float[] forward = new float[3];
@@ -204,9 +225,14 @@ final class SplatRenderer {
         fbo = 0;
         fboColour = 0;
         fboDepth = 0;
+        fboB = 0;
+        fboBColour = 0;
+        blurProg = 0;
         renderW = 1;
         renderH = 1;
         scaleInUse = 1f;
+        offscreenActive = false;
+        blurActive = false;
         ready = false;
         sortPrimed = false;
         timerExt = false;
@@ -324,6 +350,10 @@ final class SplatRenderer {
             GLES30.glDeleteProgram(prog);
             prog = 0;
         }
+        if (blurProg != 0) {
+            GLES30.glDeleteProgram(blurProg);
+            blurProg = 0;
+        }
         if (vboCorner != 0) {
             int[] v = new int[1];
             v[0] = vboCorner;
@@ -345,16 +375,32 @@ final class SplatRenderer {
      * @param cloudLens the cloud's own lens, as {@code focal / height}, or 0 for
      *                  unknown. See {@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens};
      *                  0 draws at {@link #SOURCE_FOVY}, the demo cloud's lens.
+     * @param eps2d the dev SIZE knob: the 2D low-pass floor, clamped through
+     *              {@link Splat#clampEps2d} so a bad pref cannot reach the shader.
+     *              {@link Splat#EPS_2D_DEFAULT} is the shipped value.
+     * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
+     *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
+     *               identity and skips both passes entirely.
      */
     void draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
-              float brightnessGain, float shadowLift, float renderScale, float cloudLens) {
+              float brightnessGain, float shadowLift, float renderScale, float cloudLens,
+              float eps2d, float blurPx) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
         long t0 = System.nanoTime();
 
-        ensureOffscreen(surfaceW, surfaceH, renderScale);
+        // Clamped here as well as at the pref read, because the renderer is the one
+        // place both the dev slider and the cold reload converge and a value that
+        // reached the shader unclamped would be a state no test can name.
+        eps2d = Splat.clampEps2d(eps2d);
+        blurPx = Splat.clampBlurPx(blurPx);
+        boolean blur = blurPx >= 0.5f;
+        eps2dInUse = eps2d;
+        blurPxInUse = blurPx;
+
+        ensureOffscreen(surfaceW, surfaceH, renderScale, blur);
         int vw = fbo != 0 ? renderW : surfaceW;
         int vh = fbo != 0 ? renderH : surfaceH;
 
@@ -436,6 +482,7 @@ final class SplatRenderer {
         GLES30.glUniform1i(uOrderW, ORDER_W);
         GLES30.glUniform1f(uNear, NEAR);
         GLES30.glUniform1f(uFudge, 1f);
+        GLES30.glUniform1f(uEps2d, eps2d);
         GLES30.glUniform1f(uBrightnessGain, brightnessGain);
         GLES30.glUniform1f(uShadowLift, shadowLift);
         GLES30.glUniform2f(uFocal, 0.5f * vw * proj[0], 0.5f * vh * proj[5]);
@@ -452,6 +499,13 @@ final class SplatRenderer {
         GLES30.glDisable(GLES30.GL_BLEND);
 
         if (fbo != 0) {
+            // The dev BLUR knob, when on: horizontal fbo -> fboB, vertical fboB ->
+            // fbo, then the same blit up. Both passes are skipped at radius 0, which
+            // is why the identity costs nothing at all.
+            if (blur && fboB != 0 && ensureBlurProgram()) {
+                blurPass(fboB, fboColour, vw, vh, 1f, 0f, blurPx);
+                blurPass(fbo, fboBColour, vw, vh, 0f, 1f, blurPx);
+            }
             GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo);
             GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0);
             GLES30.glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, surfaceW, surfaceH,
@@ -565,15 +619,26 @@ final class SplatRenderer {
 
     // ------------------------------------------------------------- offscreen
 
-    private void ensureOffscreen(int surfaceW, int surfaceH, float scale) {
+    private void ensureOffscreen(int surfaceW, int surfaceH, float scale, boolean blur) {
         int rw = Math.max(1, Math.round(surfaceW * scale));
         int rh = Math.max(1, Math.round(surfaceH * scale));
-        if (rw == renderW && rh == renderH && Math.abs(scale - scaleInUse) < 1e-4f && fbo != 0) return;
+        // The blur needs a texture to sample, so it forces the FBO path even at
+        // render scale 1 -- the one case that otherwise draws straight to the
+        // surface. `blurActive` records what was ASKED, not whether fboB came up, so
+        // a target that fails to build does not re-allocate every frame; the draw
+        // checks fboB itself before using it.
+        boolean wantFbo = scale < 0.999f || blur;
+        boolean unchanged = rw == renderW && rh == renderH
+                && Math.abs(scale - scaleInUse) < 1e-4f
+                && offscreenActive == wantFbo && blurActive == blur;
+        if (unchanged && (!wantFbo || fbo != 0)) return;
         releaseOffscreen();
         scaleInUse = scale;
         renderW = rw;
         renderH = rh;
-        if (scale >= 0.999f) return;      // 1.0 draws straight to the surface
+        offscreenActive = wantFbo;
+        blurActive = blur;
+        if (!wantFbo) return;      // 1.0 draws straight to the surface
         int[] v = new int[1];
         GLES30.glGenFramebuffers(1, v, 0);
         fbo = v[0];
@@ -584,7 +649,11 @@ final class SplatRenderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboColour);
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, rw, rh, 0,
                 GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null);
-        nearest(fboColour);
+        // LINEAR, not NEAREST: the blur samples this texture, and a nearest tap at
+        // the fractional offsets the Gaussian uses would quantise the kernel back
+        // toward a box. Nothing else samples it -- the blit's filter is its own
+        // argument -- so this changes only the blur.
+        linear(fboColour);
         GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, fboDepth);
         GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, rw, rh);
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo);
@@ -601,7 +670,94 @@ final class SplatRenderer {
             renderW = surfaceW;
             renderH = surfaceH;
             scaleInUse = 1f;
+            return;
         }
+        if (!blur) return;
+        // The blur's ping-pong target. No depth: it is a colour-only pass. A failure
+        // here is not fatal -- the draw skips the blur and shows the picture -- which
+        // is the right way round, because a missing pass is soft and a half-built
+        // one is black.
+        GLES30.glGenFramebuffers(1, v, 0);
+        fboB = v[0];
+        GLES30.glGenTextures(1, v, 0);
+        fboBColour = v[0];
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboBColour);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, rw, rh, 0,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null);
+        linear(fboBColour);
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fboB);
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
+                GLES30.GL_TEXTURE_2D, fboBColour, 0);
+        int stB = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER);
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        if (stB != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            android.util.Log.w(TAG, "splat blur target incomplete (" + stB + "), blur off");
+            int[] del = new int[1];
+            del[0] = fboB;
+            GLES30.glDeleteFramebuffers(1, del, 0);
+            del[0] = fboBColour;
+            GLES30.glDeleteTextures(1, del, 0);
+            fboB = 0;
+            fboBColour = 0;
+        }
+    }
+
+    /**
+     * One axis of the separable blur, into {@code target}, sampling {@code srcTex}.
+     *
+     * <p>Fullscreen triangle, no attribute, no buffer: the vertex shader derives it
+     * from {@code gl_VertexID}. The caller has already guaranteed a program and a
+     * source texture, so this does no error handling of its own -- see {@link #draw},
+     * which only calls it when {@link #ensureBlurProgram} answered true and
+     * {@code fboB} exists.
+     */
+    private void blurPass(int target, int srcTex, int w, int h,
+                          float dx, float dy, float radius) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, target);
+        GLES30.glViewport(0, 0, w, h);
+        GLES30.glDisable(GLES30.GL_BLEND);
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+        // The blur reads no attribute; the cards' array 0 is left disabled so a
+        // driver that fetches anyway cannot read a buffer this pass never binds.
+        GLES30.glDisableVertexAttribArray(0);
+        GLES30.glUseProgram(blurProg);
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0);
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, srcTex);
+        GLES30.glUniform1i(uBlurTex, 0);
+        GLES30.glUniform2f(uBlurTexel, 1f / w, 1f / h);
+        GLES30.glUniform2f(uBlurDir, dx, dy);
+        GLES30.glUniform1f(uBlurRadius, radius);
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3);
+    }
+
+    /** Build the blur program on first use. False when it cannot come up. */
+    private boolean ensureBlurProgram() {
+        if (blurProg != 0) return true;
+        int vs = compile(GLES30.GL_VERTEX_SHADER, BLUR_VERT);
+        int fs = compile(GLES30.GL_FRAGMENT_SHADER, BLUR_FRAG);
+        if (vs == 0 || fs == 0) return false;
+        int p = GLES30.glCreateProgram();
+        GLES30.glAttachShader(p, vs);
+        GLES30.glAttachShader(p, fs);
+        GLES30.glLinkProgram(p);
+        int[] ok = new int[1];
+        GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0);
+        GLES30.glDeleteShader(vs);
+        GLES30.glDeleteShader(fs);
+        if (ok[0] == 0) {
+            android.util.Log.e(TAG, "splat blur link failed: " + GLES30.glGetProgramInfoLog(p));
+            GLES30.glDeleteProgram(p);
+            return false;
+        }
+        blurProg = p;
+        uBlurTex = GLES30.glGetUniformLocation(blurProg, "uBlurTex");
+        uBlurTexel = GLES30.glGetUniformLocation(blurProg, "uBlurTexel");
+        uBlurDir = GLES30.glGetUniformLocation(blurProg, "uBlurDir");
+        uBlurRadius = GLES30.glGetUniformLocation(blurProg, "uBlurRadius");
+        for (int loc : new int[] { uBlurTex, uBlurTexel, uBlurDir, uBlurRadius }) {
+            if (loc < 0) android.util.Log.e(TAG, "splat blur uniform dropped in silence");
+        }
+        return true;
     }
 
     private void releaseOffscreen() {
@@ -614,9 +770,20 @@ final class SplatRenderer {
             v[0] = fboDepth;
             GLES30.glDeleteRenderbuffers(1, v, 0);
         }
+        if (fboB != 0) {
+            int[] v = new int[1];
+            v[0] = fboB;
+            GLES30.glDeleteFramebuffers(1, v, 0);
+            v[0] = fboBColour;
+            GLES30.glDeleteTextures(1, v, 0);
+        }
         fbo = 0;
         fboColour = 0;
         fboDepth = 0;
+        fboB = 0;
+        fboBColour = 0;
+        offscreenActive = false;
+        blurActive = false;
     }
 
     private static int ceilRows(int count, int width) {
@@ -627,6 +794,15 @@ final class SplatRenderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+    }
+
+    /** A colour target the blur samples: linear both ways, clamped at the edge. */
+    private void linear(int tex) {
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
     }
@@ -661,12 +837,13 @@ final class SplatRenderer {
         uOrderW = GLES30.glGetUniformLocation(prog, "uOrderW");
         uNear = GLES30.glGetUniformLocation(prog, "uNear");
         uFudge = GLES30.glGetUniformLocation(prog, "uFudge");
+        uEps2d = GLES30.glGetUniformLocation(prog, "uEps2d");
         uFocal = GLES30.glGetUniformLocation(prog, "uFocal");
         uViewport = GLES30.glGetUniformLocation(prog, "uViewport");
         uBrightnessGain = GLES30.glGetUniformLocation(prog, "uBrightnessGain");
         uShadowLift = GLES30.glGetUniformLocation(prog, "uShadowLift");
         for (int loc : new int[] { uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW,
-                uNear, uFudge, uFocal, uViewport, uBrightnessGain, uShadowLift }) {
+                uNear, uFudge, uEps2d, uFocal, uViewport, uBrightnessGain, uShadowLift }) {
             if (loc < 0) android.util.Log.e(TAG, "splat uniform dropped in silence");
         }
     }
@@ -780,6 +957,8 @@ final class SplatRenderer {
         float frameMs = 1000f / Math.max(fps, 0.001f);
         float sortMs = sortsInWindow > 0 ? sortNanosInWindow / 1e6f / sortsInWindow : 0f;
         android.util.Log.i(TAG, "splat: count=" + count
+                + " eps2d=" + fmt(eps2dInUse)
+                + " blurPx=" + fmt(blurPxInUse)
                 + " fps=" + fmt(fps)
                 + " frameMs=" + fmt(frameMs)
                 + " maxFrameMs=" + fmt(maxFrameNanos / 1e6f)
@@ -857,8 +1036,11 @@ final class SplatRenderer {
             "precision highp sampler2D;\n" +
             "precision highp usampler2D;\n" +
             "\n" +
-            // See the note at its use: a floor on the 2D covariance, not a blur.
-            "const float SPLAT_EPS_2D = 2.5;\n" +
+            // A floor on the 2D covariance, not a blur; see its use below and the
+            // class's note. A UNIFORM rather than a const so the dev SIZE knob
+            // (Splat.EPS_2D_DEFAULT's home) moves it live on the GL thread with no
+            // recompile and no restart.
+            "uniform float uEps2d;\n" +
             "\n" +
             "uniform mat4 uProj;\n" +
             "uniform mat4 uView;\n" +
@@ -946,14 +1128,15 @@ final class SplatRenderer {
             // on the cloud that showed the striping (sky high-frequency energy /
             // subject high-frequency energy / black holes): 0.3 -> 10.08 / 1.68 /
             // 9.6%; 1.5 -> 5.26 / 1.46 / 1.8%; 2.5 -> 2.98 / 1.35 / 0.2%; 4.0 ->
-            // 1.27 / 1.26 / 0.0%. 2.5 is the knee: the stripes are gone and the
-            // subject is visually unchanged. 4.0 is the cleaner-sky option at a
-            // small subject cost, and is deliberately not shipped. This is the
+            // 1.27 / 1.26 / 0.0%. 2.5 is the knee and the shipped default: the
+            // stripes are gone and the subject is visually unchanged. 4.0 is the
+            // cleaner-sky option at a small subject cost. The dev SIZE knob spans
+            // 0.3..8, so a phone can re-pick that trade by eye. This is the
             // only place the floor lives -- :core's SplatProjection::conic has no
             // equivalent (its MIN_DET is a singularity guard, not a floor), so
             // there is nothing to keep in step.
-            "  cov00 += SPLAT_EPS_2D;\n" +
-            "  cov11 += SPLAT_EPS_2D;\n" +
+            "  cov00 += uEps2d;\n" +
+            "  cov11 += uEps2d;\n" +
             "\n" +
             "  float det = cov00 * cov11 - cov01 * cov01;\n" +
             "  if (det <= 1e-9) {\n" +
@@ -1021,5 +1204,69 @@ final class SplatRenderer {
             "  vec3 c = vColor.rgb * uBrightnessGain;\n" +
             "  c += uShadowLift * (1.0 - c);\n" +
             "  outColor = vec4(c, a);\n" +
+            "}\n";
+
+    // ------------------------------------------------------------------ blur
+    //
+    // The dev BLUR knob: a real post-softness on the splat FBO, in render-target
+    // pixels, 0 = identity. It is NOT the SIZE floor and does not pretend to be --
+    // the floor lifts the splats too small to sample and leaves the well-sampled
+    // ones alone, so it removes the screen-door without touching detail; a blur
+    // smears the whole picture, so it removes residual speckle at the cost of the
+    // detail the floor preserved. Density (BUDGET, a regeneration) is the only
+    // thing that gets the detail back. See the class note for the measurement.
+    //
+    // MSAA was assessed and is NOT used, because it cannot do this job: it
+    // antialiases the EDGES of the triangles that are drawn, and the artifact is
+    // the BLACK GAPS between splats that are not drawn -- a coverage problem, not
+    // an aliasing one. 4x MSAA on the surface (ReliefRenderer.enableMSAA) already
+    // applies to the direct-to-surface path and leaves the screen-door exactly as
+    // it was. So the blur is a separable Gaussian: one pass per axis, each a
+    // fullscreen triangle derived from gl_VertexID (no VBO), sampling the previous
+    // pass's colour texture. 13 taps per axis at the top radius.
+
+    /** Fullscreen triangle: no attribute, no buffer, the same id trick as the cards. */
+    private static final String BLUR_VERT =
+            "#version 300 es\n" +
+            "precision highp float;\n" +
+            "out vec2 vUv;\n" +
+            "void main() {\n" +
+            "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n" +
+            "  vUv = p;\n" +
+            "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n" +
+            "}\n";
+
+    /**
+     * One axis of the separable Gaussian.
+     *
+     * <p>The offsets are whole pixels and the weights are a Gaussian of sigma
+     * {@code radius/2}, so {@code radius} is the kernel's half-width in pixels --
+     * the number the label states. The loop is a fixed {@code -6..6} with a
+     * weight that is zero beyond the radius, so the cost is constant whenever the
+     * pass runs at all and no dynamic loop bound can reach the driver. The pass is
+     * skipped entirely at radius &lt; 0.5, which is why 0 is exactly the identity.
+     */
+    private static final String BLUR_FRAG =
+            "#version 300 es\n" +
+            "precision highp float;\n" +
+            "uniform sampler2D uBlurTex;\n" +
+            "uniform vec2 uBlurTexel;\n" +
+            "uniform vec2 uBlurDir;\n" +
+            "uniform float uBlurRadius;\n" +
+            "in vec2 vUv;\n" +
+            "out vec4 outColor;\n" +
+            "void main() {\n" +
+            "  float sigma = max(uBlurRadius, 0.5) * 0.5;\n" +
+            "  float twoSigma2 = 2.0 * sigma * sigma;\n" +
+            "  vec4 sum = vec4(0.0);\n" +
+            "  float wsum = 0.0;\n" +
+            "  for (int i = -6; i <= 6; i++) {\n" +
+            "    float fi = float(i);\n" +
+            "    float w = exp(-(fi * fi) / twoSigma2);\n" +
+            "    w *= 1.0 - step(uBlurRadius + 0.001, abs(fi));\n" +
+            "    sum += texture(uBlurTex, vUv + uBlurDir * uBlurTexel * fi) * w;\n" +
+            "    wsum += w;\n" +
+            "  }\n" +
+            "  outColor = wsum > 0.0 ? sum / wsum : texture(uBlurTex, vUv);\n" +
             "}\n";
 }

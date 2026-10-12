@@ -217,8 +217,22 @@ final class SplatImport {
                 api.freeMemory();
             } catch (Exception ignored) {
             }
+            // The budget is the dev BUDGET knob's value, read here at submission
+            // rather than at draw: it is a generation-side number, and the point of
+            // the ladder is to regenerate one item at a different one and look at
+            // it. Clamped in :core, so a pref that cannot claim a count runs the
+            // shipped default rather than the node's own 999999 fallback.
+            int budget = ComfyWorkflow.SHARP_BUDGET;
+            try {
+                budget = ComfyWorkflow.clampSharpBudget(
+                        prefs.getInt(ReliefRenderer.KEY_SPLAT_BUDGET,
+                                ComfyWorkflow.SHARP_BUDGET));
+            } catch (Exception ignored) {
+                // A pref of the wrong type is the default, not a crash.
+            }
+            android.util.Log.i(TAG, "splat: budget=" + budget + " for " + id);
             String graph = ComfyWorkflow.sharpStillWorkflow(new JSONObject(info), uploadedName,
-                    tag, item.focal);
+                    tag, item.focal, budget);
             JSONObject submitted = new JSONObject(api.submitPrompt(graph, "basrelief-splat-" + id));
             promptId = submitted.getString("prompt_id");
             // THE RECORD, written once the server has accepted the prompt, and

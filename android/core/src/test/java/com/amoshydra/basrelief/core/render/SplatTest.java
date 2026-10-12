@@ -182,4 +182,54 @@ public class SplatTest {
         assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(Splat.GRID_LEVELS.length));
         assertEquals(Splat.GRID_LEVELS[0], Splat.gridForLevel(9999));
     }
+
+    /**
+     * The dev SIZE knob's clamp, and the one wrong answer a screenshot cannot tell
+     * from the right one: a value that cannot claim a number.
+     *
+     * <p>The floor is a quantity the shader adds to a covariance, so a NaN reaching
+     * it poisons every splat's conic and the whole cloud disappears; a value below
+     * the range is the artifact's own setting (the screen-door returns) and a value
+     * above it is a look nobody measured. So a non-finite pref answers the DEFAULT,
+     * not the nearest bound — that is the {@code DepthSource} "a window claims
+     * nothing" rule applied to a number, and it is the assertion that would fail if
+     * this were written as a plain min/max, where {@code NaN} compares false and
+     * falls through to the value.
+     */
+    @Test
+    public void theSizeKnobClampsAndAValueThatClaimsNothingIsTheDefault() {
+        assertEquals(Splat.EPS_2D_DEFAULT, Splat.clampEps2d(Splat.EPS_2D_DEFAULT), 0f);
+        assertEquals("inside the range is kept exactly",
+                4f, Splat.clampEps2d(4f), 0f);
+        assertEquals("below the range is the floor",
+                Splat.EPS_2D_MIN, Splat.clampEps2d(0f), 0f);
+        assertEquals("below the range is the floor",
+                Splat.EPS_2D_MIN, Splat.clampEps2d(-3f), 0f);
+        assertEquals("above the range is the ceiling",
+                Splat.EPS_2D_MAX, Splat.clampEps2d(100f), 0f);
+        assertEquals("a NaN claims nothing and must be the default, not a NaN",
+                Splat.EPS_2D_DEFAULT, Splat.clampEps2d(Float.NaN), 0f);
+        assertEquals("an infinity claims nothing",
+                Splat.EPS_2D_DEFAULT, Splat.clampEps2d(Float.POSITIVE_INFINITY), 0f);
+    }
+
+    /**
+     * The dev BLUR knob's clamp: one-sided, so 0 is the identity and a negative or
+     * non-finite value is that identity rather than its magnitude.
+     *
+     * <p>The failure this pins is quiet: a {@code -2} read as a magnitude would
+     * blur exactly as much as {@code +2} while the label printed "-2.0", and a NaN
+     * radius would reach the shader's weight term and zero every tap.
+     */
+    @Test
+    public void theBlurKnobIsOneSidedAndZeroIsTheIdentity() {
+        assertEquals("0 is the identity", 0f, Splat.clampBlurPx(0f), 0f);
+        assertEquals(Splat.BLUR_DEFAULT, Splat.clampBlurPx(0f), 0f);
+        assertEquals("inside the range is kept exactly", 3f, Splat.clampBlurPx(3f), 0f);
+        assertEquals("above the range is the ceiling", Splat.BLUR_MAX, Splat.clampBlurPx(99f), 0f);
+        assertEquals("a negative radius is the identity, not its magnitude",
+                0f, Splat.clampBlurPx(-2f), 0f);
+        assertEquals("a NaN radius claims nothing",
+                Splat.BLUR_DEFAULT, Splat.clampBlurPx(Float.NaN), 0f);
+    }
 }

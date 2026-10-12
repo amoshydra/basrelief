@@ -479,6 +479,58 @@ already cost real time.
       the wanted row, so a row that gains a lens repaints through the loaded cloud
       with no re-decode; a new cloud FILE (a new filename) is the identity change,
       exactly as it was before.
+  - **The splat look has three dev knobs, they are NOT in the counted schema, and
+    two of them are different things that both look like "softness".** The problem
+    they tune: a 150k cloud is drawn at roughly one splat per 12 px with ~1 px
+    splats, so a bright flat field reads as a screen-door — invisible on mid-tones,
+    black-and-white noise on a bright sky. They live as prefs read at draw
+    (`ReliefRenderer.KEY_SPLAT_EPS2D` / `KEY_SPLAT_BLUR` / `KEY_SPLAT_BUDGET`),
+    exactly as the Stage-0 `splat_grid` and `splat_scale` keys do, **because
+    `SurfaceSettings.with` and `Framing`'s counted fields are deliberately untouched
+    until the values are known** — a field in the counted chain is a schema bump plus
+    a writer at every call site for a number that may not survive the tuning. The
+    product defaults are unchanged for anyone who never opens the dev group:
+    `Splat.EPS_2D_DEFAULT` = 2.5, `Splat.BLUR_DEFAULT` = 0,
+    `ComfyWorkflow.SHARP_BUDGET` = 150k.
+    - **SIZE is a coverage lift, not a blur, and that distinction is the whole
+      point.** The `eps2d` floor lifts only the splats whose screen covariance is
+      too small to sample and leaves the well-sampled ones alone, so it removes the
+      screen-door without smearing detail. Measured (sky high-frequency energy /
+      subject high-frequency energy / black holes): 0.3 → 10.08 / 1.68 / 9.6%;
+      2.5 → 2.98 / 1.35 / 0.2%; 4.0 → 1.27 / 1.26 / 0.0%. 2.5 is the knee and the
+      shipped value; the dev row spans 0.3..8 so a phone can re-pick the trade by
+      eye. It is a `uniform`, not a `const`, so it moves live with no recompile.
+    - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
+      One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
+      from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
+      nothing. `Splat.BLUR_MAX` = 6 render-target pixels. **MSAA was assessed and is
+      NOT the tool**: it antialiases the EDGES of the triangles that are drawn, and
+      the artifact is the BLACK GAPS between splats that are not drawn — a coverage
+      problem, not an aliasing one, which is why the 4x MSAA already on the surface
+      (`ReliefRenderer.enableMSAA`) leaves the screen-door exactly as it was. **Only
+      density (BUDGET, a regeneration) gets the detail back**; the blur is honest
+      about being a trade, not a fix.
+    - **BUDGET is generation-side and is read at submission, not at draw.** It is
+      the `budget` the app sends to `SharpStill`, read in `SplatImport.generate`
+      from the same pref the confirm sheet states (`MainActivity.cloudBudget`), so
+      the number the user compares by eye is the number that runs. The ladder's own
+      verdict is 150k soft, 741k right, 1.05M indistinguishable from full — and on
+      the measured phone 741k ≈ 18 fps, 1.05M ≈ 13. A dev changes it and presses
+      Regenerate on one row to compare. The confirm's `~10 s · ~4.8 MB` estimate is
+      deliberately NOT scaled by the budget: it is the node's own reference run, and
+      a scaled guess would be a second, unmeasured number.
+    - **The group is shown only when it can change a pixel** — the selected row is
+      in Splat mode AND names a cloud file that is here, the two conditions
+      `ReliefRenderer.useSplat()` draws under. A row in Splat mode with no cloud
+      renders its relief, where Size and Blur are inert; a control that cannot change
+      anything is the lie this file keeps refusing to ship. Size and Blur dim the
+      sheet while held (`dimWhileInteracting`) so the render shows through the finger;
+      Budget does not, because it changes nothing on screen to reveal.
+    - **The floor's and the blur's per-setting cost is the one thing still
+      unmeasured, because the phone is unreachable** (`No route to host`). The
+      `splat:` STATS line now prints `eps2d=` and `blurPx=` beside `count`/`fps`/
+      `gpuMs`, so the first device session can read the cost straight off a log —
+      that is what those two fields are for.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -848,7 +900,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 628 tests across thirty-five classes:
+it**. 631 tests across thirty-five classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for

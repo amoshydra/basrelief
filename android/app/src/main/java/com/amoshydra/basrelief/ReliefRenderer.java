@@ -183,6 +183,30 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     static final String KEY_SPLAT_SCALE = "splat_scale";
 
+    /**
+     * The splat look's dev tuning knobs, read at draw and written by the sheet's dev
+     * group. <b>Not</b> in the per-item schema ({@code SurfaceSettings} / {@code Framing}'s
+     * counted fields) on purpose: these are values still being chosen by eye, and a
+     * field in the counted chain is a schema bump plus a writer every call site must
+     * carry for a number that may not survive the tuning. They are the same shape as
+     * {@link #KEY_SPLAT_GRID} and {@link #KEY_SPLAT_SCALE}: a pref, off the product
+     * path, so a user who never opens the dev group sees {@link Splat#EPS_2D_DEFAULT}
+     * and {@link Splat#BLUR_DEFAULT} and nothing else.
+     *
+     * <p>{@link #KEY_SPLAT_EPS2D} is the 2D low-pass floor (gsplat's {@code eps2d});
+     * {@link #KEY_SPLAT_BLUR} is the post-blur radius in render-target pixels.
+     */
+    static final String KEY_SPLAT_EPS2D = "splat_eps2d";
+    static final String KEY_SPLAT_BLUR = "splat_blur_px";
+
+    /**
+     * The generation-side dev knob: the budget the next cloud build sends to
+     * {@code SharpStill}. Read by {@link SplatImport} at submission and by the
+     * confirm sheet, so the number the user compares by eye is the number that runs.
+     * Default {@link com.amoshydra.basrelief.core.depth.ComfyWorkflow#SHARP_BUDGET}.
+     */
+    static final String KEY_SPLAT_BUDGET = "splat_budget";
+
     // The Stage-0 `splat_file` debug pref lived here: a bare filename used as the
     // splat for the bundled row when that row named no cloud. Stage 1 retired it --
     // the demo's cloud ships in res/raw, the ordinary seed copies it and names it on
@@ -701,6 +725,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile float splatWantedLens;
     private volatile float splatRenderScale = 1f;
+
+    /**
+     * The dev tuning knobs, written by the sheet's dev group and read at draw.
+     *
+     * <p>Volatile and nothing more, per the threading rule: a UI-thread setter may
+     * only write a field, and the GL thread reads these in {@link #onDrawFrame} and
+     * hands them to {@link SplatRenderer#draw}. They are seeded from the prefs in
+     * {@link #reloadFromPrefs} (so a reboot keeps the tuned look) and moved live by
+     * the dev sliders, which is what makes the trade pickable by eye without a
+     * rebuild.
+     */
+    private volatile float splatEps2d = Splat.EPS_2D_DEFAULT;
+    private volatile float splatBlurPx = Splat.BLUR_DEFAULT;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -1966,6 +2003,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void setMotion(float v) {
         motion = Math.max(0f, Math.min(3f, v));
+    }
+
+    /**
+     * Live write for the dev SIZE knob: the 2D low-pass floor, gsplat's
+     * {@code eps2d}.
+     *
+     * <p>Writes only a volatile field and does not touch GL, so it is safe from the
+     * UI thread — the same rule {@link #setDepth} and {@link #setMotion} follow. The
+     * draw reads it next frame and hands it to {@link SplatRenderer}; no recompile,
+     * no restart, and nothing is persisted here (the slider's release writes the
+     * pref), exactly as the other live previews behave.
+     */
+    public void setSplatEps2d(float v) {
+        splatEps2d = Splat.clampEps2d(v);
+    }
+
+    /**
+     * Live write for the dev BLUR knob: the post-blur radius in render-target
+     * pixels. Same contract as {@link #setSplatEps2d}; 0 is the identity and skips
+     * both blur passes.
+     */
+    public void setSplatBlurPx(float v) {
+        splatBlurPx = Splat.clampBlurPx(v);
     }
 
     /**
@@ -3254,6 +3314,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
         splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
+        // The two draw-side dev knobs, read with the rest of the cold-load state so a
+        // reboot keeps the tuned look. Clamped through :core, so a pref written by a
+        // newer build or restored from another device cannot reach the shader as a
+        // value no test can name -- and a non-finite one answers the product default
+        // rather than a NaN uniform.
+        splatEps2d = Splat.clampEps2d(p.getFloat(KEY_SPLAT_EPS2D, Splat.EPS_2D_DEFAULT));
+        splatBlurPx = Splat.clampBlurPx(p.getFloat(KEY_SPLAT_BLUR, Splat.BLUR_DEFAULT));
         setSplatForItem(active == null ? null : active.splatName,
                 active != null && active.isSplatMode(),
                 active == null ? 0f : active.splatLens);
@@ -3565,7 +3632,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
                     orbitX, orbitY, panX, panY,
                     pendingBrightnessGain, pendingShadowLift, splatRenderScale,
-                    splatWantedLens);
+                    splatWantedLens, splatEps2d, splatBlurPx);
             captureLockFrameIfWanted();
             return;
         }

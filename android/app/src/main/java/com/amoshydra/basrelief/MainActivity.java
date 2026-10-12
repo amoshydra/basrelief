@@ -535,6 +535,13 @@ public class MainActivity extends Activity {
      */
     private RendererRows rendererRows;
     /**
+     * The splat look's dev tuning group (Size / Blur / Budget), directly under the
+     * Renderer row. Built once and refreshed from the live index on every
+     * {@code refreshSliders}; see {@link SplatDevRows}. A dev path, shown only when
+     * the selected row draws a cloud.
+     */
+    private SplatDevRows splatDevRows;
+    /**
      * The Light group, hidden in splat mode.
      *
      * <p><b>Not because the row is unimplemented — because the cloud has no
@@ -1059,6 +1066,12 @@ public class MainActivity extends Activity {
         // when there is none) so it reads as the group's other axis.
         rendererRows = new RendererRows(this);
         sheetContent.addView(rendererRows.view(), rendererInsertIndex());
+        // The dev tuning group, directly under the Renderer row it tunes. Inserted
+        // after the renderer row rather than at a derived index, because the renderer
+        // row is the sibling it belongs to and it is always present for an item.
+        splatDevRows = new SplatDevRows(this);
+        sheetContent.addView(splatDevRows.view(),
+                sheetContent.indexOfChild(rendererRows.view()) + 1);
         motionCaption = sectionLabel(
                 heading(R.string.group_motion, R.string.group_motion_surface));
         // The launch state of the first-caption rule: without a depth row the caption
@@ -4260,6 +4273,9 @@ public class MainActivity extends Activity {
             lightSection.setVisibility(splatMode ? View.GONE : View.VISIBLE);
         }
         if (rendererRows != null) rendererRows.refresh();
+        // The dev tuning group follows the same one decision: shown only when the
+        // selected row draws a cloud, so its two live knobs cannot be inert.
+        if (splatDevRows != null) splatDevRows.refresh();
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
@@ -5841,6 +5857,7 @@ public class MainActivity extends Activity {
     /** Repaint the renderer row without touching storage. */
     void refreshRendererRows() {
         if (rendererRows != null) rendererRows.refresh();
+        if (splatDevRows != null) splatDevRows.refresh();
     }
 
     /**
@@ -5857,6 +5874,24 @@ public class MainActivity extends Activity {
         });
         applyFiles();
         refreshSliders();
+    }
+
+    /**
+     * The budget the next cloud build will send, from the dev BUDGET pref.
+     *
+     * <p>Read here rather than spelled as the constant, so the confirm states the
+     * count that will actually run — the whole point of the dev ladder is that the
+     * number is the user's, and a dialog claiming 150,000 while a 600,000 build runs
+     * is the "control nothing reads" lie in its other direction.
+     */
+    private int cloudBudget() {
+        try {
+            return com.amoshydra.basrelief.core.depth.ComfyWorkflow.clampSharpBudget(
+                    prefs.getInt(ReliefRenderer.KEY_SPLAT_BUDGET,
+                            com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET));
+        } catch (Exception e) {
+            return com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET;
+        }
     }
 
     /**
@@ -5877,8 +5912,7 @@ public class MainActivity extends Activity {
                 ? R.string.splat_confirm_rebuild_title : R.string.splat_confirm_title)));
         body.addView(ModalSheet.subtitle(this, getString(R.string.splat_confirm_body,
                 getString(R.string.splat_generator),
-                String.format(java.util.Locale.US, "%,d",
-                        com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET),
+                String.format(java.util.Locale.US, "%,d", cloudBudget()),
                 getString(R.string.splat_estimate))));
         sheet.body(body);
         Button notNow = ModalSheet.button(this, getString(R.string.splat_confirm_not_now),

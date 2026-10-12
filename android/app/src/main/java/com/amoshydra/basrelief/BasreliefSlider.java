@@ -718,6 +718,13 @@ final class BasreliefSlider extends LinearLayout {
         // the same reason: the same slider, and a key drawn as itself would read
         // "render_3d_level" in the name column.
         else if ("render_3d_level".equals(key)) res = R.string.slider_splat_detail;
+        // The splat dev group's three rows. They are dev controls on the studio
+        // sheet, but they are the same slider and must resolve a label the same way
+        // as every other row -- a key drawn as itself would read "splat_eps2d" in
+        // the fixed name column.
+        else if ("splat_eps2d".equals(key)) res = R.string.slider_splat_size;
+        else if ("splat_blur_px".equals(key)) res = R.string.slider_splat_blur;
+        else if ("splat_budget".equals(key)) res = R.string.slider_splat_budget;
         else res = 0;
         return res == 0 ? key : a.getString(res);
     }

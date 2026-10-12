@@ -841,6 +841,35 @@ public class ComfyWorkflowTest {
                         .getDouble("focal_px"), 1e-9);
     }
 
+    /**
+     * The dev BUDGET knob: a caller-stated budget reaches the node exactly, and a
+     * value that cannot claim a count is the app's default rather than the node's own.
+     *
+     * <p>The trap is the one the fixture's 999999 default already guards, in the other
+     * direction: a budget that silently came from the node rather than from the user
+     * would look identical in a screenshot of the graph, and the whole point of the
+     * ladder is "regenerate at 600k and compare". The clamp's job is that 0 ("unset"),
+     * a negative, and a value below the measured ladder all answer the shipped
+     * default or the nearest measured bound -- never the node's own fallback, which is
+     * a number this app never chose.
+     */
+    @Test
+    public void theDevBudgetReachesTheNodeAndClampsWhatCannotClaimACount() throws Exception {
+        JSONObject in = new JSONObject(ComfyWorkflow.sharpStillWorkflow(
+                sharpServerInfo(), "up.png", "item-1", 0f, 600_000))
+                .getJSONObject("2").getJSONObject("inputs");
+        assertEquals("a stated budget is the user's, not the node's default",
+                600_000, in.getInt("budget"));
+        assertEquals(ComfyWorkflow.SHARP_BUDGET, ComfyWorkflow.clampSharpBudget(0));
+        assertEquals(ComfyWorkflow.SHARP_BUDGET, ComfyWorkflow.clampSharpBudget(-1));
+        assertEquals("below the ladder is the bottom of it",
+                ComfyWorkflow.SHARP_BUDGET_MIN, ComfyWorkflow.clampSharpBudget(1_000));
+        assertEquals("above the ladder is the top of it",
+                ComfyWorkflow.SHARP_BUDGET_MAX, ComfyWorkflow.clampSharpBudget(99_000_000));
+        assertEquals("inside the ladder is kept exactly",
+                741_000, ComfyWorkflow.clampSharpBudget(741_000));
+    }
+
     /** The filenames the fetch and resume paths address, derived from the tag. */
     @Test
     public void sharpFileNamesMatchTheNodesRule() {
