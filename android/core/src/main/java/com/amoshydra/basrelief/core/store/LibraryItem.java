@@ -1196,13 +1196,19 @@ public final class LibraryItem {
             // again, and why this needed no version bump either. 0 means UNKNOWN and
             // is never stored, because a stored 0 and an absent key would be two
             // spellings of one state.
-            if (focal > 0f) o.put("focal", focal);
+            // The cast is load-bearing: :core compiles against Maven's org.json,
+            // which has put(String, float), while Android's platform org.json does
+            // NOT. A bare float argument therefore links here and throws
+            // NoSuchMethodError on the device -- on the index-writer thread, so it
+            // takes the app down on any write. Every float this class stores goes
+            // through (double), and scripts/check-json-puts.mjs enforces it.
+            if (focal > 0f) o.put("focal", (double) focal);
             // The cloud's lens, only when known: a row whose cloud predates this
             // field (or whose run reported none) writes nothing and draws at the
             // demo lens, which is what keeps those clouds' look unchanged. The same
             // 0-is-absent argument the focal above makes, one unit over: a stored 0
             // and an absent key would be two spellings of one state.
-            if (splatLens > 0f) o.put("splat_lens", splatLens);
+            if (splatLens > 0f) o.put("splat_lens", (double) splatLens);
             // The splat, only when there is one: a library of ordinary
             // photographs stays byte-identical to one this build never touched,
             // which is why this needed no schema bump. The same argument the

@@ -34,6 +34,11 @@ jobs:
       # stays fast and cannot break for an unrelated reason.
       - name: AGENTS.md links + web/Android parity
         run: node scripts/check-parity.mjs
+      # Device-only trap: :core compiles against Maven's org.json, which has
+      # put(String, float); Android's platform org.json does not. A bare float
+      # put passes both Android gates and throws NoSuchMethodError on the phone.
+      - name: org.json float puts
+        run: node scripts/check-json-puts.mjs
       - name: Shaders compile (glslangValidator)
         run: |
           sudo apt-get update -qq

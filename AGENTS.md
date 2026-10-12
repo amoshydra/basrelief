@@ -55,8 +55,9 @@ worked, because the build still succeeds. Override the location with
 
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
 every push, plus a `vite` build for the web and a `guards` job: AGENTS.md's paths
-and the port parity, and `scripts/check-shaders.mjs`, which compiles every GLSL
-shader the app keeps in Java. It invokes the script from the repo
+and the port parity, `scripts/check-shaders.mjs`, which compiles every GLSL
+shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
+float handed to `JSONObject.put`. It invokes the scripts from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
 
 Web (reference port, not maintained): `npm install && npm run build`.
@@ -923,6 +924,20 @@ wallpaper to the system's static image — which only the wallpaper picker can
 restore. One shader checker would have caught it before the install; the file's own
 rule is that anything that can invalidate a device test has to be checkable without
 one.
+
+The same hole exists one language over, for **`JSONObject.put(String, float)`**.
+`:core` compiles against Maven's org.json (`compileOnly 'org.json:json:20231013'`),
+which HAS that overload; Android's platform org.json does NOT. A bare float
+therefore links, passes `:core:test` — which runs on the JVM, against the very
+org.json that has the method — and passes `build-apk`, which compiles, and then
+throws `NoSuchMethodError` at runtime. It shipped: `LibraryItem.toJson` wrote
+`focal` and `splat_lens` as floats, the throw was on the `index-writer` thread, and
+every library write took the app down, so any gallery tap crashed it.
+`scripts/check-json-puts.mjs` closes it, and the rule it enforces is one cast:
+**every float a `toJson` stores goes through `(double)`**, which resolves to
+`put(String, double)` on both platforms. The APK's own DEX is the proof — `dexdump
+-d` over the built dex lists `put(String, Object/int/double/boolean/long)` and no
+`(String, float)` at all, so the check is of the artifact and not of the source.
 
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
