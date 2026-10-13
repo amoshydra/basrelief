@@ -1107,7 +1107,20 @@ every library write took the app down, so any gallery tap crashed it.
     their FIRST prompt, because any of them is a legitimate in-flight run and
     dropping it would strand a finished result -- the exact loss this class exists to
     end. **The node's sidecar (`basrelief_<tag>.progress.json`, fetchable through
-    /view) is the run's own state, and the resume pass asks it first:** photo gone or
+    /view) is a **FIXED filename that any run leaves behind**, so it may not answer for a run
+    it does not belong to -- and it did: the poll asked it FIRST and returned on its
+    first iteration because the PREVIOUS run's sidecar was still there saying `done`,
+    so every build completed instantly with the cloud from the build before it
+    (measured: a 703k build producing an 806k cloud, and a rebuild that looked
+    instantaneous because nothing ever waited; its `failed` was the worse half, since
+    a previous run's failure would have aborted a healthy build with the last one's
+    words). **The run is identified by the PROMPT the app created, and that prompt's
+    own history entry is the only thing that says the run is over** -- it is keyed by
+    exactly the job the app submitted, so it is the one question another run cannot
+    answer, and an absent entry is NOT a verdict, because the server registers the
+    prompt when it starts it and a run queued behind another has none yet. What
+    follows is what the sidecar is still read FOR, as content, once the history has
+    spoken, and the resume pass asks it first:** photo gone or
     no colour clip → clear; server unreachable → KEEP (a sleeping laptop is not a
     lost import); sidecar `running` → KEEP and seed the line's count from its
     `done`/`total` (the node is doing the work, and re-submitting here would run it
