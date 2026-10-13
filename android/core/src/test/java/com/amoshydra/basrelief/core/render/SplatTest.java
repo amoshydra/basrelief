@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief.core.render;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -314,5 +315,27 @@ public class SplatTest {
         assertEquals(0.5f, Splat.EPS_2D_DEFAULT, 0f);
         assertEquals("and it resolves to the measured 6 px at that frame",
                 6f, Splat.eps2dFor(Splat.EPS_2D_DEFAULT, 912, 1984, 149504, 1f), 0.1f);
+    }
+
+    /**
+     * A rebuilt cloud must not be mistaken for the one already on screen.
+     *
+     * <p>The failure this pins is silent and was reported as sometimes there was no visible difference: a rebuild writes the same filename, so an identity made of the
+     * path alone answers "already showing it", the new file is never uploaded, and
+     * the picture does not change while the bytes on disk have.
+     */
+    @Test
+    public void aRebuiltCloudIsADifferentCloudEvenAtTheSamePath() {
+        String path = "/files/item-abc.splat";
+        assertEquals("the same path and the same bytes is the same cloud",
+                Splat.cloudIdentity(path, 4784128L), Splat.cloudIdentity(path, 4784128L));
+        assertFalse("a rebuild at a bigger budget writes more bytes, and IS a new cloud",
+                Splat.cloudIdentity(path, 4784128L).equals(Splat.cloudIdentity(path, 23134208L)));
+        assertFalse("two files are two clouds",
+                Splat.cloudIdentity(path, 100L).equals(Splat.cloudIdentity("/files/b.splat", 100L)));
+        assertFalse("an absent file must not collide with a loaded one",
+                Splat.cloudIdentity(path, 0L).equals(Splat.cloudIdentity(path, 4784128L)));
+        assertEquals("and an unreadable count is 0 rather than the path alone",
+                Splat.cloudIdentity(path, 0L), Splat.cloudIdentity(path, -5L));
     }
 }

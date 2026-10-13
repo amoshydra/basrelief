@@ -715,7 +715,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private SplatRenderer splat;
     private volatile String splatWantedPath;
     private String splatLoadedPath;
+    private String splatLoadedId;
     private String splatPendingPath;
+    private String splatPendingId;
     private int splatSeq;
     /**
      * The wanted cloud's own lens, as {@code focal / height}, or 0 for unknown.
@@ -2866,7 +2868,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // context that holds no texture -- the hasInstalled rule, one medium over.
         if (splat != null) splat.onContextLost();
         splatLoadedPath = null;
+        splatLoadedId = null;
         splatPendingPath = null;
+        splatPendingId = null;
         // A load in flight when the context died must be dropped: its upload would
         // run against a GL context that is gone (the empty-log "compile failed"
         // this now avoids), and the reload below re-requests it anyway.
@@ -3376,6 +3380,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         requestSplat(splatWantedPath);
     }
 
+    /** The bytes behind a cloud path, or 0 when it cannot be read. See Splat.cloudIdentity. */
+    private static long splatBytes(String path) {
+        java.io.File f = new java.io.File(path);
+        return f.isFile() ? f.length() : 0L;
+    }
+
     /**
      * Load a splat cloud off the GL thread and upload it on it.
      *
@@ -3391,8 +3401,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private void requestSplat(final String path) {
         if (path == null) return;
-        if (path.equals(splatLoadedPath) || path.equals(splatPendingPath)) return;
+        // The identity is the path AND the bytes behind it; see Splat.cloudIdentity.
+        // A rebuild writes the SAME filename, so a path-only identity answers
+        // "already showing it", the request is dropped, and the new cloud never
+        // reaches the screen -- which is what a rebuild appearing to do nothing was.
+        final String id = Splat.cloudIdentity(path, splatBytes(path));
+        if (id.equals(splatLoadedId) || id.equals(splatPendingId)) return;
         splatPendingPath = path;
+        splatPendingId = id;
         final int seq = ++splatSeq;
         final java.util.concurrent.Executor glThread = glDispatch;
         Io.run(new java.util.concurrent.Callable<SplatCloud>() {
@@ -3431,14 +3447,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // requestSplat skips a path that is already pending, and a failed upload
         // that stayed "pending" would never be re-asked.
         splatPendingPath = null;
+        splatPendingId = null;
         if (splat == null) splat = new SplatRenderer();
         if (cloud == null || !splat.upload(cloud)) {
             android.util.Log.w("Basrelief", "splat: could not load " + path
                     + (cloud == null ? " (read failed)" : " (upload failed)"));
             splatLoadedPath = null;
+            splatLoadedId = null;
             return;
         }
         splatLoadedPath = path;
+        splatLoadedId = Splat.cloudIdentity(path, splatBytes(path));
         android.util.Log.i("Basrelief", "splat: loaded " + path + " count=" + splat.count());
         // PAINT IT. The upload runs on a GL event that the host queued, and the
         // host's own requestRender() may already have been consumed before the file

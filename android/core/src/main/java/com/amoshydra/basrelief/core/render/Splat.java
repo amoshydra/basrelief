@@ -112,6 +112,29 @@ public final class Splat {
     public static final float EPS_2D_MAX = 0.8f;
 
     /**
+     * A cloud's identity: its path AND the number of bytes behind it.
+     *
+     * <p><b>The path alone is not an identity, and that is the bug this exists
+     * for.</b> A rebuild writes the SAME filename -- the node's output name is
+     * deterministic in the item id and the app stores it as
+     * {@code item-&lt;tag&gt;.splat} -- so a renderer that remembers "I am showing
+     * this path" cannot tell a rebuilt cloud from the one it already holds, drops
+     * the request, and the new file never reaches the screen. Measured: a rebuild
+     * at a different budget changed nothing on the phone until the app was
+     * restarted, while the file on disk had gone from 4.8 MB to 23 MB.
+     *
+     * <p>The byte count is a sufficient stamp <b>because the node is
+     * deterministic</b>: its own tests pin byte-identical output for the same
+     * budget and inputs, so a different size means different bytes and the same
+     * size means the same cloud. A count that cannot be read is 0, which is the "a
+     * window claims nothing" rule -- an absent file must not be able to collide
+     * with a loaded one.
+     */
+    public static String cloudIdentity(String path, long byteCount) {
+        return path + "\u0000" + Math.max(0L, byteCount);
+    }
+
+    /**
      * The floor a stored value means. A non-finite value, or one below the range,
      * answers the default rather than the floor: a pref that cannot claim a value
      * must not be read as one -- the "a window claims nothing" rule applied to a

@@ -901,7 +901,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 635 tests across thirty-five classes:
+it**. 636 tests across thirty-five classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -976,7 +976,15 @@ every library write took the app down, so any gallery tap crashed it.
   both axes. A
   cell that cannot be claimed (no splats, no viewport, a NaN fraction) answers 0,
   which is the identity for a floor — the "a window claims nothing" rule applied to
-  a number, where a guess would be a floor derived from a count of nothing.
+  a number, where a guess would be a floor derived from a count of nothing. Its
+  sixth is a cloud's **identity**, which is the path AND the bytes behind it and not
+  the path alone: a rebuild writes the *same* filename, so a path-only identity
+  answers "already showing it", the request is dropped, and the new cloud never
+  reaches the screen — reported as a rebuild that sometimes appears to do nothing
+  while the file on disk had gone from 4.8 MB to 23 MB. The byte count is a
+  sufficient stamp because the node is deterministic (its own tests pin
+  byte-identical output for the same budget and inputs), and a count that cannot be
+  read is 0, so an absent file cannot collide with a loaded one.
 - `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
   projector, the two things a shader cannot be checked for off-device. The
   container test pins the 32-byte record field for field, including that the
