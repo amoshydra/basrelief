@@ -78,7 +78,6 @@ final class SplatDevRows {
         box.addView(sizeRow());
         box.addView(scaleRow());
         box.addView(blurRow());
-        box.addView(budgetRow());
 
         box.setVisibility(View.GONE);
     }
@@ -218,35 +217,6 @@ final class SplatDevRows {
         return s.view();
     }
 
-    /**
-     * BUDGET: the count the next cloud build sends to {@code SharpStill}, in
-     * thousands so the row's integer range is the ladder's own numbers.
-     *
-     * <p>No preview and no dim: it is read when Regenerate runs, not at draw, so it
-     * changes nothing on screen and there is no render to reveal while dragging.
-     */
-    private View budgetRow() {
-        int initial = readBudget() / 1000;
-        BasreliefSlider s = BasreliefSlider.create(activity, ReliefRenderer.KEY_SPLAT_BUDGET,
-                initial, ComfyWorkflow.SHARP_BUDGET_MIN / 1000,
-                ComfyWorkflow.SHARP_BUDGET_MAX / 1000,
-                new BasreliefSlider.ValueFormatter() {
-                    @Override
-                    public String format(int value) {
-                        return value + "k";
-                    }
-                },
-                new BasreliefSlider.OnChanged() {
-                    @Override
-                    public void onChanged(int value) {
-                        int v = ComfyWorkflow.clampSharpBudget(value * 1000);
-                        activity.prefs.edit()
-                                .putInt(ReliefRenderer.KEY_SPLAT_BUDGET, v).apply();
-                    }
-                });
-        return s.view();
-    }
-
     // ---------------------------------------------------------------- pref reads
 
     /** Defensive on the read: a pref written as another type must not take the sheet down. */
@@ -259,13 +229,4 @@ final class SplatDevRows {
     }
 
     /** The budget the next build will send, from the same pref {@link SplatImport} reads. */
-    private int readBudget() {
-        try {
-            return ComfyWorkflow.clampSharpBudget(
-                    activity.prefs.getInt(ReliefRenderer.KEY_SPLAT_BUDGET,
-                            ComfyWorkflow.SHARP_BUDGET));
-        } catch (Exception e) {
-            return ComfyWorkflow.SHARP_BUDGET;
-        }
-    }
 }

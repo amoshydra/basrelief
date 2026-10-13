@@ -5902,6 +5902,30 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** The sheet's own sentence for a budget: one string, so it cannot be restated wrongly. */
+    private String budgetSentence(int budget) {
+        return getString(R.string.splat_confirm_body,
+                getString(R.string.splat_generator),
+                String.format(java.util.Locale.US, "%,d", budget),
+                getString(R.string.splat_estimate));
+    }
+
+    /**
+     * The sheet's budget slider, applied on every change.
+     *
+     * <p>The pref is written here so {@link #cloudBudget} -- which the build itself
+     * reads -- answers the number on the line above, and the line is restated from the
+     * same value, so the three cannot drift. {@code apply()} rather than
+     * {@code commit()}: this runs per drag frame, and a synchronous write of the whole
+     * prefs file on the UI thread is the stall the gesture rules exist to avoid.
+     */
+    private void setCloudBudget(int sliderThousands, TextView line) {
+        int v = com.amoshydra.basrelief.core.depth.ComfyWorkflow.clampSharpBudget(
+                sliderThousands * 1000);
+        prefs.edit().putInt(ReliefRenderer.KEY_SPLAT_BUDGET, v).apply();
+        if (line != null) line.setText(budgetSentence(v));
+    }
+
     /**
      * The confirm that states what a cloud build will run and cost.
      *
@@ -5918,10 +5942,44 @@ public class MainActivity extends Activity {
         body.setOrientation(LinearLayout.VERTICAL);
         body.addView(ModalSheet.title(this, getString(rebuild
                 ? R.string.splat_confirm_rebuild_title : R.string.splat_confirm_title)));
-        body.addView(ModalSheet.subtitle(this, getString(R.string.splat_confirm_body,
-                getString(R.string.splat_generator),
-                String.format(java.util.Locale.US, "%,d", cloudBudget()),
-                getString(R.string.splat_estimate))));
+        // The budget lives HERE, in the flow that reads it, and not in the dev group
+        // where it used to. It is a submission-time value -- nothing on screen changes
+        // while it moves -- so the only place it can be judged is next to the button
+        // that submits it, and the number on the line above is restated from the same
+        // control rather than read back from storage. That is what makes the sheet's
+        // promise ("the number you compare by eye is the number that runs") structural
+        // instead of a coincidence: there is one value, and every part of this dialog
+        // reads it.
+        final TextView budgetLine = ModalSheet.subtitle(this, budgetSentence(cloudBudget()));
+        body.addView(budgetLine);
+        final BasreliefSlider budget = BasreliefSlider.create(this,
+                ReliefRenderer.KEY_SPLAT_BUDGET,
+                cloudBudget() / 1000,
+                com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MIN / 1000,
+                com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MAX / 1000,
+                new BasreliefSlider.ValueFormatter() {
+                    @Override
+                    public String format(int value) {
+                        return value + "k";
+                    }
+                },
+                new BasreliefSlider.OnChanged() {
+                    @Override
+                    public void onChanged(int value) {
+                        setCloudBudget(value, budgetLine);
+                    }
+                });
+        // EVERY change, not just the release. A budget that only commits on release
+        // can be submitted from a drag that never ended, and a row that is rebuilt
+        // while it is being dragged snaps back to storage -- which is how the sheet
+        // came to state one number while the build ran another.
+        budget.setOnPreview(new BasreliefSlider.OnPreview() {
+            @Override
+            public void onPreview(int value) {
+                setCloudBudget(value, budgetLine);
+            }
+        });
+        body.addView(budget.view());
         sheet.body(body);
         Button notNow = ModalSheet.button(this, getString(R.string.splat_confirm_not_now),
                 false, true);
