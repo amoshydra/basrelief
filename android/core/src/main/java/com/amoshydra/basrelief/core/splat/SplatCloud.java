@@ -18,11 +18,15 @@ import java.nio.file.Files;
  * </pre>
  *
  * <p><b>The record IS the GPU texel pair, and that is not a coincidence.</b> The
- * renderer uploads the raw bytes as an {@code RGBA32F} texture with two texels per
+ * renderer uploads the raw bytes as an {@code RGBA32UI} texture with two texels per
  * splat: texel A is {@code (x, y, z, sx)} and texel B is
  * {@code (sy, sz, colourBits, quatBits)}, where the two {@code uint8x4} fields are
- * reinterpreted as floats. That is precisely this 32-byte layout, so the reader
- * never repacks anything and the file can be uploaded verbatim. {@link #raw()}
+ * read as the unsigned words they are. <b>It must not be a float texture.</b> Four
+ * uint8 packed into a float32 make a NaN for every bright colour — alpha and blue
+ * both at or above 128 — and a NaN's payload does not survive {@code floatBitsToUint}
+ * on every driver, so those splats draw as flat white instead of their colour. That
+ * is precisely this 32-byte layout, so the reader never repacks anything and the
+ * file can be uploaded verbatim. {@link #raw()}
  * is the whole reader for the app's purposes; the typed accessors exist for the
  * CPU sort (positions) and for the tests.
  *
@@ -173,18 +177,21 @@ public final class SplatCloud {
     }
 
     /**
-     * The {@code uint8x4} colour reinterpreted as the float the shader unpacks.
+     * The {@code uint8x4} colour as the float whose BIT PATTERN is that word.
      *
-     * <p>The shader does {@code unpack_unorm_4x8(floatBitsToUint(B.z))}, so the
-     * four bytes are read as one little-endian float and bit-cast. This is the
-     * same value the GPU would compute from the raw bytes; it exists so the
-     * round trip can be asserted without a device.
+     * <p>The shader reads the word as an unsigned integer
+     * ({@code unpack_unorm_4x8(B.z)}), because the texture is {@code RGBA32UI} —
+     * see the class note for why it must not be a float one. This accessor is
+     * that same little-endian word seen as a float, so the record's layout can be
+     * asserted without a device, and so the trap can be asserted too: for a bright
+     * colour this float IS a NaN, and that is exactly the value no driver may be
+     * asked to carry through {@code floatBitsToUint}.
      */
     public float packedColor(int i) {
         return f32(data, i * RECORD_BYTES + 24);
     }
 
-    /** The quaternion bytes as the float the shader unpacks. See {@link #packedColor}. */
+    /** The quaternion word as the float with that bit pattern. See {@link #packedColor}. */
     public float packedQuaternion(int i) {
         return f32(data, i * RECORD_BYTES + 28);
     }

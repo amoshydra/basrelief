@@ -671,6 +671,17 @@ already cost real time.
   `onSurfaceCreated` one level deeper, and the pattern is the lesson: **any state
   that records "this is on screen" must only be written when the GL calls that
   put it there actually succeeded.**
+- **The probe for "is there a current context" must be EGL, never a GL call.**
+  `SplatRenderer.upload` refuses a queued upload that ran before the GL thread had
+  a context, and it asked `glGetString(GL_VERSION) == null` — which is what
+  AGENTS.md said it answers. On Mali it does not: it dereferences the absent
+  dispatch table and takes the process down. Measured on the Pixel 7 Pro: the
+  studio's first splat load produced `SIGSEGV in glGetString+44` from
+  `SplatRenderer.upload`, `applySplat` on `GLThread`, every launch — the studio
+  was unusable, and the empty-log "compile failed" it was written to prevent was
+  never reached. `EGL14.eglGetCurrentContext() == EGL14.EGL_NO_CONTEXT` answers
+  the same question and touches no GL state. **A guard whose own probe can crash
+  is worse than no guard**, and this one had been a landmine since it was written.
 - **Decodes run off the GL thread and finish out of order, so the newest request
   must win by sequence, not by arrival.** A runnable queued while the engine was
   hidden replays the *previous* selection, and a large PNG decode can complete
@@ -937,7 +948,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 678 tests across thirty-eight classes:
+it**. 679 tests across thirty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1046,9 +1057,17 @@ every library write took the app down, so any gallery tap crashed it.
 - `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
   projector, the two things a shader cannot be checked for off-device. The
   container test pins the 32-byte record field for field, including that the
-  colour and quaternion bytes read back as the little-endian floats the shader's
-  `floatBitsToUint` unpacks (the record IS the two `RGBA32F` texels the renderer
-  uploads), and that a partial trailing record is dropped rather than read past.
+  colour and quaternion bytes ARE the little-endian words at offsets 24 and 28
+  (the record IS the two `RGBA32UI` texels the renderer uploads — **integer
+  texels, and that is load-bearing**: four uint8 packed into a float32 is a NaN
+  for every bright colour, alpha and blue both at or above 128, and a NaN's
+  payload does not survive `floatBitsToUint` on Mali — it answers a canonical
+  NaN, so those splats drew as flat white. Measured: the sky went grey and
+  speckled, sat 0.14 against the faithful render's 3.72, while the tan sand
+  beside it — blue below 128, not a NaN — stayed pixel-perfect. The container
+  test pins that condition too, so the reason the texture cannot be a float one
+  is asserted rather than remembered), and that a partial trailing record is
+  dropped rather than read past.
   The projection test pins the chain the plan states — `Sigma3D = R S S^T R^T`,
   `SigmaV = V Sigma3D V^T`, the perspective Jacobian, `Sigma2D = J SigmaV J^T`,
   the conic, the eigen extents — and above all the relation that makes the quad's

@@ -35,11 +35,17 @@ import com.amoshydra.basrelief.core.splat.SplatProjection;
  * Jacobian, {@code Sigma2D = J SigmaV J^T}, the conic and the eigen extents.
  * {@link #VERT} mirrors {@link SplatProjection} step for step.
  *
- * <p><b>The record is uploaded verbatim.</b> The 32-byte {@code .splat} record is
- * exactly two {@code RGBA32F} texels — {@code (x,y,z,sx)} and
- * {@code (sy,sz,colourBits,quatBits)} — so the file goes straight to the GPU and
- * the shader does {@code floatBitsToUint} to unpack the colour and the
- * quaternion. No CPU repack, no per-frame allocation.
+ * <p><b>The record is uploaded verbatim, as INTEGER texels.</b> The 32-byte
+ * {@code .splat} record is exactly two {@code RGBA32UI} texels —
+ * {@code (x,y,z,sx)} and {@code (sy,sz,colourBits,quatBits)} — so the file goes
+ * straight to the GPU with no CPU repack and no per-frame allocation, and the
+ * shader unpacks the colour and quaternion with integer shifts. <b>It must not be
+ * a float texture.</b> Four uint8 packed into a float32 make a NaN for every
+ * bright splat (alpha &ge; 128 and blue &ge; 128), and a NaN's payload does not
+ * survive {@code floatBitsToUint} on every driver: Mali returns a canonical NaN,
+ * so those splats draw as flat white/grey — the hard-edged speckle over a sky or
+ * a white wall, with the tan sand beside it untouched because its blue byte is
+ * below 128. Integers cannot be canonicalised, so the bytes arrive exactly.
  *
  * <p><b>The camera is the photograph's own, and it is a camera.</b> A cloud is in
  * the frame of the still SHARP ran on (x right, y down, z forward, principal point
@@ -267,7 +273,15 @@ final class SplatRenderer {
         // failed" seen on device -- so refuse here rather than build against
         // nothing. The caller retries on the next resolve, and no state that says
         // "this is on screen" is written.
-        if (GLES30.glGetString(GLES30.GL_VERSION) == null) return false;
+        //
+        // The probe is the EGL context, not glGetString: glGetString with no
+        // current context does not answer null on every driver -- on the Mali
+        // this app ships to it dereferences the absent dispatch table and takes
+        // the whole process down (measured: SIGSEGV in glGetString+44, from
+        // SplatRenderer.upload, on the studio's first splat load). EGL14 answers
+        // the question directly and touches no GL state.
+        if (android.opengl.EGL14.eglGetCurrentContext()
+                == android.opengl.EGL14.EGL_NO_CONTEXT) return false;
 
         if (prog == 0) buildProgram();
         if (prog == 0) return false;
@@ -300,8 +314,12 @@ final class SplatRenderer {
         padded.put(cloud.raw(), 0, Math.min(cloud.raw().length, n * 32));
         padded.position(0);
         long tPack1 = System.nanoTime();
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA32F, DATA_W, dataRows, 0,
-                GLES30.GL_RGBA, GLES30.GL_FLOAT, padded);
+        // UNSIGNED INTEGER, not float: the record's bytes ARE the texel. A float
+        // texture makes the packed colour/quaternion a NaN for every bright splat
+        // and the driver's floatBitsToUint then returns a canonical NaN -- the
+        // bright-region speckle. See VERT's uData note.
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA32UI, DATA_W, dataRows, 0,
+                GLES30.GL_RGBA_INTEGER, GLES30.GL_UNSIGNED_INT, padded);
         long tGl = System.nanoTime();
         nearest(texData);
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texOrder);
@@ -1164,7 +1182,19 @@ final class SplatRenderer {
             "uniform mat4 uProj;\n" +
             "uniform mat4 uView;\n" +
             "uniform mat3 uViewRot;\n" +
-            "uniform sampler2D uData;\n" +
+            // An UNSIGNED-INTEGER texture, not a float one, and that is the fix for
+            // the bright-region speckle. The record's colour and quaternion are four
+            // uint8 each; packing them into an RGBA32F texel makes the float a NaN
+            // for every bright splat (alpha >= 128 AND blue >= 128), and a NaN's
+            // payload does not survive the round trip on every driver -- Mali hands
+            // floatBitsToUint a canonical NaN, so the colour reads as a flat
+            // white/grey instead of the bytes. Measured: the sky turned grey and
+            // speckled while the tan sand beside it stayed pixel-perfect, and the
+            // grey region was exactly the NaN-colour splats. As integers the bytes
+            // ARE the texel and nothing can canonicalise them; the position and
+            // scale floats come back with uintBitsToFloat, which is exact for the
+            // normal floats the node writes.
+            "uniform usampler2D uData;\n" +
             "uniform usampler2D uOrder;\n" +
             "uniform int uDataW;\n" +
             "uniform int uOrderW;\n" +
@@ -1188,13 +1218,13 @@ final class SplatRenderer {
             "  uint sp = texelFetch(uOrder, ivec2(gl_InstanceID % uOrderW, gl_InstanceID / uOrderW), 0).x;\n" +
             "  ivec2 c0 = ivec2(int(2u * sp) % uDataW, int(2u * sp) / uDataW);\n" +
             "  ivec2 c1 = ivec2(int(2u * sp + 1u) % uDataW, int(2u * sp + 1u) / uDataW);\n" +
-            "  vec4 A = texelFetch(uData, c0, 0);\n" +
-            "  vec4 B = texelFetch(uData, c1, 0);\n" +
+            "  uvec4 A = texelFetch(uData, c0, 0);\n" +
+            "  uvec4 B = texelFetch(uData, c1, 0);\n" +
             "\n" +
-            "  vec3 spPos = A.xyz;\n" +
-            "  vec3 spScale = vec3(A.w, B.x, B.y);\n" +
-            "  vec4 spCol = unpack_unorm_4x8(floatBitsToUint(B.z));\n" +
-            "  vec4 q4 = unpack_unorm_4x8(floatBitsToUint(B.w)) * 2.0 - 1.0;\n" +
+            "  vec3 spPos = vec3(uintBitsToFloat(A.x), uintBitsToFloat(A.y), uintBitsToFloat(A.z));\n" +
+            "  vec3 spScale = vec3(uintBitsToFloat(A.w), uintBitsToFloat(B.x), uintBitsToFloat(B.y));\n" +
+            "  vec4 spCol = unpack_unorm_4x8(B.z);\n" +
+            "  vec4 q4 = unpack_unorm_4x8(B.w) * 2.0 - 1.0;\n" +
             "\n" +
             // THE DEV DEPTH KNOB. A splat sits on the ray from the eye through its
             // own image pixel, at its own depth, so moving it ALONG that ray changes

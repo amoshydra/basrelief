@@ -12,7 +12,7 @@ import org.junit.Test;
 
 /**
  * The {@code .splat} container: 32 bytes a record, little-endian, and the layout
- * happens to be exactly the two {@code RGBA32F} texels the renderer uploads — so
+ * happens to be exactly the two {@code RGBA32UI} texels the renderer uploads — so
  * these tests pin the record field offsets as much as they pin the reader.
  *
  * <p>The trap is a partial trailing record: a file whose length is not a whole
@@ -59,18 +59,46 @@ public class SplatCloudTest {
 
     /**
      * The raw record IS the texel pair: texel A is {@code (x, y, z, sx)} and
-     * texel B is {@code (sy, sz, colourBits, quatBits)}, so the four colour bytes
-     * and the four quaternion bytes must read back as the little-endian floats
-     * the shader's {@code floatBitsToUint} unpacks.
+     * texel B is {@code (sy, sz, colourWord, quatWord)}, so the four colour bytes
+     * and the four quaternion bytes must be the little-endian words at offsets 24
+     * and 28 — which is the integer the shader reads.
      */
     @Test
-    public void theColourAndQuaternionBytesAreTheFloatsTheShaderUnpacks() {
+    public void theColourAndQuaternionBytesAreTheTexelWordsTheShaderReads() {
         byte[] raw = oneRecord(0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8);
         SplatCloud c = SplatCloud.parse(raw);
         float expectedColor = Float.intBitsToFloat(0x04030201);
         float expectedQuat = Float.intBitsToFloat(0x08070605);
         assertEquals(expectedColor, c.packedColor(0), 0f);
         assertEquals(expectedQuat, c.packedQuaternion(0), 0f);
+    }
+
+    /**
+     * <b>The reason the data texture is an INTEGER one: four uint8 packed as a
+     * float32 is a NaN for every bright colour, and a NaN's payload does not
+     * survive {@code floatBitsToUint} on every driver.</b>
+     *
+     * <p>The exponent bits 30..23 are the alpha byte's top seven bits and the blue
+     * byte's top bit, so the float is a NaN whenever alpha and blue are both at
+     * least 128 — which is the sky, a white wall, a blown highlight. Mali answers
+     * {@code floatBitsToUint} with a canonical NaN for those, and the splats drew
+     * as flat white: a hard-edged field of white speckle over the bright parts of
+     * a scene, while the tan sand beside them — blue below 128, not a NaN — stayed
+     * pixel-perfect. Uploading the same bytes as {@code RGBA32UI} removes the
+     * question entirely, so this pins the condition that makes it necessary.
+     */
+    @Test
+    public void aBrightColourPacksIntoAFloatAsANaNWhichIsWhyTheTextureIsInteger() {
+        // sky white-blue: (r, g, b, a) = (240, 239, 234, 255)
+        SplatCloud sky = SplatCloud.parse(oneRecord(0, 0, 0, 0, 0, 0, 240, 239, 234, 255,
+                0, 0, 0, 0));
+        assertTrue("a bright blue-white splat's packed colour must be the NaN the "
+                + "driver may canonicalise", Float.isNaN(sky.packedColor(0)));
+        // sand tan: (r, g, b, a) = (180, 140, 100, 255) — blue below 128, a normal float
+        SplatCloud sand = SplatCloud.parse(oneRecord(0, 0, 0, 0, 0, 0, 180, 140, 100, 255,
+                0, 0, 0, 0));
+        assertFalse("a tan splat must NOT be a NaN, which is why the sand never showed "
+                + "the artifact", Float.isNaN(sand.packedColor(0)));
     }
 
     @Test
