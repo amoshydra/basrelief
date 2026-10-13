@@ -1111,7 +1111,19 @@ every library write took the app down, so any gallery tap crashed it.
   that this moves the pivot and NOT the picture: at rest the eye is the source eye
   whatever the pivot is, so the same probe points project identically at every
   multiplier. Zoom is a crop of the same camera and
-  Pan is a screen-pixel shift at every depth, both pinned.
+  Pan is a screen-pixel shift at every depth, both pinned. Its fifth is the **tap**:
+  a tap resolves the origin by RAY-CASTING into the cloud — the image position of
+  the frontmost splat under the ray through the tapped pixel — through the same
+  `SplatCamera.originForRay`/`pivot` pick the orbit uses, so the tap, the pivot, the
+  aim and the crosshair name one point. It pins that the pick is the frontmost splat
+  on the ray and not the nearest in image space, that a ray holding no splat falls
+  back the way the pivot does (the nearest splat, then the reference-plane point on
+  the ray), that a splat the Depth knob pushes through the eye is skipped, that the
+  answer does not depend on the Depth knob (the image position is `x/z`, which
+  `Splat.depthScale` preserves), and above all that **tapping and then resolving is
+  a fixed point**: the origin a tap produces is the image position of the splat the
+  pivot picks for that origin. That is the property the old tap — the tapped SCREEN
+  fraction, which drifts by the current Origin and Pan — broke.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes
