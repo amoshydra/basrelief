@@ -268,66 +268,114 @@ public class SplatTest {
     }
 
     /**
-     * The floor has a SAMPLING MINIMUM: it is never smaller than
-     * {@link Splat#SAMPLING_MIN_PX}, however small the cell term becomes.
+     * The floor has a SAMPLING MINIMUM: it is never smaller than the minimum for
+     * the render target in use -- {@link Splat#samplingMinPx2} -- however small the
+     * cell term becomes.
      *
      * <p>This is the density-independent speckle it exists for. The cell term
      * shrinks as the count grows -- {@code viewportArea / count} -- so a dense cloud
-     * on a low-resolution render target (the phone draws at a 0.25 render scale, a
-     * 360 px-wide target) lands below one render pixel, where a splat is smaller
-     * than the samples that would draw it and is hit or missed by where its centre
-     * happens to fall. Measured across a 150k and a 1.18M cloud the artifact did not
-     * shrink with density: doubling the count halved the cell, which halved the
-     * floor, holding the coverage constant.
+     * on a low-resolution render target lands below one render pixel, where a splat
+     * is smaller than the samples that would draw it and is hit or missed by where
+     * its centre happens to fall. Measured across a 150k and a 1.18M cloud the
+     * artifact did not shrink with density: doubling the count halved the cell,
+     * which halved the floor, holding the coverage constant.
      *
-     * <p>The two properties that make it a render-TARGET property rather than a
-     * scene one are pinned here: it does NOT scale with zoom (a zoom-out must not
-     * divide it back toward zero), and it does NOT scale with the viewport (it is a
-     * constant in render pixels, so a smaller target still gets the same one).
+     * <p>The property that makes it a render-TARGET property rather than a scene one
+     * is pinned here: it does NOT scale with zoom (a zoom-out must not divide it
+     * back toward zero). That it scales with the target's AREA -- and not with the
+     * frame -- is the other half and is pinned by
+     * {@link #theSamplingMinimumScalesWithTheRenderTargetArea}.
      */
     @Test
     public void theFloorNeverFallsBelowTheSamplingMinimum() {
         // The value AND its derivation, so the number cannot move in silence: a
-        // clean reference render needs eps2d 6 at 912 px wide, and a variance scales
-        // as an area, so the phone's 360 px-wide target implies 6*(360/912)^2 =
-        // 0.935 px^2, rounded up to one render pixel.
-        assertEquals(1f, Splat.SAMPLING_MIN_PX, 0f);
-        float scaled = 6f * (360f / 912f) * (360f / 912f);
-        assertTrue("the reference's clean floor scales to under the minimum",
-                scaled < Splat.SAMPLING_MIN_PX);
-        assertTrue("but only by the rounding margin, not by a different amount",
-                Splat.SAMPLING_MIN_PX - scaled < 0.1f);
+        // clean reference render needs eps2d 6 px^2 at 912x1984, and a variance
+        // scales as an area, so the minimum is that measurement as a fraction of the
+        // target's area -- 6.00 back at the frame it was measured in, and the
+        // parent's 0.935 at the 360x780 of a 0.25 render scale.
+        assertEquals(6f / (912f * 1984f), Splat.SAMPLING_MIN_AREA_FRACTION, 0f);
+        assertEquals("6 px^2 back at the frame the sweep was run in",
+                6f, Splat.samplingMinPx2(912, 1984), 0.01f);
+        assertEquals("and the same look at a 0.25 render scale",
+                0.935f, Splat.samplingMinPx2(360, 780), 0.01f);
 
-        // A dense cloud on the phone's own 360x780 target: the raw cell term is
-        // below the minimum, so the minimum is the floor eps2dFor returns. (The raw
-        // term is written out by hand here because eps2dFor itself answers the max,
-        // so it cannot show its own smaller term.)
+        // A dense cloud on the reference target: the raw cell term is below the
+        // minimum, so the minimum is the floor eps2dFor returns. (The raw term is
+        // written out by hand here because eps2dFor itself answers the max, so it
+        // cannot show its own smaller term.)
+        float min = Splat.samplingMinPx2(360, 780);
         float raw = 0.45f * (360f * 780f / 1177600f);
-        assertTrue("the cell term really is below the minimum here",
-                raw < Splat.SAMPLING_MIN_PX);
-        assertEquals(Splat.SAMPLING_MIN_PX,
-                Splat.eps2dFor(0.45f, 360, 780, 1177600, 1f), 0f);
+        assertTrue("the cell term really is below the minimum here", raw < min);
+        assertEquals(min, Splat.eps2dFor(0.45f, 360, 780, 1177600, 1f), 0f);
 
         // NOT scaled by zoom: the raw cell term stays below the minimum at every
         // zoom, and the floor stays exactly the minimum. Folding zoom in would let a
         // zoom-out divide it toward zero and the artifact return.
         for (float z : new float[] {0.25f, 0.5f, 1f, 2f}) {
             assertTrue("the cell term must stay below the minimum at z=" + z,
-                    raw * z * z < Splat.SAMPLING_MIN_PX);
+                    raw * z * z < min);
             assertEquals("zoom must not scale the sampling minimum",
-                    Splat.SAMPLING_MIN_PX,
-                    Splat.eps2dFor(0.45f, 360, 780, 1177600, z), 0f);
+                    min, Splat.eps2dFor(0.45f, 360, 780, 1177600, z), 0f);
         }
-
-        // A render-target constant, not a fraction of the frame: a much smaller
-        // target does not shrink it.
-        assertEquals(Splat.SAMPLING_MIN_PX,
-                Splat.eps2dFor(0.45f, 90, 195, 1177600, 1f), 0f);
 
         // Above the minimum the cell term is exact, so the minimum only ever lifts
         // an undersampled floor and never clamps a well-sampled one.
         assertEquals(0.5f * (1000f * 2000f / 100f),
                 Splat.eps2dFor(0.5f, 1000, 2000, 100, 1f), 1e-3f);
+    }
+
+    /**
+     * The sampling minimum scales with the render target's AREA, because the
+     * requirement it states is an area.
+     *
+     * <p>This is the defect it exists for, in the numbers it was measured in. The
+     * minimum used to be a constant 1 px^2, derived at 360x780 -- but
+     * {@code splat_scale} is a dev pref from 0.25 to 1.0 and the device draws at
+     * 0.5, so the constant was 4x too small on the target in use. Measured with the
+     * faithful renderer on the 149504-splat beach cloud's smooth sky (high-pass std,
+     * against 0.76 at 360x780): at 720x1560 a floor of 1.0 leaves <b>12.71</b> and
+     * 3.72 leaves <b>1.15</b>. So the assertion is not any single value but that the
+     * minimum is at or just above each measured clean floor at the target it was
+     * measured on -- and that the device's own target gets four times the reference
+     * target's.
+     *
+     * <p>The same deficit appears at render scale 1.0 on a DENSE cloud: the cell
+     * term is {@code viewportArea / count}, so a 1.18M-splat cloud at 1440x3120 has
+     * a cell of 3.8 px^2 against a needed 14.9, and the old constant let the floor
+     * sit at ~1.9. That is why the artifact was seen at 100% as well as at 25% and
+     * did not shrink with density.
+     */
+    @Test
+    public void theSamplingMinimumScalesWithTheRenderTargetArea() {
+        // The measured clean floors, at the targets they were measured on. The
+        // minimum is at or just above each, and only by the measurement's own margin.
+        assertEquals("912x1984 needed 6", 6f, Splat.samplingMinPx2(912, 1984), 0.01f);
+        assertEquals("360x780 needed 0.935", 0.935f, Splat.samplingMinPx2(360, 780), 0.01f);
+        assertEquals("720x1560 needed 3.74", 3.74f, Splat.samplingMinPx2(720, 1560), 0.02f);
+        assertEquals("1440x3120 needed 14.9", 14.9f, Splat.samplingMinPx2(1440, 3120), 0.05f);
+
+        // An area: double the resolution each way is four times the floor, and
+        // double it again is sixteen.
+        assertEquals(4f, Splat.samplingMinPx2(720, 1560)
+                / Splat.samplingMinPx2(360, 780), 1e-3f);
+        assertEquals(16f, Splat.samplingMinPx2(1440, 3120)
+                / Splat.samplingMinPx2(360, 780), 1e-2f);
+
+        // The device's own target at render scale 0.5, and a dense cloud whose cell
+        // term is far below the minimum: the floor is the minimum, not the cell. This
+        // is the reported artifact's own numbers -- the floor went from the 1.0 the
+        // constant gave to the 3.72 the target needs.
+        assertEquals("a dense cloud's floor is the minimum, not its tiny cell",
+                3.72f, Splat.eps2dFor(0.5f, 720, 1560, 598016, 1f), 0.02f);
+        // A sparse cloud at the tuned 0.25 target still gets the CELL term, so the
+        // fix cannot move the look of the target it was derived on.
+        assertEquals(0.5f * (360f * 780f / 149504f),
+                Splat.eps2dFor(0.5f, 360, 780, 149504, 1f), 1e-4f);
+
+        // A target that claims no size answers the identity, like every other
+        // "a window claims nothing" number here.
+        assertEquals(0f, Splat.samplingMinPx2(0, 780), 0f);
+        assertEquals(0f, Splat.samplingMinPx2(360, 0), 0f);
     }
 
     /**

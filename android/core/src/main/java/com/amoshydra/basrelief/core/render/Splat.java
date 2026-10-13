@@ -120,33 +120,47 @@ public final class Splat {
     public static final float EPS_2D_MAX = 0.8f;
 
     /**
-     * The smallest variance, in render-target pixels squared, at which a splat can
-     * be sampled -- the floor's own floor, and the second term of
-     * {@link #eps2dFor}'s maximum.
+     * The smallest variance at which a splat can be sampled, <b>as a fraction of
+     * the render target's area</b> -- the floor's own floor, and the second term of
+     * {@link #eps2dFor}'s maximum. Resolved for a target by
+     * {@link #samplingMinPx2}.
      *
-     * <p><b>Derived from the reference render.</b> A clean reference renderer
-     * reaches the photograph's own high-frequency energy at {@code eps2d = 6} on a
-     * 912 px-wide frame. A variance is an area, so the same look on the 360 px-wide
-     * render target the phone actually draws into -- a 0.25 render scale of 1440,
-     * read off the device's own {@code splat: ... render=360x780 scale=0.2500}
-     * line -- is {@code 6 x (360/912)^2 = 0.935} px^2, rounded up to 1. That is
-     * sigma = one render pixel: below it a splat is smaller than the samples that
-     * would draw it, so it is hit or missed depending on where its centre lands,
-     * which is the partial-coverage speckle the fraction term cannot remove. It is
-     * rounded UP rather than to the exact 0.935 because a floor a little above the
-     * measurement only enlarges an already-undersampled splat, while one below it
-     * is the artifact itself.
+     * <p><b>Derived from the reference render, and it is an AREA.</b> A clean
+     * reference renderer reaches the photograph's own high-frequency energy at
+     * {@code eps2d = 6} px^2 on a 912x1984 frame -- the frame the sweep was run in
+     * -- so the measurement is {@code 6 / (912 * 1984)} of the target's area. It
+     * resolves to <b>6.00</b> px^2 back at 912x1984, <b>0.931</b> at the 360x780 of
+     * a 0.25 render scale (the parent's 0.935, to the measurement's own precision),
+     * <b>3.72</b> at the 720x1560 of a 0.5 render scale, and <b>14.90</b> at
+     * 1440x3120.
+     *
+     * <p><b>THE UNIT IS A FRACTION OF THE TARGET, AND THE TARGET IS NOT ALWAYS 360
+     * WIDE -- which is the bug this is.</b> The requirement is an area: the floor's
+     * job is to bring a splat up to roughly the spacing of its neighbours, and BOTH
+     * the splat's own screen variance and that spacing scale with the render
+     * resolution squared. A constant in render pixels is therefore right at exactly
+     * one resolution. Measured with the faithful renderer on the 149504-splat beach
+     * cloud's smooth sky (high-pass std, against a clean render's 0.76 at 360x780):
+     * at the <b>720x1560</b> target the device draws into at render scale 0.5 --
+     * read off its own {@code splat: ... render=720x1560 scale=0.5000} line -- a
+     * floor of 1.0 px^2 leaves <b>12.71</b>, 2.0 leaves 5.33, and the resolved 3.72
+     * leaves <b>1.15</b>. The old constant was 4x too small at half scale, and the
+     * SIZE knob could not recover it: at 0.8 of a dense cloud's cell the term is
+     * 0.75, still under the 1.0 constant, which is why the knob changed the texture
+     * and never the region. The same deficit appears at render scale 1.0 on a DENSE
+     * cloud, where the cell term {@code viewportArea / count} is small: a 1.18M
+     * splat cloud at 1440x3120 has a cell of 3.8 px^2 against a needed 14.9.
      *
      * <p><b>It is NOT scaled by zoom, and that is the point of a separate term.</b>
      * The cell term carries {@code zoom^2} because the gap between splats is a
      * property of the SCENE, and a magnified render spreads those splats over more
-     * pixels. This floor is a property of the RENDER TARGET -- a splat cannot be
-     * sampled below one target pixel however the camera is zoomed -- so it is a
-     * constant in render pixels. Folding the zoom in here would let a zoom-out
+     * pixels. This floor is a property of the render TARGET -- a splat cannot be
+     * sampled below one of ITS pixels however the camera is zoomed -- so it is a
+     * constant for a given target. Folding the zoom in here would let a zoom-out
      * (0.25 is reachable) divide the minimum back toward zero and reintroduce the
-     * same artifact, smaller, which is the failure this constant exists to end.
+     * same artifact, smaller, which is the failure this number exists to end.
      */
-    public static final float SAMPLING_MIN_PX = 1f;
+    public static final float SAMPLING_MIN_AREA_FRACTION = 6f / (912f * 1984f);
 
     /**
      * A cloud's identity: its path AND the number of bytes behind it.
@@ -186,7 +200,7 @@ public final class Splat {
 
     /**
      * The floor in render-target pixels squared: the LARGER of the sampling minimum
-     * and the fraction of the cell the knob stores.
+     * <b>for THIS target</b> and the fraction of the cell the knob stores.
      *
      * <p>This is the one resolution of the setting into a number, and it lives here
      * rather than in the renderer so the invariance it exists for can be asserted.
@@ -194,11 +208,12 @@ public final class Splat {
      * squared:
      *
      * <ul>
-     *   <li>{@link #SAMPLING_MIN_PX} -- the smallest variance a splat can be
-     *       sampled at. It is a property of the RENDER TARGET, so it is independent
-     *       of zoom and of count, and it is what keeps the floor from falling below
-     *       the pixel grid on a low-resolution target (the phone's 0.25 render
-     *       scale) or a high-count cloud.</li>
+     *   <li>{@link #samplingMinPx2} -- the smallest variance a splat can be sampled
+     *       at, for this target's area. It is a property of the RENDER TARGET, so
+     *       it is independent of zoom and of count, and it is what keeps the floor
+     *       from falling below the pixel grid on a low-resolution target or a
+     *       high-count cloud. <b>It scales with the target's area</b>, because the
+     *       requirement it states does: see {@link #SAMPLING_MIN_PX}.</li>
      *   <li>{@code fraction * cell * zoom^2}, where the cell is the area one splat
      *       stands for on screen: {@code viewportArea / count}. That is the area
      *       when the cloud fills the viewport -- which is the case for a photograph,
@@ -225,8 +240,34 @@ public final class Splat {
                                  int count, float zoom) {
         if (!(fraction > 0f) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
         float z = Float.isFinite(zoom) ? Math.max(0.25f, Math.min(2f, zoom)) : 1f;
-        float cell = fraction * ((float) viewportW * viewportH / count) * z * z;
-        return Math.max(SAMPLING_MIN_PX, cell);
+        float area = (float) viewportW * viewportH;
+        float cell = fraction * (area / count) * z * z;
+        return Math.max(samplingMinPx2(viewportW, viewportH), cell);
+    }
+
+    /**
+     * The sampling minimum for a given render target, in that target's pixels
+     * squared: {@link #SAMPLING_MIN_AREA_FRACTION} of the target's area.
+     *
+     * <p><b>Why an area and not a constant.</b> The measurement behind it is a
+     * variance, and a variance is an area, so the same look on a different
+     * resolution is the same number times the resolution ratio squared. The device
+     * draws at more than one render scale -- {@code splat_scale} is a dev pref from
+     * 0.25 to 1.0, and 0.5 is reachable and was measured -- so a constant stated at
+     * one of them is wrong at every other, and the wrongness is silent: a floor
+     * that is 4x too small does not error, it just leaves the speckle in.
+     *
+     * <p>It resolves to 6.00 px^2 at the 912x1984 the sweep was run in, 0.931 at the
+     * 360x780 of a 0.25 render scale, 3.72 at the 720x1560 of a 0.5 scale, and 14.90
+     * at 1440x3120. It is deliberately NOT scaled by zoom -- see
+     * {@link #SAMPLING_MIN_AREA_FRACTION}.
+     *
+     * <p>A target that cannot claim a size answers 0, the identity: a floor derived
+     * from no target is not a floor.
+     */
+    public static float samplingMinPx2(int viewportW, int viewportH) {
+        if (viewportW <= 0 || viewportH <= 0) return 0f;
+        return SAMPLING_MIN_AREA_FRACTION * ((float) viewportW * (float) viewportH);
     }
 
     /** The product default post-blur radius, in pixels: 0 is the identity. */

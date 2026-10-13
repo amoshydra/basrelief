@@ -510,16 +510,23 @@ already cost real time.
       too small to sample and leaves the well-sampled ones alone, so it removes the
       screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
       (`Splat.EPS_2D_DEFAULT` = 0.5, the dev row spans 0.45..0.80), and the draw
-      resolves it to `max(Splat.SAMPLING_MIN_PX, fraction × cell × zoom²)` — the
-      larger of that fraction term and **one render pixel squared**, the floor's own
-      floor. The minimum exists because the cell (`viewportArea / count`) shrinks as
-      the count grows, so a dense cloud on the phone's 0.25 render scale (a 360
-      px-wide target) falls below a pixel, where a splat is hit or missed by where
-      its centre lands and a smooth bright far region shows a **density-independent
-      speckle** the fraction term cannot remove. The minimum is a property of the
-      RENDER TARGET and is deliberately NOT scaled by zoom; the cell term is (the
-      scene spreads over more pixels). It is a `uniform`, not a `const`, so it moves
-      live with no recompile.
+      resolves it to `max(Splat.samplingMinPx2(w, h), fraction × cell × zoom²)` — the
+      larger of that fraction term and the sampling minimum, the floor's own floor.
+      The minimum exists because the cell (`viewportArea / count`) shrinks as the
+      count grows, so a dense cloud on a low-resolution render target falls below a
+      pixel, where a splat is hit or missed by where its centre lands and a smooth
+      bright far region shows a **density-independent speckle** the fraction term
+      cannot remove. **The minimum scales with the render target's AREA**
+      (`SAMPLING_MIN_AREA_FRACTION`, the measured clean 6 px² at 912×1984 as a
+      fraction of the target: 0.931 at 360×780, 3.72 at 720×1560, 14.90 at
+      1440×3120), because the requirement it states is an area — and that is the bug
+      it was: as a constant 1 px² it was right only at the 360-wide 0.25 render scale
+      it was derived on, 4× too small at the 720×1560 the device draws at 0.5, and
+      too small again at 1440 on a dense cloud (a 1.18M cloud's cell is 3.8 px²
+      against a needed 14.9), which is why the speckle survived the SIZE knob. The
+      minimum is deliberately NOT scaled by zoom; the cell term is (the scene spreads
+      over more pixels). It is a `uniform`, not a `const`, so it moves live with no
+      recompile.
     - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
       One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
       from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
@@ -930,7 +937,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 662 tests across thirty-seven classes:
+it**. 663 tests across thirty-seven classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1004,12 +1011,17 @@ every library write took the app down, so any gallery tap crashed it.
   square of the resolution ratio, and the zoom enters squared because it magnifies
   both axes — **where the cell term is the larger of the two terms.** Below it the
   floor does not shrink, and that floor's floor is the fix for a second, separate
-  bug: `Splat.SAMPLING_MIN_PX` is one render pixel squared, derived from the
-  reference's clean 6 px² at 912 wide scaled to the phone's 360 px-wide target
-  (0.935, rounded up), and it is a property of the RENDER TARGET. The test pins
-  that it does NOT scale with zoom (a zoom-out must not divide it back toward zero,
-  which is the same artifact smaller) and does not shrink with a smaller viewport,
-  and that it never clamps a floor the cell term has already lifted. A
+  bug: the sampling minimum is the reference's clean 6 px² at 912×1984 **as a
+  fraction of the render target's area** (`Splat.SAMPLING_MIN_AREA_FRACTION`, via
+  `Splat.samplingMinPx2`), so it is 0.931 at 360×780, 3.72 at 720×1560 and 14.90 at
+  1440×3120. As a constant 1 px² it was right only at the 360-wide target it was
+  derived on — 4× too small at the 720×1560 the device draws at 0.5, and too small
+  at 1440 on a dense cloud — which is why the speckle survived the SIZE knob (at 0.8
+  of a dense cloud's cell the term is 0.75, still under the constant) and why it
+  appeared at 100% and 25% and did not shrink with density. The test pins that the
+  minimum does NOT scale with zoom (a zoom-out must not divide it back toward zero,
+  which is the same artifact smaller), that it DOES scale with the target's area, and
+  that it never clamps a floor the cell term has already lifted. A
   cell that cannot be claimed (no splats, no viewport, a NaN fraction) answers 0,
   which is the identity for a floor — the "a window claims nothing" rule applied to
   a number, where a guess would be a floor derived from a count of nothing. Its
