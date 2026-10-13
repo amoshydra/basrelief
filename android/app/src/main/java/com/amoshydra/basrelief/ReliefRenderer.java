@@ -2035,6 +2035,18 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
+     * Live write for the dev RESOLUTION knob: the fraction of the surface the cloud
+     * is rasterised at. Same contract as {@link #setSplatEps2d}. This is the one
+     * lever that is linear in the thing the frame actually costs -- fill is pixels,
+     * so 0.7 is half the fragment work -- at the price of a softer picture, which
+     * for a wallpaper is the right trade to be able to make. Clamped to the same
+     * 0.25..1 the pref is read with, so the two cannot disagree.
+     */
+    public void setSplatRenderScale(float v) {
+        splatRenderScale = Math.max(0.25f, Math.min(1f, v));
+    }
+
+    /**
      * Live preview for the Brightness and Shadow sliders.
      *
      * <p>Writes only volatile fields and does not touch GL, so it is safe from the

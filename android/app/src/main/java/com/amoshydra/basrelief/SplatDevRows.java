@@ -76,6 +76,7 @@ final class SplatDevRows {
         box.addView(note);
 
         box.addView(sizeRow());
+        box.addView(scaleRow());
         box.addView(blurRow());
         box.addView(budgetRow());
 
@@ -134,7 +135,46 @@ final class SplatDevRows {
         s.setOnPreview(new BasreliefSlider.OnPreview() {
             @Override
             public void onPreview(int value) {
-                activity.renderer.setSplatEps2d(value / 10f);
+                activity.renderer.setSplatEps2d(value / 100f);
+                activity.glView.requestRender();
+            }
+        });
+        activity.dimWhileInteracting(s);
+        return s.view();
+    }
+
+    /**
+     * RESOLUTION: the fraction of the surface the cloud is rasterised at, in per
+     * cent. The one lever that is linear in what a frame costs -- fill is pixels,
+     * so 70 is about half the fragment work -- at the price of a softer picture.
+     * Live, because the whole point is to watch the frame rate and the softness
+     * move together, and the pref it writes is the one the renderer already reads.
+     */
+    private View scaleRow() {
+        int initial = Math.round(readFloat(ReliefRenderer.KEY_SPLAT_SCALE, 1f) * 100f);
+        initial = Math.max(25, Math.min(100, initial));
+        BasreliefSlider s = BasreliefSlider.create(activity, ReliefRenderer.KEY_SPLAT_SCALE,
+                initial, 25, 100,
+                new BasreliefSlider.ValueFormatter() {
+                    @Override
+                    public String format(int value) {
+                        return value + "%";
+                    }
+                },
+                new BasreliefSlider.OnChanged() {
+                    @Override
+                    public void onChanged(int value) {
+                        float v = Math.max(0.25f, Math.min(1f, value / 100f));
+                        activity.prefs.edit()
+                                .putFloat(ReliefRenderer.KEY_SPLAT_SCALE, v).apply();
+                        activity.renderer.setSplatRenderScale(v);
+                        activity.glView.requestRender();
+                    }
+                });
+        s.setOnPreview(new BasreliefSlider.OnPreview() {
+            @Override
+            public void onPreview(int value) {
+                activity.renderer.setSplatRenderScale(value / 100f);
                 activity.glView.requestRender();
             }
         });
