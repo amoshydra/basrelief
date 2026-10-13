@@ -4928,6 +4928,14 @@ public class MainActivity extends Activity {
         if (isFinishing() || isDestroyed()) return;
         if (gallery != null) gallery.jobsChanged();
         refreshSliders();
+        // The renderer rows carry the "N splats" line, and N is read from the
+        // cloud FILE (RendererRows.countOf) rather than from anything captured at
+        // import time -- so it is correct the moment it is asked, and the only
+        // reason a rebuild did not appear to change it is that nobody asked. The
+        // resume path already refreshed these rows on every phase and the live path
+        // did not, which is why a recovered build updated the label and a watched
+        // one did not.
+        refreshRendererRows();
     }
 
     /**
