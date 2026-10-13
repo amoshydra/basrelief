@@ -505,16 +505,32 @@ final class SplatRenderer {
 
         if (fbo != 0) {
             // The dev BLUR knob, when on: horizontal fbo -> fboB, vertical fboB ->
-            // fbo, then the same blit up. Both passes are skipped at radius 0, which
-            // is why the identity costs nothing at all.
+            // fbo, then the copy up. Both passes are skipped at radius 0, which is
+            // why the identity costs nothing at all.
             if (blur && fboB != 0 && ensureBlurProgram()) {
                 blurPass(fboB, fboColour, vw, vh, 1f, 0f, blurPx);
                 blurPass(fbo, fboBColour, vw, vh, 0f, 1f, blurPx);
             }
-            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo);
-            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0);
-            GLES30.glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, surfaceW, surfaceH,
-                    GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR);
+            // The upscale to the surface is a DRAWN copy, not a scaled
+            // glBlitFramebuffer. That blit was the only call in the path whose
+            // behaviour on a SCALED source is driver-dependent, and it is what the
+            // two blank frames had in common: the offscreen path is reached by a
+            // render scale below 100% and by the blur, and by nothing else, and both
+            // came back black while the same draw straight to the surface was fine.
+            // A fullscreen triangle sampling the colour texture is the operation the
+            // blur already performs, at radius 0, where the kernel is exactly a copy
+            // -- so this needs no new program and no new buffer. The blit is kept as
+            // the fallback for a driver where the blur program will not build, so
+            // the worst case is the behaviour that shipped.
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+            if (ensureBlurProgram()) {
+                blurPass(0, fboColour, surfaceW, surfaceH, 1f, 0f, 0f);
+            } else {
+                GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, fbo);
+                GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0);
+                GLES30.glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, surfaceW, surfaceH,
+                        GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR);
+            }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
         }
         endGpuTimer();
