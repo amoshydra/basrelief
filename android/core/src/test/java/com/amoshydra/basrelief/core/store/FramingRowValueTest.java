@@ -172,9 +172,13 @@ public class FramingRowValueTest {
         // makes "the pinch committed exactly what the control showed" true.
         assertEquals(FramingRowValue.zoomPercent(1.376f),
                 new SurfaceSettings(90, FramingRowValue.zoomPercent(1.376f), 60,
-                        0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED).zoom);
+                        0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED,
+                        SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE).zoom);
         assertEquals(1.376f, new SurfaceSettings(90, FramingRowValue.zoomPercent(1.376f),
-                60, 0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED).zoomScale(), 0.005f);
+                60, 0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED,
+                SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE).zoomScale(), 0.005f);
     }
 
     // --------------------------------------------------------- the round trip
@@ -192,7 +196,10 @@ public class FramingRowValueTest {
     @Test
     public void whatTheRowPrintsIsWhatTheStoreKeeps() {
         SurfaceSettings stored = new SurfaceSettings(90, 142, 60,
-                0.2577801f, -0.15712592f, 86.5f, -126f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED);
+                0.2577801f, -0.15712592f, 86.5f, -126f, 0, 0, 0f, 0f,
+                SurfaceSettings.DEFAULT_SPEED,
+                SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
         assertEquals(258, FramingRowValue.originThousandths(stored.originX));
         assertEquals(-157, FramingRowValue.originThousandths(stored.originY));
         assertEquals(87, FramingRowValue.showablePan(stored.panX, 3120));

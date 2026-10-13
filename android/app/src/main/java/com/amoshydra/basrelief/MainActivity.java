@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.render.Splat;
 import com.amoshydra.basrelief.core.store.AssetActions;
 import com.amoshydra.basrelief.core.store.AssetRow;
 import com.amoshydra.basrelief.core.store.BuildTab;
@@ -535,12 +536,22 @@ public class MainActivity extends Activity {
      */
     private RendererRows rendererRows;
     /**
-     * The splat look's dev tuning group (Size / Blur / Budget), directly under the
-     * Renderer row. Built once and refreshed from the live index on every
-     * {@code refreshSliders}; see {@link SplatDevRows}. A dev path, shown only when
-     * the selected row draws a cloud.
+     * The splat look's four rows: Depth, Size, Blur and Resolution, in the geometry
+     * group under the Renderer row.
+     *
+     * <p><b>Product controls now, not a dev group.</b> They were prefs while the look
+     * was still being chosen by eye; the values are per photo and per surface now, so
+     * the rows are the ordinary sliders the rest of the sheet uses — built and removed
+     * by {@link #syncSplatRows} exactly as the relief's Depth row is by
+     * {@link #syncDepthRow}, because a control that cannot change a pixel must not be
+     * on screen. They are shown only when the selected row draws a cloud
+     * ({@code isSplatMode()} and the file is here), the two conditions
+     * {@code ReliefRenderer.useSplat()} draws under.
      */
-    private SplatDevRows splatDevRows;
+    private View splatDepthRow;
+    private View splatSizeRow;
+    private View splatBlurRow;
+    private View splatScaleRow;
     /**
      * The Light group, hidden in splat mode.
      *
@@ -1066,12 +1077,6 @@ public class MainActivity extends Activity {
         // when there is none) so it reads as the group's other axis.
         rendererRows = new RendererRows(this);
         sheetContent.addView(rendererRows.view(), rendererInsertIndex());
-        // The dev tuning group, directly under the Renderer row it tunes. Inserted
-        // after the renderer row rather than at a derived index, because the renderer
-        // row is the sibling it belongs to and it is always present for an item.
-        splatDevRows = new SplatDevRows(this);
-        sheetContent.addView(splatDevRows.view(),
-                sheetContent.indexOfChild(rendererRows.view()) + 1);
         motionCaption = sectionLabel(
                 heading(R.string.group_motion, R.string.group_motion_surface));
         // The launch state of the first-caption rule: without a depth row the caption
@@ -3931,7 +3936,11 @@ public class MainActivity extends Activity {
             renderer.setLight(
                     "light_azimuth".equals(key) ? value : shownAzimuth,
                     "light_elevation".equals(key) ? value : shownElevation);
-        } else renderer.setDepth(value / 100f);
+        } else if ("splat_depth_mul".equals(key)) renderer.setSplatDepthMul(value / 100f);
+        else if ("splat_eps2d".equals(key)) renderer.setSplatEps2d(value / 100f);
+        else if ("splat_blur_px".equals(key)) renderer.setSplatBlurPx(value / 10f);
+        else if ("splat_scale".equals(key)) renderer.setSplatRenderScale(value / 100f);
+        else renderer.setDepth(value / 100f);
     }
 
     /**
@@ -3980,6 +3989,17 @@ public class MainActivity extends Activity {
         if (key.equals("speed")) return String.format(Locale.US, "%.2f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
         if (key.equals("motion")) return value + "%";
+        // The splat look's four rows. Depth and Size are hundredths, so two decimals
+        // show the step a nudge takes; Blur is tenths and 0 reads as exactly that
+        // rather than "0.0"; Resolution is whole percent, like Zoom.
+        if (key.equals("splat_depth_mul") || key.equals("splat_eps2d")) {
+            return String.format(Locale.US, "%.2f", value / 100f);
+        }
+        if (key.equals("splat_blur_px")) {
+            if (value == 0) return "0";
+            return String.format(Locale.US, "%.1f", value / 10f);
+        }
+        if (key.equals("splat_scale")) return value + "%";
         // The light's two rows print their own unit, and only their own unit: the
         // convention (azimuth counter-clockwise from the right, elevation 0
         // grazing) lives in the caption above them, because neither number means
@@ -4273,6 +4293,22 @@ public class MainActivity extends Activity {
                             "light_azimuth".equals(key) ? value : other.lightAzimuth,
                             "light_elevation".equals(key) ? value : other.lightElevation);
                 }
+                // The splat look's four rows, each through its own one-value mutator
+                // so the other three and every other setting carry across -- the
+                // withDepth scar this file exists to prevent. Clamped through Splat
+                // so the stored value is canonical the moment it is written.
+                if ("splat_depth_mul".equals(key)) {
+                    return item.withSplatDepth(editSurface, Splat.clampDepthMul(value / 100f));
+                }
+                if ("splat_eps2d".equals(key)) {
+                    return item.withSplatSize(editSurface, Splat.clampEps2d(value / 100f));
+                }
+                if ("splat_blur_px".equals(key)) {
+                    return item.withSplatBlur(editSurface, Splat.clampBlurPx(value / 10f));
+                }
+                if ("splat_scale".equals(key)) {
+                    return item.withSplatScale(editSurface, Splat.clampRenderScale(value / 100f));
+                }
                 return item.withMotion(editSurface, value);
             }
         });
@@ -4338,9 +4374,12 @@ public class MainActivity extends Activity {
             lightSection.setVisibility(splatMode ? View.GONE : View.VISIBLE);
         }
         if (rendererRows != null) rendererRows.refresh();
-        // The dev tuning group follows the same one decision: shown only when the
-        // selected row draws a cloud, so its two live knobs cannot be inert.
-        if (splatDevRows != null) splatDevRows.refresh();
+        // The splat look's four rows follow the same one decision the relief's Depth
+        // row does: present only when they can change a pixel. syncSplatRows builds
+        // them when the selection draws a cloud and removes them when it does not, so
+        // a row in Relief mode -- or in Splat mode with no cloud -- shows none of
+        // them. A control that cannot act is the lie this project keeps refusing.
+        syncSplatRows(item);
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
@@ -4371,6 +4410,13 @@ public class MainActivity extends Activity {
                     ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation;
             setBar("light_azimuth", azimuthForSlider(shownAzimuth), true);
             setBar("light_elevation", elevationForSlider(shownElevation), true);
+            // The splat look's four rows, from the same one read. setBar is a no-op
+            // when the row is not built (a relief row, or a splat row with no cloud),
+            // so this cannot write to a control that is not on screen.
+            setBar("splat_depth_mul", splatDepthSliderValue(s), true);
+            setBar("splat_eps2d", splatSizeSliderValue(s), true);
+            setBar("splat_blur_px", splatBlurSliderValue(s), true);
+            setBar("splat_scale", splatScaleSliderValue(s), true);
         }
         // The four framing rows are sliders on this same sheet and must follow the
         // same one resolution. They live in FramingRows and register under different
@@ -4450,6 +4496,95 @@ public class MainActivity extends Activity {
             sliders.remove("intensity");
             depthBarRow = null;
         }
+    }
+
+    /**
+     * Add or remove the splat look's four rows so they match the photo on screen.
+     *
+     * <p><b>The same rule as {@link #syncDepthRow}, one medium over.</b> The four are
+     * render values that only a drawn cloud reads, so they belong on the sheet only
+     * when the selected row draws one: {@code isSplatMode()} AND the cloud file is
+     * here -- exactly the two conditions {@code ReliefRenderer.useSplat()} draws
+     * under. A row in Splat mode with no cloud renders its relief, where all four are
+     * inert; a control that cannot change a pixel is the lie this project keeps
+     * refusing to ship.
+     *
+     * <p>Built the first time they are wanted and removed (from the tree and from the
+     * {@code sliders} map, like the Depth row) when they are not, so a selection that
+     * stops drawing a cloud cannot leave four detached sliders that {@code setBar}
+     * would silently write to.
+     */
+    private void syncSplatRows(LibraryItem item) {
+        boolean want = item != null && item.isSplatMode() && splatFilePresent(item);
+        if (!want) {
+            dropSplatRow("splat_depth_mul", splatDepthRow);
+            dropSplatRow("splat_eps2d", splatSizeRow);
+            dropSplatRow("splat_blur_px", splatBlurRow);
+            dropSplatRow("splat_scale", splatScaleRow);
+            splatDepthRow = null;
+            splatSizeRow = null;
+            splatBlurRow = null;
+            splatScaleRow = null;
+            return;
+        }
+        if (splatDepthRow != null) return;   // already built for this state
+        SurfaceSettings s = item.settings(editSurface);
+        // Inserted directly under the Renderer row, in the order the look reads:
+        // Depth (shape), Size (coverage), Blur (softness), Resolution (cost). Derived
+        // at insert time from the renderer row's own position, like rendererInsertIndex,
+        // rather than a saved integer.
+        int at = splatInsertIndex();
+        splatDepthRow = addSlider("splat_depth_mul", splatDepthSliderValue(s), 0, 300);
+        sheetContent.addView(splatDepthRow, at++);
+        splatSizeRow = addSlider("splat_eps2d", splatSizeSliderValue(s),
+                Math.round(Splat.EPS_2D_MIN * 100f), Math.round(Splat.EPS_2D_MAX * 100f));
+        sheetContent.addView(splatSizeRow, at++);
+        splatBlurRow = addSlider("splat_blur_px", splatBlurSliderValue(s),
+                0, Math.round(Splat.BLUR_MAX * 10f));
+        sheetContent.addView(splatBlurRow, at++);
+        splatScaleRow = addSlider("splat_scale", splatScaleSliderValue(s),
+                Math.round(Splat.RENDER_SCALE_MIN * 100f),
+                Math.round(Splat.RENDER_SCALE_MAX * 100f));
+        sheetContent.addView(splatScaleRow, at);
+    }
+
+    /** Remove one splat row from the tree and the slider map. See {@link #syncSplatRows}. */
+    private void dropSplatRow(String key, View row) {
+        if (row != null) sheetContent.removeView(row);
+        sliders.remove(key);
+    }
+
+    /** Where the splat rows belong: directly under the Renderer row. */
+    private int splatInsertIndex() {
+        int at = rendererRows == null ? -1 : sheetContent.indexOfChild(rendererRows.view());
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
+    }
+
+    // The four splat values as the integers their rows carry. The encodings are the
+    // ones the old dev group used, so a value the migration seeded reads back at the
+    // same position on the track: Depth and Size in hundredths, Blur in tenths,
+    // Resolution in whole percent. Each is a pure function of the stored float, used
+    // by both the build (here) and the repaint (refreshSliders), so the row cannot be
+    // created at one value and refreshed to another.
+
+    private static int splatDepthSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_DEPTH : s.splatDepth;
+        return Math.round(Splat.clampDepthMul(v) * 100f);
+    }
+
+    private static int splatSizeSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_EPS2D : s.splatEps2d;
+        return Math.round(Splat.clampEps2d(v) * 100f);
+    }
+
+    private static int splatBlurSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_BLUR : s.splatBlur;
+        return Math.round(Splat.clampBlurPx(v) * 10f);
+    }
+
+    private static int splatScaleSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_SCALE : s.splatScale;
+        return Math.round(Splat.clampRenderScale(v) * 100f);
     }
 
     /**
@@ -5945,7 +6080,10 @@ public class MainActivity extends Activity {
     /** Repaint the renderer row without touching storage. */
     void refreshRendererRows() {
         if (rendererRows != null) rendererRows.refresh();
-        if (splatDevRows != null) splatDevRows.refresh();
+        // The four splat rows follow the same state: a finished build makes the cloud
+        // present, and that is the moment they must appear (or a delete makes it
+        // absent, and that is the moment they must go).
+        syncSplatRows(state().activeItem());
         // A cloud build's every UI update goes through here -- each phase, the
         // completion and the failure -- so this is where the collapsed pill learns a
         // splat run has started or ended. It is the same shape as the depth run's

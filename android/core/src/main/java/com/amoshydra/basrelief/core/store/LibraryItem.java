@@ -312,7 +312,11 @@ public final class LibraryItem {
                         SurfaceSettings.DEFAULT_ADJUST, SurfaceSettings.DEFAULT_ADJUST,
                         SurfaceSettings.DEFAULT_LIGHT_AZIMUTH,
                         SurfaceSettings.DEFAULT_LIGHT_ELEVATION,
-                        SurfaceSettings.DEFAULT_SPEED),
+                        SurfaceSettings.DEFAULT_SPEED,
+                        SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                        SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                        SurfaceSettings.DEFAULT_SPLAT_SCALE),
                 null);
     }
 
@@ -829,14 +833,16 @@ public final class LibraryItem {
     public LibraryItem withIntensity(Surface surface, int v) {
         return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /** The Zoom slider, 25..200, on one surface. */
     public LibraryItem withZoom(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /**
@@ -846,7 +852,8 @@ public final class LibraryItem {
     public LibraryItem withMotion(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /**
@@ -858,28 +865,32 @@ public final class LibraryItem {
     public LibraryItem withSpeed(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, v));
+                s.lightAzimuth, s.lightElevation, v,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /** Origin, a fraction of the plane, on one surface. */
     public LibraryItem withOrigin(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
                 s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
     public LibraryItem withPan(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, x, y, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /** Brightness and shadow, -100..100, on one surface. Render-time only. */
     public LibraryItem withAdjust(Surface surface, int brightness, int shadow) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, s.panX, s.panY, brightness, shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
     }
 
     /**
@@ -889,6 +900,46 @@ public final class LibraryItem {
      */
     public LibraryItem withLight(Surface surface, float azimuthDegrees, float elevationDegrees) {
         return editSettings(surface, s -> s.withLight(azimuthDegrees, elevationDegrees));
+    }
+
+    // --------------------------------------------------- the splat look rows
+    //
+    // Four render values, each per photo and per surface like Depth and Motion.
+    // They were global prefs; the migration in {@link Library} seeds them once from
+    // the old keys, and these are the writes the sheet's four rows use. Each
+    // carries the other three, so nudging Size cannot reset Depth -- the
+    // {@code withDepth} scar this file exists to prevent.
+
+    /** The splat cloud's Depth, a multiplier on the reconstructed depth. */
+    public LibraryItem withSplatDepth(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                v, s.splatEps2d, s.splatBlur, s.splatScale));
+    }
+
+    /** The splat cloud's Size: the 2D floor as a fraction of a splat's cell. */
+    public LibraryItem withSplatSize(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, v, s.splatBlur, s.splatScale));
+    }
+
+    /** The splat cloud's Blur: a post-blur radius in render-target pixels. */
+    public LibraryItem withSplatBlur(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, v, s.splatScale));
+    }
+
+    /** The splat cloud's Resolution: the fraction of the surface it is drawn at. */
+    public LibraryItem withSplatScale(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, v));
     }
 
     /**
@@ -1284,7 +1335,14 @@ public final class LibraryItem {
                     // A flat blob predates the field, so absent is 1x -- and this
                     // legacy shape is read once and rewritten into the settings form,
                     // so the default lands on disk rather than being re-derived.
-                    o.optInt("speed", SurfaceSettings.DEFAULT_SPEED));
+                    o.optInt("speed", SurfaceSettings.DEFAULT_SPEED),
+                    // The four splat-look values postdate the flat shape entirely, so
+                    // they are always the defaults here; the migration in Library is
+                    // what seeds them from the old global prefs.
+                    SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                    SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                    SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                    SurfaceSettings.DEFAULT_SPLAT_SCALE);
         }
         return SurfaceSettings.defaults();
     }

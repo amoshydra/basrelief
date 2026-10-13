@@ -62,16 +62,19 @@ public final class Splat {
 
     // ------------------------------------------------------ the tuning knobs
     //
-    // The three values a dev tunes by eye on the phone. They are NOT in the
-    // persisted per-item schema (SurfaceSettings / LibraryItem / Framing's counted
-    // fields) -- deliberately, until the look they settle on is known, because a
-    // field added to the counted chain is a field every writer must carry and a
-    // schema bump for a number that is still being chosen. They live as plain
-    // prefs read at draw, exactly as the Stage-0 `splat_grid` and `splat_scale`
-    // dev keys do, so the product defaults below are what a user who never opens
-    // the dev group sees. Their clamps are here, in :core, so a pref written by a
-    // newer build, restored from another device or typed by adb cannot put the
-    // shader in a state no test can name.
+    // The four values the sheet's splat rows edit: SIZE, BLUR, DEPTH and
+    // RESOLUTION. <b>They are in the persisted per-item, per-surface schema now</b>
+    // -- on {@link com.amoshydra.basrelief.core.store.SurfaceSettings}, carried by
+    // its positional {@code with}, resolved by
+    // {@link com.amoshydra.basrelief.core.render.Framing} and compared by
+    // {@code sameAs}. They were deliberately prefs while the look was still being
+    // chosen by eye ("a field in the counted chain is a schema bump plus a writer
+    // at every call site for a number that may not survive the tuning"); the tuning
+    // is over, so they are a render value on the photo exactly as Depth and Motion
+    // are. Their clamps live here, in :core, so a blob written by a newer build,
+    // restored from another device or typed by adb cannot put the shader in a state
+    // no test can name, and the product defaults below are what an untouched
+    // install renders.
 
     /**
      * The product default 2D low-pass floor, gsplat's {@code eps2d}: it lifts only
@@ -105,7 +108,7 @@ public final class Splat {
     public static final float EPS_2D_DEFAULT = 0.5f;
 
     /**
-     * The bottom of the dev SIZE range. <b>The range is the USEFUL band, not a full
+     * The bottom of the SIZE range. <b>The range is the USEFUL band, not a full
      * sweep, and that is a deliberate product decision.</b> Measured, the floor has
      * a narrow usable window: below about 0.4 of the cell the screen-door returns,
      * and above about 0.8 the picture is soft for no gain. A knob that spans the
@@ -116,7 +119,7 @@ public final class Splat {
      */
     public static final float EPS_2D_MIN = 0.45f;
 
-    /** The top of the dev SIZE range: the cleaner-sky option at a small subject cost. */
+    /** The top of the SIZE range: the cleaner-sky option at a small subject cost. */
     public static final float EPS_2D_MAX = 0.8f;
 
     /**
@@ -274,7 +277,7 @@ public final class Splat {
     public static final float BLUR_DEFAULT = 0f;
 
     /**
-     * The top of the dev BLUR range, in render-target pixels. Six is where the
+     * The top of the BLUR range, in render-target pixels. Six is where the
      * speckle is gone several times over and the detail cost is obvious; a larger
      * radius is a different effect (a defocus), not a cleaner version of this one.
      */
@@ -291,29 +294,55 @@ public final class Splat {
         return value;
     }
 
+    // ------------------------------------------------- the RESOLUTION knob
+
+    /** The product default render scale: the cloud is drawn at the surface's own size. */
+    public static final float RENDER_SCALE_DEFAULT = 1f;
+
+    /**
+     * The bottom of the RESOLUTION range: the fraction of the surface the cloud is
+     * rasterised at. Below a quarter the picture is softer than the fill it saves,
+     * so this is the useful floor rather than a bound on a divisor.
+     */
+    public static final float RENDER_SCALE_MIN = 0.25f;
+
+    /** The top of the RESOLUTION range: straight to the surface, no offscreen blit. */
+    public static final float RENDER_SCALE_MAX = 1f;
+
+    /**
+     * The render scale a stored value means. A non-finite value answers the default
+     * rather than the nearest bound -- the "a window claims nothing" rule applied to
+     * a number, so a NaN cannot size the offscreen target.
+     */
+    public static float clampRenderScale(float value) {
+        if (!Float.isFinite(value)) return RENDER_SCALE_DEFAULT;
+        if (value < RENDER_SCALE_MIN) return RENDER_SCALE_MIN;
+        if (value > RENDER_SCALE_MAX) return RENDER_SCALE_MAX;
+        return value;
+    }
+
     // ------------------------------------------------- the Depth knob
     //
-    // The live dev knob the sheet's splat group gained after SIZE / BLUR /
-    // RESOLUTION. Same rule as the three above: a pref read at draw, not a field in
-    // the counted schema, and its clamp is here so a pref from a newer build or
-    // another device cannot reach the shader as a value no test can name.
+    // The shape knob, added after SIZE / BLUR / RESOLUTION. Same rule as the three
+    // above: a per-item, per-surface render value in the counted schema, clamped
+    // here so a blob from a newer build or another device cannot reach the shader as
+    // a value no test can name.
 
     /**
      * The product default depth multiplier: 1.0, exactly the depth the node
-     * reconstructed. A user who never opens the dev group sees the cloud as it was
-     * measured.
+     * reconstructed. An untouched photo shows the cloud as it was measured.
      */
     public static final float DEPTH_MUL_DEFAULT = 1f;
 
     /**
-     * The bottom of the dev DEPTH range: 0 collapses every splat onto the reference
+     * The bottom of the DEPTH range: 0 collapses every splat onto the reference
      * plane, which is the flat photograph (the cloud has no depth to reveal), and is
      * the honest "off" end of the control rather than a bound on a divisor.
      */
     public static final float DEPTH_MUL_MIN = 0f;
 
     /**
-     * The top of the dev DEPTH range. Three times the measured depth is well past
+     * The top of the DEPTH range. Three times the measured depth is well past
      * anything a single-image reconstruction is entitled to and is where the holes a
      * deeper cloud opens stop reading as parallax; the useful band is below it.
      */

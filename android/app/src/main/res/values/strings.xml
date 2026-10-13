@@ -580,19 +580,17 @@
     <!-- The level slider's name column, resolved by BasreliefSlider.labelFor. -->
     <string name="slider_splat_detail">3D detail</string>
     <!--
-      The splat dev group's sliders. Short names, because BasreliefSlider's
-      name column is a fixed 66dp: "Splat size" would be ellipsised, and the
-      caption above the group already says what is being tuned.
+      The splat look rows' sliders: Depth, Size, Blur and Resolution. Short names,
+      because BasreliefSlider's name column is a fixed 66dp: "Splat size" would be
+      ellipsised, and the Renderer row above them already says what is being tuned.
+      The relief's own Depth row uses the same word, and the two are never on
+      screen together: the relief's is hidden in Splat mode, these only appear in it.
     -->
     <string name="slider_splat_size">Size</string>
     <string name="slider_splat_blur">Blur</string>
     <string name="slider_splat_budget">Budget</string>
     <string name="slider_splat_resolution">Resolution</string>
     <string name="slider_splat_depth">Depth</string>
-    <!-- The dev group's caption and note. Labelled "dev" on purpose: these are
-         values still being picked by eye, not a product control. -->
-    <string name="splat_dev_caption">Splat tuning · dev</string>
-    <string name="splat_dev_note">Size lifts the splats too thin to cover, and costs nothing. Blur softens what is left and costs detail — only a higher Budget brings it back, on Regenerate.</string>
     <string name="settings_licence">MIT</string>
     <!-- The sheet's grip. It has no label on screen, so a screen reader is told
          what it is; "Done" would be a lie, because the bar closes the sheet

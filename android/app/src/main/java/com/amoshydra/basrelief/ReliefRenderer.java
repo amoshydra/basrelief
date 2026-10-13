@@ -178,45 +178,39 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     static final String KEY_RENDER_3D_LEVEL = "render_3d_level";
 
     /**
-     * The Gaussian splat's render scale: the fraction of the surface the cloud is
-     * drawn at before a blit up. A Stage-0 knob, read in {@link #reloadFromPrefs}
-     * and not exposed in the UI yet; 1.0 draws straight to the surface.
+     * The Gaussian splat's render scale, as it existed before it became per-item.
+     *
+     * <p><b>A migration source now, read only by {@code AppState} for Library's
+     * v4->v5 migration</b> — the {@link #KEY_RENDER_3D} precedent one version later.
+     * The value the renderer draws with is
+     * {@code SurfaceSettings.splatScale}, resolved through {@link Framing}. Nothing
+     * reads this pref at draw any more.
      */
     static final String KEY_SPLAT_SCALE = "splat_scale";
 
     /**
-     * The splat look's dev tuning knobs, read at draw and written by the sheet's dev
-     * group. <b>Not</b> in the per-item schema ({@code SurfaceSettings} / {@code Framing}'s
-     * counted fields) on purpose: these are values still being chosen by eye, and a
-     * field in the counted chain is a schema bump plus a writer every call site must
-     * carry for a number that may not survive the tuning. They are the same shape as
-     * {@link #KEY_SPLAT_GRID} and {@link #KEY_SPLAT_SCALE}: a pref, off the product
-     * path, so a user who never opens the dev group sees {@link Splat#EPS_2D_DEFAULT}
-     * and {@link Splat#BLUR_DEFAULT} and nothing else.
+     * The splat look's other three pre-item values, migration sources read only by
+     * {@code AppState} for the v4->v5 migration.
      *
      * <p>{@link #KEY_SPLAT_EPS2D} is the 2D low-pass floor (gsplat's {@code eps2d}),
      * stored as a fraction of the cell a splat stands for rather than in pixels --
      * a pixel count means a different thing at every render resolution and every
      * zoom, which is what made the knob's maximum too small on the phone. The draw
      * resolves it to the larger of that fraction of the cell and the sampling
-     * minimum {@link Splat#SAMPLING_MIN_PX}, so a dense cloud on a low-resolution
-     * target cannot drag the floor below one render pixel. See
-     * {@link Splat#eps2dFor}. {@link #KEY_SPLAT_BLUR} is the post-blur radius in
-     * render-target pixels.
+     * minimum, so a dense cloud on a low-resolution target cannot drag the floor
+     * below one render pixel. See {@link Splat#eps2dFor}.
+     * {@link #KEY_SPLAT_BLUR} is the post-blur radius in render-target pixels.
+     * {@link #KEY_SPLAT_DEPTH} multiplies the cloud's depth: 1 is the depth the
+     * node reconstructed, 0 collapses the cloud onto its reference plane (the flat
+     * photograph).
+     *
+     * <p>The product defaults are {@link Splat#EPS_2D_DEFAULT},
+     * {@link Splat#BLUR_DEFAULT} and {@link Splat#DEPTH_MUL_DEFAULT}; an untouched
+     * install's migration writes nothing, because a value equal to the default is
+     * omitted from the blob.
      */
     static final String KEY_SPLAT_EPS2D = "splat_eps2d";
     static final String KEY_SPLAT_BLUR = "splat_blur_px";
-
-    /**
-     * The splat's DEPTH-side dev knob, beside the look knobs above and read the
-     * same way (a pref at draw, off the product path, clamped in {@code :core}).
-     *
-     * <p>{@link #KEY_SPLAT_DEPTH} multiplies the cloud's depth: 1 is the depth the
-     * node reconstructed, 0 collapses the cloud onto its reference plane (the flat
-     * photograph). At rest the picture is the photograph at every value -- each
-     * splat is moved along the ray from the eye through its own pixel -- so only the
-     * parallax under tilt changes.
-     */
     static final String KEY_SPLAT_DEPTH = "splat_depth_mul";
 
     /**
@@ -681,7 +675,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * {@code RenderMode} is the live selector. This flag is reachable only through
      * the {@link #KEY_SPLAT_GRID} dev pref, which is not in the UI — it is kept
      * because the card mode is a documented experiment worth A/B-ing on a device,
-     * exactly as {@link #KEY_SPLAT_SCALE} and {@link #KEY_RENDER_3D_LEVEL} are.
+     * exactly as {@link #KEY_RENDER_3D_LEVEL} is. (The splat look's own four values
+     * used to be dev prefs too; they are per-item render values now, see
+     * {@link com.amoshydra.basrelief.core.store.SurfaceSettings}.)
      *
      * <p><b>Its own key, not {@code render_3d}.</b> That pref is the migration source
      * for the per-item mode, and letting it also select the card grid would make every
@@ -746,18 +742,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * {@code splatWantedPath}'s job.
      */
     private volatile float splatWantedLens;
-    private volatile float splatRenderScale = 1f;
 
     /**
-     * The dev tuning knobs, written by the sheet's dev group and read at draw.
+     * The splat look and shape, written from the resolved {@link Framing} and read
+     * at draw.
      *
-     * <p>Volatile and nothing more, per the threading rule: a UI-thread setter may
-     * only write a field, and the GL thread reads these in {@link #onDrawFrame} and
-     * hands them to {@link SplatRenderer#draw}. They are seeded from the prefs in
-     * {@link #reloadFromPrefs} (so a reboot keeps the tuned look) and moved live by
-     * the dev sliders, which is what makes the trade pickable by eye without a
-     * rebuild.
+     * <p><b>Per photo and per surface now, not global prefs.</b> They are ordinary
+     * render values: {@link #apply(Framing)} sets them from the row the host
+     * resolved, {@link #stepGlide} eases them across a surface boundary, and
+     * {@link #snapshot()} reports them so the no-op-paint guard can see a change.
+     * The sheet's four splat rows move them live while a finger drags (the same
+     * volatile-only contract {@link #setDepth} follows); the store write is on
+     * release.
      */
+    private volatile float splatRenderScale = 1f;
     private volatile float splatEps2d = Splat.EPS_2D_DEFAULT;
     private volatile float splatBlurPx = Splat.BLUR_DEFAULT;
     private volatile float splatDepthMul = Splat.DEPTH_MUL_DEFAULT;
@@ -2029,21 +2027,21 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Live write for the dev SIZE knob: the 2D low-pass floor, gsplat's
+     * Live write for the splat Size row: the 2D low-pass floor, gsplat's
      * {@code eps2d}.
      *
      * <p>Writes only a volatile field and does not touch GL, so it is safe from the
      * UI thread — the same rule {@link #setDepth} and {@link #setMotion} follow. The
      * draw reads it next frame and hands it to {@link SplatRenderer}; no recompile,
      * no restart, and nothing is persisted here (the slider's release writes the
-     * pref), exactly as the other live previews behave.
+     * item), exactly as the other live previews behave.
      */
     public void setSplatEps2d(float v) {
         splatEps2d = Splat.clampEps2d(v);
     }
 
     /**
-     * Live write for the dev BLUR knob: the post-blur radius in render-target
+     * Live write for the splat Blur row: the post-blur radius in render-target
      * pixels. Same contract as {@link #setSplatEps2d}; 0 is the identity and skips
      * both blur passes.
      */
@@ -2052,19 +2050,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Live write for the dev RESOLUTION knob: the fraction of the surface the cloud
+     * Live write for the splat Resolution row: the fraction of the surface the cloud
      * is rasterised at. Same contract as {@link #setSplatEps2d}. This is the one
      * lever that is linear in the thing the frame actually costs -- fill is pixels,
      * so 0.7 is half the fragment work -- at the price of a softer picture, which
-     * for a wallpaper is the right trade to be able to make. Clamped to the same
-     * 0.25..1 the pref is read with, so the two cannot disagree.
+     * for a wallpaper is the right trade to be able to make. Clamped through
+     * {@link Splat#clampRenderScale}, so the row and the stored value cannot
+     * disagree.
      */
     public void setSplatRenderScale(float v) {
-        splatRenderScale = Math.max(0.25f, Math.min(1f, v));
+        splatRenderScale = Splat.clampRenderScale(v);
     }
 
     /**
-     * Live write for the dev DEPTH knob: a multiplier on the cloud's depth, clamped
+     * Live write for the splat Depth row: a multiplier on the cloud's depth, clamped
      * through {@link Splat#clampDepthMul}. Same contract as {@link #setSplatEps2d}:
      * a volatile field only, read at draw. 1 is the node's own depth and 0 is the
      * flat photograph, so a drag is visible immediately with no re-upload.
@@ -2770,15 +2769,29 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         if (w == 0 || h == 0) return false;
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
-        // In SPLAT mode the Origin IS the screen fraction: the camera shifts the
-        // projection so the point at NDC (2*originX, 2*originY) lands at the
-        // centre, so a tap sets the origin to where it landed. There is no plane
-        // to miss and no unprojection to run -- the tapped point is centred by
-        // construction. (The cloud's pivot, and therefore the orbit centre, is
-        // resolved from that origin by SplatCamera on the next draw.)
+        // In SPLAT mode the tap RAY-CASTS into the cloud: the origin is the image
+        // position of the frontmost splat under the ray through the tapped pixel --
+        // the same pick SplatCamera.pivot makes for the orbit, so the tap, the pivot,
+        // the aim and the crosshair are one answer. It used to set the origin to the
+        // tapped SCREEN fraction, which is the source image position only while
+        // nothing has shifted the picture, so after the first tap (or with any Pan)
+        // it landed away from the point that was touched. The cast is the SOURCE
+        // camera's ray, so neither the Depth knob nor the pivot's depth can move it.
+        // See SplatRenderer.tapOrigin and SplatCamera.originForRay.
+        //
+        // The relief path below is unchanged: its surface is a field with one
+        // unambiguous depth, so there is nothing to cast -- unprojecting through the
+        // pivot height IS its pick.
         if (useSplat()) {
-            orbitX = Math.max(-0.5f, Math.min(0.5f, ndcX * 0.5f));
-            orbitY = Math.max(-0.5f, Math.min(0.5f, ndcY * 0.5f));
+            if (!splat.tapOrigin(ndcX, ndcY, tapOrbit)) {
+                // The cloud is on screen (useSplat) but its drawn frame is not
+                // recorded yet: the tapped pixel's own fraction is the honest answer
+                // rather than a dropped tap.
+                tapOrbit[0] = ndcX * 0.5f;
+                tapOrbit[1] = ndcY * 0.5f;
+            }
+            orbitX = Math.max(-0.5f, Math.min(0.5f, tapOrbit[0]));
+            orbitY = Math.max(-0.5f, Math.min(0.5f, tapOrbit[1]));
             return true;
         }
         if (displayed == null || !displayed.isDrawable()) return false;
@@ -3098,6 +3111,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the glide never needs the inverse and never carries a stale component.
         setLight(LightDirection.lerpAzimuth(glideFrom.lightAzimuth, glideTo.lightAzimuth, e),
                 lerp(glideFrom.lightElevation, glideTo.lightElevation, e));
+        // The splat look and shape, eased like the rest: they are continuous render
+        // values on the surface being crossed, so a home<->lock glide must move them
+        // rather than snap at the end. (The medium and the draw path are the two that
+        // are held whole instead -- see glideSourceKind.)
+        splatDepthMul = lerp(glideFrom.splatDepth, glideTo.splatDepth, e);
+        splatEps2d = lerp(glideFrom.splatEps2d, glideTo.splatEps2d, e);
+        splatBlurPx = lerp(glideFrom.splatBlur, glideTo.splatBlur, e);
+        splatRenderScale = lerp(glideFrom.splatScale, glideTo.splatScale, e);
     }
 
     private static float lerp(float a, float b, float t) {
@@ -3125,11 +3146,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // (The thirteenth was the SPEED; the twelve-argument form was the last caller
         // of the eleven-argument one, which cannot name the medium either.) AGENTS.md:
         // a field ofValues cannot reproduce is a field the no-op-paint guard cannot see.
+        //
+        // EIGHTEEN now, the last four being the splat look and shape. They are per
+        // photo and per surface, so a snapshot that dropped them would compare equal
+        // to a frame drawn with a different Depth, Size, Blur or Resolution -- the
+        // same dropped-frame failure, one medium over.
         return com.amoshydra.basrelief.core.render.Framing.ofValues(
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
                 pendingBrightnessGain, pendingShadowLift,
                 lightAzimuth, lightElevation,
-                sourceKind, renderMode, speed);
+                sourceKind, renderMode, speed,
+                splatDepthMul, splatEps2d, splatBlurPx, splatRenderScale);
     }
 
     /**
@@ -3233,6 +3260,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // apply is not a no-op; the cloud's own bytes are still a separate question
         // (useSplat), so the relief draws for the frame or two before it loads.
         renderMode = f.renderMode;
+        // The splat look and shape, per photo and per surface. Set here with the rest
+        // of the render values so a resolve always wins, and so the renderer's own
+        // snapshot reports them and the no-op-paint guard can see a change. The store
+        // clamps them; SplatRenderer.draw clamps again at the uniform.
+        splatDepthMul = f.splatDepth;
+        splatEps2d = f.splatEps2d;
+        splatBlurPx = f.splatBlur;
+        splatRenderScale = f.splatScale;
         // An explicit apply ends any glide in flight: it is the caller saying where
         // the view IS, and a tween arguing with that is a smear, not an ease.
         glideFrom = null;
@@ -3360,15 +3395,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.depthName);
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
-        splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
-        // The DEPTH draw-side dev knob, read with the rest of the cold-load state so a
-        // reboot keeps the tuned look. Clamped through :core, so a pref written by a
-        // newer build or restored from another device cannot reach the shader as a
-        // value no test can name -- and a non-finite one answers the product default
-        // rather than a NaN uniform.
-        splatEps2d = Splat.clampEps2d(p.getFloat(KEY_SPLAT_EPS2D, Splat.EPS_2D_DEFAULT));
-        splatBlurPx = Splat.clampBlurPx(p.getFloat(KEY_SPLAT_BLUR, Splat.BLUR_DEFAULT));
-        splatDepthMul = Splat.clampDepthMul(p.getFloat(KEY_SPLAT_DEPTH, Splat.DEPTH_MUL_DEFAULT));
+        // The splat look and shape are read from the resolved Framing above, not
+        // from prefs: they are per photo and per surface now, and `apply(mine)` (or
+        // the glide) has already set the four volatile fields from the row. Reading
+        // the old global prefs here would be a second source that disagrees with the
+        // row the renderer just resolved.
         setSplatForItem(active == null ? null : active.splatName,
                 active != null && active.isSplatMode(),
                 active == null ? 0f : active.splatLens);

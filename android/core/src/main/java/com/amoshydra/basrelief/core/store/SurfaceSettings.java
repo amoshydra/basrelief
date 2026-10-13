@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief.core.store;
 
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.render.Splat;
 
 import org.json.JSONObject;
 
@@ -94,6 +95,24 @@ public final class SurfaceSettings {
     public static final float DEFAULT_LIGHT_AZIMUTH = LightDirection.DEFAULT_AZIMUTH_DEG;
     public static final float DEFAULT_LIGHT_ELEVATION = LightDirection.DEFAULT_ELEVATION_DEG;
 
+    /**
+     * The four splat-look values, and <b>they are render values on this surface
+     * like every other field here</b>: per photo and per screen, so a cloud can
+     * look different from the next cloud and different behind a lock-screen clock.
+     * They were global prefs while the look was still being tuned by eye; the
+     * tuning is over, so they moved into the counted chain exactly as Motion moved
+     * out of {@link Config}. The defaults are the constants the prefs used to
+     * default to, so an untouched install renders exactly what it rendered before.
+     *
+     * <p>Each clamp lives in {@link Splat}, which owns the range and the "a window
+     * claims nothing" fallback, and is applied once here in the constructor -- the
+     * same rule every other bound in this class follows.
+     */
+    public static final float DEFAULT_SPLAT_DEPTH = Splat.DEPTH_MUL_DEFAULT;
+    public static final float DEFAULT_SPLAT_EPS2D = Splat.EPS_2D_DEFAULT;
+    public static final float DEFAULT_SPLAT_BLUR = Splat.BLUR_DEFAULT;
+    public static final float DEFAULT_SPLAT_SCALE = Splat.RENDER_SCALE_DEFAULT;
+
     // ----------------------------------------------------------------- state
 
     public final int depth;
@@ -111,19 +130,31 @@ public final class SurfaceSettings {
     public final float lightAzimuth;
     /** Elevation in degrees, clamped into [0, 90]; see {@link LightDirection}. */
     public final float lightElevation;
+    /** The splat cloud's Depth: a multiplier on the reconstructed depth. */
+    public final float splatDepth;
+    /** The splat cloud's Size: the 2D floor as a fraction of a splat's cell. */
+    public final float splatEps2d;
+    /** The splat cloud's Blur: a post-blur radius in render-target pixels. */
+    public final float splatBlur;
+    /** The splat cloud's Resolution: the fraction of the surface it is drawn at. */
+    public final float splatScale;
 
     /** Everything at its default — "a photo that has not been adjusted yet". */
     public static SurfaceSettings defaults() {
         return new SurfaceSettings(DEFAULT_DEPTH, DEFAULT_ZOOM, DEFAULT_MOTION,
                 DEFAULT_ORIGIN, DEFAULT_ORIGIN, DEFAULT_PAN, DEFAULT_PAN,
                 DEFAULT_ADJUST, DEFAULT_ADJUST,
-                DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION, DEFAULT_SPEED);
+                DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION, DEFAULT_SPEED,
+                DEFAULT_SPLAT_DEPTH, DEFAULT_SPLAT_EPS2D, DEFAULT_SPLAT_BLUR,
+                DEFAULT_SPLAT_SCALE);
     }
 
     public SurfaceSettings(int depth, int zoom, int motion,
                            float originX, float originY, float panX, float panY,
                            int brightness, int shadow,
-                           float lightAzimuth, float lightElevation, int speed) {
+                           float lightAzimuth, float lightElevation, int speed,
+                           float splatDepth, float splatEps2d, float splatBlur,
+                           float splatScale) {
         this.depth = clamp(depth, DEPTH_MIN, DEPTH_MAX);
         this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
@@ -139,6 +170,13 @@ public final class SurfaceSettings {
         this.lightAzimuth = LightDirection.normaliseAzimuth(lightAzimuth);
         this.lightElevation = LightDirection.normaliseElevation(lightElevation);
         this.speed = clamp(speed, SPEED_MIN, SPEED_MAX);
+        // The splat look, clamped through Splat's own helpers so the store, the
+        // sheet's range and the shader cannot each decide a different bound -- and a
+        // NaN answers the product default rather than reaching a uniform.
+        this.splatDepth = Splat.clampDepthMul(splatDepth);
+        this.splatEps2d = Splat.clampEps2d(splatEps2d);
+        this.splatBlur = Splat.clampBlurPx(splatBlur);
+        this.splatScale = Splat.clampRenderScale(splatScale);
     }
 
     // ------------------------------------------------------------- accessors
@@ -173,15 +211,19 @@ public final class SurfaceSettings {
                                 float originX, float originY,
                                 float panX, float panY,
                                 int brightness, int shadow,
-                                float lightAzimuth, float lightElevation, int speed) {
+                                float lightAzimuth, float lightElevation, int speed,
+                                float splatDepth, float splatEps2d, float splatBlur,
+                                float splatScale) {
         return new SurfaceSettings(depth, zoom, motion, originX, originY,
-                panX, panY, brightness, shadow, lightAzimuth, lightElevation, speed);
+                panX, panY, brightness, shadow, lightAzimuth, lightElevation, speed,
+                splatDepth, splatEps2d, splatBlur, splatScale);
     }
 
     /** The light angles, with every other value read from this instance. */
     public SurfaceSettings withLight(float azimuthDegrees, float elevationDegrees) {
         return with(depth, zoom, motion, originX, originY, panX, panY,
-                brightness, shadow, azimuthDegrees, elevationDegrees, speed);
+                brightness, shadow, azimuthDegrees, elevationDegrees, speed,
+                splatDepth, splatEps2d, splatBlur, splatScale);
     }
 
     // ------------------------------------------------------------- serialise
@@ -204,6 +246,21 @@ public final class SurfaceSettings {
             o.put("light_azimuth", (double) lightAzimuth);
             o.put("light_elevation", (double) lightElevation);
             o.put("speed", speed);
+            // The four splat-look values, each written only when it is NOT the
+            // default -- the normal/video/focal rule, and why moving them into the
+            // schema needed no key an untouched item gains. An item that never had
+            // them (every item written before they existed) reads them back as the
+            // defaults, and an item whose value IS the default writes nothing, so a
+            // photograph nobody opened the splat rows on stays byte-identical.
+            // The cast is load-bearing: :core compiles against Maven's org.json,
+            // which has put(String, float), while Android's platform org.json does
+            // NOT, so a bare float throws NoSuchMethodError on the index-writer
+            // thread and takes the app down on any library write.
+            // scripts/check-json-puts.mjs enforces it.
+            if (splatDepth != DEFAULT_SPLAT_DEPTH) o.put("splat_depth", (double) splatDepth);
+            if (splatEps2d != DEFAULT_SPLAT_EPS2D) o.put("splat_eps2d", (double) splatEps2d);
+            if (splatBlur != DEFAULT_SPLAT_BLUR) o.put("splat_blur", (double) splatBlur);
+            if (splatScale != DEFAULT_SPLAT_SCALE) o.put("splat_scale", (double) splatScale);
         } catch (Exception ignored) {
             // A JSONObject put cannot fail on these types. If it somehow does, the
             // value is lost rather than the write: an item with default settings
@@ -236,7 +293,15 @@ public final class SurfaceSettings {
                 // Absent means 1x: every settings blob written before this field
                 // existed plays exactly as it did, which is the only honest default
                 // for a value that changes motion.
-                o.optInt("speed", DEFAULT_SPEED));
+                o.optInt("speed", DEFAULT_SPEED),
+                // The splat look: absent is the product default, which is what every
+                // item written before the fields existed carries -- so an upgrade
+                // changes no cloud's look. The constructor clamps, so a hand-edited
+                // blob cannot put a NaN or an out-of-range value on the shader.
+                (float) o.optDouble("splat_depth", DEFAULT_SPLAT_DEPTH),
+                (float) o.optDouble("splat_eps2d", DEFAULT_SPLAT_EPS2D),
+                (float) o.optDouble("splat_blur", DEFAULT_SPLAT_BLUR),
+                (float) o.optDouble("splat_scale", DEFAULT_SPLAT_SCALE));
     }
 
     // ----------------------------------------------------------------- utils
@@ -254,6 +319,8 @@ public final class SurfaceSettings {
         return "depth=" + depth + " zoom=" + zoom + " motion=" + motion
                 + " origin=" + originX + "," + originY + " pan=" + panX + "," + panY
                 + " adj=" + brightness + "," + shadow
-                + " light=" + lightAzimuth + "°," + lightElevation + "°";
+                + " light=" + lightAzimuth + "°," + lightElevation + "°"
+                + " splat=" + splatDepth + "," + splatEps2d + "," + splatBlur
+                + "," + splatScale;
     }
 }

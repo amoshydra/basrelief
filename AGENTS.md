@@ -492,24 +492,28 @@ already cost real time.
       the wanted row, so a row that gains a lens repaints through the loaded cloud
       with no re-decode; a new cloud FILE (a new filename) is the identity change,
       exactly as it was before.
-  - **The splat look has three dev knobs, they are NOT in the counted schema, and
-    two of them are different things that both look like "softness".** The problem
-    they tune: a 150k cloud is drawn at roughly one splat per 12 px with ~1 px
-    splats, so a bright flat field reads as a screen-door — invisible on mid-tones,
-    black-and-white noise on a bright sky. They live as prefs read at draw
-    (`ReliefRenderer.KEY_SPLAT_EPS2D` / `KEY_SPLAT_BLUR` / `KEY_SPLAT_BUDGET`),
-    exactly as the Stage-0 `splat_grid` and `splat_scale` keys do, **because
-    `SurfaceSettings.with` and `Framing`'s counted fields are deliberately untouched
-    until the values are known** — a field in the counted chain is a schema bump plus
-    a writer at every call site for a number that may not survive the tuning. The
-    product defaults are unchanged for anyone who never opens the dev group:
-    `Splat.EPS_2D_DEFAULT` = 0.5 of the cell, `Splat.BLUR_DEFAULT` = 0,
-    `ComfyWorkflow.SHARP_BUDGET` = 150k.
+  - **The splat look is four per-photo, per-surface values, and two of them are
+    different things that both look like "softness".** The problem they tune: a 150k
+    cloud is drawn at roughly one splat per 12 px with ~1 px splats, so a bright flat
+    field reads as a screen-door — invisible on mid-tones, black-and-white noise on a
+    bright sky. **They were global dev prefs while the look was still being chosen by
+    eye; the tuning is over, so they are in the counted chain now** — on
+    `SurfaceSettings`, carried by its positional `with`, resolved by `Framing` and
+    compared by `sameAs`, exactly as Depth and Motion are. The schema went to **v5**
+    and `Library`'s v4→v5 migration seeds every item's home surface from the old keys
+    (`ReliefRenderer.KEY_SPLAT_EPS2D` / `KEY_SPLAT_BLUR` / `KEY_SPLAT_DEPTH` /
+    `KEY_SPLAT_SCALE`), read once by `AppState` and never at draw; a value equal to its
+    default is written nowhere, so an untouched library's items are byte-identical.
+    The product defaults are unchanged: `Splat.EPS_2D_DEFAULT` = 0.5 of the cell,
+    `Splat.BLUR_DEFAULT` = 0, `Splat.DEPTH_MUL_DEFAULT` = 1,
+    `Splat.RENDER_SCALE_DEFAULT` = 1. **BUDGET is the one that stays a pref**: it is
+    generation-side, read at submission, and the number the user compares by eye is
+    the number that runs — see below.
     - **SIZE is a coverage lift, not a blur, and that distinction is the whole
       point.** The `eps2d` floor lifts only the splats whose screen covariance is
       too small to sample and leaves the well-sampled ones alone, so it removes the
       screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
-      (`Splat.EPS_2D_DEFAULT` = 0.5, the dev row spans 0.45..0.80), and the draw
+      (`Splat.EPS_2D_DEFAULT` = 0.5, the row spans 0.45..0.80), and the draw
       resolves it to `max(Splat.samplingMinPx2(w, h), fraction × cell × zoom²)` — the
       larger of that fraction term and the sampling minimum, the floor's own floor.
       The minimum exists because the cell (`viewportArea / count`) shrinks as the
@@ -546,13 +550,15 @@ already cost real time.
       Regenerate on one row to compare. The tab's `~10 s · ~4.8 MB` estimate is
       deliberately NOT scaled by the budget: it is the node's own reference run, and
       a scaled guess would be a second, unmeasured number.
-    - **The group is shown only when it can change a pixel** — the selected row is
-      in Splat mode AND names a cloud file that is here, the two conditions
+    - **The four rows are shown only when they can change a pixel** — the selected row
+      is in Splat mode AND names a cloud file that is here, the two conditions
       `ReliefRenderer.useSplat()` draws under. A row in Splat mode with no cloud
-      renders its relief, where Size and Blur are inert; a control that cannot change
-      anything is the lie this file keeps refusing to ship. Size and Blur dim the
-      sheet while held (`dimWhileInteracting`) so the render shows through the finger;
-      Budget does not, because it changes nothing on screen to reveal.
+      renders its relief, where all four are inert; a control that cannot change
+      anything is the lie this file keeps refusing to ship. They are built and removed
+      by `MainActivity.syncSplatRows` exactly as the relief's Depth row is by
+      `syncDepthRow`, and they dim the sheet while held (`dimWhileInteracting`) so the
+      render shows through the finger. Budget stays in the build dialog's Splat tab
+      because it changes nothing on screen to reveal.
     - **The floor's and the blur's per-setting cost is the one thing still
       unmeasured, because the phone is unreachable** (`No route to host`). The
       `splat:` STATS line now prints `eps2d=` and `blurPx=` beside `count`/`fps`/
@@ -948,7 +954,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 698 tests across thirty-nine classes:
+it**. 709 tests across thirty-nine classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1125,22 +1131,26 @@ every library write took the app down, so any gallery tap crashed it.
   with the same values, and without a value comparison the renderer cannot tell "a different
   picture" from "the picture I am gliding towards" — so the second resolve painted the
   destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
-  **fourteen** fields is compared, and the field count is asserted, because a field added
+  **eighteen** fields is compared, and the field count is asserted, because a field added
   without teaching `sameAs` about it would make a real frame silently a no-op. The reflection
   that drives it **excludes static fields**, which it had to start doing when the twelfth
   arrived: `SOURCE_STILL`/`SOURCE_VIDEO` are `public static final float`, so counting every
-  float found fourteen and the count could then be "updated" to match whatever the code
-  happened to declare — which is a guard that can no longer fail. That twelfth field is
+  float found more than the instance fields and the count could then be "updated" to match
+  whatever the code happened to declare — which is a guard that can no longer fail. That
+  twelfth field is
   `sourceKind`, and it is **compared where `bundled` is not**, which is the whole reason to
   read the two together: `bundled` says which *row* produced a framing, so two framings of
   the same numbers are the same picture, while the medium says what the *pixels* are, so a
   still and a clip at identical depth, zoom and light are two pictures. It is a float rather
-  than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
+  than a flag for the same reason `SurfaceSettings.with` names every value — a field
   `ofValues` cannot reproduce is a field the no-op-paint guard cannot see. The fourteenth is
   `renderMode` (relief or splat cloud), compared for the same reason the medium is: a relief
   and a cloud at identical numbers are two pictures, so a toggle must paint rather than
   answer "already showing". It is read from the item, so the two surfaces and the renderer's
-  own snapshot cannot disagree about it.
+  own snapshot cannot disagree about it. The last four are the splat look — Depth, Size,
+  Blur and Resolution — compared because a cloud at a different look is a different picture;
+  they were global prefs and are per photo and per surface now, so a snapshot must be able
+  to reproduce them or every resolve of a tuned cloud repaints.
   - **`aPreviewRowNamesTheMediumOfItsPixels` — the preview's medium is video, and the
     ROW cannot say so.** An import's preview row is deliberately a photograph (nothing
     half a clip is ever stored), while the pixels on screen are the colour clip's — so
@@ -1353,15 +1363,18 @@ every library write took the app down, so any gallery tap crashed it.
     decoder that cannot keep up.
     Both decoders of a clip get the same rate for the same reason they get the same
     lead: two rates are two frame indices by construction.
-  - **`Framing` has THIRTEEN float fields and the count is asserted, so a new one
-    cannot be added silently.** `SurfaceSettings.with` takes twelve arguments and
-    `Framing.ofValues` thirteen; every writer and every test call site fails to
+  - **`Framing` has EIGHTEEN float fields and the count is asserted, so a new one
+    cannot be added silently.** `SurfaceSettings.with` takes sixteen arguments and
+    `Framing.ofValues` eighteen; every writer and every test call site fails to
     compile when a field is added, which is the only mechanical guard there is. The
     writers carry the new field through rather than resetting it -- the `withDepth`
     scar one field over -- and `FramingTest` drives one varied vector per field so a
-    fourteenth cannot be forgotten. `speed` IS compared by `sameAs`, unlike
+    nineteenth cannot be forgotten. `speed` IS compared by `sameAs`, unlike
     `bundled`: a frame at 0.5x is a different picture from the same frame at 1x, and
-    the no-op-paint guard has to see the difference or a speed change snaps.
+    the no-op-paint guard has to see the difference or a speed change snaps. The
+    last four are the splat look (`splatDepth`/`splatEps2d`/`splatBlur`/`splatScale`),
+    compared for the same reason: a cloud at a different Depth, Size, Blur or
+    Resolution is a different picture, so a change to one must paint.
   - **Two shader families, two unit systems, and the uniform that goes to
     location -1 is dropped in silence.** The clip's depth shader works in **0..255**
     (it scales the blurred mean by 255 in-shader) and its range offset is
@@ -1587,12 +1600,19 @@ every library write took the app down, so any gallery tap crashed it.
   pan is in **pixels** and must not be clamped to origin's fraction range (delta
   exactly 0, so a partial clamp cannot hide), and the bundled item is the one entry
   with no file on disk, so a cleanup pass or a parse must not drop it — it cannot
-  be recreated from filesDir. Two more it earns: the v2 → v3 migration must copy
+  be recreated from filesDir. More it earns: the v2 → v3 migration must copy
   the old **global** Motion onto every item, because the library blob has no copy of
-  it and dropping it silently resets everyone's wallpaper speed on upgrade; and a
-  single-field edit must not reset the values it does not name, which shipped broken
-  once — `withDepth` reset Motion, brightness and shadow, because the values it did
-  not pass had been added after it was written.
+  it and dropping it silently resets everyone's wallpaper speed on upgrade; the v4 →
+  v5 migration must copy the four **global** splat-look prefs onto every item's home
+  surface for the same reason, and it is asserted **idempotent by the data** with the
+  version forced back to 4 so the second parse actually exercises the step rather
+  than skipping it — the weak version re-parses `toJson()`, which is already v5 and
+  proves nothing; a default value must write **no key**, so an untouched library's
+  items stay byte-identical; the four look values round-trip and clamp to their
+  useful band; and a single-field edit must not reset the values it does not name,
+  which shipped broken once — `withDepth` reset Motion, brightness and shadow,
+  because the values it did not pass had been added after it was written, and the
+  four splat rows are exactly that shape of value one version later.
 - `SurfaceResolverTest` — which surface an engine is drawing, and the **three**
   questions it takes to answer that: the engine's own surface, whether the lock
   screen composites it, and what the lock screen can be at all. They are three

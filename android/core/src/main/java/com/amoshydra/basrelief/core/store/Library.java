@@ -1,5 +1,7 @@
 package com.amoshydra.basrelief.core.store;
 
+import com.amoshydra.basrelief.core.render.Splat;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -68,11 +70,15 @@ public final class Library {
      * v2: per-item settings. v3: per-surface settings and Motion on the item.
      * v4: the render mode ({@link RenderMode}) moved off the global {@code render_3d}
      * pref onto each item, exactly as Motion moved off {@link Config} in v3 — see
-     * {@link #migrate}. A v1 or v2 blob is still readable; an item with no settings
+     * {@link #migrate}. v5: the four splat-look values (Depth, Size, Blur,
+     * Resolution) moved off the global dev prefs onto each item's home surface,
+     * the {@code render_3d} step one version later and for the same reason — a
+     * global render value is the wrong home for a look that belongs to one photo on
+     * one screen. A v1 or v2 blob is still readable; an item with no settings
      * of its own loads with the defaults in {@link LibraryItem}, which is why the
      * v0-v1 steps are a no-op.
      */
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
 
     /**
      * The id of the bundled marble bust, the demo every install starts with.
@@ -1022,7 +1028,8 @@ public final class Library {
 
     /**
      * As {@link #parse(String, int)}, told what the global render mode was before it
-     * became per-item.
+     * became per-item, and what the four global splat-look prefs were before they
+     * became per-item too.
      *
      * <p>The {@code render_3d} pref was one value for the whole app, so the library
      * blob never held it. Moving it onto every item is a migration that has to be
@@ -1038,6 +1045,26 @@ public final class Library {
      *                     upgrade
      */
     public static Library parse(String raw, int legacyMotion, boolean legacySplat) {
+        return parse(raw, legacyMotion, legacySplat, LegacySplat.defaults());
+    }
+
+    /**
+     * The production form: the two legacy globals and the four legacy splat-look
+     * values.
+     *
+     * <p><b>The four are the migration source, read once by {@code AppState} from
+     * the dev prefs.</b> A v5 blob no longer carries them as globals, so this is the
+     * only thing that can seed a tuned install's photos with the look they had —
+     * exactly as {@code legacyMotion} seeds Motion and {@code legacySplat} seeds the
+     * render mode. Passing {@link LegacySplat#defaults()} (the three-argument form
+     * above) writes nothing, because a value equal to the default is omitted from
+     * the blob by {@link SurfaceSettings#toJson}.
+     *
+     * @param legacyKnobs the four global splat-look values to seed every item's home
+     *                    surface with on upgrade; never null
+     */
+    public static Library parse(String raw, int legacyMotion, boolean legacySplat,
+                                LegacySplat legacyKnobs) {
         if (raw == null || raw.trim().isEmpty()) return empty();
         JSONObject o;
         try {
@@ -1052,7 +1079,8 @@ public final class Library {
             return empty();
         }
         if (version < VERSION) {
-            o = migrate(o, version, legacyMotion, legacySplat);
+            o = migrate(o, version, legacyMotion, legacySplat,
+                    legacyKnobs == null ? LegacySplat.defaults() : legacyKnobs);
         }
 
         List<LibraryItem> parsed = new ArrayList<LibraryItem>();
@@ -1102,7 +1130,7 @@ public final class Library {
      * @param motion      the old GLOBAL Motion, copied onto every item
      */
     private static JSONObject migrate(JSONObject o, int fromVersion, int motion,
-                                      boolean legacySplat) {
+                                      boolean legacySplat, LegacySplat legacyKnobs) {
         if (fromVersion < 3) {
             // v2 -> v3: the six flat render values move under surfaces.home, and
             // Motion -- which was GLOBAL, in Config -- is copied onto every item so
@@ -1158,7 +1186,110 @@ public final class Library {
                 }
             }
         }
+        if (fromVersion < 5) {
+            // v4 -> v5: the four splat-look values moved off the global dev prefs
+            // onto each item's home surface. The same one-time inheritance the
+            // Motion and render-mode steps give, for the same reason: a user who
+            // tuned the look by eye keeps it, and a user who never opened the group
+            // gets the product defaults because each legacy value IS its default and
+            // a default is omitted from the blob (see SurfaceSettings.toJson).
+            //
+            // Idempotent by the row's own contents: a key that is already there is
+            // left alone, so a partial write or a hand-edited blob is not
+            // overwritten, and re-parsing the same v4 blob twice gives the same
+            // result. Once the blob is written as v5 this step never runs again --
+            // the stored version is the marker, not a separate flag.
+            if (!legacyKnobs.isDefault()) {
+                JSONArray items = o.optJSONArray("items");
+                if (items != null) {
+                    for (int i = 0; i < items.length(); i++) {
+                        JSONObject it = items.optJSONObject(i);
+                        if (it == null) continue;
+                        JSONObject surfaces = it.optJSONObject("surfaces");
+                        if (surfaces == null) continue;
+                        JSONObject home = surfaces.optJSONObject(Surface.HOME.key);
+                        if (home == null) continue;
+                        try {
+                            if (legacyKnobs.depth != SurfaceSettings.DEFAULT_SPLAT_DEPTH
+                                    && !home.has("splat_depth")) {
+                                home.put("splat_depth", (double) legacyKnobs.depth);
+                            }
+                            if (legacyKnobs.eps2d != SurfaceSettings.DEFAULT_SPLAT_EPS2D
+                                    && !home.has("splat_eps2d")) {
+                                home.put("splat_eps2d", (double) legacyKnobs.eps2d);
+                            }
+                            if (legacyKnobs.blur != SurfaceSettings.DEFAULT_SPLAT_BLUR
+                                    && !home.has("splat_blur")) {
+                                home.put("splat_blur", (double) legacyKnobs.blur);
+                            }
+                            if (legacyKnobs.scale != SurfaceSettings.DEFAULT_SPLAT_SCALE
+                                    && !home.has("splat_scale")) {
+                                home.put("splat_scale", (double) legacyKnobs.scale);
+                            }
+                        } catch (JSONException ignored) {
+                            // One unreadable item is one item at its default, not a
+                            // failed migration for the whole library.
+                        }
+                    }
+                }
+            }
+        }
         return o;
+    }
+
+    /**
+     * The four splat-look values as they existed before they were per-item: the
+     * migration source, in one value.
+     *
+     * <p><b>Read once by {@code AppState} from the dev prefs, then never again.</b>
+     * The four keys were the sheet's tuning knobs, one value for every photo and
+     * both screens; moving them onto each item is the same shape of change as Motion
+     * (v3) and the render mode (v4), so the values travel the same way — a parameter
+     * of {@link #parse}, clamped once here so a pref written by another build cannot
+     * reach the shader as a value no test can name. A value equal to the default is
+     * written nowhere, which is what keeps an untouched library's items
+     * byte-identical.
+     */
+    public static final class LegacySplat {
+
+        public final float depth;
+        public final float eps2d;
+        public final float blur;
+        public final float scale;
+
+        private LegacySplat(float depth, float eps2d, float blur, float scale) {
+            // Clamped through the same helpers the store uses, so the migration
+            // cannot write a value the store would immediately re-clamp to
+            // something else.
+            this.depth = Splat.clampDepthMul(depth);
+            this.eps2d = Splat.clampEps2d(eps2d);
+            this.blur = Splat.clampBlurPx(blur);
+            this.scale = Splat.clampRenderScale(scale);
+        }
+
+        /** The four as they were read, clamped. */
+        public static LegacySplat of(float depth, float eps2d, float blur, float scale) {
+            return new LegacySplat(depth, eps2d, blur, scale);
+        }
+
+        /** The product defaults: the migration writes nothing. */
+        public static LegacySplat defaults() {
+            return new LegacySplat(SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                    SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                    SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                    SurfaceSettings.DEFAULT_SPLAT_SCALE);
+        }
+
+        /**
+         * Whether every value is already its default, in which case the migration
+         * has nothing to say and the blob's items are left byte-identical.
+         */
+        public boolean isDefault() {
+            return depth == SurfaceSettings.DEFAULT_SPLAT_DEPTH
+                    && eps2d == SurfaceSettings.DEFAULT_SPLAT_EPS2D
+                    && blur == SurfaceSettings.DEFAULT_SPLAT_BLUR
+                    && scale == SurfaceSettings.DEFAULT_SPLAT_SCALE;
+        }
     }
 
     @Override

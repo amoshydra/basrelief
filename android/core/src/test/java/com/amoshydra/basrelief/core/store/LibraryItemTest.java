@@ -548,7 +548,11 @@ public class LibraryItemTest {
                 .withAdjust(Surface.HOME, -12, 18)
                 .withSettings(Surface.LOCK, sample().settings(Surface.LOCK)
                         .with(30, 120, 20, 0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
-                                SurfaceSettings.DEFAULT_SPEED));
+                                SurfaceSettings.DEFAULT_SPEED,
+                                SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                                SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                                SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                                SurfaceSettings.DEFAULT_SPLAT_SCALE));
 
         LibraryItem hidden = full.withArchived(true);
         assertTrue(hidden.hasOwnLockSettings());

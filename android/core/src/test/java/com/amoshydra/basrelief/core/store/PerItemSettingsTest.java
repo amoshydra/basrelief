@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.render.Splat;
 
 import org.json.JSONObject;
 import org.junit.Test;
@@ -130,6 +131,81 @@ public class PerItemSettingsTest {
         assertEquals(0, home(item("a")).brightness);
     }
 
+    // --------------------------------------------------------- the splat look
+
+    /**
+     * The four splat-look values round-trip, and a default writes no key.
+     *
+     * <p>The {@code normal}/{@code video}/{@code focal} rule: an item whose value IS
+     * the default serialises without the key, so a library nobody opened the splat
+     * rows on stays byte-identical to one an older build wrote -- which is why moving
+     * them into the counted chain needed no key every untouched item gains.
+     */
+    @Test
+    public void theSplatLookRoundTripsAndADefaultIsOmitted() {
+        LibraryItem tuned = item("a")
+                .withSplatDepth(Surface.HOME, 1.5f)
+                .withSplatSize(Surface.HOME, 0.7f)
+                .withSplatBlur(Surface.HOME, 2.5f)
+                .withSplatScale(Surface.HOME, 0.6f);
+        LibraryItem r = Library.parse(libraryOf(tuned)).activeItem();
+        assertEquals(1.5f, home(r).splatDepth, 1e-6f);
+        assertEquals(0.7f, home(r).splatEps2d, 1e-6f);
+        assertEquals(2.5f, home(r).splatBlur, 1e-6f);
+        assertEquals(0.6f, home(r).splatScale, 1e-6f);
+
+        String json = home(item("a")).toJson().toString();
+        assertFalse(json, json.contains("splat_depth"));
+        assertFalse(json, json.contains("splat_eps2d"));
+        assertFalse(json, json.contains("splat_blur"));
+        assertFalse(json, json.contains("splat_scale"));
+        // And an untouched item's whole blob gains nothing either.
+        String untouched = libraryOf(item("a"));
+        assertFalse(untouched, untouched.contains("splat_"));
+    }
+
+    /**
+     * The splat look clamps to the useful band, and a value that cannot claim one
+     * answers the default rather than a NaN.
+     *
+     * <p>Each clamp lives in {@link Splat}, and the store applies it once on
+     * construction, so a hand-edited blob cannot put an out-of-range value on the
+     * shader.
+     */
+    @Test
+    public void theSplatLookIsClampedToItsUsefulRange() {
+        SurfaceSettings high = home(item("a")
+                .withSplatDepth(Surface.HOME, 99f)
+                .withSplatSize(Surface.HOME, 9f)
+                .withSplatBlur(Surface.HOME, 99f)
+                .withSplatScale(Surface.HOME, 9f));
+        assertEquals(Splat.DEPTH_MUL_MAX, high.splatDepth, 1e-6f);
+        assertEquals(Splat.EPS_2D_MAX, high.splatEps2d, 1e-6f);
+        assertEquals(Splat.BLUR_MAX, high.splatBlur, 1e-6f);
+        assertEquals(Splat.RENDER_SCALE_MAX, high.splatScale, 1e-6f);
+
+        SurfaceSettings low = home(item("a")
+                .withSplatDepth(Surface.HOME, -1f)
+                .withSplatSize(Surface.HOME, 0f)
+                .withSplatBlur(Surface.HOME, -1f)
+                .withSplatScale(Surface.HOME, 0.01f));
+        assertEquals(Splat.DEPTH_MUL_MIN, low.splatDepth, 1e-6f);
+        assertEquals(Splat.EPS_2D_MIN, low.splatEps2d, 1e-6f);
+        assertEquals(Splat.BLUR_DEFAULT, low.splatBlur, 1e-6f);
+        assertEquals(Splat.RENDER_SCALE_MIN, low.splatScale, 1e-6f);
+
+        // A non-finite value answers the default, not the nearest bound.
+        SurfaceSettings nan = home(item("a")
+                .withSplatDepth(Surface.HOME, Float.NaN)
+                .withSplatSize(Surface.HOME, Float.NaN)
+                .withSplatBlur(Surface.HOME, Float.NaN)
+                .withSplatScale(Surface.HOME, Float.NaN));
+        assertEquals(Splat.DEPTH_MUL_DEFAULT, nan.splatDepth, 0f);
+        assertEquals(Splat.EPS_2D_DEFAULT, nan.splatEps2d, 0f);
+        assertEquals(Splat.BLUR_DEFAULT, nan.splatBlur, 0f);
+        assertEquals(Splat.RENDER_SCALE_DEFAULT, nan.splatScale, 0f);
+    }
+
     /**
      * The light normalises on the way in: azimuth wraps, elevation clamps.
      *
@@ -216,7 +292,8 @@ public class PerItemSettingsTest {
         LibraryItem it = item("a")
                 .withIntensity(Surface.HOME, 80)
                 .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0,
-                        s.lightAzimuth, s.lightElevation, s.speed));
+                        s.lightAzimuth, s.lightElevation, s.speed,
+                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
 
         LibraryItem r = Library.parse(libraryOf(it)).activeItem();
         assertTrue(r.hasOwnLockSettings());
@@ -299,7 +376,11 @@ public class PerItemSettingsTest {
                 .withOrigin(Surface.HOME, 0.1f, -0.2f)
                 .withPan(Surface.HOME, 30f, -40f)
                 .withAdjust(Surface.HOME, -15, 20)
-                .withLight(Surface.HOME, 205f, 35f);
+                .withLight(Surface.HOME, 205f, 35f)
+                .withSplatDepth(Surface.HOME, 1.5f)
+                .withSplatSize(Surface.HOME, 0.7f)
+                .withSplatBlur(Surface.HOME, 2.5f)
+                .withSplatScale(Surface.HOME, 0.6f);
 
         // the three identity-only mutators are the ones most likely to take a
         // shortcut through a short constructor
@@ -319,7 +400,72 @@ public class PerItemSettingsTest {
             assertEquals("the light was reset by an identity-only edit",
                     205f, s.lightAzimuth, 1e-6f);
             assertEquals(35f, s.lightElevation, 1e-6f);
+            // The four splat values are the newest fields and therefore the most
+            // likely to be dropped by a writer written before they existed -- the
+            // withDepth scar exactly. An identity-only edit must carry all four.
+            assertEquals(1.5f, s.splatDepth, 1e-6f);
+            assertEquals(0.7f, s.splatEps2d, 1e-6f);
+            assertEquals(2.5f, s.splatBlur, 1e-6f);
+            assertEquals(0.6f, s.splatScale, 1e-6f);
         }
+    }
+
+    /**
+     * Editing one splat row must not reset the other three -- or anything else.
+     *
+     * <p>The four look values were added after every writer existed, which is the
+     * shape that shipped the {@code withDepth} bug: a constructor that defaults what
+     * it is not given. Each of the four mutators goes through {@code editSettings}
+     * and a {@code SurfaceSettings.with} that names all sixteen values, so this is
+     * the guard made mechanical -- and asserted here so a future writer that takes
+     * the short path fails a test rather than a user's cloud.
+     */
+    @Test
+    public void aSplatRowEditDoesNotResetTheOthers() {
+        LibraryItem full = item("a")
+                .withIntensity(Surface.HOME, 80)
+                .withZoom(Surface.HOME, 150)
+                .withMotion(Surface.HOME, 55)
+                .withAdjust(Surface.HOME, -15, 20)
+                .withLight(Surface.HOME, 205f, 35f)
+                .withSplatDepth(Surface.HOME, 1.5f)
+                .withSplatSize(Surface.HOME, 0.7f)
+                .withSplatBlur(Surface.HOME, 2.5f)
+                .withSplatScale(Surface.HOME, 0.6f);
+
+        LibraryItem afterDepth = full.withSplatDepth(Surface.HOME, 2f);
+        LibraryItem afterSize = full.withSplatSize(Surface.HOME, 0.55f);
+        LibraryItem afterBlur = full.withSplatBlur(Surface.HOME, 1f);
+        LibraryItem afterScale = full.withSplatScale(Surface.HOME, 0.8f);
+
+        for (LibraryItem after : new LibraryItem[]{
+                afterDepth, afterSize, afterBlur, afterScale}) {
+            SurfaceSettings s = home(after);
+            assertEquals("Depth was reset by a splat-row edit", 80, s.depth);
+            assertEquals(150, s.zoom);
+            assertEquals("Motion was reset by a splat-row edit", 55, s.motion);
+            assertEquals(-15, s.brightness);
+            assertEquals(20, s.shadow);
+            assertEquals("the light was reset by a splat-row edit",
+                    205f, s.lightAzimuth, 1e-6f);
+        }
+        // And each edit moved exactly its own value.
+        assertEquals(2f, home(afterDepth).splatDepth, 1e-6f);
+        assertEquals(0.7f, home(afterDepth).splatEps2d, 1e-6f);
+        assertEquals(2.5f, home(afterDepth).splatBlur, 1e-6f);
+        assertEquals(0.6f, home(afterDepth).splatScale, 1e-6f);
+        assertEquals(1.5f, home(afterSize).splatDepth, 1e-6f);
+        assertEquals(0.55f, home(afterSize).splatEps2d, 1e-6f);
+        assertEquals(2.5f, home(afterSize).splatBlur, 1e-6f);
+        assertEquals(0.6f, home(afterSize).splatScale, 1e-6f);
+        assertEquals(1.5f, home(afterBlur).splatDepth, 1e-6f);
+        assertEquals(0.7f, home(afterBlur).splatEps2d, 1e-6f);
+        assertEquals(1f, home(afterBlur).splatBlur, 1e-6f);
+        assertEquals(0.6f, home(afterBlur).splatScale, 1e-6f);
+        assertEquals(1.5f, home(afterScale).splatDepth, 1e-6f);
+        assertEquals(0.7f, home(afterScale).splatEps2d, 1e-6f);
+        assertEquals(2.5f, home(afterScale).splatBlur, 1e-6f);
+        assertEquals(0.8f, home(afterScale).splatScale, 1e-6f);
     }
 
     /**
@@ -468,6 +614,91 @@ public class PerItemSettingsTest {
 
         // The migrated form is v4, so the migration does not re-run on every load.
         assertFalse(Library.needsMigration(on.toJson()));
+    }
+
+    /**
+     * A v4 blob's items adopt the global splat-look values, once.
+     *
+     * <p>The {@code render_3d} precedent one version later: the four look values used
+     * to be global dev prefs, so the library blob has no copy of them and the
+     * migration has to be handed them. Dropping them would silently reset every
+     * cloud's look to the product defaults -- a change nobody can file a bug about,
+     * because the cloud still renders.
+     *
+     * <p>Three halves, because each is a way to get it wrong: the values must be
+     * copied onto every item, an item that already carries one must keep its own
+     * (this is a migration, not an overwrite), and the migrated form must be v5 so
+     * the step does not re-run.
+     */
+    @Test
+    public void theGlobalSplatKnobsAreCopiedOntoEveryItemOnUpgrade() {
+        String v4 = "{\"version\":4,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1,"
+                + "\"surfaces\":{\"home\":{\"depth\":90,\"zoom\":100}}},"
+                + "{\"id\":\"b\",\"image\":\"b.png\",\"added_at\":2,"
+                + "\"surfaces\":{\"home\":{\"depth\":90,\"splat_depth\":2.0}}}]}";
+        Library.LegacySplat tuned = Library.LegacySplat.of(1.5f, 0.7f, 2.5f, 0.6f);
+        Library lib = Library.parse(v4, 33, false, tuned);
+
+        SurfaceSettings a = home(lib.find("a"));
+        assertEquals(1.5f, a.splatDepth, 1e-6f);
+        assertEquals(0.7f, a.splatEps2d, 1e-6f);
+        assertEquals(2.5f, a.splatBlur, 1e-6f);
+        assertEquals(0.6f, a.splatScale, 1e-6f);
+        assertEquals("the second photo gets the values it is missing",
+                0.7f, home(lib.find("b")).splatEps2d, 1e-6f);
+        assertEquals(2.5f, home(lib.find("b")).splatBlur, 1e-6f);
+        assertEquals(0.6f, home(lib.find("b")).splatScale, 1e-6f);
+        assertEquals("an item's own value is not overwritten",
+                2.0f, home(lib.find("b")).splatDepth, 1e-6f);
+
+        assertFalse("the migrated form must be v5",
+                Library.needsMigration(lib.toJson()));
+    }
+
+    /**
+     * The splat-knob migration is idempotent even when forced to run twice.
+     *
+     * <p><b>The re-parse that proves nothing, avoided.</b> Re-parsing
+     * {@code once.toJson()} alone sees version 5 and skips the migration entirely, so
+     * the test would pass identically whether the step is idempotent or simply never
+     * runs. The version field is put back to 4 before the second parse, which forces
+     * the step over content it already produced -- the case that actually breaks, a
+     * migration that re-copies rather than only filling in what is absent.
+     */
+    @Test
+    public void theSplatKnobMigrationIsIdempotentEvenWhenForcedToRunTwice() {
+        String v4 = "{\"version\":4,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1,"
+                + "\"surfaces\":{\"home\":{\"depth\":90,\"zoom\":100}}}]}";
+        Library.LegacySplat tuned = Library.LegacySplat.of(1.5f, 0.7f, 2.5f, 0.6f);
+        Library once = Library.parse(v4, 33, false, tuned);
+        String alreadyMigrated = once.toJson()
+                .replace("\"version\":" + Library.VERSION, "\"version\":4");
+        Library twice = Library.parse(alreadyMigrated, 33, false, tuned);
+        assertEquals("the whole blob must survive a second migration",
+                once.toJson(), twice.toJson());
+    }
+
+    /**
+     * Default splat knobs write nothing, so an untouched library keeps its items.
+     *
+     * <p>The migration is gated on the data being non-default: a user who never
+     * opened the dev group had no pref, so every legacy value is its default and
+     * nothing is written into any item. Only the version moves, which is what makes
+     * the step one-time.
+     */
+    @Test
+    public void defaultSplatKnobsWriteNothingSoAnUntouchedLibraryKeepsItsItems() {
+        String v4 = "{\"version\":4,\"active\":\"a\",\"items\":["
+                + "{\"id\":\"a\",\"image\":\"a.png\",\"added_at\":1,"
+                + "\"surfaces\":{\"home\":{\"depth\":90,\"zoom\":100}}}]}";
+        Library lib = Library.parse(v4, 33, false, Library.LegacySplat.defaults());
+        assertFalse("no item may gain a splat key",
+                lib.toJson().contains("splat_"));
+        assertEquals(90, home(lib.find("a")).depth);
+        assertEquals(SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                home(lib.find("a")).splatDepth, 0f);
     }
 
     /**

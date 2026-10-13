@@ -169,6 +169,15 @@ final class SplatRenderer {
     /** The dev value the last frame drew with, for the stats line. */
     private float depthMulInUse = Splat.DEPTH_MUL_DEFAULT;
 
+    /**
+     * The frame the cloud was last DRAWN with, for resolving a tap: the projection's
+     * own factors and the Origin + Pan shift. The tap's ray is the SOURCE camera's,
+     * so the tapped pixel's source NDC is the drawn NDC minus this shift -- and the
+     * DRAWN frame's numbers are used rather than recomputed so the tap lands on the
+     * picture the user actually saw. Written in {@link #draw}.
+     */
+    private float tapProj0, tapProj5, tapShiftX, tapShiftY;
+
     private final float[] eye = new float[3];
     private final float[] forward = new float[3];
     private final float[] viewRot = new float[9];
@@ -222,6 +231,34 @@ final class SplatRenderer {
 
     int count() {
         return count;
+    }
+
+    /**
+     * Resolve a tap to the Origin it names: the image position of the frontmost
+     * splat under the ray through the tapped pixel.
+     *
+     * <p><b>It casts the same ray {@link SplatCamera#pivot} resolves the orbit
+     * from</b>, so the tap, the pivot, the aim and the crosshair are one answer. The
+     * drawn view is the source view shifted by Origin + Pan, so the tapped pixel's
+     * SOURCE NDC is the drawn NDC minus that shift -- and the shift and projection
+     * factors come from the frame the cloud was last DRAWN with, not recomputed, so
+     * the tap lands on the picture the user saw. The Depth knob is handed through
+     * only for the pick (a splat it pushes through the eye is skipped); the answer is
+     * that splat's image position, which the knob does not move.
+     *
+     * @param ndcX,ndcY the tapped pixel in the drawn camera's NDC
+     * @param out receives the origin fraction; must hold 2 floats
+     * @return true if it resolved; false only when the cloud or its frame is not
+     *         here yet, in which case {@code out} is untouched
+     */
+    boolean tapOrigin(float ndcX, float ndcY, float[] out) {
+        if (!isReady() || tapProj0 == 0f || tapProj5 == 0f) return false;
+        float sourceNdcX = ndcX - tapShiftX;
+        float sourceNdcY = ndcY - tapShiftY;
+        splatCamera.originForRay(pos, count,
+                sourceNdcX / tapProj0, -sourceNdcY / tapProj5,
+                refDepth, depthMulInUse, tapProj0, tapProj5, out);
+        return true;
     }
 
     /** A new EGL context: every name this class cached is meaningless now. */
@@ -410,16 +447,16 @@ final class SplatRenderer {
      * @param cloudLens the cloud's own lens, as {@code focal / height}, or 0 for
      *                  unknown. See {@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens};
      *                  0 draws at {@link #SOURCE_FOVY}, the demo cloud's lens.
-     * @param eps2d the dev SIZE knob: the 2D low-pass floor as a FRACTION OF THE
-     *              CELL, clamped through {@link Splat#clampEps2d} so a bad pref
+     * @param eps2d the splat Size: the 2D low-pass floor as a FRACTION OF THE
+     *              CELL, clamped through {@link Splat#clampEps2d} so a bad blob
      *              cannot reach the shader, and resolved into render pixels by
      *              {@link Splat#eps2dFor} -- which takes the larger of that fraction
      *              of the cell and the sampling minimum, {@link Splat#SAMPLING_MIN_PX}.
      *              {@link Splat#EPS_2D_DEFAULT} is the shipped value.
-     * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
+     * @param blurPx the splat Blur: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
-     * @param depthMul the dev DEPTH knob: a multiplier on the cloud's depth, clamped
+     * @param depthMul the splat Depth: a multiplier on the cloud's depth, clamped
      *                 through {@link Splat#clampDepthMul} and applied in the vertex
      *                 shader as {@link Splat#depthScale} on each splat's position AND
      *                 size. 1 is the node's own depth, 0 collapses the cloud onto the
@@ -491,6 +528,14 @@ final class SplatRenderer {
         // uProj gets the PANNED projection: the shift is what makes the at-rest
         // picture the photograph moved by Origin and Pan, at every depth.
         System.arraycopy(cam.projPanned, 0, proj, 0, 16);
+        // The frame a later tap resolves against, from the frame this draw used. The
+        // projection factors are the base perspective's (the shift is a clip-space
+        // translation and does not change them); the shift is the Origin + Pan shift
+        // the tap must undo to reach the SOURCE camera's ray. See tapOrigin.
+        tapProj0 = cam.proj[0];
+        tapProj5 = cam.proj[5];
+        tapShiftX = cam.shiftX;
+        tapShiftY = cam.shiftY;
         eye[0] = cam.eyeX; eye[1] = cam.eyeY; eye[2] = cam.eyeZ;
         forward[0] = cam.forwardX; forward[1] = cam.forwardY; forward[2] = cam.forwardZ;
         camFocalX = proj[0];

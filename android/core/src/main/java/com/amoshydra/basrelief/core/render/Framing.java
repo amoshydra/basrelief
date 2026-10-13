@@ -142,6 +142,22 @@ public final class Framing {
     public final float speed;
 
     /**
+     * The splat cloud's look and shape, resolved from the surface's settings.
+     *
+     * <p><b>Four render values on the same footing as Depth and Motion, and
+     * compared by {@code sameAs}.</b> A frame at a different splat Depth, Size,
+     * Blur or Resolution is a different picture, so the no-op-paint guard must see
+     * it -- and {@link #ofValues} must be able to reproduce them, which is the same
+     * rule {@code sourceKind} and {@code renderMode} follow. They are in the counted
+     * chain now (see {@link SurfaceSettings}); they used to be global prefs, and a
+     * global is the wrong home for a look that belongs to one photo on one screen.
+     */
+    public final float splatDepth;
+    public final float splatEps2d;
+    public final float splatBlur;
+    public final float splatScale;
+
+    /**
      * Whether this row will be drawn from a clip, as far as the index knows.
      *
      * <p><b>Deliberately not "can play".</b> Whether the clips decode is a file and
@@ -180,11 +196,11 @@ public final class Framing {
      * of its own destination landed 1.2 seconds later, mid-flight — the frame the user
      * reported as a snap.
      *
-     * <p><b>Every field, and that is the point.</b> This class has twelve of them and
-     * no {@code equals} for the same reason {@code SurfaceSettings.with} takes
-     * eleven arguments: adding a value without teaching the comparison about it would
-     * make the renderer treat a real change as a no-op and silently drop the frame. The
-     * test reflects over the fields so a thirteenth cannot be forgotten.
+     * <p><b>Every field, and that is the point.</b> This class has eighteen of them
+     * and no {@code equals} for the same reason {@code SurfaceSettings.with} takes
+     * sixteen arguments: adding a value without teaching the comparison about it
+     * would make the renderer treat a real change as a no-op and silently drop the
+     * frame. The test reflects over the fields so a nineteenth cannot be forgotten.
      */
     public boolean sameAs(Framing other) {
         if (other == null) return false;
@@ -202,7 +218,11 @@ public final class Framing {
                 && near(lightElevation, other.lightElevation)
                 && near(sourceKind, other.sourceKind)
                 && near(renderMode, other.renderMode)
-                && near(speed, other.speed);
+                && near(speed, other.speed)
+                && near(splatDepth, other.splatDepth)
+                && near(splatEps2d, other.splatEps2d)
+                && near(splatBlur, other.splatBlur)
+                && near(splatScale, other.splatScale);
         // `bundled` is deliberately NOT compared, and the reason is structural rather
         // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
         // it to false, so a sameAs that required it could NEVER no-op for the bundled
@@ -329,6 +349,10 @@ public final class Framing {
             this.lightAzimuth = LightDirection.DEFAULT_AZIMUTH_DEG;
             this.lightElevation = LightDirection.DEFAULT_ELEVATION_DEG;
             this.speed = DEFAULT_SPEED;
+            this.splatDepth = SurfaceSettings.DEFAULT_SPLAT_DEPTH;
+            this.splatEps2d = SurfaceSettings.DEFAULT_SPLAT_EPS2D;
+            this.splatBlur = SurfaceSettings.DEFAULT_SPLAT_BLUR;
+            this.splatScale = SurfaceSettings.DEFAULT_SPLAT_SCALE;
             return;
         }
         this.depth = s.depthFraction();
@@ -346,6 +370,13 @@ public final class Framing {
         this.shadowLift = Picture.shadowLift(s.shadow);
         this.lightAzimuth = s.lightAzimuth;
         this.lightElevation = s.lightElevation;
+        // The splat look, read off the row like every other render value. A
+        // photograph carries them too (they are inert until a cloud draws), exactly
+        // as it carries a speed it never plays -- one storage rule, no branch.
+        this.splatDepth = s.splatDepth;
+        this.splatEps2d = s.splatEps2d;
+        this.splatBlur = s.splatBlur;
+        this.splatScale = s.splatScale;
     }
 
     /**
@@ -417,10 +448,32 @@ public final class Framing {
                                    float orbitX, float orbitY, float panX, float panY,
                                    float brightnessGain, float shadowLift,
                                    float lightAzimuth, float lightElevation,
-                                   float sourceKind, float renderMode, float speed) {
+                                   float sourceKind, float renderMode, float speed,
+                                   float splatDepth, float splatEps2d, float splatBlur,
+                                   float splatScale) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
-                renderMode, speed);
+                renderMode, speed, splatDepth, splatEps2d, splatBlur, splatScale);
+    }
+
+    /**
+     * @deprecated The form that <b>cannot say the splat look</b> — it always says the
+     * product defaults — for the same reason the thirteen-argument form cannot say
+     * the render mode: a snapshot that cannot reproduce a field compares unequal to
+     * the frame on screen and repaints. A renderer handing back what it is drawing
+     * must use the eighteen-argument form above.
+     */
+    @Deprecated
+    public static Framing ofValues(float depth, float zoom, float motion,
+                                   float orbitX, float orbitY, float panX, float panY,
+                                   float brightnessGain, float shadowLift,
+                                   float lightAzimuth, float lightElevation,
+                                   float sourceKind, float renderMode, float speed) {
+        return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
+                renderMode, speed,
+                SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
     }
 
     /**
@@ -428,7 +481,7 @@ public final class Framing {
      * relief — for the same reason the eleven-argument form cannot say the medium: a
      * snapshot that cannot reproduce a field compares unequal to the frame on screen
      * and repaints. A renderer handing back what it is drawing must use the
-     * fourteen-argument form above. It is correct for every relief row, and kept only
+     * eighteen-argument form above. It is correct for every relief row, and kept only
      * because a caller that has not moved yet can still compile against it.
      */
     @Deprecated
@@ -439,7 +492,9 @@ public final class Framing {
                                    float sourceKind, float speed) {
         return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
-                RENDER_RELIEF, speed);
+                RENDER_RELIEF, speed,
+                SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
     }
 
     /**
@@ -449,8 +504,8 @@ public final class Framing {
      *
      * <p>And the form that <b>cannot say whether the picture is a clip</b>, so it
      * always says still. A renderer that hands back what it is currently drawing
-     * must use the twelve-argument form above, because a snapshot taken through this
-     * one loses the medium and then compares unequal to the frame on screen — an
+     * must use the eighteen-argument form above, because a snapshot taken through
+     * this one loses the medium and then compares unequal to the frame on screen — an
      * instant repaint, which is the snap {@link #sameAs} exists to prevent.
      *
      * <p>Kept only because it has a caller that has not moved yet. It is correct for
@@ -463,14 +518,18 @@ public final class Framing {
                                    float lightAzimuth, float lightElevation) {
         return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, SOURCE_STILL,
-                DEFAULT_SPEED);
+                RENDER_RELIEF, DEFAULT_SPEED,
+                SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
     }
 
     private Framing(float depth, float zoom, float motion,
                     float orbitX, float orbitY, float panX, float panY,
                     float brightnessGain, float shadowLift,
                     float lightAzimuth, float lightElevation, float sourceKind,
-                    float renderMode, float speed) {
+                    float renderMode, float speed,
+                    float splatDepth, float splatEps2d, float splatBlur,
+                    float splatScale) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -485,6 +544,10 @@ public final class Framing {
         this.sourceKind = sourceKind;
         this.renderMode = renderMode;
         this.speed = speed;
+        this.splatDepth = splatDepth;
+        this.splatEps2d = splatEps2d;
+        this.splatBlur = splatBlur;
+        this.splatScale = splatScale;
         this.bundled = false;
     }
 }

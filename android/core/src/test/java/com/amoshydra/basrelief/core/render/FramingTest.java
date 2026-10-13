@@ -92,10 +92,14 @@ public class FramingTest {
      */
     @Test
     public void sameAsComparesEveryValueAndCountsThemAll() throws Exception {
+        // The base vector: eighteen values, and the four splat ones are deliberately
+        // NOT their defaults so the varied vectors below differ from them.
         Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
-                Framing.SOURCE_STILL, 1f);
+                Framing.SOURCE_STILL, Framing.RENDER_RELIEF, 1f,
+                1.2f, 0.6f, 1.5f, 0.7f);
         Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
-                Framing.SOURCE_STILL, 1f);
+                Framing.SOURCE_STILL, Framing.RENDER_RELIEF, 1f,
+                1.2f, 0.6f, 1.5f, 0.7f);
         assertTrue("equal values must compare equal", a.sameAs(b));
         assertTrue(a.sameAs(a));
         assertFalse("a different item must not", a.sameAs(null));
@@ -108,10 +112,10 @@ public class FramingTest {
         //
         // STATIC FIELDS ARE EXCLUDED, and that filter is not tidiness. SOURCE_STILL
         // and SOURCE_VIDEO are public static final floats, so a reflection that
-        // counted every float found fourteen, asserted nothing useful, and would have
-        // let the count be "updated" to match whatever the code happened to declare --
-        // which is a guard that can no longer fail. An instance field is the only
-        // thing sameAs has to compare.
+        // counted every float found more than the instance fields, asserted nothing
+        // useful, and would have let the count be "updated" to match whatever the code
+        // happened to declare -- which is a guard that can no longer fail. An instance
+        // field is the only thing sameAs has to compare.
         java.lang.reflect.Field[] fields = Framing.class.getFields();
         java.util.List<String> numeric = new java.util.ArrayList<String>();
         for (java.lang.reflect.Field f : fields) {
@@ -121,34 +125,60 @@ public class FramingTest {
             }
         }
         assertEquals("sameAs must compare every float field, and there are this many",
-                14, numeric.size());
+                18, numeric.size());
 
-        // One call per field: the same vector with exactly one component moved.
+        // One call per field: the same vector with exactly one component moved. The
+        // last four are the splat look (Depth, Size, Blur, Resolution), added when
+        // they moved off the global prefs into the counted chain.
         float[][] varied = {
-                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // depth
-                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // zoom
-                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // motion
-                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // orbitX
-                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // orbitY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // panX
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 0f, 1f},   // panY
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 0f, 1f},   // brightness
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 0f, 1f},   // shadow
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 0f, 1f},   // azimuth
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 0f, 1f},   // elevation
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 0f, 1f},   // sourceKind
-                // The fourteenth: the draw path. Compared where `bundled` is not,
-                // because a relief and a cloud at identical numbers are two pictures.
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f, 1f},   // renderMode
-                // The thirteenth: a CLIP's rate. It is compared where `bundled` is
-                // not, because it changes what is drawn -- a frame at 0.5x is a
-                // different picture from the same frame at 1x.
-                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 0.5f}, // speed
+                {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // depth
+                {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // zoom
+                {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // motion
+                {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // orbitX
+                {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // orbitY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // panX
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // panY
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // brightness
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // shadow
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // azimuth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // elevation
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // sourceKind
+                // The draw path. Compared where `bundled` is not, because a relief
+                // and a cloud at identical numbers are two pictures.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // renderMode
+                // A CLIP's rate. It is compared where `bundled` is not, because it
+                // changes what is drawn -- a frame at 0.5x is a different picture.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 0.5f,
+                        1.2f, 0.6f, 1.5f, 0.7f},   // speed
+                // The splat look: a cloud at a different Depth, Size, Blur or
+                // Resolution is a different picture, so sameAs must see each.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.3f, 0.6f, 1.5f, 0.7f},   // splatDepth
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.7f, 1.5f, 0.7f},   // splatEps2d
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 2.5f, 0.7f},   // splatBlur
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.5f},   // splatScale
         };
         assertEquals("one varied vector per float field", numeric.size(), varied.length);
         for (float[] v : varied) {
             Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
-                    v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
+                    v[7], v[8], v[9], v[10], v[11], v[12], v[13],
+                    v[14], v[15], v[16], v[17]);
             assertFalse("a moving value must make sameAs false", a.sameAs(moved));
         }
     }
@@ -400,7 +430,7 @@ public class FramingTest {
      *
      * <p>The counterpart of the {@link #bundled} lesson. {@code bundled} is hard-coded
      * false by {@code ofValues} and therefore cannot be compared; the medium is a
-     * float precisely so a snapshot CAN carry it. This asserts the twelve-argument
+     * float precisely so a snapshot CAN carry it. This asserts the eighteen-argument
      * form round-trips, and pins the loss in the eleven-argument one rather than
      * leaving it to be discovered on a device — where the symptom is an instant
      * repaint the user's rule calls a snap.
@@ -413,7 +443,9 @@ public class FramingTest {
         Framing snapshot = Framing.ofValues(clip.depth, clip.zoom, clip.motion,
                 clip.orbitX, clip.orbitY, clip.panX, clip.panY,
                 clip.brightnessGain, clip.shadowLift,
-                clip.lightAzimuth, clip.lightElevation, clip.sourceKind, 1f);
+                clip.lightAzimuth, clip.lightElevation, clip.sourceKind,
+                clip.renderMode, clip.speed,
+                clip.splatDepth, clip.splatEps2d, clip.splatBlur, clip.splatScale);
         assertTrue("what is showing must compare equal to itself",
                 clip.sameAs(snapshot));
         assertTrue("including the medium", snapshot.isVideo());
@@ -546,7 +578,8 @@ public class FramingTest {
                 .withAdjust(Surface.HOME, 100, 0)
                 .editSettings(Surface.LOCK, s -> s.with(s.depth, s.zoom, s.motion,
                         s.originX, s.originY, s.panX, s.panY, 0, -100,
-                        s.lightAzimuth, s.lightElevation, s.speed));
+                        s.lightAzimuth, s.lightElevation, s.speed,
+                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
         assertEquals(2f, home(item).brightnessGain, 1e-6f);
         assertEquals(0f, home(item).shadowLift, 1e-6f);
         assertEquals(1f, Framing.of(item, Surface.LOCK).brightnessGain, 1e-6f);
@@ -591,7 +624,9 @@ public class FramingTest {
     public void aLockOverrideIsUsedAndLeavesHomeAlone() {
         LibraryItem item = photo("a", 90, 100, 0f, 0f, 0f, 0f)
                 .editSettings(Surface.LOCK, s -> s.with(30, 140, 80, 0.1f, -0.2f,
-                        -40f, 15f, -20, 35, 200f, 15f, SurfaceSettings.DEFAULT_SPEED));
+                        -40f, 15f, -20, 35, 200f, 15f, SurfaceSettings.DEFAULT_SPEED,
+                        SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE));
 
         assertTrue(item.hasOwnLockSettings());
         Framing onLock = Framing.of(item, Surface.LOCK);
@@ -793,7 +828,8 @@ public class FramingTest {
         Framing f =
                 Framing.ofValues(
                         0.9f, 1.2f, 0.3f, 0.11f, -0.22f, 40f, -60f, 1.5f, 0.5f,
-                        330f, 12f, Framing.SOURCE_VIDEO, 1f);
+                        330f, 12f, Framing.SOURCE_VIDEO, Framing.RENDER_SPLAT, 1f,
+                        1.4f, 0.55f, 2.5f, 0.5f);
         assertEquals(0.9f, f.depth, 0f);
         assertEquals(1.2f, f.zoom, 0f);
         assertEquals(0.3f, f.motion, 0f);
@@ -807,6 +843,12 @@ public class FramingTest {
         assertEquals(12f, f.lightElevation, 0f);
         assertEquals("and the medium, which is the field a snapshot cannot lose",
                 Framing.SOURCE_VIDEO, f.sourceKind, 0f);
+        // The four splat values, handed back exactly. A snapshot that could not
+        // reproduce them would compare unequal to the frame on screen every resolve.
+        assertEquals(1.4f, f.splatDepth, 0f);
+        assertEquals(0.55f, f.splatEps2d, 0f);
+        assertEquals(2.5f, f.splatBlur, 0f);
+        assertEquals(0.5f, f.splatScale, 0f);
         assertFalse("a snapshot is numbers, not the bundled file case",
                 f.bundled);
     }
