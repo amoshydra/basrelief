@@ -208,20 +208,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     static final String KEY_SPLAT_BLUR = "splat_blur_px";
 
     /**
-     * The splat's two DEPTH-side dev knobs, beside the look knobs above and read
-     * the same way (a pref at draw, off the product path, clamped in {@code :core}).
+     * The splat's DEPTH-side dev knob, beside the look knobs above and read the
+     * same way (a pref at draw, off the product path, clamped in {@code :core}).
      *
      * <p>{@link #KEY_SPLAT_DEPTH} multiplies the cloud's depth: 1 is the depth the
      * node reconstructed, 0 collapses the cloud onto its reference plane (the flat
      * photograph). At rest the picture is the photograph at every value -- each
      * splat is moved along the ray from the eye through its own pixel -- so only the
-     * parallax under tilt changes. {@link #KEY_SPLAT_PERSPECTIVE} multiplies the
-     * cloud's own lens, so 1 is the at-rest photograph and anything else RE-FRAMES
-     * it: a wider lens shows more of the scene and strengthens the parallax. The
-     * resulting fovy is clamped by the renderer, so neither can make a fisheye.
+     * parallax under tilt changes.
      */
     static final String KEY_SPLAT_DEPTH = "splat_depth_mul";
-    static final String KEY_SPLAT_PERSPECTIVE = "splat_persp";
 
     /**
      * The generation-side dev knob: the budget the next cloud build sends to
@@ -765,7 +761,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private volatile float splatEps2d = Splat.EPS_2D_DEFAULT;
     private volatile float splatBlurPx = Splat.BLUR_DEFAULT;
     private volatile float splatDepthMul = Splat.DEPTH_MUL_DEFAULT;
-    private volatile float splatPerspective = Splat.PERSPECTIVE_DEFAULT;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -2079,17 +2074,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Live write for the dev PERSPECTIVE knob: a multiplier on the cloud's lens,
-     * clamped through {@link Splat#clampPerspective}. Same contract as
-     * {@link #setSplatEps2d}. Unlike Depth it RE-FRAMES the picture, which is the
-     * point of the control: a wider lens shows more of the scene and strengthens the
-     * parallax, at the cost of the at-rest identity, which holds at 1 only.
-     */
-    public void setSplatPerspective(float v) {
-        splatPerspective = Splat.clampPerspective(v);
-    }
-
-    /**
      * Live preview for the Brightness and Shadow sliders.
      *
      * <p>Writes only volatile fields and does not touch GL, so it is safe from the
@@ -3377,7 +3361,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
         splatRenderScale = Math.max(0.25f, Math.min(1f, p.getFloat(KEY_SPLAT_SCALE, 1f)));
-        // The two draw-side dev knobs, read with the rest of the cold-load state so a
+        // The DEPTH draw-side dev knob, read with the rest of the cold-load state so a
         // reboot keeps the tuned look. Clamped through :core, so a pref written by a
         // newer build or restored from another device cannot reach the shader as a
         // value no test can name -- and a non-finite one answers the product default
@@ -3385,8 +3369,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         splatEps2d = Splat.clampEps2d(p.getFloat(KEY_SPLAT_EPS2D, Splat.EPS_2D_DEFAULT));
         splatBlurPx = Splat.clampBlurPx(p.getFloat(KEY_SPLAT_BLUR, Splat.BLUR_DEFAULT));
         splatDepthMul = Splat.clampDepthMul(p.getFloat(KEY_SPLAT_DEPTH, Splat.DEPTH_MUL_DEFAULT));
-        splatPerspective = Splat.clampPerspective(
-                p.getFloat(KEY_SPLAT_PERSPECTIVE, Splat.PERSPECTIVE_DEFAULT));
         setSplatForItem(active == null ? null : active.splatName,
                 active != null && active.isSplatMode(),
                 active == null ? 0f : active.splatLens);
@@ -3713,7 +3695,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             SplatCamera.Frame sf = splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
                     orbitX, orbitY, panX, panY,
                     pendingBrightnessGain, pendingShadowLift, splatRenderScale,
-                    splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul, splatPerspective);
+                    splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul);
             // The orbit crosshair belongs to the cloud too, and this branch used to
             // return before it was ever drawn -- so a row in Splat mode had no origin
             // indicator at all, which is the one place the pivot is otherwise

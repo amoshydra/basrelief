@@ -13,7 +13,7 @@ import java.io.File;
 import java.util.Locale;
 
 /**
- * The splat look's dev tuning group: SIZE, RESOLUTION, BLUR, DEPTH and PERSPECTIVE,
+ * The splat look's dev tuning group: SIZE, RESOLUTION, BLUR and DEPTH,
  * on the studio sheet under the Renderer row.
  *
  * <p><b>A dev path, not a product control, and labelled as one.</b> The values
@@ -24,13 +24,13 @@ import java.util.Locale;
  * counted chain is a schema bump plus a writer at every call site for a number that
  * may not survive the tuning. A user who never opens this group sees
  * {@link Splat#EPS_2D_DEFAULT}, {@link Splat#BLUR_DEFAULT},
- * {@link Splat#DEPTH_MUL_DEFAULT}, {@link Splat#PERSPECTIVE_DEFAULT} and
- * {@link ComfyWorkflow#SHARP_BUDGET} and nothing else.
+ * {@link Splat#DEPTH_MUL_DEFAULT} and {@link ComfyWorkflow#SHARP_BUDGET} and
+ * nothing else.
  *
  * <p><b>It lives on the studio sheet because the render is behind it.</b> The
  * Settings screen is a Dialog in its own window over a dimmed studio — you cannot
  * see what a knob does while you move it. Here the sheet is a sibling of the
- * {@code GLSurfaceView}, so the Size, Blur, Depth and Perspective rows dim it to
+ * {@code GLSurfaceView}, so the Size, Blur and Depth rows dim it to
  * glass while held ({@link MainActivity#dimWhileInteracting}) and the picture
  * updates under the finger. That is the whole reason the draw knobs are here and not
  * there.
@@ -38,16 +38,15 @@ import java.util.Locale;
  * <p><b>Shown only when it can change a pixel.</b> The group appears when the active
  * row is in Splat mode AND names a cloud file that is here — the two conditions under
  * which {@link ReliefRenderer#useSplat()} draws the cloud. A row in Splat mode with
- * no cloud renders its relief, where Size, Blur, Depth and Perspective are inert, and
+ * no cloud renders its relief, where Size, Blur and Depth are inert, and
  * a control that cannot change anything is the lie this project keeps refusing to
  * ship (the same reason the Depth and Light rows are hidden in Splat mode).
  *
- * <p><b>DEPTH and PERSPECTIVE are the cloud's shape, not its look.</b> DEPTH moves
- * every splat along its own ray, so at rest the picture is the photograph at every
- * value and only the parallax changes; PERSPECTIVE multiplies the cloud's lens and
- * therefore re-frames the picture. Both are free to move live with no re-upload --
- * they are uniforms the draw reads -- which is why they sit here beside Size and
- * Blur rather than in Settings.
+ * <p><b>DEPTH is the cloud's shape, not its look.</b> It moves every splat along
+ * its own ray, so at rest the picture is the photograph at every value and only the
+ * parallax changes. It is free to move live with no re-upload -- it is a uniform the
+ * draw reads -- which is why it sits here beside Size and Blur rather than in
+ * Settings.
  *
  * <p><b>BUDGET is generation-side and does not dim.</b> It is read when the user
  * presses Regenerate, not at draw, so moving it changes nothing on screen and there
@@ -88,7 +87,6 @@ final class SplatDevRows {
         box.addView(scaleRow());
         box.addView(blurRow());
         box.addView(depthRow());
-        box.addView(perspectiveRow());
 
         box.setVisibility(View.GONE);
     }
@@ -263,48 +261,6 @@ final class SplatDevRows {
             @Override
             public void onPreview(int value) {
                 activity.renderer.setSplatDepthMul(value / 100f);
-                activity.glView.requestRender();
-            }
-        });
-        activity.dimWhileInteracting(s);
-        return s.view();
-    }
-
-    /**
-     * PERSPECTIVE: a multiplier on the cloud's own lens, in hundredths. 1 is the
-     * cloud's lens, at which the at-rest picture is the photograph; above 1 is a
-     * wider lens (more of the scene, stronger parallax) and below 1 flatter. Unlike
-     * DEPTH this RE-FRAMES the picture, so it is not free -- the renderer clamps the
-     * resulting fovy, which is what stops it becoming a fisheye. It dims the sheet
-     * while held because the re-frame is exactly what there is to see.
-     */
-    private View perspectiveRow() {
-        int initial = Math.round(readFloat(ReliefRenderer.KEY_SPLAT_PERSPECTIVE,
-                Splat.PERSPECTIVE_DEFAULT) * 100f);
-        initial = Math.round(Splat.clampPerspective(initial / 100f) * 100f);
-        BasreliefSlider s = BasreliefSlider.create(activity, ReliefRenderer.KEY_SPLAT_PERSPECTIVE,
-                initial, Math.round(Splat.PERSPECTIVE_MIN * 100f),
-                Math.round(Splat.PERSPECTIVE_MAX * 100f),
-                new BasreliefSlider.ValueFormatter() {
-                    @Override
-                    public String format(int value) {
-                        return String.format(Locale.US, "%.2f", value / 100f);
-                    }
-                },
-                new BasreliefSlider.OnChanged() {
-                    @Override
-                    public void onChanged(int value) {
-                        float v = Splat.clampPerspective(value / 100f);
-                        activity.prefs.edit()
-                                .putFloat(ReliefRenderer.KEY_SPLAT_PERSPECTIVE, v).apply();
-                        activity.renderer.setSplatPerspective(v);
-                        activity.glView.requestRender();
-                    }
-                });
-        s.setOnPreview(new BasreliefSlider.OnPreview() {
-            @Override
-            public void onPreview(int value) {
-                activity.renderer.setSplatPerspective(value / 100f);
                 activity.glView.requestRender();
             }
         });

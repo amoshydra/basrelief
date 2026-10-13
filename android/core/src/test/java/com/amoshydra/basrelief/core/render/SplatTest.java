@@ -525,26 +525,4 @@ public class SplatTest {
         assertEquals("the scale is clamped, not the pref alone",
                 Splat.depthScale(1.4f, 0.68f, 99f), Splat.depthScale(1.4f, 0.68f, Splat.DEPTH_MUL_MAX), 0f);
     }
-
-    /**
-     * The dev PERSPECTIVE knob's clamp: 1.0 is the cloud's own lens (the at-rest
-     * photograph), 0.5 is half the lens and 2.0 twice it, and a value that cannot
-     * claim a number is the default rather than a bound. The resulting fovy is
-     * clamped again by the renderer's own {@code MIN_FOVY}/{@code MAX_FOVY}, so this
-     * range cannot become a fisheye.
-     */
-    @Test
-    public void thePerspectiveKnobClampsAroundThePhotograph() {
-        assertEquals(Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(1f), 0f);
-        assertEquals("1 is the photograph", 1f, Splat.PERSPECTIVE_DEFAULT, 0f);
-        assertEquals("inside the range is kept exactly", 1.25f, Splat.clampPerspective(1.25f), 0f);
-        assertEquals("below the range is half the lens",
-                Splat.PERSPECTIVE_MIN, Splat.clampPerspective(0.1f), 0f);
-        assertEquals("above the range is twice the lens",
-                Splat.PERSPECTIVE_MAX, Splat.clampPerspective(9f), 0f);
-        assertEquals("a NaN claims nothing and must be the default",
-                Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(Float.NaN), 0f);
-        assertEquals("an infinity claims nothing",
-                Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(Float.POSITIVE_INFINITY), 0f);
-    }
 }

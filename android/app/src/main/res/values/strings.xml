@@ -589,7 +589,6 @@
     <string name="slider_splat_budget">Budget</string>
     <string name="slider_splat_resolution">Resolution</string>
     <string name="slider_splat_depth">Depth</string>
-    <string name="slider_splat_perspective">Perspective</string>
     <!-- The dev group's caption and note. Labelled "dev" on purpose: these are
          values still being picked by eye, not a product control. -->
     <string name="splat_dev_caption">Splat tuning · dev</string>

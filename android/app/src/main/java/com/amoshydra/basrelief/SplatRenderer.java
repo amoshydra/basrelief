@@ -166,9 +166,8 @@ final class SplatRenderer {
      */
     private float eps2dInUse = Splat.EPS_2D_DEFAULT;
     private float blurPxInUse = Splat.BLUR_DEFAULT;
-    /** The two dev values the last frame drew with, for the stats line. */
+    /** The dev value the last frame drew with, for the stats line. */
     private float depthMulInUse = Splat.DEPTH_MUL_DEFAULT;
-    private float perspInUse = Splat.PERSPECTIVE_DEFAULT;
 
     private final float[] eye = new float[3];
     private final float[] forward = new float[3];
@@ -432,13 +431,6 @@ final class SplatRenderer {
      *                 moved depth -- see {@link SplatCamera#pivot} -- because it is
      *                 the surface the shader draws, so the crosshair and the aim
      *                 follow the knob rather than marking a point the cloud has left.
-     * @param perspective the dev PERSPECTIVE knob: a multiplier on the cloud's lens,
-     *                    clamped through {@link Splat#clampPerspective} and applied to
-     *                    the drawing fovy before the existing {@link #MIN_FOVY} /
-     *                    {@link #MAX_FOVY} clamp. 1 is the cloud's own lens and the
-     *                    at-rest photograph; above 1 is a wider lens and stronger
-     *                    parallax, below 1 flatter. Unlike Depth this one RE-FRAMES
-     *                    the picture, so the at-rest identity holds at 1 only.
      * @return the camera frame this draw used, or null when nothing was drawn — so
      *         the host can place its orbit marker at the SAME pivot the cloud was
      *         aimed at. The frame is the one reusable instance, valid until the next
@@ -447,7 +439,7 @@ final class SplatRenderer {
     SplatCamera.Frame draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
               float brightnessGain, float shadowLift, float renderScale, float cloudLens,
-              float eps2d, float blurPx, float depthMul, float perspective) {
+              float eps2d, float blurPx, float depthMul) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return null;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
@@ -465,12 +457,10 @@ final class SplatRenderer {
         blurPx = Splat.clampBlurPx(blurPx);
         boolean blur = blurPx >= 0.5f;
         blurPxInUse = blurPx;
-        // The two dev knobs are clamped here as well as at the pref read, for the
-        // same reason: the renderer is where the slider and the cold reload converge.
+        // The dev knob is clamped here as well as at the pref read, for the same
+        // reason: the renderer is where the slider and the cold reload converge.
         depthMul = Splat.clampDepthMul(depthMul);
-        perspective = Splat.clampPerspective(perspective);
         depthMulInUse = depthMul;
-        perspInUse = perspective;
 
         ensureOffscreen(surfaceW, surfaceH, renderScale, blur);
         int vw = fbo != 0 ? renderW : surfaceW;
@@ -486,12 +476,7 @@ final class SplatRenderer {
         float lensFovy = Splat.fovyForFocalOverHeight(cloudLens);
         float sourceFovy = lensFovy > 0f ? lensFovy : SOURCE_FOVY;
         float fovy = sourceFovy / Math.max(0.25f, Math.min(2f, zoom));
-        // The dev PERSPECTIVE knob multiplies the lens. It is NOT free: it re-frames
-        // the picture (a wider lens makes the same photo smaller and shows more of
-        // it), so the at-rest identity is at 1.0 only -- and it is why the stored
-        // focal scales the depth rather than the ray, one medium over. The existing
-        // clamp is applied AFTER the multiplier, so the knob cannot make a fisheye.
-        fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy * perspective));
+        fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy));
 
         // The camera, all of it in :core: the source view, the Origin/Pan shift,
         // and the turntable about the cloud's own surface under the origin. See
@@ -1093,7 +1078,6 @@ final class SplatRenderer {
                 + " eps2d=" + fmt(eps2dInUse)
                 + " blurPx=" + fmt(blurPxInUse)
                 + " depthMul=" + fmt(depthMulInUse)
-                + " persp=" + fmt(perspInUse)
                 + " fps=" + fmt(fps)
                 + " frameMs=" + fmt(frameMs)
                 + " maxFrameMs=" + fmt(maxFrameNanos / 1e6f)

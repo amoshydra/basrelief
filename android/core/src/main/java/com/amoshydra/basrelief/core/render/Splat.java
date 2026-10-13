@@ -291,11 +291,11 @@ public final class Splat {
         return value;
     }
 
-    // ------------------------------------------------- the Depth / Perspective knobs
+    // ------------------------------------------------- the Depth knob
     //
-    // The two live dev knobs the sheet's splat group gained after SIZE / BLUR /
-    // RESOLUTION. Same rule as the three above: prefs read at draw, not fields in the
-    // counted schema, and their clamps are here so a pref from a newer build or
+    // The live dev knob the sheet's splat group gained after SIZE / BLUR /
+    // RESOLUTION. Same rule as the three above: a pref read at draw, not a field in
+    // the counted schema, and its clamp is here so a pref from a newer build or
     // another device cannot reach the shader as a value no test can name.
 
     /**
@@ -363,37 +363,6 @@ public final class Splat {
         float z2 = refDepth + clampDepthMul(mul) * (z - refDepth);
         if (z2 < 0f) z2 = 0f;
         return z2 / z;
-    }
-
-    /**
-     * The product default perspective multiplier: 1.0, exactly the cloud's own
-     * lens, which is the value at which the at-rest picture is the photograph.
-     */
-    public static final float PERSPECTIVE_DEFAULT = 1f;
-
-    /**
-     * The bottom of the dev PERSPECTIVE range: half the lens, a narrower field of
-     * view and therefore a flatter, more telephoto view. Below this the cloud reads
-     * as an orthographic card, which is a different mode rather than a weaker one.
-     */
-    public static final float PERSPECTIVE_MIN = 0.5f;
-
-    /**
-     * The top of the dev PERSPECTIVE range: twice the lens, a wider field of view
-     * and stronger parallax. The resulting fovy is still clamped by the renderer's
-     * {@code MIN_FOVY}/{@code MAX_FOVY}, so this cannot become a fisheye.
-     */
-    public static final float PERSPECTIVE_MAX = 2f;
-
-    /**
-     * The perspective multiplier a stored value means. A non-finite value answers
-     * the default, so a NaN cannot reach the projection.
-     */
-    public static float clampPerspective(float value) {
-        if (!Float.isFinite(value)) return PERSPECTIVE_DEFAULT;
-        if (value < PERSPECTIVE_MIN) return PERSPECTIVE_MIN;
-        if (value > PERSPECTIVE_MAX) return PERSPECTIVE_MAX;
-        return value;
     }
 
     /**
