@@ -6023,6 +6023,15 @@ public class MainActivity extends Activity {
         go.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // The submitted number is the slider's OWN value, read HERE, and not
+                // whatever the pref happens to hold. The callbacks that keep the pref
+                // warm are unreliable in order -- a view detached mid-gesture can
+                // deliver a stale value after the release, which is how a slider
+                // showing 150k came to run a 404,000 build. The one number that is
+                // certainly what the user chose is the one the slider is displaying,
+                // so that is the one the build reads, and the pref write below is
+                // only so the next dialog opens where this one was left.
+                setCloudBudget(budget.value(), budgetLine);
                 sheet.dismiss();
                 startCloudBuild(item);
             }
