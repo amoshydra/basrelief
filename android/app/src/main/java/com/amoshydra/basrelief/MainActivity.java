@@ -6032,6 +6032,12 @@ public class MainActivity extends Activity {
                 // so that is the one the build reads, and the pref write below is
                 // only so the next dialog opens where this one was left.
                 setCloudBudget(budget.value(), budgetLine);
+                // Two numbers, one line: what the slider is showing and what storage
+                // holds. They must agree, and when they did not the only way to tell
+                // which one was wrong was to guess -- the last three attempts each
+                // guessed a different half. This makes the next attempt state it.
+                android.util.Log.i("Basrelief", "splat budget at submit: slider="
+                        + budget.value() + "k pref=" + (cloudBudget() / 1000) + "k");
                 sheet.dismiss();
                 startCloudBuild(item);
             }

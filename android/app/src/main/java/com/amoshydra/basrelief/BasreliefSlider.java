@@ -277,7 +277,18 @@ final class BasreliefSlider extends LinearLayout {
     private final View minus;
     private final View plus;
 
-    private int value;
+    /**
+     * The value the face is showing.
+     *
+     * <p>It is written by {@link #show} and nowhere else, so it is true whether the
+     * number arrived from a drag, a nudge or a programmatic set. It used to be called
+     * {@code value} and was assigned only by {@link #setValue}, which made
+     * {@link #value()} -- documented as "what this control is showing" -- answer the
+     * last programmatic set instead: a slider painting 480k answered 150 while a
+     * finger was down, and a build read it. A field that means something other than
+     * its name is the same defect as one nothing reads.
+     */
+    private int shown;
 
     /**
      * Build one row.
@@ -407,7 +418,7 @@ final class BasreliefSlider extends LinearLayout {
      * told to run.
      */
     int value() {
-        return value;
+        return shown;
     }
 
     /**
@@ -443,7 +454,7 @@ final class BasreliefSlider extends LinearLayout {
         min = lo;
         max = hi;
         pxPerUnit = pxPerUnitFor();
-        show(clamp(value, min, max));
+        show(clamp(shown, min, max));
     }
 
     /** Let the renderer follow a drag. Optional; see {@link OnPreview}. */
@@ -499,7 +510,7 @@ final class BasreliefSlider extends LinearLayout {
 
     /** Repaint for a value. The one place the face, the number and the description move. */
     private void show(int v) {
-        value = v;
+        shown = v;
         String text = formatter.format(v);
         face.setFraction(fractionOf(v));
         face.setLabel(text);
@@ -539,7 +550,7 @@ final class BasreliefSlider extends LinearLayout {
      */
     private void preview(int next) {
         int v = clamp(next, min, max);
-        if (v == value) return;
+        if (v == shown) return;
         show(v);
         if (onPreview != null) onPreview.onPreview(v);
     }
@@ -574,8 +585,8 @@ final class BasreliefSlider extends LinearLayout {
      * the value you were trying to correct.
      */
     private void nudge(int direction) {
-        int next = clamp(value + direction * STEP, min, max);
-        if (next == value) return;
+        int next = clamp(shown + direction * STEP, min, max);
+        if (next == shown) return;
         show(next);
         if (onChanged != null) onChanged.onChanged(next);
     }
@@ -587,8 +598,8 @@ final class BasreliefSlider extends LinearLayout {
      * is expensive enough that a gesture nobody meant should not cause one.
      */
     private void release(int pressedAt) {
-        if (value == pressedAt) return;
-        if (onChanged != null) onChanged.onChanged(value);
+        if (shown == pressedAt) return;
+        if (onChanged != null) onChanged.onChanged(shown);
     }
 
     /** Back where the gesture started, for a drag the system took away. */
@@ -793,7 +804,7 @@ final class BasreliefSlider extends LinearLayout {
                     // Claiming the gesture here is the touch-level way to say so.
                     getParent().requestDisallowInterceptTouchEvent(true);
                     downX = event.getX();
-                    pressedAt = owner.value;
+                    pressedAt = owner.shown;
                     dragging = false;
                     gesturePxPerUnit = owner.unitTravel();
                     owner.beginInteraction();
@@ -811,7 +822,7 @@ final class BasreliefSlider extends LinearLayout {
                         // this very event -- a batched ACTION_MOVE can contain a whole
                         // gesture -- while still leaving no jump at the boundary.
                         anchorX = downX + (dx > 0 ? owner.touchSlop : -owner.touchSlop);
-                        anchorValue = owner.value;
+                        anchorValue = owner.shown;
                     }
                     int next = anchorValue
                             + Math.round((event.getX() - anchorX) / gesturePxPerUnit);
