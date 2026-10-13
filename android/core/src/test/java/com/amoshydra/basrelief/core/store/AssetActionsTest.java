@@ -99,11 +99,18 @@ public class AssetActionsTest {
         assertEquals(AssetActions.DepthAction.REPLACE, a.depthAction());
     }
 
-    /** A row with no map offers no Replace: adding one is the fix line's action. */
+    /**
+     * A row with no map offers <b>Choose a map</b>, and a window offers nothing.
+     *
+     * <p>The gate is {@link DepthSource.Answer#reportsNoDepth()}, not
+     * {@code canReplace()}: the UNKNOWN window is also {@code State.NONE} and its
+     * {@code canReplace()} is false, so it claims nothing rather than offering a map
+     * for a photo that may already have one.
+     */
     @Test
-    public void aRowWithNoDepthOffersNoReplace() {
+    public void aRowWithNoDepthOffersChoose() {
         BuildTab.Answer relief = BuildTab.forRelief(false, true, false, false);
-        assertEquals(AssetActions.DepthAction.NONE, resolve(BuildTab.forSplat(false, false, false),
+        assertEquals(AssetActions.DepthAction.CHOOSE, resolve(BuildTab.forSplat(false, false, false),
                 relief, none(), false).depthAction());
         assertEquals(AssetActions.DepthAction.NONE, resolve(BuildTab.forSplat(false, false, false),
                 relief, DepthSource.UNKNOWN, false).depthAction());
@@ -173,13 +180,16 @@ public class AssetActionsTest {
     }
 
     /**
-     * A row with neither asset is hidden, which is the whole of "a control that
-     * cannot change anything is a lie".
+     * A row whose depth is still being read is hidden: the window claims nothing.
+     *
+     * <p>This is the one case where the gate has nothing to offer at all — no cloud,
+     * no Delete, and a depth the row may not yet describe. "A control that cannot
+     * change anything is a lie" is why the whole row goes rather than sitting empty.
      */
     @Test
-    public void aRowWithNothingToOfferIsHidden() {
+    public void aRowInTheUnreadWindowIsHidden() {
         AssetActions.Answer a = resolve(BuildTab.forSplat(false, false, false),
-                BuildTab.forRelief(false, true, false, false), none(), false);
+                BuildTab.forRelief(false, false, false, false), DepthSource.UNKNOWN, false);
         assertTrue(a.isNone());
         assertFalse(a.canDeleteCloud());
         assertEquals(AssetActions.DepthAction.NONE, a.depthAction());

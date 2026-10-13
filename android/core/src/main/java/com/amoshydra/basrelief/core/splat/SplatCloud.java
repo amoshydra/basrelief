@@ -68,7 +68,22 @@ public final class SplatCloud {
      */
     public static SplatCloud parse(byte[] data) {
         if (data == null) return new SplatCloud(new byte[0], 0);
-        return new SplatCloud(data, data.length / RECORD_BYTES);
+        return new SplatCloud(data, countIn(data.length));
+    }
+
+    /**
+     * How many records a cloud of this many bytes holds, without reading it.
+     *
+     * <p><b>The count the sheet states is a fact about the FILE.</b> A rebuild writes
+     * the <i>same filename</i>, so a number captured at import time is the previous
+     * cloud's for ever after — which is why the sheet reads the length at refresh
+     * rather than remembering it. A trailing partial record is dropped, exactly as
+     * {@link #parse} drops it: a window claims nothing, and a corrupt tail costs one
+     * splat rather than the cloud.
+     */
+    public static int countIn(long byteCount) {
+        if (byteCount <= 0) return 0;
+        return (int) (byteCount / RECORD_BYTES);
     }
 
     /** Read a file and parse it. The only I/O in this class. */

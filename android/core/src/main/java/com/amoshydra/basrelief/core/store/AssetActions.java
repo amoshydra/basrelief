@@ -1,36 +1,18 @@
 package com.amoshydra.basrelief.core.store;
 
 /**
- * The sheet's one shared asset row: the secondary actions a row may offer once the
- * primary build lives in the 3D-build dialog's tabs.
+ * The sheet's asset row: the secondary actions a row may offer beside its primary
+ * build.
  *
  * <p><b>Why this exists.</b> The sheet used to carry the same decisions twice. Under
  * the Renderer segment a cloud row stated the cloud's state and offered its one
  * action (<i>Make one</i> / <i>Rebuild</i> / <i>Regenerate</i>) beside a
  * <b>Delete</b>; all the way at the bottom a "This photo's map" section offered
- * <b>Regenerate</b> and <b>Replace</b>. The dialog's own two tabs
- * ({@link BuildTab}) already resolve each kind's state and its primary action, so
- * both rows were restating a decision the dialog owns. The user's report was
- * exactly that: <i>the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
-    regenerate/replace, and the two were expected to be combined</i>
- *
- * <p><b>One row, and only the secondary actions.</b> The primary build stays where
- * it can be configured — in the dialog's tabs — and this class answers the two
- * questions the one shared row asks: may the user <b>delete the cloud</b>, and may
- * they <b>act on the depth</b>. The depth action is a small vocabulary rather than
- * a boolean because the two cases are genuinely different actions, not two labels
- * for one:
- *
- * <ul>
- *   <li>{@link DepthAction#REPLACE} — a still depth <b>file</b>: choose a map from
- *       the picker, which writes over this photo's depth.</li>
- *   <li>{@link DepthAction#REGENERATE} — a clip's depth is a <b>track</b>, and the
- *       dialog's Relief tab refuses it by {@link BuildTab}'s own rule (a depth this
- *       dialog cannot replace is BUILT with no action). So the clip's regeneration,
- *       which runs the whole video graph, has no tab to live in and is a secondary
- *       action by construction. It stays reachable here instead of being stranded
- *       with the removed bottom block.</li>
- * </ul>
+ * <b>Regenerate</b> and <b>Replace</b>. The user's report was exactly that: <i>the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
+    regenerate/replace, and the two were expected to be combined</i> The two rows became one, and the one row now states the
+ * selected mode's asset and offers its primary build as well — see {@link AssetRow},
+ * which composes this answer with {@link BuildTab}'s. This class stays the gate for
+ * the <b>second</b> button: it decides the actions that are not the mode's build.
  *
  * <p><b>It reuses the rules rather than re-deciding them.</b> Both actions are read
  * out of the two {@link BuildTab.Answer}s, so "a run in flight offers nothing" and
@@ -47,11 +29,14 @@ public final class AssetActions {
 
     /** The one secondary action the depth asset may offer. */
     public enum DepthAction {
-        /** Nothing to offer: no map, an embedded map, or a run that owns the row. */
+        /** Nothing to offer: an embedded map, a track, or a run that owns the row. */
         NONE,
 
         /** A still depth file: choose another map to write over it. */
         REPLACE,
+
+        /** No depth yet: choose a map to add. */
+        CHOOSE,
 
         /** A clip's depth track: run the video graph again to rebuild it. */
         REGENERATE
@@ -128,13 +113,17 @@ public final class AssetActions {
             if (regeneratesAsClip) {
                 depthAction = DepthAction.REGENERATE;
             } else if (depth != null && depth.canReplace()) {
-                // A still file: replace it. A row with no map is not BUILT above --
-                // adding a map where there is none is the fix line's "Choose a map",
-                // not this row's Replace. An embedded map is BUILT and cannot
-                // replace, so it falls through to NONE, which the fix line refuses
-                // for the same reason.
+                // A still file: replace it. An embedded map is BUILT and cannot
+                // replace, so it falls through to NONE.
                 depthAction = DepthAction.REPLACE;
             }
+        } else if (relief != null && relief.state() == BuildTab.State.NONE
+                && depth != null && depth.reportsNoDepth()) {
+            // No map yet, and the row says so: choose one. The gate is
+            // reportsNoDepth() rather than canReplace(), so the UNKNOWN window --
+            // which is also State.NONE, and whose canReplace() is false -- claims
+            // nothing rather than offering a map for a photo that may have one.
+            depthAction = DepthAction.CHOOSE;
         }
 
         if (!deleteCloud && depthAction == DepthAction.NONE) return NONE;

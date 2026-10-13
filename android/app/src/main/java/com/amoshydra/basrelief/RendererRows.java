@@ -7,43 +7,39 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.amoshydra.basrelief.core.store.AssetActions;
+import com.amoshydra.basrelief.core.store.AssetRow;
 import com.amoshydra.basrelief.core.store.BuildTab;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.RenderMode;
 
 /**
- * The sheet's "Renderer — Relief | Splat" row, and the one shared asset row under
- * it.
+ * The sheet's "Renderer — Relief | Splat" row, and the asset row under it.
  *
- * <p><b>Two rows, one question each.</b> The renderer row is the <i>choice</i> —
- * which draw path this photo uses — and both options are always tappable. The row
- * under it is the <i>secondary actions</i> on the row's built assets: <b>Delete</b>
- * a cloud, and one depth action (<b>Replace</b> a still map, or <b>Regenerate</b> a
- * clip's track). Which of those apply is {@link AssetActions}, in {@code :core}, so
- * it is a tested decision rather than a branch on this screen.
+ * <p><b>Two rows, two questions, and only one asset row exists.</b> The renderer row
+ * is the <i>mode selector</i> — which draw path this photo uses — and both options are
+ * always tappable. The row directly under it is the <b>selected mode's state and its
+ * primary action</b>, beside the secondary actions that belong to that mode. Which
+ * actions those are is {@link AssetRow}, in {@code :core}, so it is a tested decision
+ * rather than a branch on this screen.
  *
- * <p><b>Why the primary action is not here.</b> The cloud row used to state the
- * cloud's state and offer its one action (<i>Make one</i> / <i>Rebuild</i> /
- * <i>Regenerate</i>), and a bottom "This photo's map" section offered Regenerate and
- * Replace — two rows restating what the 3D-build dialog's tabs already resolve. The
- * user reported exactly that: <i>the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
-    regenerate/replace, and the two were expected to be combined</i> So the primary lives only in the dialog
- * (where it can be configured), the bottom section is gone, and this row holds the
- * secondary actions the tabs deliberately do not.
+ * <p><b>Why the row holds the primary again.</b> It briefly held only the secondary
+ * actions, on the reasoning that the 3D-build dialog's tabs already stated each kind's
+ * state and offered its primary. That reasoning <i>hid</i> both facts behind a dialog:
+ * the user reported it as <i>the splat regeneration action and the splat count had gone missing</i> — the cloud's count and its Rebuild were one tap behind a
+ * control you had to know to tap. So the row states the selected mode's asset and
+ * offers its primary, and the dialog becomes the <i>settings and confirm</i> the
+ * primary opens: the budget on the Splat tab, the model and resolution on the Relief
+ * tab.
  *
- * <p><b>The tab owns its primary action.</b> Tapping the tab you are already on
- * opens the build dialog on it — Generate / Regenerate for Relief, Make one /
- * Rebuild / Regenerate for Splat. Switching to the other tab just switches, except
- * that a tab with nothing built yet offers its build, which is the offer the Splat
- * tab has always made. That is what keeps Rebuild and Regenerate reachable after the
- * cloud row stopped carrying them, without a dialog on every mode switch.
+ * <p><b>The tabs are only the mode switch.</b> Tapping one switches the picture's draw
+ * path and nothing else; the row's primary button is the entry to a build, and it
+ * always was. The "tap the tab you are on to reach its action" behaviour is gone with
+ * the reason it existed.
  *
  * <p><b>It lives in the geometry group, beside the depth rows.</b> That group
  * already answers "what is this item's geometry"; a cloud is the same question
- * answered in 3D. A control nothing reads is a bug, not a greyed row: the relief's
- * Depth and Light rows are hidden in splat mode (see {@code MainActivity}), and the
- * splat has none of its own.
+ * answered in 3D.
  *
  * <p>The class is built once and refreshed on every {@code refreshSliders}, the same
  * contract {@link FramingRows} has, so a selection change or a finished build
@@ -56,19 +52,23 @@ final class RendererRows {
 
     private final Button reliefBtn;
     private final Button splatBtn;
-    /** The depth slot: Replace a still map, or Regenerate a clip's track. */
-    private final Button depthActionBtn;
-    private final Button cloudDeleteBtn;
+    /** The state sentence: what the selected mode's asset is. */
+    private final TextView stateText;
+    /** The first button (left), and the second (right). */
+    private final Button leadBtn;
+    private final Button trailBtn;
     private final LinearLayout assetRow;
 
     /**
-     * What {@link #depthActionBtn} is currently offering.
+     * What the two buttons are currently offering, and the tab their build opens.
      *
-     * <p>The listener is installed once and reads this, rather than the button
+     * <p>The listeners are installed once and read these, rather than each button
      * carrying a new listener on every refresh — the label and the action must be the
      * same value, and re-binding a listener per repaint is how they come apart.
      */
-    private AssetActions.DepthAction shownDepthAction = AssetActions.DepthAction.NONE;
+    private AssetRow.Action shownLead = AssetRow.Action.NONE;
+    private AssetRow.Action shownTrail = AssetRow.Action.NONE;
+    private BuildTab.Kind shownTab = BuildTab.Kind.RELIEF;
 
     RendererRows(MainActivity activity) {
         this.activity = activity;
@@ -92,14 +92,14 @@ final class RendererRows {
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        onTabTapped(BuildTab.Kind.RELIEF);
+                        setMode(RenderMode.RELIEF);
                     }
                 });
         splatBtn = segmentButton(activity.getString(R.string.renderer_splat),
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        onTabTapped(BuildTab.Kind.SPLAT);
+                        setMode(RenderMode.SPLAT);
                     }
                 });
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, activity.dp(30), 1f);
@@ -109,49 +109,36 @@ final class RendererRows {
         seg.addView(splatBtn, slp);
         box.addView(seg);
 
-        // The shared asset row: the secondary actions only, each shown when it can
-        // actually act. See the class javadoc for what it replaced.
+        // The asset row: the selected mode's sentence, then its buttons. The state
+        // takes the space and the buttons hug the right, the shape the cloud row
+        // already had.
         assetRow = new LinearLayout(activity);
         assetRow.setOrientation(LinearLayout.HORIZONTAL);
-        depthActionBtn = activity.makeButton("", new View.OnClickListener() {
+        assetRow.setGravity(Gravity.CENTER_VERTICAL);
+        stateText = new TextView(activity);
+        stateText.setTextSize(12);
+        stateText.setTextColor(0x8CFFFFFF);
+        assetRow.addView(stateText, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        leadBtn = assetButton(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                LibraryItem item = activity.state().activeItem();
-                if (item == null) return;
-                switch (shownDepthAction) {
-                    case REPLACE:
-                        // Reuses the active item's id, so it overwrites this photo's
-                        // map rather than starting a new gallery row.
-                        activity.replaceDepthMap();
-                        break;
-                    case REGENERATE:
-                        // A clip regenerates its TRACK SET through the video graph --
-                        // the image graph would write a one-frame depth over a
-                        // playing clip's depth track. DepthSource.canRegenerate says
-                        // a track may ask for this; the routing is the half the
-                        // renderer cannot know.
-                        activity.regenerateClip(item);
-                        break;
-                    default:
-                        break;
-                }
+                onAction(shownLead);
             }
-        }, 0, 1f);
-        assetRow.addView(depthActionBtn);
-        cloudDeleteBtn = activity.makeButton(activity.getString(R.string.splat_action_delete),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        LibraryItem item = activity.state().activeItem();
-                        if (item != null) activity.deleteCloud(item);
-                    }
-                }, 0, 1f);
-        assetRow.addView(cloudDeleteBtn);
-        LinearLayout.LayoutParams crp = new LinearLayout.LayoutParams(
+        });
+        assetRow.addView(leadBtn);
+        trailBtn = assetButton(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onAction(shownTrail);
+            }
+        });
+        assetRow.addView(trailBtn);
+        LinearLayout.LayoutParams arp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        crp.topMargin = activity.dp(6);
-        assetRow.setLayoutParams(crp);
+        arp.topMargin = activity.dp(6);
+        assetRow.setLayoutParams(arp);
         box.addView(assetRow);
     }
 
@@ -186,6 +173,17 @@ final class RendererRows {
         return b;
     }
 
+    /**
+     * One asset-row button: the sheet's plate, hugging its label.
+     *
+     * <p>{@code WRAP_CONTENT} rather than the equal share {@code makeButton} defaults
+     * to, because the row's buttons are beside a sentence rather than filling the row
+     * — the same shape the cloud row used.
+     */
+    private Button assetButton(View.OnClickListener tap) {
+        return activity.makeButton("", tap, LinearLayout.LayoutParams.WRAP_CONTENT, 0f);
+    }
+
     // ---------------------------------------------------------------- refresh
 
     /** Repaint the whole row from the live index. Called by {@code refreshSliders}. */
@@ -201,20 +199,90 @@ final class RendererRows {
         style(reliefBtn, !splat);
         style(splatBtn, splat);
 
-        // The secondary actions, resolved once. A row with nothing to offer hides
-        // the whole row: a control that cannot change anything is a lie, and an
-        // empty row is that lie with more pixels.
-        AssetActions.Answer actions = activity.assetActionsFor(item);
-        shownDepthAction = actions.depthAction();
-        if (actions.depthAction() == AssetActions.DepthAction.NONE) {
-            depthActionBtn.setVisibility(View.GONE);
-        } else {
-            depthActionBtn.setVisibility(View.VISIBLE);
-            depthActionBtn.setText(actions.depthAction() == AssetActions.DepthAction.REPLACE
-                    ? R.string.action_replace : R.string.action_regenerate);
+        AssetRow.Answer row = activity.assetRowFor(item);
+        shownTab = row.tab();
+        shownLead = row.lead();
+        shownTrail = row.trail();
+        stateText.setText(stateTextFor(row, item));
+        show(leadBtn, row.lead());
+        show(trailBtn, row.trail());
+        // The gap belongs between the two buttons and nowhere else: a right margin on
+        // both leaves a dead strip at the row's right edge.
+        boolean both = row.lead() != AssetRow.Action.NONE && row.trail() != AssetRow.Action.NONE;
+        setRightMargin(leadBtn, both ? activity.dp(8) : 0);
+        setRightMargin(trailBtn, 0);
+        // A row with nothing to say and nothing to offer is hidden: an empty row is a
+        // control that cannot change anything with more pixels. A sentence with no
+        // button is not a control, so a row that has something to say stays.
+        assetRow.setVisibility(row.isNone() ? View.GONE : View.VISIBLE);
+    }
+
+    /**
+     * The sentence for the selected mode's state, from the live row.
+     *
+     * <p>Only the Splat states carry a run: a cloud build has no fix line, so its
+     * phase and its failure's own words are the sheet's only statement of it. A Relief
+     * state is always the depth's own kind — a depth run is the fix line's, and a
+     * second copy would be staler. The count is {@link BuildDialog#cloudCount}, read
+     * from the cloud FILE, because a rebuild writes the same filename.
+     */
+    private CharSequence stateTextFor(AssetRow.Answer row, LibraryItem item) {
+        switch (row.state()) {
+            case NO_DEPTH:       return activity.getString(R.string.build_relief_none);
+            case HAS_DEPTH:      return activity.getString(R.string.build_relief_built);
+            case DEPTH_EMBEDDED: return activity.getString(R.string.build_relief_embedded);
+            case DEPTH_TRACK:    return activity.getString(R.string.asset_row_depth_track);
+            case NO_CLOUD:       return activity.getString(R.string.splat_row_none);
+            case CLOUD:          return activity.getString(R.string.splat_row_built,
+                    BuildDialog.cloudCount(activity, item),
+                    activity.getString(R.string.splat_generator));
+            case BUILDING:       return BuildDialog.splatPhase(activity, item);
+            case FAILED: {
+                Jobs.Job job = activity.splatJob(item.id);
+                return activity.getString(R.string.splat_row_failed, job == null ? "" : job.error);
+            }
+            case NONE:
+            default:             return "";
         }
-        cloudDeleteBtn.setVisibility(actions.canDeleteCloud() ? View.VISIBLE : View.GONE);
-        assetRow.setVisibility(actions.isNone() ? View.GONE : View.VISIBLE);
+    }
+
+    /** Show one button with its action's own word, or hide it. */
+    private void show(Button b, AssetRow.Action action) {
+        if (action == AssetRow.Action.NONE) {
+            b.setVisibility(View.GONE);
+            return;
+        }
+        b.setVisibility(View.VISIBLE);
+        b.setText(labelFor(action));
+    }
+
+    /**
+     * The word for one button.
+     *
+     * <p>The three build actions go through {@link BuildDialog#labelFor}, so the row's
+     * primary and the dialog's own footer cannot grow two words for one action. The
+     * rest are the words this sheet already uses elsewhere.
+     */
+    private int labelFor(AssetRow.Action action) {
+        switch (action) {
+            case BUILD:
+            case REBUILD:
+            case REGENERATE:
+                return BuildDialog.labelFor(action.tabAction(), shownTab);
+            case REPLACE:        return R.string.action_replace;
+            case CHOOSE:         return R.string.fix_choose_map;
+            case DELETE:         return R.string.splat_action_delete;
+            case REGENERATE_CLIP: return R.string.action_regenerate;
+            case NONE:
+            default:             return 0;
+        }
+    }
+
+    private void setRightMargin(Button b, int px) {
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
+        if (lp == null) return;
+        lp.rightMargin = px;
+        b.setLayoutParams(lp);
     }
 
     private void style(Button b, boolean on) {
@@ -228,30 +296,49 @@ final class RendererRows {
     // ---------------------------------------------------------------- actions
 
     /**
-     * A tab was tapped: switch the mode, and offer that tab's primary build when the
-     * tab is the one already selected, or when it has nothing built yet.
+     * One button was pressed: run what it currently offers.
      *
-     * <p>The mode is switched first and unconditionally, because the segment is also
-     * the mode switch — the picture follows the tab even when no dialog opens. The
-     * dialog is the tab's <i>primary action</i> (Generate / Regenerate, Make one /
-     * Rebuild / Regenerate), which is why a re-tap opens it: the primary has no other
-     * home on this sheet, and the bottom block that used to carry Regenerate is gone.
+     * <p>Resolved at CLICK time, not build time, for the reason on the class: the row
+     * is repainted per selection but a click can land after another change. The action
+     * is the one the row is showing, so the label and the effect cannot come apart.
      */
-    private void onTabTapped(BuildTab.Kind kind) {
+    private void onAction(AssetRow.Action action) {
         LibraryItem item = activity.state().activeItem();
         if (item == null) return;
-        boolean wasCurrent = (kind == BuildTab.Kind.SPLAT) == item.isSplatMode();
-        setMode(BuildTab.modeFor(kind));
-        BuildTab.Answer answer = activity.buildTabAnswer(kind, item);
-        // The offer: a tab with nothing built yet (or a failed build) opens its
-        // dialog, which is the behaviour the Splat tab has always had, now stated
-        // for both tabs and both run states.
-        if (wasCurrent || answer.state() == BuildTab.State.NONE
-                || answer.state() == BuildTab.State.FAILED) {
-            activity.openBuildDialog(kind);
+        switch (action) {
+            case BUILD:
+            case REBUILD:
+            case REGENERATE:
+                // The dialog is the primary's settings-and-confirm, opened on the
+                // selected mode's own tab.
+                activity.openBuildDialog(shownTab);
+                break;
+            case REPLACE:
+            case CHOOSE:
+                // One picker for both: the file reuses the active item's id, so it
+                // overwrites this photo's map or adds the first one.
+                activity.replaceDepthMap();
+                break;
+            case DELETE:
+                activity.deleteCloud(item);
+                break;
+            case REGENERATE_CLIP:
+                // A clip regenerates its TRACK SET through the video graph -- the
+                // image graph would write a one-frame depth over a playing clip's
+                // depth track. The dialog's Relief tab refuses a track by BuildTab's
+                // own rule, which is why this action has no tab to live in.
+                activity.regenerateClip(item);
+                break;
+            case NONE:
+            default:
+                break;
         }
     }
 
+    /**
+     * Switch the picture's draw path. The tabs are only the mode switch; a build is
+     * the row's primary button.
+     */
     private void setMode(RenderMode mode) {
         LibraryItem item = activity.state().activeItem();
         if (item == null || item.renderMode == mode) return;

@@ -146,6 +146,26 @@ public class SplatCloudTest {
     }
 
     /**
+     * The count a file's size implies, without reading it — the number the sheet
+     * states beside the cloud.
+     *
+     * <p>It is a fact about the FILE, because a rebuild writes the same filename, so
+     * a number captured when the run finished would be the previous cloud's for ever
+     * after. A partial tail is dropped, exactly as {@link SplatCloud#parse} drops it,
+     * and a size that cannot claim a record answers zero rather than a guess.
+     */
+    @Test
+    public void theCountIsTheFilesOwnSizeInRecords() {
+        assertEquals(0, SplatCloud.countIn(0));
+        assertEquals(0, SplatCloud.countIn(31));
+        assertEquals(1, SplatCloud.countIn(32));
+        assertEquals(479_232, SplatCloud.countIn(479_232L * SplatCloud.RECORD_BYTES));
+        assertEquals("a size that cannot claim a record answers nothing",
+                0, SplatCloud.countIn(-32));
+        assertEquals(SplatCloud.parse(new byte[320]).count, SplatCloud.countIn(320));
+    }
+
+    /**
      * The cloud's centre is its median depth: the fallback the splat camera's pivot
      * uses when the origin's ray finds no splat. An odd count takes the middle
      * record, an even count averages the two middle records, and an empty cloud

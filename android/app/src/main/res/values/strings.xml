@@ -813,6 +813,13 @@
     <string name="splat_row_building">reconstructs this photo · about 10 s</string>
     <string name="splat_row_built">%1$s splats · %2$s</string>
     <string name="splat_row_failed">failed — %1$s</string>
+    <!--
+      The asset row's Relief sentence for a clip: the depth is a track, and the row
+      offers its Regenerate. Deliberately not build_relief_track, which says "nothing
+      to build here" — true of the dialog's Relief tab, which refuses a track, and
+      false of this row, which is where the track's regeneration lives.
+    -->
+    <string name="asset_row_depth_track">Depth is in the clip</string>
     <string name="splat_generator">SHARP</string>
     <string name="splat_estimate">~10 s · ~4.8 MB</string>
     <string name="splat_action_make">Make one</string>

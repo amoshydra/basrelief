@@ -2,6 +2,7 @@ package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
 import com.amoshydra.basrelief.core.depth.ModelRanking;
+import com.amoshydra.basrelief.core.splat.SplatCloud;
 import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.Jobs;
@@ -1373,7 +1374,7 @@ public final class BuildDialog {
         // — two buttons for one decision is the duplication this file removes.
         if (!depthRunning && current.canBuild()) {
             generateBtn.setVisibility(View.VISIBLE);
-            generateBtn.setText(labelFor(current));
+            generateBtn.setText(labelFor(current.action(), current.tab()));
             setUsable(generateBtn, usable(current));
         } else {
             generateBtn.setVisibility(View.GONE);
@@ -1442,12 +1443,9 @@ public final class BuildDialog {
                 return activity.getString(R.string.splat_row_failed,
                         job == null ? "" : job.error);
             case BUILDING:
-                SplatImport.Live live = subjectItem == null
-                        ? null : SplatImport.live(subjectItem.id);
-                return live == null || live.phase.isEmpty()
-                        ? activity.getString(R.string.splat_row_building) : live.phase;
+                return splatPhase(activity, subjectItem);
             case BUILT:
-                return activity.getString(R.string.splat_row_built, countOf(),
+                return activity.getString(R.string.splat_row_built, cloudCount(activity, subjectItem),
                         activity.getString(R.string.splat_generator));
             case NONE:
             default:
@@ -1455,12 +1453,33 @@ public final class BuildDialog {
         }
     }
 
-    /** How many records the cloud holds, from the file's own size. */
-    private String countOf() {
-        if (subjectItem == null || subjectItem.splatName == null) return "0";
-        File f = PrefFiles.resolve(activity.getFilesDir(), subjectItem.splatName);
-        long n = f == null ? 0 : f.length() / com.amoshydra.basrelief.core.splat.SplatCloud.RECORD_BYTES;
-        return String.format(Locale.US, "%,d", n);
+    /**
+     * How many records the cloud holds, from the file's own size.
+     *
+     * <p><b>Read from the FILE, never captured at import time.</b> A rebuild writes
+     * the same filename, so a number remembered when a run finished would be the
+     * previous cloud's for ever after. The sheet's asset row states the same number
+     * through this method, so the row and the dialog's Splat tab cannot disagree
+     * about what is on the row.
+     */
+    static String cloudCount(Context ctx, LibraryItem item) {
+        if (item == null || item.splatName == null) return "0";
+        File f = PrefFiles.resolve(ctx.getFilesDir(), item.splatName);
+        long bytes = f == null ? 0 : f.length();
+        return String.format(Locale.US, "%,d", SplatCloud.countIn(bytes));
+    }
+
+    /**
+     * The word for a running cloud build: its live phase, or the estimate.
+     *
+     * <p>Shared by the dialog's Splat tab and the sheet's asset row, because the row
+     * is where a cloud build is stated on the sheet — a cloud build has no fix line —
+     * and two copies of the phase would be two answers to one question.
+     */
+    static CharSequence splatPhase(Context ctx, LibraryItem item) {
+        SplatImport.Live live = item == null ? null : SplatImport.live(item.id);
+        return live == null || live.phase.isEmpty()
+                ? ctx.getString(R.string.splat_row_building) : live.phase;
     }
 
     /**
@@ -1468,15 +1487,17 @@ public final class BuildDialog {
      *
      * <p>The action is {@link BuildTab}'s decision; the word is this screen's. The
      * two are separate so the rule about state can be tested in {@code :core} while
-     * the labels stay with the platform's strings.
+     * the labels stay with the platform's strings. Package-private and static because
+     * the sheet's asset row labels its primary build through the same switch: one
+     * action must not grow two words.
      */
-    private int labelFor(BuildTab.Answer answer) {
-        switch (answer.action()) {
+    static int labelFor(BuildTab.Action action, BuildTab.Kind tab) {
+        switch (action) {
             case REBUILD:    return R.string.action_rebuild;
             case REGENERATE: return R.string.action_regenerate;
             case BUILD:
             default:
-                return answer.tab() == BuildTab.Kind.SPLAT
+                return tab == BuildTab.Kind.SPLAT
                         ? R.string.splat_action_make : R.string.depth_generate;
         }
     }

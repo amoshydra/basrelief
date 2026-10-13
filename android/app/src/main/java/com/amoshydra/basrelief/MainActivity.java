@@ -6,6 +6,7 @@ import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.store.AssetActions;
+import com.amoshydra.basrelief.core.store.AssetRow;
 import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
@@ -4530,9 +4531,9 @@ public class MainActivity extends Activity {
      * the window between the two so a row naming a cloud whose file has not been read
      * answers {@link SplatSource.Kind#UNREAD} rather than "no cloud".
      *
-     * <p>The stat is synchronous, like the two the sheet already makes on the UI
-     * thread for the same file ({@code RendererRows.hasCloud}, {@code
-     * BuildDialog.hasCloud}) — and unlike the embedded and clip reads, which decode a
+     * <p>The stat is synchronous, like the one the sheet already makes on the UI
+     * thread for the same file ({@code BuildDialog.hasCloud}) — and unlike the
+     * embedded and clip reads, which decode a
      * PNG or open containers and therefore go to the {@code Io} worker. It is one
      * {@code isFile()} on a path the index already resolved.
      */
@@ -4549,18 +4550,17 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * <b>The sheet's one shared asset row, resolved.</b> Which secondary actions
-     * the row under the Renderer segment may offer: Delete a cloud, and one depth
-     * action.
+     * <b>The sheet's asset row, resolved.</b> The selected mode's state, its primary
+     * action, and the secondary actions that belong to that mode.
      *
      * <p><b>Why one answer.</b> The cloud row and the bottom "This photo's map"
      * section used to resolve the same two decisions separately — the cloud's own
      * file check and job record here, the depth answer and the clip routing there.
      * That is the class of bug this project keeps paying for (two answers to one
      * question), and it is also what the user reported as two rows offering the same
-     * actions. So the two facts are gathered once and handed to
-     * {@link AssetActions}, which reads {@link BuildTab}'s own answers rather than a
-     * second copy of its ranking.
+     * actions. So the facts are gathered once and handed to {@link AssetRow}, which
+     * reads {@link BuildTab}'s own answers and {@link AssetActions}' own gate rather
+     * than a second copy of either.
      *
      * <p>The run state is the row's own: a still depth run is the
      * {@link BuildDialog} one, while a clip's depth is rebuilt by the video graph, so
@@ -4568,8 +4568,8 @@ public class MainActivity extends Activity {
      * Folding the two together would let a clip import show the dialog's still-run
      * frame.
      */
-    AssetActions.Answer assetActionsFor(LibraryItem item) {
-        if (item == null) return AssetActions.NONE;
+    AssetRow.Answer assetRowFor(LibraryItem item) {
+        if (item == null) return AssetRow.NONE;
         BuildTab.Answer cloud = buildTabAnswer(BuildTab.Kind.SPLAT, item);
         // A clip's depth is a track, and a row whose colour clip landed without its
         // depth is a clip waiting to become one -- both regenerate through the video
@@ -4587,7 +4587,9 @@ public class MainActivity extends Activity {
         } else {
             relief = buildTabAnswer(BuildTab.Kind.RELIEF, item);
         }
-        return AssetActions.resolve(cloud, relief, depthAnswerFor(item), regeneratesAsClip);
+        // A null mode is the relief, the same degradation RenderMode.parse makes.
+        return AssetRow.resolve(item.renderMode, relief, cloud, depthAnswerFor(item),
+                regeneratesAsClip);
     }
 
     /**
@@ -5004,7 +5006,7 @@ public class MainActivity extends Activity {
         if (gallery != null) gallery.jobsChanged();
         refreshSliders();
         // The renderer rows carry the "N splats" line, and N is read from the
-        // cloud FILE (RendererRows.countOf) rather than from anything captured at
+        // cloud FILE (BuildDialog.cloudCount) rather than from anything captured at
         // import time -- so it is correct the moment it is asked, and the only
         // reason a rebuild did not appear to change it is that nobody asked. The
         // resume path already refreshed these rows on every phase and the live path
@@ -6078,14 +6080,15 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * The shared asset row's <b>Replace</b>: pick a depth map file for the active
-     * row.
+     * The asset row's depth picker: <b>Replace</b> a still map, or <b>Choose a map</b>
+     * where there is none.
      *
      * <p>Package-private for {@link RendererRows}, and deliberately nothing more than
      * the existing picker: the file reuses the active item's id, so it overwrites
-     * this photo's map rather than starting a new gallery row. Only offered for a
-     * still depth <b>file</b> — {@link AssetActions} refuses an embedded map and a
-     * clip's track, and a row with no map is the fix line's "Choose a map".
+     * this photo's map rather than starting a new gallery row. Offered only where
+     * {@link AssetActions} allows it — a still depth <b>file</b> (Replace) or no map
+     * at all (Choose); an embedded map and a clip's track are refused by the same
+     * gate.
      */
     void replaceDepthMap() {
         pickFile(REQ_DEPTH);
