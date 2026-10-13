@@ -102,6 +102,8 @@ public final class SplatCamera {
 
     private final Frame frame = new Frame();
     private final float[] shiftMat = new float[16];
+    /** Scratch for {@link #originForRay}; the drawn {@link #frame} is left untouched. */
+    private final Frame tapPick = new Frame();
 
     /**
      * Build one frame's camera.
@@ -253,6 +255,47 @@ public final class SplatCamera {
         } else {
             fallbackPivot(tanX, tanY, refDepth, out);
         }
+    }
+
+    /**
+     * The Origin a tap names: the image position of the frontmost splat under the
+     * ray through the tapped pixel.
+     *
+     * <p><b>It is {@link #pivot}'s own pick, so the tap, the pivot, the aim and the
+     * crosshair cannot name different points.</b> The ray is the SOURCE camera's --
+     * the eye at the origin looking down {@code +z}, the ray the pivot itself is
+     * resolved from -- because the Origin is a fraction of the source image, not of
+     * the current tilted view. A ray cast from the tilted eye would move with the
+     * pivot, and the pivot moves with the Depth knob: that is exactly the dependence
+     * that made the tap land away from the point that was touched.
+     *
+     * <p>The ray arrives as the source camera's tangent ({@code tanX, tanY}) and the
+     * answer is converted back to the Origin fraction with the projection's own
+     * factors, so a tap and the resolve of the origin it sets are one mapping -- the
+     * fixed point {@code pivot} is aimed by. A ray that holds no splat falls back to
+     * the reference-plane point on the ray, exactly as {@link #pivot} does, and that
+     * point's image position is the tapped pixel's own: a window claims nothing, but
+     * a tap still names a point.
+     *
+     * <p>The Depth knob reaches the PICK (a splat it pushes through the eye is
+     * skipped, as in {@link #pivot}) but not the answer: {@link Splat#depthScale}
+     * preserves {@code x/z}, so the picked splat's image position is the same at
+     * every multiplier.
+     *
+     * @param positions the cloud's xyz mirror, {@code count * 3} floats
+     * @param tanX,tanY the ray in the source camera's tangent plane
+     * @param proj0,proj5 the projection's own factors ({@code Frame.proj[0]}, [5])
+     * @param out receives the origin fraction; must hold 2 floats
+     * @return true if a splat was picked; false when the reference plane answered
+     */
+    public boolean originForRay(float[] positions, int count, float tanX, float tanY,
+                                float refDepth, float depthMul,
+                                float proj0, float proj5, float[] out) {
+        pivot(positions, count, tanX, tanY, refDepth, depthMul, tapPick);
+        float invz = tapPick.pivotZ > 1e-6f ? 1f / tapPick.pivotZ : 0f;
+        out[0] = tapPick.pivotX * invz * proj0 * 0.5f;
+        out[1] = -tapPick.pivotY * invz * proj5 * 0.5f;
+        return tapPick.pivotFound;
     }
 
     /**

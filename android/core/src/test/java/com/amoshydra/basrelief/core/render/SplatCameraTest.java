@@ -60,6 +60,13 @@ public class SplatCameraTest {
         return new float[]{v[0] / v[3], v[1] / v[3]};
     }
 
+    /** The projection's own factors, which turn an image tangent into NDC. */
+    private static float[] projectionFactors(float fovyDeg, float aspect) {
+        float[] proj = new float[16];
+        Mat4.perspective(proj, 0, fovyDeg, aspect, SplatCamera.NEAR, SplatCamera.FAR);
+        return new float[]{proj[0], proj[5]};
+    }
+
     // ------------------------------------------------------- the at-rest picture
 
     /**
@@ -422,6 +429,149 @@ public class SplatCameraTest {
                 0f, Splat.depthScale(0.5f, REF_DEPTH, 3f), 0f);
         assertEquals("so the farther splat is the pivot",
                 4f * Splat.depthScale(4f, REF_DEPTH, 3f), f.pivotZ, 1e-5f);
+    }
+
+    // --------------------------------------------------------------- the tap
+
+    /**
+     * A tap names the FRONTMOST splat under its ray, not the nearest in image
+     * space. A background splat can project closer to the ray than the foreground
+     * one and still be behind it, so the two picks differ here on purpose.
+     */
+    @Test
+    public void aTapNamesTheFrontmostSplatOnItsRayNotTheNearestInImageSpace() {
+        // Tangents are x/z: the background projects 0.001 from the ray, the
+        // foreground 0.005, and both are inside PIVOT_RADIUS.
+        float[] cloud = new float[6];
+        System.arraycopy(cloudAt(0.005f, 0f, 1f), 0, cloud, 0, 3);   // foreground
+        System.arraycopy(cloudAt(0.001f, 0f, 5f), 0, cloud, 3, 3);   // background
+        float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
+        float[] out = new float[2];
+        boolean found = camera().originForRay(cloud, 2, 0f, 0f, REF_DEPTH, 1f,
+                f[0], f[1], out);
+        assertTrue(found);
+        assertEquals("the foreground splat's image position, not the background's",
+                0.005f * f[0] * 0.5f, out[0], 1e-6f);
+        assertEquals(0f, out[1], 1e-6f);
+    }
+
+    /**
+     * A ray that holds no splat falls back the way {@link SplatCamera#pivot} does:
+     * the nearest splat when there is one, and the reference-plane point on the ray
+     * only when the cloud has nothing in front of the camera. Either way the answer
+     * is an Origin, so a tap never vanishes.
+     */
+    @Test
+    public void aTapRayThatHoldsNoSplatFallsBackToItsOwnImagePosition() {
+        float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
+        float[] out = new float[2];
+        // An empty cloud: the reference-plane point on the ray, whose image position
+        // is the tapped pixel's own.
+        boolean found = camera().originForRay(new float[0], 0, 0.25f, -0.1f,
+                REF_DEPTH, 1f, f[0], f[1], out);
+        assertFalse(found);
+        assertEquals("the fallback is the ray's own image position",
+                0.25f * f[0] * 0.5f, out[0], 1e-6f);
+        assertEquals(0.1f * f[1] * 0.5f, out[1], 1e-6f);
+        // A splat far outside the radius is the middle fallback: a real point rather
+        // than a guess, so its own image position answers.
+        float[] off = cloudAt(1.5f, 2f, 2f);
+        camera().originForRay(off, 1, 0f, 0f, REF_DEPTH, 1f, f[0], f[1], out);
+        assertEquals("the nearest splat's image position", 1.5f * f[0] * 0.5f, out[0], 1e-6f);
+        assertEquals("and its y, not the ray's", -2f * f[1] * 0.5f, out[1], 1e-6f);
+    }
+
+    /**
+     * A splat the Depth knob pushes THROUGH the eye is skipped by the tap's pick,
+     * exactly as it is skipped by the pivot's: the vertex shader culls it, so a tap
+     * must not name a point the cloud does not draw.
+     */
+    @Test
+    public void aTapSkipsASplatTheDepthKnobPushesThroughTheEye() {
+        // mul 3 about ref 2.4: z=0.5 moves to 2.4 + 3*(0.5 - 2.4) = -3.3, floored to
+        // 0 and culled. The farther splat on nearly the same ray is the tap's pick.
+        float[] cloud = new float[6];
+        System.arraycopy(cloudAt(0.001f, 0f, 0.5f), 0, cloud, 0, 3);  // pushed through
+        System.arraycopy(cloudAt(0.005f, 0f, 4f), 0, cloud, 3, 3);    // survivor
+        float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
+        float[] out = new float[2];
+        camera().originForRay(cloud, 2, 0f, 0f, REF_DEPTH, 1f, f[0], f[1], out);
+        assertEquals("at mul 1 the near splat is the pick",
+                0.001f * f[0] * 0.5f, out[0], 1e-6f);
+        assertEquals("the near splat really is pushed through the eye at mul 3",
+                0f, Splat.depthScale(0.5f, REF_DEPTH, 3f), 0f);
+        camera().originForRay(cloud, 2, 0f, 0f, REF_DEPTH, 3f, f[0], f[1], out);
+        assertEquals("so the far splat's image position is the tap's answer",
+                0.005f * f[0] * 0.5f, out[0], 1e-6f);
+    }
+
+    /**
+     * THE PROPERTY THE OLD TAP BROKE. For a tap at a given pixel, the origin it
+     * produces must be the image position of the splat the {@link
+     * SplatCamera#pivot} would pick for that origin: tapping and then resolving is a
+     * fixed point, so the tap, the pivot, the aim and the crosshair name one point.
+     *
+     * <p>Asserted through the real camera, never as a restatement of the mapping: the
+     * origin from the tap is handed to {@link SplatCamera#frame} and the pivot it
+     * resolves is converted back to an image position, which must be that origin.
+     */
+    @Test
+    public void aTapAndThePivotItResolvesAreAFixedPoint() {
+        // A front and a back splat on nearly the same ray, and a third well off it,
+        // so the pick is a real choice rather than the tapped point itself.
+        float[] cloud = new float[9];
+        System.arraycopy(cloudAt(0.052f, 0.031f, 2.0f), 0, cloud, 0, 3);
+        System.arraycopy(cloudAt(0.045f, 0.026f, 7.0f), 0, cloud, 3, 3);
+        System.arraycopy(cloudAt(0.40f, -0.30f, 1.5f), 0, cloud, 6, 3);
+        float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
+        float[] out = new float[2];
+        boolean found = camera().originForRay(cloud, 3, 0.050f, 0.030f,
+                REF_DEPTH, 1f, f[0], f[1], out);
+        assertTrue(found);
+        assertEquals("the origin is the front splat's image position",
+                0.052f * f[0] * 0.5f, out[0], 1e-6f);
+        assertEquals("the origin is the front splat's image position",
+                -0.031f * f[1] * 0.5f, out[1], 1e-6f);
+        // Resolving that origin picks the SAME splat: the pivot's image position is
+        // the origin, to float noise.
+        SplatCamera.Frame fr = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                out[0], out[1], 0f, 0f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, 1f);
+        assertTrue("the pivot is a real splat, not the fallback", fr.pivotFound);
+        float invz = 1f / fr.pivotZ;
+        assertEquals("tapping then resolving is a fixed point",
+                out[0], fr.pivotX * invz * f[0] * 0.5f, 1e-5f);
+        assertEquals("tapping then resolving is a fixed point",
+                out[1], -fr.pivotY * invz * f[1] * 0.5f, 1e-5f);
+    }
+
+    /**
+     * The tap does not depend on the Depth knob. The origin is the picked splat's
+     * IMAGE POSITION, and {@link Splat#depthScale} preserves {@code x/z}, so the
+     * answer is the same at every multiplier -- the dependence that made the old tap
+     * land away from the point that was touched.
+     */
+    @Test
+    public void theTapDoesNotDependOnTheDepthKnob() {
+        float[] cloud = new float[6];
+        System.arraycopy(cloudAt(0.052f, 0.031f, 2.0f), 0, cloud, 0, 3);
+        System.arraycopy(cloudAt(0.045f, 0.026f, 7.0f), 0, cloud, 3, 3);
+        float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
+        float[] base = new float[2];
+        boolean first = true;
+        for (float mul : new float[]{0f, 0.5f, 1f, 2f, 3f}) {
+            float[] out = new float[2];
+            camera().originForRay(cloud, 2, 0.050f, 0.030f, REF_DEPTH, mul,
+                    f[0], f[1], out);
+            if (first) {
+                base[0] = out[0];
+                base[1] = out[1];
+                first = false;
+            }
+            assertEquals("origin x at mul=" + mul, base[0], out[0], 1e-6f);
+            assertEquals("origin y at mul=" + mul, base[1], out[1], 1e-6f);
+        }
+        assertEquals("and it is the front splat's image position",
+                0.052f * f[0] * 0.5f, base[0], 1e-6f);
     }
 
     // ------------------------------------------------------------------- zoom
