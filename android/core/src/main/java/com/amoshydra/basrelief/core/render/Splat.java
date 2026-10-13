@@ -291,6 +291,111 @@ public final class Splat {
         return value;
     }
 
+    // ------------------------------------------------- the Depth / Perspective knobs
+    //
+    // The two live dev knobs the sheet's splat group gained after SIZE / BLUR /
+    // RESOLUTION. Same rule as the three above: prefs read at draw, not fields in the
+    // counted schema, and their clamps are here so a pref from a newer build or
+    // another device cannot reach the shader as a value no test can name.
+
+    /**
+     * The product default depth multiplier: 1.0, exactly the depth the node
+     * reconstructed. A user who never opens the dev group sees the cloud as it was
+     * measured.
+     */
+    public static final float DEPTH_MUL_DEFAULT = 1f;
+
+    /**
+     * The bottom of the dev DEPTH range: 0 collapses every splat onto the reference
+     * plane, which is the flat photograph (the cloud has no depth to reveal), and is
+     * the honest "off" end of the control rather than a bound on a divisor.
+     */
+    public static final float DEPTH_MUL_MIN = 0f;
+
+    /**
+     * The top of the dev DEPTH range. Three times the measured depth is well past
+     * anything a single-image reconstruction is entitled to and is where the holes a
+     * deeper cloud opens stop reading as parallax; the useful band is below it.
+     */
+    public static final float DEPTH_MUL_MAX = 3f;
+
+    /**
+     * The depth multiplier a stored value means. A non-finite value answers the
+     * default rather than the nearest bound -- the "a window claims nothing" rule
+     * applied to a number, so a NaN cannot reach the shader's position scale.
+     */
+    public static float clampDepthMul(float value) {
+        if (!Float.isFinite(value)) return DEPTH_MUL_DEFAULT;
+        if (value < DEPTH_MUL_MIN) return DEPTH_MUL_MIN;
+        if (value > DEPTH_MUL_MAX) return DEPTH_MUL_MAX;
+        return value;
+    }
+
+    /**
+     * The scale a splat's position AND size take to multiply its depth about the
+     * reference plane <b>without moving its image position</b> -- the vertex shader
+     * mirrors this line, and the test pins the identity it exists for.
+     *
+     * <p><b>Why a per-splat scale and not a multiply on {@code z}.</b> A cloud's
+     * splats each sit on the ray from the eye through their own image pixel, at
+     * their own depth, so moving one along that ray is what changes the depth and
+     * leaves the photograph alone. Scaling only {@code z} would drag the splat off
+     * its ray and the at-rest picture would move; scaling the whole vector by
+     * {@code (ref + mul*(z - ref)) / z} keeps it on the ray, and the same factor on
+     * the splat's own size keeps its angular size its footprint's at every depth --
+     * exactly the property the relief's cards carry, which is why at rest the
+     * picture is the photograph at EVERY multiplier and only the parallax changes.
+     *
+     * <p>{@code mul == 1} is the identity for every {@code z}: the cloud is the one
+     * the node measured. {@code mul == 0} puts every splat on the reference plane
+     * {@code refDepth}, which projects to the same pixels -- the flat photograph.
+     * The result is floored at 0 so a multiplier above 1 cannot push a near splat
+     * through the eye and render it mirrored; such a splat collapses to the eye and
+     * the existing near-plane cull drops it.
+     *
+     * <p>A depth or reference that cannot claim a value answers 1, the identity: a
+     * splat behind the camera has no ray to move along, and a plane that is not a
+     * distance cannot be one.
+     */
+    public static float depthScale(float z, float refDepth, float mul) {
+        if (!Float.isFinite(z) || z <= 1e-4f) return 1f;
+        if (!Float.isFinite(refDepth) || refDepth <= 0f) return 1f;
+        float z2 = refDepth + clampDepthMul(mul) * (z - refDepth);
+        if (z2 < 0f) z2 = 0f;
+        return z2 / z;
+    }
+
+    /**
+     * The product default perspective multiplier: 1.0, exactly the cloud's own
+     * lens, which is the value at which the at-rest picture is the photograph.
+     */
+    public static final float PERSPECTIVE_DEFAULT = 1f;
+
+    /**
+     * The bottom of the dev PERSPECTIVE range: half the lens, a narrower field of
+     * view and therefore a flatter, more telephoto view. Below this the cloud reads
+     * as an orthographic card, which is a different mode rather than a weaker one.
+     */
+    public static final float PERSPECTIVE_MIN = 0.5f;
+
+    /**
+     * The top of the dev PERSPECTIVE range: twice the lens, a wider field of view
+     * and stronger parallax. The resulting fovy is still clamped by the renderer's
+     * {@code MIN_FOVY}/{@code MAX_FOVY}, so this cannot become a fisheye.
+     */
+    public static final float PERSPECTIVE_MAX = 2f;
+
+    /**
+     * The perspective multiplier a stored value means. A non-finite value answers
+     * the default, so a NaN cannot reach the projection.
+     */
+    public static float clampPerspective(float value) {
+        if (!Float.isFinite(value)) return PERSPECTIVE_DEFAULT;
+        if (value < PERSPECTIVE_MIN) return PERSPECTIVE_MIN;
+        if (value > PERSPECTIVE_MAX) return PERSPECTIVE_MAX;
+        return value;
+    }
+
     /**
      * The splat grids a level can select, smallest first: the field's own sampling
      * and multiples of it.

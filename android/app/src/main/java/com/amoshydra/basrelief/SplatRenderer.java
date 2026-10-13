@@ -110,7 +110,7 @@ final class SplatRenderer {
 
     // Uniform locations.
     private int uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW, uNear, uFudge,
-            uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d;
+            uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d, uDepthMul, uDepthRef;
 
     // The cloud's CPU mirror.
     private int count;
@@ -160,6 +160,9 @@ final class SplatRenderer {
      */
     private float eps2dInUse = Splat.EPS_2D_DEFAULT;
     private float blurPxInUse = Splat.BLUR_DEFAULT;
+    /** The two dev values the last frame drew with, for the stats line. */
+    private float depthMulInUse = Splat.DEPTH_MUL_DEFAULT;
+    private float perspInUse = Splat.PERSPECTIVE_DEFAULT;
 
     private final float[] eye = new float[3];
     private final float[] forward = new float[3];
@@ -399,6 +402,24 @@ final class SplatRenderer {
      * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
+     * @param depthMul the dev DEPTH knob: a multiplier on the cloud's depth, clamped
+     *                 through {@link Splat#clampDepthMul} and applied in the vertex
+     *                 shader as {@link Splat#depthScale} on each splat's position AND
+     *                 size. 1 is the node's own depth, 0 collapses the cloud onto the
+     *                 reference plane (the flat photograph). At rest the picture is
+     *                 the photograph at every value; only the parallax changes. The
+     *                 CPU sort and the pivot still read the node's own positions, and
+     *                 that is consistent: the scale is monotonic in depth and moves
+     *                 each splat along its own ray, so the order and the ray's pick
+     *                 are the same at rest and differ only by the tilt's own small
+     *                 lateral perturbation.
+     * @param perspective the dev PERSPECTIVE knob: a multiplier on the cloud's lens,
+     *                    clamped through {@link Splat#clampPerspective} and applied to
+     *                    the drawing fovy before the existing {@link #MIN_FOVY} /
+     *                    {@link #MAX_FOVY} clamp. 1 is the cloud's own lens and the
+     *                    at-rest photograph; above 1 is a wider lens and stronger
+     *                    parallax, below 1 flatter. Unlike Depth this one RE-FRAMES
+     *                    the picture, so the at-rest identity holds at 1 only.
      * @return the camera frame this draw used, or null when nothing was drawn — so
      *         the host can place its orbit marker at the SAME pivot the cloud was
      *         aimed at. The frame is the one reusable instance, valid until the next
@@ -407,7 +428,7 @@ final class SplatRenderer {
     SplatCamera.Frame draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
               float brightnessGain, float shadowLift, float renderScale, float cloudLens,
-              float eps2d, float blurPx) {
+              float eps2d, float blurPx, float depthMul, float perspective) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return null;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
@@ -425,6 +446,12 @@ final class SplatRenderer {
         blurPx = Splat.clampBlurPx(blurPx);
         boolean blur = blurPx >= 0.5f;
         blurPxInUse = blurPx;
+        // The two dev knobs are clamped here as well as at the pref read, for the
+        // same reason: the renderer is where the slider and the cold reload converge.
+        depthMul = Splat.clampDepthMul(depthMul);
+        perspective = Splat.clampPerspective(perspective);
+        depthMulInUse = depthMul;
+        perspInUse = perspective;
 
         ensureOffscreen(surfaceW, surfaceH, renderScale, blur);
         int vw = fbo != 0 ? renderW : surfaceW;
@@ -440,7 +467,12 @@ final class SplatRenderer {
         float lensFovy = Splat.fovyForFocalOverHeight(cloudLens);
         float sourceFovy = lensFovy > 0f ? lensFovy : SOURCE_FOVY;
         float fovy = sourceFovy / Math.max(0.25f, Math.min(2f, zoom));
-        fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy));
+        // The dev PERSPECTIVE knob multiplies the lens. It is NOT free: it re-frames
+        // the picture (a wider lens makes the same photo smaller and shows more of
+        // it), so the at-rest identity is at 1.0 only -- and it is why the stored
+        // focal scales the depth rather than the ray, one medium over. The existing
+        // clamp is applied AFTER the multiplier, so the knob cannot make a fisheye.
+        fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy * perspective));
 
         // The camera, all of it in :core: the source view, the Origin/Pan shift,
         // and the turntable about the cloud's own surface under the origin. See
@@ -510,6 +542,12 @@ final class SplatRenderer {
         GLES30.glUniform1f(uNear, NEAR);
         GLES30.glUniform1f(uFudge, 1f);
         GLES30.glUniform1f(uEps2d, eps2dInUse);
+        // The depth multiplier and the plane it scales about. The plane is the
+        // cloud's own median depth (the pivot's fallback), so 0 flattens onto the
+        // cloud's centre rather than onto the camera; the shader mirrors
+        // Splat.depthScale, which the test pins the identity of.
+        GLES30.glUniform1f(uDepthMul, depthMulInUse);
+        GLES30.glUniform1f(uDepthRef, refDepth);
         GLES30.glUniform1f(uBrightnessGain, brightnessGain);
         GLES30.glUniform1f(uShadowLift, shadowLift);
         GLES30.glUniform2f(uFocal, 0.5f * vw * proj[0], 0.5f * vh * proj[5]);
@@ -908,12 +946,15 @@ final class SplatRenderer {
         uNear = GLES30.glGetUniformLocation(prog, "uNear");
         uFudge = GLES30.glGetUniformLocation(prog, "uFudge");
         uEps2d = GLES30.glGetUniformLocation(prog, "uEps2d");
+        uDepthMul = GLES30.glGetUniformLocation(prog, "uDepthMul");
+        uDepthRef = GLES30.glGetUniformLocation(prog, "uDepthRef");
         uFocal = GLES30.glGetUniformLocation(prog, "uFocal");
         uViewport = GLES30.glGetUniformLocation(prog, "uViewport");
         uBrightnessGain = GLES30.glGetUniformLocation(prog, "uBrightnessGain");
         uShadowLift = GLES30.glGetUniformLocation(prog, "uShadowLift");
         for (int loc : new int[] { uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW,
-                uNear, uFudge, uEps2d, uFocal, uViewport, uBrightnessGain, uShadowLift }) {
+                uNear, uFudge, uEps2d, uDepthMul, uDepthRef, uFocal, uViewport,
+                uBrightnessGain, uShadowLift }) {
             if (loc < 0) android.util.Log.e(TAG, "splat uniform dropped in silence");
         }
     }
@@ -1029,6 +1070,8 @@ final class SplatRenderer {
         android.util.Log.i(TAG, "splat: count=" + count
                 + " eps2d=" + fmt(eps2dInUse)
                 + " blurPx=" + fmt(blurPxInUse)
+                + " depthMul=" + fmt(depthMulInUse)
+                + " persp=" + fmt(perspInUse)
                 + " fps=" + fmt(fps)
                 + " frameMs=" + fmt(frameMs)
                 + " maxFrameMs=" + fmt(maxFrameNanos / 1e6f)
@@ -1111,6 +1154,12 @@ final class SplatRenderer {
             // (Splat.EPS_2D_DEFAULT's home) moves it live on the GL thread with no
             // recompile and no restart.
             "uniform float uEps2d;\n" +
+            // The dev DEPTH knob and the plane it scales about. Mirrors
+            // Splat.depthScale, which the :core test pins: 1 is the node's depth,
+            // 0 collapses the cloud onto the plane. See the use below for why the
+            // scale is per-splat and applies to the size as well as the position.
+            "uniform float uDepthMul;\n" +
+            "uniform float uDepthRef;\n" +
             "\n" +
             "uniform mat4 uProj;\n" +
             "uniform mat4 uView;\n" +
@@ -1146,6 +1195,25 @@ final class SplatRenderer {
             "  vec3 spScale = vec3(A.w, B.x, B.y);\n" +
             "  vec4 spCol = unpack_unorm_4x8(floatBitsToUint(B.z));\n" +
             "  vec4 q4 = unpack_unorm_4x8(floatBitsToUint(B.w)) * 2.0 - 1.0;\n" +
+            "\n" +
+            // THE DEV DEPTH KNOB. A splat sits on the ray from the eye through its
+            // own image pixel, at its own depth, so moving it ALONG that ray changes
+            // the depth and leaves the photograph alone: scaling the whole vector by
+            // (ref + mul*(z - ref)) / z keeps it on the ray, and the same factor on
+            // its size keeps its angular size its footprint's at every depth. So at
+            // rest the picture is the photograph at every multiplier and only the
+            // parallax under tilt changes; 0 lands every splat on the reference
+            // plane, which is the flat photograph. Mirrors Splat.depthScale, whose
+            // test pins the identity at 1 and the ray invariance.
+            //
+            // The max(..., 0) floors the moved depth: a multiplier above 1 can push
+            // a near splat past the eye, and a splat there would render mirrored --
+            // floored, it collapses to the eye and the near cull below drops it.
+            "  float zr = uDepthRef;\n" +
+            "  float z2 = zr + uDepthMul * (spPos.z - zr);\n" +
+            "  float dscl = spPos.z > 1e-4 ? max(z2, 0.0) / spPos.z : 1.0;\n" +
+            "  spPos *= dscl;\n" +
+            "  spScale *= dscl;\n" +
             "\n" +
             "  vec4 mv = uView * vec4(spPos, 1.0);\n" +
             "  float depth = -mv.z;\n" +

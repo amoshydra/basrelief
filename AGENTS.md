@@ -937,7 +937,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 675 tests across thirty-eight classes:
+it**. 678 tests across thirty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1032,7 +1032,17 @@ every library write took the app down, so any gallery tap crashed it.
   while the file on disk had gone from 4.8 MB to 23 MB. The byte count is a
   sufficient stamp because the node is deterministic (its own tests pin
   byte-identical output for the same budget and inputs), and a count that cannot be
-  read is 0, so an absent file cannot collide with a loaded one.
+  read is 0, so an absent file cannot collide with a loaded one. Its seventh is the
+  two **shape knobs** the sheet's splat group gained after the look knobs. The DEPTH
+  multiplier is pinned as the identity at 1 for every depth and as the flat
+  photograph at 0 (every splat on the reference plane), and above all by the
+  invariant that makes both true at once: the scale it applies leaves each splat on
+  the ray from the eye through its own image pixel, so the at-rest picture is the
+  photograph at every value and only the parallax moves. A NaN is the default, not a
+  bound, and a depth or plane that claims nothing is the identity. The PERSPECTIVE
+  multiplier is pinned as the identity at 1 and as half/double the lens at its ends,
+  with a NaN answering the default; the fovy it multiplies is clamped again by the
+  renderer, which is what stops it becoming a fisheye.
 - `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
   projector, the two things a shader cannot be checked for off-device. The
   container test pins the 32-byte record field for field, including that the

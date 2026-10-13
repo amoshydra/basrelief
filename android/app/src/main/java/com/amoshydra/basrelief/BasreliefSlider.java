@@ -737,6 +737,9 @@ final class BasreliefSlider extends LinearLayout {
         else if ("splat_blur_px".equals(key)) res = R.string.slider_splat_blur;
         else if ("splat_budget".equals(key)) res = R.string.slider_splat_budget;
         else if ("splat_scale".equals(key)) res = R.string.slider_splat_resolution;
+        // The two shape knobs, added after the look knobs and resolved the same way.
+        else if ("splat_depth_mul".equals(key)) res = R.string.slider_splat_depth;
+        else if ("splat_persp".equals(key)) res = R.string.slider_splat_perspective;
         else res = 0;
         return res == 0 ? key : a.getString(res);
     }

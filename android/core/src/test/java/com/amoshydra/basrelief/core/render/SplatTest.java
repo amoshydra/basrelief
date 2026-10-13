@@ -454,4 +454,97 @@ public class SplatTest {
         assertEquals("and an unreadable count is 0 rather than the path alone",
                 Splat.cloudIdentity(path, 0L), Splat.cloudIdentity(path, -5L));
     }
+
+    /**
+     * The dev DEPTH knob: the identity at 1.0, the flat photograph at 0.0, and the
+     * one property that makes both true at once -- every splat stays on the ray
+     * from the eye through its own image pixel, so at rest the picture does not
+     * move whatever the multiplier is.
+     *
+     * <p>This is the assertion a screenshot cannot make. A multiplier applied to
+     * {@code z} alone would still look like a plausible cloud, but the at-rest
+     * picture would slide as the knob moved -- the failure this pins is the
+     * difference between "more parallax" and "a different photograph".
+     */
+    @Test
+    public void theDepthKnobIsTheIdentityAtOneAndFlattensAtZero() {
+        float ref = 0.6828f;
+        // 1.0 is EXACTLY the node's cloud, for every depth.
+        for (float z : new float[] {0.2f, 0.5f, 1f, 2f, 10f}) {
+            assertEquals("mul 1 must be the identity at z=" + z,
+                    1f, Splat.depthScale(z, ref, 1f), 1e-6f);
+        }
+        // 0.0 lands every splat on the reference plane, which is the flat
+        // photograph: the new depth is the plane for every z.
+        for (float z : new float[] {0.2f, 0.5f, 1f, 2f, 10f}) {
+            assertEquals("mul 0 puts every splat on the plane",
+                    ref, z * Splat.depthScale(z, ref, 0f), 1e-5f);
+        }
+        // THE INVARIANT: the image position (x/z) is preserved by the scale, so the
+        // at-rest picture is the photograph at every multiplier. The same scale
+        // applies to the splat's size, which is why its angular size is unchanged.
+        float x = 0.31f;
+        for (float mul : new float[] {0f, 0.5f, 1f, 2f, 3f}) {
+            float s = Splat.depthScale(0.9f, ref, mul);
+            assertEquals("the ray is preserved at mul=" + mul,
+                    x / 0.9f, (x * s) / (0.9f * s), 1e-6f);
+        }
+        // Deeper is deeper: the moved depth rises with the multiplier.
+        float prev = Float.NEGATIVE_INFINITY;
+        for (float mul : new float[] {0f, 0.5f, 1f, 1.5f, 2f, 3f}) {
+            float moved = 1.4f * Splat.depthScale(1.4f, ref, mul);
+            assertTrue("the moved depth must rise with the multiplier", moved > prev);
+            prev = moved;
+        }
+        // A depth or a plane that claims nothing answers the identity, not a
+        // division: a splat behind the camera has no ray to move along.
+        assertEquals(1f, Splat.depthScale(0f, ref, 0f), 0f);
+        assertEquals(1f, Splat.depthScale(-1f, ref, 2f), 0f);
+        assertEquals(1f, Splat.depthScale(1f, 0f, 0f), 0f);
+        assertEquals(1f, Splat.depthScale(1f, Float.NaN, 2f), 0f);
+        assertEquals(1f, Splat.depthScale(Float.NaN, ref, 2f), 0f);
+    }
+
+    /**
+     * The dev DEPTH knob's clamp, with the same rule the SIZE and BLUR knobs
+     * follow: inside the range is kept exactly, outside it is the nearest bound,
+     * and a value that cannot claim a number is the DEFAULT rather than a bound --
+     * a NaN reaching the position scale would move every splat to the eye.
+     */
+    @Test
+    public void theDepthKnobClampsAndAValueThatClaimsNothingIsTheDefault() {
+        assertEquals(Splat.DEPTH_MUL_DEFAULT, Splat.clampDepthMul(1f), 0f);
+        assertEquals("inside the range is kept exactly", 1.7f, Splat.clampDepthMul(1.7f), 0f);
+        assertEquals("below the range is the floor", Splat.DEPTH_MUL_MIN, Splat.clampDepthMul(-2f), 0f);
+        assertEquals("above the range is the ceiling", Splat.DEPTH_MUL_MAX, Splat.clampDepthMul(9f), 0f);
+        assertEquals("a NaN claims nothing and must be the default",
+                Splat.DEPTH_MUL_DEFAULT, Splat.clampDepthMul(Float.NaN), 0f);
+        assertEquals("an infinity claims nothing",
+                Splat.DEPTH_MUL_DEFAULT, Splat.clampDepthMul(Float.POSITIVE_INFINITY), 0f);
+        // The clamp is applied inside depthScale too, so a pref cannot bypass it.
+        assertEquals("the scale is clamped, not the pref alone",
+                Splat.depthScale(1.4f, 0.68f, 99f), Splat.depthScale(1.4f, 0.68f, Splat.DEPTH_MUL_MAX), 0f);
+    }
+
+    /**
+     * The dev PERSPECTIVE knob's clamp: 1.0 is the cloud's own lens (the at-rest
+     * photograph), 0.5 is half the lens and 2.0 twice it, and a value that cannot
+     * claim a number is the default rather than a bound. The resulting fovy is
+     * clamped again by the renderer's own {@code MIN_FOVY}/{@code MAX_FOVY}, so this
+     * range cannot become a fisheye.
+     */
+    @Test
+    public void thePerspectiveKnobClampsAroundThePhotograph() {
+        assertEquals(Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(1f), 0f);
+        assertEquals("1 is the photograph", 1f, Splat.PERSPECTIVE_DEFAULT, 0f);
+        assertEquals("inside the range is kept exactly", 1.25f, Splat.clampPerspective(1.25f), 0f);
+        assertEquals("below the range is half the lens",
+                Splat.PERSPECTIVE_MIN, Splat.clampPerspective(0.1f), 0f);
+        assertEquals("above the range is twice the lens",
+                Splat.PERSPECTIVE_MAX, Splat.clampPerspective(9f), 0f);
+        assertEquals("a NaN claims nothing and must be the default",
+                Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(Float.NaN), 0f);
+        assertEquals("an infinity claims nothing",
+                Splat.PERSPECTIVE_DEFAULT, Splat.clampPerspective(Float.POSITIVE_INFINITY), 0f);
+    }
 }
