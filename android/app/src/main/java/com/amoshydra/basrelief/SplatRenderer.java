@@ -426,11 +426,12 @@ final class SplatRenderer {
      *                 size. 1 is the node's own depth, 0 collapses the cloud onto the
      *                 reference plane (the flat photograph). At rest the picture is
      *                 the photograph at every value; only the parallax changes. The
-     *                 CPU sort and the pivot still read the node's own positions, and
-     *                 that is consistent: the scale is monotonic in depth and moves
-     *                 each splat along its own ray, so the order and the ray's pick
-     *                 are the same at rest and differ only by the tilt's own small
-     *                 lateral perturbation.
+     *                 CPU sort still reads the node's own positions, and that is
+     *                 consistent: the scale is monotonic in depth, so it cannot
+     *                 reorder the cloud. The PIVOT, by contrast, is resolved on the
+     *                 moved depth -- see {@link SplatCamera#pivot} -- because it is
+     *                 the surface the shader draws, so the crosshair and the aim
+     *                 follow the knob rather than marking a point the cloud has left.
      * @param perspective the dev PERSPECTIVE knob: a multiplier on the cloud's lens,
      *                    clamped through {@link Splat#clampPerspective} and applied to
      *                    the drawing fovy before the existing {@link #MIN_FOVY} /
@@ -495,9 +496,12 @@ final class SplatRenderer {
         // The camera, all of it in :core: the source view, the Origin/Pan shift,
         // and the turntable about the cloud's own surface under the origin. See
         // SplatCamera for why the origin is a shift and not a lateral move.
+        // The Depth knob is handed to the camera as well as the shader: the pivot
+        // is the surface the shader DRAWS, so it must be resolved on the moved
+        // depth or the crosshair and the orbit stay at the old height.
         SplatCamera.Frame cam = splatCamera.frame(surfaceW, surfaceH, fovy,
                 orbitX, orbitY, panX, panY, tiltX, tiltY, motion,
-                pos, count, refDepth);
+                pos, count, refDepth, depthMulInUse);
         System.arraycopy(cam.view, 0, view, 0, 16);
         // uProj gets the PANNED projection: the shift is what makes the at-rest
         // picture the photograph moved by Origin and Pan, at every depth.

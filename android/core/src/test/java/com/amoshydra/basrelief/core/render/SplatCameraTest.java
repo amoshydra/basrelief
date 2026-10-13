@@ -85,7 +85,7 @@ public class SplatCameraTest {
                 for (float panX : new float[]{0f, 120f, -300f}) {
                     for (float panY : new float[]{0f, -75f}) {
                         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                                ox, oy, panX, panY, 0f, 0f, 1f, cloud, cloud.length / 3, REF_DEPTH);
+                                ox, oy, panX, panY, 0f, 0f, 1f, cloud, cloud.length / 3, REF_DEPTH, 1f);
                         float shiftX = -2f * ox - 2f * panX / SURFACE_W;
                         float shiftY = -2f * oy + 2f * panY / SURFACE_H;
                         for (int i = 0, j = 0; i < cloud.length / 3; i++, j += 3) {
@@ -123,9 +123,9 @@ public class SplatCameraTest {
             SplatCamera nearCam = camera();
             SplatCamera farCam = camera();
             SplatCamera.Frame a = nearCam.frame(SURFACE_W, SURFACE_H, FOVY,
-                    ox, 0.2f, 0f, 0f, 0f, 0f, 1f, near, 1, REF_DEPTH);
+                    ox, 0.2f, 0f, 0f, 0f, 0f, 1f, near, 1, REF_DEPTH, 1f);
             SplatCamera.Frame b = farCam.frame(SURFACE_W, SURFACE_H, FOVY,
-                    ox, 0.2f, 0f, 0f, 0f, 0f, 1f, far, 1, REF_DEPTH);
+                    ox, 0.2f, 0f, 0f, 0f, 0f, 1f, far, 1, REF_DEPTH, 1f);
             assertTrue("the two clouds must resolve different pivots", a.pivotZ != b.pivotZ);
             // And the eye is the source eye in both.
             assertEquals(0f, a.eyeX, 0f);
@@ -162,7 +162,7 @@ public class SplatCameraTest {
                 float ty = -ndcY / proj[5];
                 float[] cloud = cloudAt(tx, ty, 3.1f);
                 SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                        ox, oy, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                        ox, oy, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
                 assertTrue("the pivot must be the splat on the ray", f.pivotFound);
                 float[] p = project(f, f.pivotX, f.pivotY, f.pivotZ);
                 assertEquals("pivot x at ndc " + ndcX + "," + ndcY, 0f, p[0], 1e-4f);
@@ -193,7 +193,7 @@ public class SplatCameraTest {
                         0.2f, 0.15f, 3.0f,
                         -0.25f, 0.3f, 1.5f);
                 SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                        ox, 0f, 0f, 0f, tilt[0], tilt[1], 1f, cloud, 3, REF_DEPTH);
+                        ox, 0f, 0f, 0f, tilt[0], tilt[1], 1f, cloud, 3, REF_DEPTH, 1f);
                 assertTrue("the pivot is the splat on the ray", f.pivotFound);
                 float[] pivot = project(f, f.pivotX, f.pivotY, f.pivotZ);
                 assertEquals("pivot holds x (tilt " + tilt[0] + "," + tilt[1] + " origin " + ox + ")",
@@ -214,7 +214,7 @@ public class SplatCameraTest {
         float[] cloud = cloudAt(0.1f, 0.05f, 2.4f);
         for (float ox : new float[]{-0.4f, 0f, 0.4f}) {
             SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                    ox, -ox, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                    ox, -ox, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
             assertEquals(0f, f.eyeX, 1e-6f);
             assertEquals(0f, f.eyeY, 1e-6f);
             assertEquals(0f, f.eyeZ, 1e-6f);
@@ -230,12 +230,12 @@ public class SplatCameraTest {
         float[] cloud = cloudAt(0f, 0f, 2.4f);
         SplatCamera c = camera();
         SplatCamera.Frame rest = c.frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
         float px = rest.pivotX, py = rest.pivotY, pz = rest.pivotZ;
         float r0 = (float) Math.sqrt(px * px + py * py + pz * pz);
         for (float[] tilt : new float[][]{{0.16f, 0f}, {0f, 0.16f}, {0.1f, -0.12f}}) {
             SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                    0f, 0f, 0f, 0f, tilt[0], tilt[1], 1f, cloud, 1, REF_DEPTH);
+                    0f, 0f, 0f, 0f, tilt[0], tilt[1], 1f, cloud, 1, REF_DEPTH, 1f);
             float r = (float) Math.sqrt(
                     (f.eyeX - px) * (f.eyeX - px)
                             + (f.eyeY - py) * (f.eyeY - py)
@@ -256,11 +256,11 @@ public class SplatCameraTest {
     public void theTiltSignsMatchTheRelief() {
         float[] cloud = cloudAt(0f, 0f, 2.4f);
         SplatCamera.Frame x = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0.16f, 0f, 1f, cloud, 1, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0.16f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
         assertTrue("positive tiltX moves the eye right", x.eyeX > 1e-4f);
         assertEquals("and not vertically", 0f, x.eyeY, 1e-6f);
         SplatCamera.Frame y = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0.16f, 1f, cloud, 1, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0.16f, 1f, cloud, 1, REF_DEPTH, 1f);
         assertTrue("positive tiltY moves the eye down (cloud +y)", y.eyeY > 1e-4f);
         assertEquals("and not horizontally", 0f, y.eyeX, 1e-6f);
     }
@@ -270,7 +270,7 @@ public class SplatCameraTest {
     public void motionZeroParksTheCamera() {
         float[] cloud = cloudAt(0f, 0f, 2.4f);
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0.16f, 0.16f, 0f, cloud, 1, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0.16f, 0.16f, 0f, cloud, 1, REF_DEPTH, 1f);
         assertEquals(0f, f.eyeX, 0f);
         assertEquals(0f, f.eyeY, 0f);
         assertEquals(0f, f.eyeZ, 0f);
@@ -291,7 +291,7 @@ public class SplatCameraTest {
                 0f, 0f, 2.0f,     // near
         };
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH, 1f);
         assertTrue(f.pivotFound);
         assertEquals("the near splat is the pivot", 2.0f, f.pivotZ, 1e-6f);
     }
@@ -308,13 +308,13 @@ public class SplatCameraTest {
         // fallback (the nearest splat) is what answers.
         float[] cloud = new float[]{5f, 5f, 2f};
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
         assertTrue("a real splat is used rather than a guess", f.pivotFound);
         assertEquals(2f, f.pivotZ, 1e-6f);
 
         // No splat in front of the camera: the reference-plane point on the ray.
         SplatCamera.Frame empty = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH, 1f);
         assertFalse("an empty cloud cannot claim a splat", empty.pivotFound);
         assertEquals("the fallback is the reference-plane point on the ray",
                 0f, empty.pivotX, 1e-6f);
@@ -322,7 +322,7 @@ public class SplatCameraTest {
         assertEquals(REF_DEPTH, empty.pivotZ, 1e-6f);
         // And on an off-axis origin the fallback point is on that ray.
         SplatCamera.Frame off = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0.25f, -0.2f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH);
+                0.25f, -0.2f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH, 1f);
         float[] p = project(off, off.pivotX, off.pivotY, off.pivotZ);
         assertEquals(0f, p[0], 1e-4f);
         assertEquals(0f, p[1], 1e-4f);
@@ -333,8 +333,95 @@ public class SplatCameraTest {
     public void pivotIgnoresSplatsBehindTheCamera() {
         float[] cloud = new float[]{0f, 0f, -3f, 0f, 0f, 1.5f};
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH);
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH, 1f);
         assertEquals(1.5f, f.pivotZ, 1e-6f);
+    }
+
+    // -------------------------------------------------- the Depth knob and the pivot
+
+    /**
+     * THE REPORTED BUG. The Depth knob moves every splat along the ray from the
+     * eye, so the cloud's surface under the origin is at a different depth — and
+     * the pivot, the aim and the crosshair must move with it. Resolved from the
+     * node's own positions they would mark a surface that is no longer there at
+     * any multiplier but 1: the origin indicator sat at the old height while the
+     * cloud was at twice it.
+     *
+     * <p>The assertion is against the SHADER's own arithmetic, {@link
+     * Splat#depthScale}, applied to the picked splat's position: the pivot must be
+     * exactly the point the vertex shader draws that splat at, not a second
+     * derivation of it that could drift from the first.
+     */
+    @Test
+    public void thePivotFollowsTheDepthKnob() {
+        // A splat inside the origin's ray radius (tangent 0.008, 0.012 against a
+        // radius of 0.02), so the FRONT pick is what answers.
+        float rawX = 0.04f, rawY = 0.06f, rawZ = 5f;
+        float[] cloud = {rawX, rawY, rawZ};
+        for (float mul : new float[]{0f, 0.5f, 1f, 2f, 3f}) {
+            SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                    0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, mul);
+            float s = Splat.depthScale(rawZ, REF_DEPTH, mul);
+            assertEquals("pivot x is the drawn x at mul=" + mul, rawX * s, f.pivotX, 1e-5f);
+            assertEquals("pivot y is the drawn y at mul=" + mul, rawY * s, f.pivotY, 1e-5f);
+            assertEquals("pivot z is the drawn depth at mul=" + mul, rawZ * s, f.pivotZ, 1e-5f);
+        }
+        // The endpoints in plain numbers, so the direction is on record: 0 puts
+        // the pivot on the reference plane, 1 leaves it where the node measured.
+        SplatCamera.Frame flat = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 0f);
+        assertEquals(REF_DEPTH, flat.pivotZ, 1e-5f);
+        SplatCamera.Frame asMeasured = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
+        assertEquals(rawZ, asMeasured.pivotZ, 1e-5f);
+    }
+
+    /**
+     * THE INVARIANT THE KNOB EXISTS FOR, at the pivot's own level: moving the
+     * pivot must not move the picture. At rest the eye is the source eye whatever
+     * the pivot is, so a cloud drawn at a different multiplier — its pivot at a
+     * different height — projects every fixed world point identically. This is the
+     * pivot-side companion to {@code SplatTest}'s ray-preservation assertion, and
+     * it is what makes "the marker follows the depth" a fix and not a re-framing.
+     */
+    @Test
+    public void theDepthKnobMovesThePivotWithoutMovingTheAtRestPicture() {
+        float[] cloud = {0.04f, 0.06f, 5f, 0.3f, -0.2f, 1.2f, -0.5f, 0.4f, 3.3f};
+        float[] probes = {-0.4f, 0f, 2.4f, 0.5f, 0.3f, 0.7f, 0f, -0.2f, 6f};
+        SplatCamera.Frame base = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                0.2f, -0.1f, 30f, -20f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, 1f);
+        for (float mul : new float[]{0f, 0.5f, 2f, 3f}) {
+            SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                    0.2f, -0.1f, 30f, -20f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, mul);
+            assertTrue("the pivot must actually move at mul=" + mul,
+                    Math.abs(f.pivotZ - base.pivotZ) > 1e-3f);
+            for (int i = 0; i < probes.length; i += 3) {
+                float[] a = project(base, probes[i], probes[i + 1], probes[i + 2]);
+                float[] b = project(f, probes[i], probes[i + 1], probes[i + 2]);
+                assertEquals("x must not move at mul=" + mul, a[0], b[0], 1e-6f);
+                assertEquals("y must not move at mul=" + mul, a[1], b[1], 1e-6f);
+            }
+        }
+    }
+
+    /**
+     * A splat the Depth knob pushes THROUGH the eye is not the pivot. The vertex
+     * shader floors the moved depth at 0 and its near cull then drops that splat;
+     * a pivot resolved from the raw depths would pick the front one anyway and aim
+     * the orbit at a point the cloud does not draw.
+     */
+    @Test
+    public void aSplatPushedThroughTheEyeIsNotThePivot() {
+        // mul 3 about ref 2.4: z = 0.5 moves to 2.4 + 3*(0.5 - 2.4) = -3.3, floored
+        // to 0 and culled by the shader. The farther splat on the same ray is the
+        // pivot, at its own moved depth.
+        float[] cloud = {0f, 0f, 0.5f, 0f, 0f, 4f};
+        SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH, 3f);
+        assertEquals("the near splat really is pushed through the eye",
+                0f, Splat.depthScale(0.5f, REF_DEPTH, 3f), 0f);
+        assertEquals("so the farther splat is the pivot",
+                4f * Splat.depthScale(4f, REF_DEPTH, 3f), f.pivotZ, 1e-5f);
     }
 
     // ------------------------------------------------------------------- zoom
@@ -350,7 +437,7 @@ public class SplatCameraTest {
         float[] cloud = cloudAt(0f, 0f, 2.4f);
         for (float fovy : new float[]{30f, 50f, 64.3f, 100f}) {
             SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, fovy,
-                    0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                    0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
             float[] want = sourceNdc(fovy, aspect, 0.2f, -0.1f, 2f);
             float[] got = project(f, 0.2f, -0.1f, 2f);
             assertEquals("fovy " + fovy, want[0], got[0], 1e-4f);
@@ -368,7 +455,7 @@ public class SplatCameraTest {
     public void panMovesThePictureByPixelsAtEveryDepth() {
         float[] cloud = cloudAt(0f, 0f, 2.4f);
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
-                0f, 0f, SURFACE_W / 2f, -SURFACE_H / 4f, 0f, 0f, 1f, cloud, 1, REF_DEPTH);
+                0f, 0f, SURFACE_W / 2f, -SURFACE_H / 4f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
         for (float z : new float[]{0.5f, 2.4f, 6f}) {
             float[] got = project(f, 0f, 0f, z);
             assertEquals("panX half the surface is -1 NDC", -1f, got[0], 1e-4f);

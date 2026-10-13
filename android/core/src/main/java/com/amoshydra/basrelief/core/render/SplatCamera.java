@@ -36,6 +36,17 @@ package com.amoshydra.basrelief.core.render;
  * source view; the pivot projects to the same NDC under every tilt (its view
  * vector is unchanged by {@code R}), so it holds the centre.
  *
+ * <p><b>And the pivot is the surface the SHADER draws, which is why the Depth
+ * knob reaches it.</b> The vertex shader moves every splat along the ray from the
+ * eye by {@link Splat#depthScale} before it is drawn, so the cloud's surface
+ * under the origin sits at the MOVED depth; a pivot resolved from the node's own
+ * depths would mark a point the cloud is no longer at at any multiplier but 1.
+ * {@link #pivot} therefore picks on the moved depth and returns the moved point,
+ * so the crosshair, the aim and the cloud cannot name different pivots. At rest
+ * the pivot's value does not enter the view at all — the eye is the source eye
+ * whatever the pivot is — so this moves the orbit and the marker and nothing
+ * about the picture.
+ *
  * <p>Not thread-safe and mutable, exactly as {@link CameraModel} is: the renderer
  * owns one and only ever touches it on the GL thread. {@link #frame} writes into
  * one reusable {@link Frame}, so drawing allocates nothing.
@@ -104,11 +115,16 @@ public final class SplatCamera {
      * @param positions the cloud's xyz mirror, {@code count * 3} floats
      * @param count    splats
      * @param refDepth the reference depth the pivot falls back to
+     * @param depthMul the Depth knob: the multiplier the vertex shader applies to
+     *                 each splat's depth. The pivot is resolved on the MOVED
+     *                 surface, so this must be the same clamped value the shader
+     *                 gets; 1 is the node's own depth and leaves the pivot where it
+     *                 was.
      */
     public Frame frame(float surfaceW, float surfaceH, float fovyDeg,
                        float orbitX, float orbitY, float panX, float panY,
                        float tiltX, float tiltY, float motion,
-                       float[] positions, int count, float refDepth) {
+                       float[] positions, int count, float refDepth, float depthMul) {
         float aspect = surfaceH > 0f ? surfaceW / surfaceH : 1f;
         Mat4.perspective(frame.proj, 0, fovyDeg, aspect, NEAR, FAR);
         float proj0 = frame.proj[0], proj5 = frame.proj[5];
@@ -117,7 +133,7 @@ public final class SplatCamera {
         // this ray and the shift below brings it to the centre.
         float tanX = proj0 != 0f ? 2f * orbitX / proj0 : 0f;
         float tanY = proj5 != 0f ? -2f * orbitY / proj5 : 0f;
-        pivot(positions, count, tanX, tanY, refDepth, frame);
+        pivot(positions, count, tanX, tanY, refDepth, depthMul, frame);
 
         // The turntable: R = Rx(b) * Ry(-a) about the pivot. The signs are the
         // relief's — positive tiltX moves the eye +x (right), positive tiltY moves
@@ -180,9 +196,20 @@ public final class SplatCamera {
      * used anyway (a real point beats a guess), and when the cloud has nothing in
      * front of the camera at all the answer is the reference-plane point on the
      * ray: a window claims nothing, but the orbit must not vanish.
+     *
+     * <p><b>The pick is made on the surface the SHADER draws, not on the node's
+     * own depths.</b> The Depth knob moves every splat along the ray from the eye
+     * by {@link Splat#depthScale} before it is drawn, so the surface under the
+     * origin is at the MOVED depth; a pivot resolved from the raw positions marks
+     * a point the cloud is no longer at at any multiplier but 1 — the reported
+     * "the origin did not follow the depth". The scale preserves {@code x/z} and
+     * {@code y/z}, so the ray's radial test is unchanged; what moves is the depth
+     * ordering and the chosen point. A splat the knob pushed through the eye — a
+     * moved depth of 0, which the vertex shader's near cull drops — is skipped
+     * here too, so the orbit can never aim at a point that is not drawn.
      */
     public void pivot(float[] positions, int count, float tanX, float tanY,
-                      float refDepth, Frame out) {
+                      float refDepth, float depthMul, Frame out) {
         if (positions == null || count <= 0) {
             fallbackPivot(tanX, tanY, refDepth, out);
             return;
@@ -196,18 +223,24 @@ public final class SplatCamera {
             float x = positions[j], y = positions[j + 1], z = positions[j + 2];
             // Behind or on the camera: no image position, so not under any ray.
             if (!(z > 1e-4f)) continue;
+            // The scale the shader applies to this splat's whole vector. It keeps
+            // the ray (x/z is invariant) and moves the depth, and 0 is the shader's
+            // "pushed through the eye" -- culled there, skipped here.
+            float dscl = Splat.depthScale(z, refDepth, depthMul);
+            if (!(dscl > 0f)) continue;
+            float sx = x * dscl, sy = y * dscl, sz = z * dscl;
             float invz = 1f / z;
             float dx = x * invz - tanX;
             float dy = y * invz - tanY;
             float d2 = dx * dx + dy * dy;
             if (d2 < nearD2) {
                 nearD2 = d2;
-                nearX = x; nearY = y; nearZ = z;
+                nearX = sx; nearY = sy; nearZ = sz;
                 near = true;
             }
-            if (d2 <= r2 && z < frontZ) {
-                frontZ = z;
-                frontX = x; frontY = y;
+            if (d2 <= r2 && sz < frontZ) {
+                frontZ = sz;
+                frontX = sx; frontY = sy;
                 front = true;
             }
         }
@@ -222,6 +255,11 @@ public final class SplatCamera {
         }
     }
 
+    /**
+     * The reference-plane point on the ray. It needs no Depth-knob correction:
+     * the plane IS the knob's fixed point, {@code depthScale(refDepth, ...) == 1}
+     * for every multiplier, so the point on it does not move.
+     */
     private static void fallbackPivot(float tanX, float tanY, float refDepth, Frame out) {
         out.pivotX = tanX * refDepth;
         out.pivotY = tanY * refDepth;

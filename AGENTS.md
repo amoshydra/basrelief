@@ -948,7 +948,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 679 tests across thirty-eight classes:
+it**. 682 tests across thirty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1099,7 +1099,15 @@ every library write took the app down, so any gallery tap crashed it.
   splat can project to the same pixel as the subject), a real splat used when the
   ray's radius holds none, and the reference-plane point on the ray only when the
   cloud has nothing in front of the camera — the `DepthSource` "a window claims
-  nothing" rule applied to an orbit centre. Zoom is a crop of the same camera and
+  nothing" rule applied to an orbit centre. Its fourth is the **Depth knob's reach
+  into the pivot**: the pick is made on the surface the SHADER draws — every splat
+  moved along the ray from the eye by `Splat.depthScale` — so the pivot, the aim
+  and the crosshair follow the knob instead of marking a point the cloud has left,
+  and a splat the knob pushes through the eye (a moved depth of 0) is skipped
+  exactly as the vertex shader's near cull drops it. The companion assertion is
+  that this moves the pivot and NOT the picture: at rest the eye is the source eye
+  whatever the pivot is, so the same probe points project identically at every
+  multiplier. Zoom is a crop of the same camera and
   Pan is a screen-pixel shift at every depth, both pinned.
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
