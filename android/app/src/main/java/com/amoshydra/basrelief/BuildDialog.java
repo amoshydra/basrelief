@@ -587,9 +587,9 @@ public final class BuildDialog {
     // --------------------------------------------------------------- public API
     //
     // Everything MainActivity needs is here, and nothing here touches
-    // MainActivity. The sheet owns the fix line, the pill and the Regenerate /
-    // Replace links; this class owns the panel and the run, and reports the run's
-    // state so the sheet can draw it.
+    // MainActivity. The sheet owns the fix line, the pill and the shared asset row
+    // (Delete / Replace); this class owns the panel and the run, and reports the
+    // run's state so the sheet can draw it.
 
     /** Show the panel on the subject's own tab. Equivalent to {@code show(null)}. */
     public void show() {
@@ -1189,37 +1189,40 @@ public final class BuildDialog {
     /**
      * The Relief tab's state for the subject.
      *
-     * <p>The depth answer is the studio's own ({@code depthSourceFor}), so this tab
-     * and the fix line cannot disagree about whether the photo has a map. An unread
-     * embedded map answers {@link DepthSource.Kind#UNKNOWN}, which has neither
-     * depth nor an action to offer — the window claims nothing, and the next
-     * refresh (which the studio fires when the read lands) fills it in.
+     * <p><b>The resolution is the studio's.</b> {@code buildTabAnswer} is the one
+     * derivation the sheet's shared asset row reads too, so the tab and that row
+     * cannot disagree about whether a photo has a map or whether a run owns it. The
+     * depth answer behind it is the studio's own ({@code depthSourceFor}), so this
+     * tab and the fix line cannot disagree either. An unread embedded map answers
+     * {@link DepthSource.Kind#UNKNOWN}, which has neither depth nor an action to
+     * offer — the window claims nothing, and the next refresh (which the studio
+     * fires when the read lands) fills it in.
+     *
+     * <p>The {@code studio == null} branch is the defensive one the class documents
+     * — a host that is not the studio gets the tab's empty state rather than a crash.
      */
     private BuildTab.Answer reliefAnswer() {
         if (subjectItem == null) return BuildTab.forRelief(false, true, false, false);
-        DepthSource.Answer depth = studio == null
-                ? null : studio.depthAnswerFor(subjectItem);
-        boolean hasDepth = depth != null && depth.hasDepth();
-        boolean canAct = depth != null && depth.canReplace();
-        boolean building = isRunningFor(subjectItem.id);
-        boolean failed = !building && isFailedFor(subjectItem.id);
-        return BuildTab.forRelief(hasDepth, canAct, building, failed);
+        if (studio == null) {
+            boolean building = isRunningFor(subjectItem.id);
+            boolean failed = !building && isFailedFor(subjectItem.id);
+            return BuildTab.forRelief(false, false, building, failed);
+        }
+        return studio.buildTabAnswer(BuildTab.Kind.RELIEF, subjectItem);
     }
 
     /**
      * The Splat tab's state for the subject: the cloud file, and the row's job.
      *
-     * <p>The job record is the same one {@link RendererRows} draws, read the same
-     * way, so the tab and the sheet's cloud row cannot disagree. A failed record is
-     * the server's own words kept until the user acts.
+     * <p>The job record is the same one {@link RendererRows} reads, and the whole
+     * answer is the studio's ({@code buildTabAnswer}), so the tab and the sheet's
+     * shared asset row cannot disagree. A failed record is the server's own words
+     * kept until the user acts.
      */
     private BuildTab.Answer splatAnswer() {
         if (subjectItem == null) return BuildTab.forSplat(false, false, false);
-        Jobs.Job job = studio == null ? null : studio.splatJob(subjectItem.id);
-        boolean failed = job != null && job.isFailed();
-        boolean building = SplatImport.isRunning(subjectItem.id)
-                || (job != null && !job.isFailed());
-        return BuildTab.forSplat(hasCloud(subjectItem), building, failed);
+        if (studio == null) return BuildTab.forSplat(hasCloud(subjectItem), false, false);
+        return studio.buildTabAnswer(BuildTab.Kind.SPLAT, subjectItem);
     }
 
     /** Whether the subject names a cloud file that is actually here. */
@@ -1848,8 +1851,8 @@ public final class BuildDialog {
      *
      * <p>The build itself runs in {@link MainActivity#startCloudBuild}, on the LONG
      * worker, behind a {@link Jobs} record and a live phase on the row — so the
-     * dialog's job ends here and the tile's ring and the sheet's cloud row carry
-     * the progress. A second copy of that progress in this dialog would be a second
+     * dialog's job ends here and the tile's ring and the collapsed pill carry the
+     * progress. A second copy of that progress in this dialog would be a second
      * place to be wrong; see the class javadoc for why this run is not shown
      * in-dialog the way the depth run is.
      *
@@ -1879,8 +1882,8 @@ public final class BuildDialog {
             android.util.Log.i(TAG, "splat budget at submit: slider="
                     + budgetSlider.value() + "k pref=" + (cloudBudget() / 1000) + "k");
         }
-        // Acting on a failure is what clears it, exactly as the sheet's cloud row
-        // does: the record keeps the server's words visible until then.
+        // Acting on a failure is what clears it, here as in the sheet's shared asset
+        // row: the record keeps the server's words visible until then.
         Jobs.Job job = splatJob();
         if (job != null && job.isFailed()) {
             JobsStore.clearItem(prefs(), item.id);

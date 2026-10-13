@@ -65,7 +65,7 @@ final class SplatImport {
      * the pill is the sheet's away-state and has no item of its own, so a build for
      * a row the user has since scrolled away from is still the thing they started
      * and still the thing worth showing. {@link #isRunning} stays the per-row
-     * question the sheet's cloud row asks.
+     * question the sheet's shared asset row and the dialog's Splat tab ask.
      */
     static boolean anyRunning() {
         return !LIVE.isEmpty();

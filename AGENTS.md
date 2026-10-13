@@ -937,7 +937,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 663 tests across thirty-seven classes:
+it**. 675 tests across thirty-eight classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1848,6 +1848,25 @@ every library write took the app down, so any gallery tap crashed it.
   no action, which is where `DepthSource.canReplace()` is read rather than
   re-decided. Both resolvers rank the run the same way, asserted, so the two tabs
   cannot grow two meanings of `FAILED`.
+- `AssetActionsTest` — the sheet's **one shared asset row**, which is what the two
+  duplicated rows became. The user's report is the whole reason it exists: *the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
+    regenerate/replace, and the two were expected to be combined*
+  The primary build stays in the dialog's tabs; this row holds the **secondary**
+  actions only, and it reads `BuildTab`'s own two answers rather than a second copy
+  of its ranking, so "a run in flight offers nothing" and "a failure outranks the
+  asset it left behind" hold in the row exactly as in the tabs. The traps are the
+  gates: **Delete** belongs to a cloud that is here and to no run that owns the row,
+  **Replace** belongs to a still depth **file** and to nothing else — an embedded map
+  has depth and no file, an unread window has no answer, and a row with no map is the
+  fix line's "Choose a map" rather than this row's Replace — and a row with neither
+  is `isNone()`, so the whole row is hidden rather than shown empty, because a control
+  that cannot change anything is the lie this project refuses to ship. The third case
+  is the one the design's "the Relief tab already offers its action" does not cover:
+  a **clip's track** is `BUILT` with no action in the tab (`DepthSource.canReplace()`
+  is false), so its regeneration — which runs the whole video graph — has no tab to
+  live in and is offered **here** instead, gated on the clip's own job rather than
+  the still run the relief answer ranks. Dropping it with the bottom block would have
+  stranded a whole feature.
 - `VideoTracksTest` — the clip's three files, and the invariant that makes them one
   thing. §2 says *"never store one without the other"* — colour without depth renders
   **flat, with no relief and no error** — and three loose `String`s could each be null

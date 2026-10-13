@@ -61,7 +61,7 @@ final class BundledFiles {
      * The demo's splat cloud. The fourth file, and the one that makes the demo an
      * ordinary 3D row rather than a debug path: it is copied by the same seed and
      * named by the same per-id scheme, so the bundled item carries a real
-     * {@code splatName} and the sheet's cloud row can show its count.
+     * {@code splatName} and the dialog's Splat tab can show its count.
      */
     static final String SPLAT = LibraryItem.splatFileName(Library.BUNDLED_ID);
 

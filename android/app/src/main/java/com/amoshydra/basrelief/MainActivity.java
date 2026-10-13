@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.store.AssetActions;
 import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
@@ -527,20 +528,8 @@ public class MainActivity extends Activity {
      */
     private TextView motionCaption;
     /**
-     * "This photo's map", as one unit with its body.
-     *
-     * <p>A {@link SheetSection} rather than a caption plus a loose row, because
-     * that shape is exactly how the section used to lie: the caption was added
-     * unconditionally, so a photo with no map showed it over nothing, and the
-     * Regenerate/Replace row was built once at construction, so a selection
-     * change left a row describing the previous photo. {@link #refreshMapSection}
-     * is the one place the whole section is put into the state of the item on
-     * screen.
-     */
-    private SheetSection mapSection;
-    /**
-     * The "Renderer — Relief | Splat" row and its cloud asset row, in the geometry
-     * group. Built once and refreshed from the live index on every
+     * The "Renderer — Relief | Splat" row and its one shared asset row, in the
+     * geometry group. Built once and refreshed from the live index on every
      * {@code refreshSliders}; see {@link RendererRows}.
      */
     private RendererRows rendererRows;
@@ -1154,17 +1143,6 @@ public class MainActivity extends Activity {
         // the shared slider map, so building it per section would double every one
         // of those. Only the parent changes.
         addFramingSections();
-
-        // "This photo's map": the mockup's heading for the Regenerate/Replace row and
-        // the fix line. It replaces a row of three buttons that were not peers --
-        // Gallery became the filmstrip, Depth became the fix line, and Calibrate
-        // became a reported condition in Settings > Gyro rather than an action.
-        //
-        // The body is put into the selected photo's state here and re-derived from
-        // the live selection on every refresh; see refreshMapSection, which is the
-        // only place that decides what the section shows.
-        mapSection = addSection(getString(R.string.group_depth));
-        refreshMapSection(initial);
 
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
@@ -2438,9 +2416,9 @@ public class MainActivity extends Activity {
         // here so the guard and the text cannot disagree about it.
         //
         // The percentage belongs to the DEPTH run. A cloud build has none -- its three
-        // phases are the sheet's cloud row's business -- so the pill reuses the
-        // existing indeterminate "Generating…" rather than inventing a number, and
-        // rather than adding a fourth generating string.
+        // phases are the dialog's Splat tab and the tile's ring's business -- so the
+        // pill reuses the existing indeterminate "Generating…" rather than inventing a
+        // number, and rather than adding a fourth generating string.
         int percent = depthRunning ? BuildDialog.progressPercent() : -1;
         if (!force && stripDrawnState == drawn && stripDrawnPercent == percent) return;
         stripDrawnState = drawn;
@@ -3737,10 +3715,9 @@ public class MainActivity extends Activity {
          * Hide this section's caption while its body has nothing in it.
          *
          * <p>Re-checked whenever the body is built and whenever it is rebuilt, so
-         * the caption and its rows cannot drift apart across a selection change.
-         * {@code refreshMapSection} is the existing precedent for re-deriving a
-         * section's contents from the live selection; this is the same idea applied
-         * to the heading rather than the body.
+         * the caption and its rows cannot drift apart across a selection change —
+         * the same idea as re-deriving a section's contents from the live selection,
+         * applied to the heading rather than the body.
          *
          * <p><b>Visibility, not emptiness.</b> A child that is itself GONE does not
          * count: a caption over a hidden row is the same orphan as a caption over no
@@ -4342,7 +4319,6 @@ public class MainActivity extends Activity {
         refreshPhotoLine(state);
         refreshSurfaceNote(state);
         syncDepthRow(state);
-        refreshMapSection(state);
         // The renderer row and the controls that only apply in relief mode. A
         // control nothing reads is a bug, not a greyed row: in splat mode the Depth
         // slider has nothing to displace and the light has nothing to shade -- the
@@ -4476,74 +4452,6 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Put "This photo's map" into the state of the photo actually selected.
-     *
-     * <p><b>Two states, and no third.</b>
-     *
-     * <ul>
-     *   <li>A photo with a map gets the Regenerate/Replace row — <i>including</i>
-     *       the bundled demo, which is a file-backed row like any other since the
-     *       seed copied its pair into {@code filesDir}. It had a special body here
-     *       ("Ships with its own depth map") for as long as it had no image file to
-     *       regenerate from and nowhere to write a replacement; both reasons are
-     *       gone, so it now gets the row every other photo gets.</li>
-     *   <li>A photo with no map gets <b>no section at all</b>, not a bare caption.
-     *       The fix line already says "No depth" with the two actions that answer
-     *       it, directly under the grip where it cannot scroll away; a second copy
-     *       here would be two controls for one fact.</li>
-     * </ul>
-     *
-     * <p>Rebuilt from the live selection on every refresh, which is what makes
-     * the row always describe the photo on screen rather than the one selected
-     * when the sheet was built. The old shape -- caption added unconditionally,
-     * row built once from the launch item -- produced both defects this replaces:
-     * a caption over nothing for a launch photo with no map, and the previous
-     * photo's row left behind after a selection change.
-     *
-     * <p><b>This is the one section whose body is emptied on purpose</b>, which is
-     * why the caption is re-synced at the end rather than only at construction: a
-     * selection change clears the body and rebuilds it, so a caption decided once
-     * would be describing whatever the body held when the sheet was built. The
-     * whole section is still hidden as a unit here — which is stronger than the
-     * caption guard and the right thing for this one — and the sync keeps the
-     * invariant true for the case where a caller later stops hiding the section.
-     */
-    private void refreshMapSection(AppState state) {
-        if (mapSection == null) return;
-        mapSection.body().removeAllViews();
-        LibraryItem item = state.activeItem();
-        // No selection means the renderer is drawing the packaged demo pair, which
-        // does have a map -- so the caption belongs, and the ordinary row does not:
-        // there is no id to write a regenerated map against.
-        if (item == null || item.depthName == null) {
-            mapSection.setVisibility(View.GONE);
-            mapSection.syncCaption();
-            return;
-        }
-        mapSection.body().addView(buildMapActions());
-        mapSection.setVisibility(View.VISIBLE);
-        mapSection.syncCaption();
-    }
-
-    /**
-     * Regenerate and Replace, on one row, for a file-backed photo with a map.
-     *
-     * <p>Two actions because an applied map has two things you might want to do
-     * to it, and neither is a third thing: deleting it belongs to the gallery
-     * row menu, where delete already asks first.
-     *
-     * <p>Gallery is NOT here. It was a button because browsing used to be a
-     * mode you entered; it is the filmstrip now, so a button that opens a
-     * gallery you are already standing in is a control with nothing to do.
-     * Calibrate is not here either: it is a reported condition in Settings >
-     * Gyro, not something the user does while looking at a photo.
-     *
-     * <p>Built fresh for each selection rather than captured once. Both actions
-     * resolve the active photo at click time -- the picker path reuses the
-     * active id, and the depth panel captures its subject when it opens -- so a
-     * stale row could only ever describe the wrong photo, never edit it.
-     */
-    /**
      * Whether this row has a colour clip on disk without its depth.
      *
      * <p>A CONVENTION ON THE ID, not a field. The import no longer stages a copy
@@ -4558,69 +4466,6 @@ public class MainActivity extends Activity {
     private boolean hasStagedClip(LibraryItem item) {
         if (item == null || item.video != null) return false;
         return new java.io.File(getFilesDir(), LibraryItem.videoFileName(item.id)).exists();
-    }
-
-    private View buildMapActions() {
-        LinearLayout mapRow = new LinearLayout(this);
-        mapRow.setOrientation(LinearLayout.HORIZONTAL);
-        // Resolved at CLICK time, not build time, for the reason on the class: the
-        // row is rebuilt per selection but a click can land after another change.
-        // A CLIP ROW INCLUDES ONE WHOSE CLIPS ARE NOT ATTACHED YET: a fetch that
-        // wrote the colour clip and then failed before the depth landed leaves a
-        // photograph with a colour clip behind it. It must still offer Generate --
-        // through the VIDEO graph, which is the only thing that can produce a depth
-        // track -- and it must not offer Replace, which writes one still map over a
-        // clip's track set.
-        final LibraryItem activeNow = state().activeItem();
-        final boolean isClip = activeNow != null
-                && (activeNow.video != null || hasStagedClip(activeNow));
-        mapRow.addView(makeButton(getString(R.string.action_regenerate),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // A clip regenerates its TRACK SET through the video graph --
-                        // the image graph would write a one-frame depth over a playing
-                        // clip's depth track, which is what the button did and why it
-                        // had to be routed. DepthSource.canRegenerate says TRACK may
-                        // ask for this; the routing is the half the renderer cannot
-                        // know.
-                        LibraryItem item = state().activeItem();
-                        if (item == null) return;
-                        if (item.video != null || hasStagedClip(item)) {
-                            regenerateClip(item);
-                        } else {
-                            openBuildDialog(BuildTab.Kind.RELIEF);
-                        }
-                    }
-                }), new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        if (!isClip) {
-            mapRow.addView(makeButton(getString(R.string.action_replace),
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            // Reuses the active item's id, so it overwrites this
-                            // photo's map rather than starting a new gallery row.
-                            pickFile(REQ_DEPTH);
-                        }
-                    }), new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        }
-        // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
-        // one control with a doubled border; the gap is what makes them two, and
-        // it is set on the surviving child rather than passed to addView because
-        // each makeButton already carries the right plate and pressed state.
-        View regenButton = mapRow.getChildAt(0);
-        LinearLayout.LayoutParams regenLp =
-                (LinearLayout.LayoutParams) regenButton.getLayoutParams();
-        regenLp.rightMargin = dp(8);
-        regenButton.setLayoutParams(regenLp);
-        LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        mapLp.topMargin = dp(2);
-        mapRow.setLayoutParams(mapLp);
-        return mapRow;
     }
 
     /**
@@ -4680,7 +4525,7 @@ public class MainActivity extends Activity {
      *
      * <p>Its sibling is {@link #depthSourceFor}, and it exists for the same reason:
      * the fix line must not decide "is there a cloud" with its own file check while
-     * the sheet's cloud row decides it with another. The index says a row <i>names</i>
+     * the sheet's shared asset row decides it with another. The index says a row <i>names</i>
      * a cloud; whether the bytes are here is a stat, and {@link SplatSource} models
      * the window between the two so a row naming a cloud whose file has not been read
      * answers {@link SplatSource.Kind#UNREAD} rather than "no cloud".
@@ -4701,6 +4546,83 @@ public class MainActivity extends Activity {
         if (item == null || item.splatName == null) return false;
         File f = PrefFiles.resolve(getFilesDir(), item.splatName);
         return f != null && f.isFile();
+    }
+
+    /**
+     * <b>The sheet's one shared asset row, resolved.</b> Which secondary actions
+     * the row under the Renderer segment may offer: Delete a cloud, and one depth
+     * action.
+     *
+     * <p><b>Why one answer.</b> The cloud row and the bottom "This photo's map"
+     * section used to resolve the same two decisions separately — the cloud's own
+     * file check and job record here, the depth answer and the clip routing there.
+     * That is the class of bug this project keeps paying for (two answers to one
+     * question), and it is also what the user reported as two rows offering the same
+     * actions. So the two facts are gathered once and handed to
+     * {@link AssetActions}, which reads {@link BuildTab}'s own answers rather than a
+     * second copy of its ranking.
+     *
+     * <p>The run state is the row's own: a still depth run is the
+     * {@link BuildDialog} one, while a clip's depth is rebuilt by the video graph, so
+     * a clip import's record and live phase are what gate that row's Regenerate.
+     * Folding the two together would let a clip import show the dialog's still-run
+     * frame.
+     */
+    AssetActions.Answer assetActionsFor(LibraryItem item) {
+        if (item == null) return AssetActions.NONE;
+        BuildTab.Answer cloud = buildTabAnswer(BuildTab.Kind.SPLAT, item);
+        // A clip's depth is a track, and a row whose colour clip landed without its
+        // depth is a clip waiting to become one -- both regenerate through the video
+        // graph, and neither is a depth file this row could Replace.
+        boolean regeneratesAsClip = item.video != null || hasStagedClip(item);
+        BuildTab.Answer relief;
+        if (regeneratesAsClip) {
+            // The clip's own run is the gate, not the still one: a clip import is a
+            // video pass, and its record and live phase are what own the row.
+            Jobs.Job clipJob = clipJob(item.id);
+            boolean clipFailed = clipJob != null && clipJob.isFailed();
+            boolean clipRunning = VideoImport.isRunning(item.id)
+                    || (clipJob != null && !clipJob.isFailed());
+            relief = BuildTab.forRelief(true, false, clipRunning, clipFailed);
+        } else {
+            relief = buildTabAnswer(BuildTab.Kind.RELIEF, item);
+        }
+        return AssetActions.resolve(cloud, relief, depthAnswerFor(item), regeneratesAsClip);
+    }
+
+    /**
+     * One tab's resolved answer for a row, by value rather than by selection.
+     *
+     * <p><b>The one derivation both the dialog's tabs and the sheet's shared asset
+     * row read.</b> The dialog captures its subject when it opens; the sheet reads
+     * the live selection; both need the same {@link BuildTab} answer, and computing
+     * it twice is how the tab and the row would come to disagree about whether a run
+     * is in flight or a failure is standing. {@link BuildDialog}'s own resolvers
+     * delegate here for the same reason.
+     *
+     * <p>A null row claims nothing: no cloud and no depth, so both tabs are in their
+     * empty state and neither may offer an action.
+     */
+    BuildTab.Answer buildTabAnswer(BuildTab.Kind kind, LibraryItem item) {
+        if (kind == BuildTab.Kind.SPLAT) {
+            if (item == null) return BuildTab.forSplat(false, false, false);
+            Jobs.Job job = splatJob(item.id);
+            boolean failed = job != null && job.isFailed();
+            boolean building = SplatImport.isRunning(item.id)
+                    || (job != null && !job.isFailed());
+            return BuildTab.forSplat(splatFilePresent(item), building, failed);
+        }
+        if (item == null) return BuildTab.forRelief(false, true, false, false);
+        DepthSource.Answer depth = depthAnswerFor(item);
+        boolean building = BuildDialog.isRunningFor(item.id);
+        boolean failed = !building && BuildDialog.isFailedFor(item.id);
+        return BuildTab.forRelief(depth.hasDepth(), depth.canReplace(), building, failed);
+    }
+
+    /** This row's clip-import record, or null. A cloud job is not one. */
+    private Jobs.Job clipJob(String itemId) {
+        Jobs.Job job = activeJob(itemId);
+        return job != null && job.kind == Jobs.Kind.CLIP ? job : null;
     }
 
     /**
@@ -5002,7 +4924,8 @@ public class MainActivity extends Activity {
         if (scene.has3d()) {
             // The row has a relief or a splat, so the no-depth affordance must not
             // appear AT ALL — not reworded, not greyed, not a smaller box. This is the
-            // user's rule: the no-depth affordance must be removed while a relief or a splat is present. It is what stops a cloud row from being told it has no depth.
+            // user's rule: the no-depth affordance must be removed while a relief or a splat is present. It is what stops a row that has a cloud from being told it has no
+            // depth.
             //
             // Shading is the separate question, and it is about a RELIEF drawn from a
             // depth map: supplied by a normal map or not, and if not the relief is flat
@@ -5918,9 +5841,12 @@ public class MainActivity extends Activity {
      * Regenerate depth and normal for the active CLIP row, through the video graph.
      *
      * <p>The same phases and the same worker as an import, because it IS an import
-     * whose colour source is the clip already in the gallery.
+     * whose colour source is the clip already in the gallery. Package-private
+     * because the sheet's one shared asset row is the caller for a clip's
+     * Regenerate: the dialog's Relief tab refuses a track by {@link BuildTab}'s own
+     * rule, so that action has no tab to live in.
      */
-    private void regenerateClip(final LibraryItem item) {
+    void regenerateClip(final LibraryItem item) {
         String host = prefs.getString("comfy_url", "");
         if (host == null || host.trim().isEmpty()) {
             Toast.makeText(MainActivity.this, R.string.video_import_no_server,
@@ -6149,6 +6075,20 @@ public class MainActivity extends Activity {
         if (now != null) gallery.itemUpdated(now);
         applyFiles();
         refreshSliders();
+    }
+
+    /**
+     * The shared asset row's <b>Replace</b>: pick a depth map file for the active
+     * row.
+     *
+     * <p>Package-private for {@link RendererRows}, and deliberately nothing more than
+     * the existing picker: the file reuses the active item's id, so it overwrites
+     * this photo's map rather than starting a new gallery row. Only offered for a
+     * still depth <b>file</b> — {@link AssetActions} refuses an embedded map and a
+     * clip's track, and a row with no map is the fix line's "Choose a map".
+     */
+    void replaceDepthMap() {
+        pickFile(REQ_DEPTH);
     }
 
     private void importSharedVideo(final Uri uri, final String label) {

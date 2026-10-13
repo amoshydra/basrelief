@@ -8,8 +8,8 @@ package com.amoshydra.basrelief.core.store;
  * <p><b>Why a fourth class.</b> A cloud is not a depth map, not a normal map and not
  * a clip: it is a whole reconstruction of the photograph, and the questions the
  * other three answer are all asked about a different file. So "does this row have a
- * cloud, and is it here" is a question of its own, and the sheet's cloud row is the
- * reader.
+ * cloud, and is it here" is a question of its own, and the sheet's one shared asset
+ * row is the reader.
  *
  * <p><b>The window claims nothing.</b> The index says a row <i>names</i> a cloud;
  * whether the bytes are on disk is a file read, so on every selection there is a

@@ -31,7 +31,9 @@
     <!-- Sheet section headings -->
     <string name="group_relief">Standing out of the plane</string>
     <string name="group_motion">How it moves</string>
-    <string name="group_depth">This photo’s map</string>
+    <!-- group_depth ("This photo's map") was deleted with its section: the one
+         shared asset row under the Renderer segment, and the 3D-build dialog's
+         Relief tab, now own the map's state and its actions. -->
     <string name="group_picture">Picture</string>
     <!--
       Light is the one group the mockup predates. Its own caption rather than a

@@ -7,25 +7,37 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.amoshydra.basrelief.core.splat.SplatCloud;
+import com.amoshydra.basrelief.core.store.AssetActions;
 import com.amoshydra.basrelief.core.store.BuildTab;
-import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
-import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.store.RenderMode;
 
-import java.io.File;
-import java.util.Locale;
-
 /**
- * The sheet's "Renderer — Relief | Splat" row, and the cloud's asset row under it.
+ * The sheet's "Renderer — Relief | Splat" row, and the one shared asset row under
+ * it.
  *
  * <p><b>Two rows, one question each.</b> The renderer row is the <i>choice</i> —
- * which draw path this photo uses — and both options are always tappable. The cloud
- * row is the <i>asset state</i>: whether a cloud exists, what it cost, and the one
- * action that fits that state (Make one / Rebuild / Regenerate). Pressing Splat with
- * no cloud is the offer; there is deliberately no "Make 3D" button living on the
- * sheet by default, because the intent comes first and the offer follows.
+ * which draw path this photo uses — and both options are always tappable. The row
+ * under it is the <i>secondary actions</i> on the row's built assets: <b>Delete</b>
+ * a cloud, and one depth action (<b>Replace</b> a still map, or <b>Regenerate</b> a
+ * clip's track). Which of those apply is {@link AssetActions}, in {@code :core}, so
+ * it is a tested decision rather than a branch on this screen.
+ *
+ * <p><b>Why the primary action is not here.</b> The cloud row used to state the
+ * cloud's state and offer its one action (<i>Make one</i> / <i>Rebuild</i> /
+ * <i>Regenerate</i>), and a bottom "This photo's map" section offered Regenerate and
+ * Replace — two rows restating what the 3D-build dialog's tabs already resolve. The
+ * user reported exactly that: <i>the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
+    regenerate/replace, and the two were expected to be combined</i> So the primary lives only in the dialog
+ * (where it can be configured), the bottom section is gone, and this row holds the
+ * secondary actions the tabs deliberately do not.
+ *
+ * <p><b>The tab owns its primary action.</b> Tapping the tab you are already on
+ * opens the build dialog on it — Generate / Regenerate for Relief, Make one /
+ * Rebuild / Regenerate for Splat. Switching to the other tab just switches, except
+ * that a tab with nothing built yet offers its build, which is the offer the Splat
+ * tab has always made. That is what keeps Rebuild and Regenerate reachable after the
+ * cloud row stopped carrying them, without a dialog on every mode switch.
  *
  * <p><b>It lives in the geometry group, beside the depth rows.</b> That group
  * already answers "what is this item's geometry"; a cloud is the same question
@@ -44,10 +56,19 @@ final class RendererRows {
 
     private final Button reliefBtn;
     private final Button splatBtn;
-    private final TextView cloudText;
-    private final Button cloudAction;
-    private final Button cloudDelete;
-    private final LinearLayout cloudRow;
+    /** The depth slot: Replace a still map, or Regenerate a clip's track. */
+    private final Button depthActionBtn;
+    private final Button cloudDeleteBtn;
+    private final LinearLayout assetRow;
+
+    /**
+     * What {@link #depthActionBtn} is currently offering.
+     *
+     * <p>The listener is installed once and reads this, rather than the button
+     * carrying a new listener on every refresh — the label and the action must be the
+     * same value, and re-binding a listener per repaint is how they come apart.
+     */
+    private AssetActions.DepthAction shownDepthAction = AssetActions.DepthAction.NONE;
 
     RendererRows(MainActivity activity) {
         this.activity = activity;
@@ -62,33 +83,25 @@ final class RendererRows {
         seg.setOrientation(LinearLayout.HORIZONTAL);
         int pad = activity.dp(3);
         seg.setPadding(pad, pad, pad, pad);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0x14FFFFFF);
-        bg.setCornerRadius(activity.dp(10));
-        bg.setStroke(activity.dp(1), 0x24FFFFFF);
-        seg.setBackground(bg);
-        reliefBtn = segmentButton(activity.getString(R.string.renderer_relief), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setMode(RenderMode.RELIEF);
-            }
-        });
-        splatBtn = segmentButton(activity.getString(R.string.renderer_splat), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // PRESSING SPLAT IS THE OFFER. Selecting the mode is the row's job;
-                // the dialog follows only when there is no cloud to show, which is
-                // what "the intent comes first, the offer follows" means. The offer
-                // is now the one build dialog, on its Splat tab, so a share, a
-                // Rebuild and this press all land in the same place.
-                boolean wasRelief = !isSplatSelected();
-                setMode(RenderMode.SPLAT);
-                LibraryItem item = activity.state().activeItem();
-                if (wasRelief && item != null && !hasCloud(item) && !isBuilding(item)) {
-                    activity.openBuildDialog(BuildTab.Kind.SPLAT);
-                }
-            }
-        });
+        GradientDrawable segBg = new GradientDrawable();
+        segBg.setColor(0x14FFFFFF);
+        segBg.setCornerRadius(activity.dp(10));
+        segBg.setStroke(activity.dp(1), 0x24FFFFFF);
+        seg.setBackground(segBg);
+        reliefBtn = segmentButton(activity.getString(R.string.renderer_relief),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        onTabTapped(BuildTab.Kind.RELIEF);
+                    }
+                });
+        splatBtn = segmentButton(activity.getString(R.string.renderer_splat),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        onTabTapped(BuildTab.Kind.SPLAT);
+                    }
+                });
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, activity.dp(30), 1f);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, activity.dp(30), 1f);
         slp.leftMargin = activity.dp(2);
@@ -96,40 +109,50 @@ final class RendererRows {
         seg.addView(splatBtn, slp);
         box.addView(seg);
 
-        // The asset row: a line of state and the one action that fits it.
-        cloudRow = new LinearLayout(activity);
-        cloudRow.setOrientation(LinearLayout.HORIZONTAL);
-        cloudRow.setGravity(Gravity.CENTER_VERTICAL);
-        cloudText = new TextView(activity);
-        cloudText.setTextSize(12);
-        cloudText.setTextColor(0x8CFFFFFF);
-        cloudRow.addView(cloudText, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        cloudAction = activity.makeButton("", new View.OnClickListener() {
+        // The shared asset row: the secondary actions only, each shown when it can
+        // actually act. See the class javadoc for what it replaced.
+        assetRow = new LinearLayout(activity);
+        assetRow.setOrientation(LinearLayout.HORIZONTAL);
+        depthActionBtn = activity.makeButton("", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                onCloudAction();
+                LibraryItem item = activity.state().activeItem();
+                if (item == null) return;
+                switch (shownDepthAction) {
+                    case REPLACE:
+                        // Reuses the active item's id, so it overwrites this photo's
+                        // map rather than starting a new gallery row.
+                        activity.replaceDepthMap();
+                        break;
+                    case REGENERATE:
+                        // A clip regenerates its TRACK SET through the video graph --
+                        // the image graph would write a one-frame depth over a
+                        // playing clip's depth track. DepthSource.canRegenerate says
+                        // a track may ask for this; the routing is the half the
+                        // renderer cannot know.
+                        activity.regenerateClip(item);
+                        break;
+                    default:
+                        break;
+                }
             }
-        }, LinearLayout.LayoutParams.WRAP_CONTENT, 0f);
-        cloudRow.addView(cloudAction);
-        // Delete sits beside Rebuild once a cloud exists. It is a destructive action,
-        // so it is a quiet plate rather than a filled one, and it is hidden whenever
-        // the action button is not Rebuild.
-        cloudDelete = activity.makeButton(activity.getString(R.string.splat_action_delete),
+        }, 0, 1f);
+        assetRow.addView(depthActionBtn);
+        cloudDeleteBtn = activity.makeButton(activity.getString(R.string.splat_action_delete),
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         LibraryItem item = activity.state().activeItem();
                         if (item != null) activity.deleteCloud(item);
                     }
-                }, LinearLayout.LayoutParams.WRAP_CONTENT, 0f);
-        cloudRow.addView(cloudDelete);
+                }, 0, 1f);
+        assetRow.addView(cloudDeleteBtn);
         LinearLayout.LayoutParams crp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         crp.topMargin = activity.dp(6);
-        cloudRow.setLayoutParams(crp);
-        box.addView(cloudRow);
+        assetRow.setLayoutParams(crp);
+        box.addView(assetRow);
     }
 
     View view() {
@@ -163,28 +186,6 @@ final class RendererRows {
         return b;
     }
 
-    // ---------------------------------------------------------------- state
-
-    private boolean isSplatSelected() {
-        LibraryItem item = activity.state().activeItem();
-        return item != null && item.isSplatMode();
-    }
-
-    private boolean hasCloud(LibraryItem item) {
-        if (item.splatName == null) return false;
-        File f = PrefFiles.resolve(activity.getFilesDir(), item.splatName);
-        return f != null && f.isFile();
-    }
-
-    private boolean isBuilding(LibraryItem item) {
-        return activity.splatJob(item.id) != null || SplatImport.isRunning(item.id);
-    }
-
-    /** The record for this row's cloud build, or null. */
-    private Jobs.Job jobFor(LibraryItem item) {
-        return activity.splatJob(item.id);
-    }
-
     // ---------------------------------------------------------------- refresh
 
     /** Repaint the whole row from the live index. Called by {@code refreshSliders}. */
@@ -200,53 +201,20 @@ final class RendererRows {
         style(reliefBtn, !splat);
         style(splatBtn, splat);
 
-        Jobs.Job job = jobFor(item);
-        if (job != null && job.isFailed()) {
-            // The server's own words, kept until the user acts — a failure that
-            // exists only in a toast is gone before it is read.
-            cloudText.setText(activity.getString(R.string.splat_row_failed, job.error));
-            cloudText.setTextColor(0xE8E8B04B);
-            showAction(activity.getString(R.string.action_regenerate), true, false);
-            return;
+        // The secondary actions, resolved once. A row with nothing to offer hides
+        // the whole row: a control that cannot change anything is a lie, and an
+        // empty row is that lie with more pixels.
+        AssetActions.Answer actions = activity.assetActionsFor(item);
+        shownDepthAction = actions.depthAction();
+        if (actions.depthAction() == AssetActions.DepthAction.NONE) {
+            depthActionBtn.setVisibility(View.GONE);
+        } else {
+            depthActionBtn.setVisibility(View.VISIBLE);
+            depthActionBtn.setText(actions.depthAction() == AssetActions.DepthAction.REPLACE
+                    ? R.string.action_replace : R.string.action_regenerate);
         }
-        cloudText.setTextColor(0x8CFFFFFF);
-        if (isBuilding(item)) {
-            SplatImport.Live live = SplatImport.live(item.id);
-            String phase = live == null || live.phase.isEmpty()
-                    ? activity.getString(R.string.splat_row_building)
-                    : live.phase;
-            cloudText.setText(phase);
-            // (progress): the ring is on the tile's corner; the row states the phase.
-            showAction(null, false, false);
-            return;
-        }
-        if (hasCloud(item)) {
-            cloudText.setText(activity.getString(R.string.splat_row_built,
-                    countOf(item), activity.getString(R.string.splat_generator)));
-            showAction(activity.getString(R.string.action_rebuild), true, true);
-            return;
-        }
-        cloudText.setText(R.string.splat_row_none);
-        showAction(activity.getString(R.string.splat_action_make), true, false);
-    }
-
-    /** How many records the cloud holds, from the file's own size. */
-    private String countOf(LibraryItem item) {
-        File f = PrefFiles.resolve(activity.getFilesDir(), item.splatName);
-        long n = f == null ? 0 : f.length() / SplatCloud.RECORD_BYTES;
-        return String.format(Locale.US, "%,d", n);
-    }
-
-    private void showAction(String label, boolean enabled, boolean deletable) {
-        cloudDelete.setVisibility(deletable ? View.VISIBLE : View.GONE);
-        if (label == null) {
-            cloudAction.setVisibility(View.GONE);
-            return;
-        }
-        cloudAction.setVisibility(View.VISIBLE);
-        cloudAction.setText(label);
-        cloudAction.setEnabled(enabled);
-        cloudAction.setAlpha(enabled ? 1f : 0.4f);
+        cloudDeleteBtn.setVisibility(actions.canDeleteCloud() ? View.VISIBLE : View.GONE);
+        assetRow.setVisibility(actions.isNone() ? View.GONE : View.VISIBLE);
     }
 
     private void style(Button b, boolean on) {
@@ -259,22 +227,34 @@ final class RendererRows {
 
     // ---------------------------------------------------------------- actions
 
+    /**
+     * A tab was tapped: switch the mode, and offer that tab's primary build when the
+     * tab is the one already selected, or when it has nothing built yet.
+     *
+     * <p>The mode is switched first and unconditionally, because the segment is also
+     * the mode switch — the picture follows the tab even when no dialog opens. The
+     * dialog is the tab's <i>primary action</i> (Generate / Regenerate, Make one /
+     * Rebuild / Regenerate), which is why a re-tap opens it: the primary has no other
+     * home on this sheet, and the bottom block that used to carry Regenerate is gone.
+     */
+    private void onTabTapped(BuildTab.Kind kind) {
+        LibraryItem item = activity.state().activeItem();
+        if (item == null) return;
+        boolean wasCurrent = (kind == BuildTab.Kind.SPLAT) == item.isSplatMode();
+        setMode(BuildTab.modeFor(kind));
+        BuildTab.Answer answer = activity.buildTabAnswer(kind, item);
+        // The offer: a tab with nothing built yet (or a failed build) opens its
+        // dialog, which is the behaviour the Splat tab has always had, now stated
+        // for both tabs and both run states.
+        if (wasCurrent || answer.state() == BuildTab.State.NONE
+                || answer.state() == BuildTab.State.FAILED) {
+            activity.openBuildDialog(kind);
+        }
+    }
+
     private void setMode(RenderMode mode) {
         LibraryItem item = activity.state().activeItem();
         if (item == null || item.renderMode == mode) return;
         activity.setRenderMode(item.id, mode);
-    }
-
-    private void onCloudAction() {
-        LibraryItem item = activity.state().activeItem();
-        if (item == null) return;
-        // EVERY route into a cloud build is the one dialog's Splat tab: the offer
-        // when there is no cloud, the rebuild when there is, and acting on a
-        // failure. The dialog reads the failure record for itself and labels its
-        // button "Regenerate"; clearing the record is part of submitting, in the
-        // dialog, so this does not clear it here — a screen that clears a state it
-        // is about to show is how the server's own words get lost before they are
-        // read.
-        activity.openBuildDialog(BuildTab.Kind.SPLAT);
     }
 }
