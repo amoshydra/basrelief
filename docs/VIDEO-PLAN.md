@@ -434,7 +434,7 @@ version painted home's framing and then glided back, which is the flicker.
 | `KeyguardManager.addKeyguardLockedStateListener` | `SecurityException` — `SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE` is not in the public SDK; calling it from `Service.onCreate` **crashes the wallpaper** |
 | `onWallpaperFlagsChanged` | zero fires — two permanently separate engines are never re-tasked |
 | lock engine `onVisibilityChanged(false)` | fires *after* home's callback, so a flag set there is consumed before written |
-| `Window.setBackgroundBlurRadius` | no blur region — a Dialog is `ty=BASE_APPLICATION`, and the region needs a translucent **floating** window |
+| `Window.setBackgroundBlurRadius` | **not a signal, and the earlier reading here was wrong**: a modal CAN blur its backdrop once its window is built from a theme with `android:windowIsTranslucent` (see AGENTS.md). It says nothing about lock state |
 
 `onApplyWindowInsets` **does** fire at the transition and both readings flip
 there — but the first-frame inheritance made it unnecessary, since the origin

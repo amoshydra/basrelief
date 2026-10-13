@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The theme every ModalSheet's window is built from, and it exists for
+      exactly one reason: a backdrop blur is gated on the window being
+      TRANSLUCENT, and "translucent" here is a THEME attribute, not a format
+      and not a window type.
+
+      This is the correction of a finding that cost the project several
+      sessions and was wrong. `Window.setBackgroundBlurRadius` was said to be
+      impossible for a Dialog because "a Dialog is ty=BASE_APPLICATION and a
+      floating window is TYPE_APPLICATION_OVERLAY, which needs
+      SYSTEM_ALERT_WINDOW". That is not where the gate is. AOSP's own
+      documentation ("Window blurs", source.android.com/docs/core/display/
+      window-blurs) implements the effect on an ACTIVITY with a
+      `windowIsTranslucent` theme, and lists dialogs and bottom sheets as the
+      feature's intended hosts.
+
+      What actually happens, read from the framework (DecorView.java,
+      updateBackgroundBlurRadius):
+
+          mBackgroundBlurRadius = mCrossWindowBlurEnabled && mWindow.isTranslucent()
+                  ? mOriginalBackgroundBlurRadius : 0;
+
+      and PhoneWindow.isTranslucent() is nothing but the `android:windowIsTranslucent`
+      theme attribute, resolved once in generateLayout:
+
+          mIsTranslucent = a.getBoolean(R.styleable.Window_windowIsTranslucent, false);
+
+      ModalSheet passed `android.R.style.Theme_DeviceDefault_NoActionBar`, an
+      opaque ACTIVITY theme, so `isTranslucent()` answered false and the
+      radius we set was forced to 0 before it ever reached SurfaceFlinger.
+      The call landed, the log said `blur=true`, and the compositor was never
+      asked for a region, which reads exactly like a capability failure and
+      is not one. `setFormat(PixelFormat.TRANSLUCENT)`, which the code had,
+      sets the surface format; it does not touch `isTranslucent()`.
+
+      The transparent `windowBackground` is the second half. DecorView layers
+      the blur UNDER the window background
+      (`LayerDrawable([blur, mOriginalBackgroundDrawable])`), so an opaque
+      window background paints over the blur it just asked for. The card's own
+      scrim is a child view drawn on top of both, which is the translucent
+      layer AOSP's guidelines say the blur must be read through.
+
+      No `windowIsFloating`: that attribute only decides whether a blur is
+      clipped to the window's bounds or drawn fullscreen, and this window IS
+      fullscreen (MATCH_PARENT x MATCH_PARENT, and the scrim fills it), so
+      fullscreen is the answer we want. Setting it would change the window's
+      layout path for no gain.
+    -->
+    <style name="ModalWindow" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+</resources>

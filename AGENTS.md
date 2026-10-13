@@ -834,36 +834,46 @@ already cost real time.
   rebuild, the cheap write has become a `reloadFromPrefs` (which is also an
   `AppState.load`, and also 113 ms) and that is the bug to look for.
 
-- **A `Dialog` cannot have a backdrop blur. Stop trying, and stop tuning the fill instead.**
-  Measured on a Pixel 7 Pro with a modal open: `dumpsys SurfaceFlinger` prints **zero**
-  `blurRadius` entries device-wide, while `disableBackgroundBlur=false` and
-  `RenderEngine chosen blur algorithm: KawaseDualFilterV2` are both set. The window asks
-  for a 25dp blur — `blurSupported()` is true and `setBackgroundBlurRadius` is called — and
-  the compositor produces no region for it. AOSP composites that region only for a
-  translucent, **floating** window, and a `Dialog` is `ty=BASE_APPLICATION`; a floating
-  window means `TYPE_APPLICATION_OVERLAY` and therefore `SYSTEM_ALERT_WINDOW`, a permission
-  a wallpaper studio should not hold for a sheet background. **It is not the radius, not the
-  fill, and not the size**, which is what makes this worth writing down: three separate
-  passes lowered the pill's opacity and then made the window 4px smaller (which `setContentView`'s
-  `MATCH_PARENT` params silently undid), each on the theory that the blur was *nearly*
-  working. What a view in one window can have is **painted** glass — transparency, a
-  gradient, a lit rim — and that is a mimic, not the effect: it cannot sample what is
-  behind it. **And a spike has now closed the last door**, because three passes were spent
-  reasoning about this instead of testing it: the studio sheet was moved into its own
-  `Dialog` window, made translucent, and made **floating** by sizing its content to the
-  display minus 8 pixels — every condition the AOSP rule names, held at once. The sheet
-  rendered perfectly in that window (all controls present in the accessibility tree), the
-  request went through (`isCrossWindowBlurEnabled()` true, `setBackgroundBlurRadius(25dp)`
-  called), and `dumpsys SurfaceFlinger` still reported **zero `blurRadius` regions
-  device-wide**. So the gate is the window TYPE — `BASE_APPLICATION` cannot be made to
-  blur by any sizing, fill or radius — and `TYPE_APPLICATION_OVERLAY` with
-  `SYSTEM_ALERT_WINDOW` is the only remaining route. The spike was reverted; it proved the
-  point and would have cost the sheet its place in `root`, which the morph, the strip and
-  the panel's layout all assume. **Two traps in the sizing, for anyone who repeats it:**
-  `setContentView(..., MATCH_PARENT, MATCH_PARENT)` overrides `setLayout` on the window, so
-  the window still requested the full display and was never floating; and a spike that
-  renders is not a spike that is *correct* — this one left the sheet outside `root` where
-  every layout calculation expects it, which looks fine and is not.
+- **A `Dialog` CAN have a backdrop blur. The gate is the THEME, not the window type —
+  and this file recorded the opposite, measured, which is how a capability came to look
+  like a platform limitation.** The wrong finding: with a modal open,
+  `dumpsys SurfaceFlinger` printed zero `blurRadius` entries device-wide while
+  `blurSupported()` was true and `setBackgroundBlurRadius(25dp)` was called, so the
+  conclusion was that AOSP composites a background blur only for a translucent,
+  *floating* window, that a `Dialog` is `ty=BASE_APPLICATION`, and that the only route was
+  `TYPE_APPLICATION_OVERLAY` with `SYSTEM_ALERT_WINDOW`. **Every measurement was real and
+  the inference was wrong.** The framework line is `DecorView.updateBackgroundBlurRadius`:
+
+      mBackgroundBlurRadius = mCrossWindowBlurEnabled && mWindow.isTranslucent()
+              ? mOriginalBackgroundBlurRadius : 0;
+
+  and `PhoneWindow.isTranslucent()` is nothing but the cached `android:windowIsTranslucent`
+  THEME attribute (`generateLayout`: `mIsTranslucent = a.getBoolean(
+  R.styleable.Window_windowIsTranslucent, false)`). `ModalSheet` built its dialog from
+  `Theme_DeviceDefault_NoActionBar`, an opaque *activity* theme, so `isTranslucent()`
+  answered false and the radius we set was forced to 0 before it reached SurfaceFlinger —
+  a call that landed and logged `blur=true`, which is exactly why it read as a capability
+  failure. `setFormat(PixelFormat.TRANSLUCENT)` sets the SURFACE format and does not answer
+  that question; that was the trap. The window is now built from `R.style.ModalWindow`
+  (`android/app/src/main/res/values/themes.xml`), which sets `windowIsTranslucent` and a
+  transparent `windowBackground` — DecorView layers the blur *under* the window background
+  (`LayerDrawable([blur, mOriginalBackgroundDrawable])`), so an opaque one paints over the
+  blur it just asked for. AOSP's own "Window blurs" page implements the effect on an
+  **activity** with a translucent theme and names dialogs and bottom sheets as intended
+  hosts, so the host was never the question. Verified on the Pixel 7 Pro: with the modal
+  open the filmstrip behind it composites as soft blobs, not sharp tiles. **And the
+  `dumpsys SurfaceFlinger` check cannot confirm this** — sdk 37 prints no per-layer blur
+  field at all, so "zero regions" was evidence of nothing; the confirmation is the screen.
+  **`windowIsFloating` is deliberately not set**: it only decides whether a blur is clipped
+  to the window's bounds or drawn fullscreen, and this window is fullscreen (MATCH_PARENT,
+  and the scrim fills it), so fullscreen is what we want.
+  **What survives from the wrong hunt:** `setContentView(..., MATCH_PARENT, MATCH_PARENT)`
+  overrides `setLayout` on the window, so a "make it float" spike that sized the content did
+  not size the window; a spike that renders is not a spike that is *correct* (one left the
+  sheet outside `root`, where the morph, the strip and the panel's layout all assume it, and
+  looked fine); and a view in one window can only have **painted** glass, which is a mimic,
+  not the effect. The studio sheet still cannot blur — it is a sibling view beside the
+  `GLSurfaceView` in the same window — so that part was never in question.
 - **`setStroke` on a `GradientDrawable` clears the fill.** AOSP writes
   `setColor(TRANSPARENT)` and installs a new stroke paint, so a stroke change after a fill
   silently leaves no fill at all — which reads as a *design choice* rather than as a bug,
