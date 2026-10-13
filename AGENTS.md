@@ -1120,7 +1120,7 @@ every library write took the app down, so any gallery tap crashed it.
     answer, and an absent entry is NOT a verdict, because the server registers the
     prompt when it starts it and a run queued behind another has none yet. What
     follows is what the sidecar is still read FOR, as content, once the history has
-    spoken, and the resume pass asks it first:** photo gone or
+    spoken, and the resume reads it only for those -- never to decide, because the history has already decided:** photo gone or
     no colour clip → clear; server unreachable → KEEP (a sleeping laptop is not a
     lost import); sidecar `running` → KEEP and seed the line's count from its
     `done`/`total` (the node is doing the work, and re-submitting here would run it
