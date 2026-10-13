@@ -393,8 +393,9 @@ final class SplatRenderer {
      * @param eps2d the dev SIZE knob: the 2D low-pass floor as a FRACTION OF THE
      *              CELL, clamped through {@link Splat#clampEps2d} so a bad pref
      *              cannot reach the shader, and resolved into render pixels by
-     *              {@link Splat#eps2dFor}. {@link Splat#EPS_2D_DEFAULT} is the
-     *              shipped value.
+     *              {@link Splat#eps2dFor} -- which takes the larger of that fraction
+     *              of the cell and the sampling minimum, {@link Splat#SAMPLING_MIN_PX}.
+     *              {@link Splat#EPS_2D_DEFAULT} is the shipped value.
      * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
@@ -413,7 +414,9 @@ final class SplatRenderer {
         // reached the shader unclamped would be a state no test can name.
         // The knob stores a FRACTION OF THE CELL, not pixels; the viewport turns it
         // into the pixels the shader works in, below. See Splat.eps2dFor for why a
-        // fixed number of pixels cannot be the setting.
+        // fixed number of pixels cannot be the setting on its own -- and why the
+        // floor it forms is the larger of that term and Splat.SAMPLING_MIN_PX, a
+        // render-target constant that a small cell cannot drag below one pixel.
         eps2d = Splat.clampEps2d(eps2d);
         blurPx = Splat.clampBlurPx(blurPx);
         boolean blur = blurPx >= 0.5f;
@@ -1192,6 +1195,14 @@ final class SplatRenderer {
             // turns the knob's fraction of the cell into the unit this line needs.
             // That indirection is not decoration: a constant here is measured in a
             // unit the gap does not use, and the gap is what is being closed.
+            //
+            // It is the LARGER of that fraction of the cell and
+            // Splat.SAMPLING_MIN_PX -- one render pixel squared, a constant of the
+            // render target and not of the scene. The cell shrinks with the count,
+            // so without that floor the term lands below a pixel on a dense cloud
+            // or a low-resolution target (the phone draws at a 0.25 scale, 360 px
+            // wide) and the splats stop being sampled at all: the partial-coverage
+            // speckle on a bright far region that does not shrink with density.
             // Measured on one cloud's smooth sky, as high-frequency energy against
             // the photograph's own: at the cloud's 912x1984 frame, 2.5 px leaves
             // 3.0x and 6 px reaches 0.67x; at the 1440x3120 the phone draws it

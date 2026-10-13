@@ -496,11 +496,18 @@ already cost real time.
     - **SIZE is a coverage lift, not a blur, and that distinction is the whole
       point.** The `eps2d` floor lifts only the splats whose screen covariance is
       too small to sample and leaves the well-sampled ones alone, so it removes the
-      screen-door without smearing detail. Measured (sky high-frequency energy /
-      subject high-frequency energy / black holes): 0.3 → 10.08 / 1.68 / 9.6%;
-      2.5 → 2.98 / 1.35 / 0.2%; 4.0 → 1.27 / 1.26 / 0.0%. 2.5 is the knee and the
-      shipped value; the dev row spans 0.3..8 so a phone can re-pick the trade by
-      eye. It is a `uniform`, not a `const`, so it moves live with no recompile.
+      screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
+      (`Splat.EPS_2D_DEFAULT` = 0.5, the dev row spans 0.45..0.80), and the draw
+      resolves it to `max(Splat.SAMPLING_MIN_PX, fraction × cell × zoom²)` — the
+      larger of that fraction term and **one render pixel squared**, the floor's own
+      floor. The minimum exists because the cell (`viewportArea / count`) shrinks as
+      the count grows, so a dense cloud on the phone's 0.25 render scale (a 360
+      px-wide target) falls below a pixel, where a splat is hit or missed by where
+      its centre lands and a smooth bright far region shows a **density-independent
+      speckle** the fraction term cannot remove. The minimum is a property of the
+      RENDER TARGET and is deliberately NOT scaled by zoom; the cell term is (the
+      scene spreads over more pixels). It is a `uniform`, not a `const`, so it moves
+      live with no recompile.
     - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
       One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
       from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
@@ -911,7 +918,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 648 tests across thirty-six classes:
+it**. 649 tests across thirty-six classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -983,7 +990,14 @@ every library write took the app down, so any gallery tap crashed it.
   asserts the *invariance* and not either pixel value: the floor over the cell is
   the same number at both resolutions, the phone's is the cloud's scaled by the
   square of the resolution ratio, and the zoom enters squared because it magnifies
-  both axes. A
+  both axes — **where the cell term is the larger of the two terms.** Below it the
+  floor does not shrink, and that floor's floor is the fix for a second, separate
+  bug: `Splat.SAMPLING_MIN_PX` is one render pixel squared, derived from the
+  reference's clean 6 px² at 912 wide scaled to the phone's 360 px-wide target
+  (0.935, rounded up), and it is a property of the RENDER TARGET. The test pins
+  that it does NOT scale with zoom (a zoom-out must not divide it back toward zero,
+  which is the same artifact smaller) and does not shrink with a smaller viewport,
+  and that it never clamps a floor the cell term has already lifted. A
   cell that cannot be claimed (no splats, no viewport, a NaN fraction) answers 0,
   which is the identity for a floor — the "a window claims nothing" rule applied to
   a number, where a guess would be a floor derived from a count of nothing. Its

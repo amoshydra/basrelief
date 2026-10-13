@@ -78,18 +78,26 @@ public final class Splat {
      * the splats whose screen covariance is too small to sample, so a far field of
      * ~2 px splats at 2 px spacing stops reading as a screen-door fog.
      *
-     * <p><b>It is a FRACTION OF THE CELL, not a number of pixels, and that is the
-     * whole of it.</b> The floor's job is to close the gap between neighbouring
-     * splats, and that gap is the cell a splat stands for: {@code viewportArea /
-     * count}, magnified by the zoom. A fixed floor in pixels is measured in a unit
-     * the gap does not use -- the cell doubles with the render's resolution and
-     * again with every octave of zoom, while a constant does not -- so the same
-     * setting is a different effect on every device and at every zoom, and the
-     * knob's maximum can be below what the phone needs. Measured on one cloud:
-     * the sky needed 6 at the cloud's own 912x1984 frame and 15 at the 1440x3120
-     * the phone draws it into, which is 6 x (1440/912)^2 to three figures. As a
-     * fraction of the cell both are 0.5, which is what makes one default correct
-     * for both. See {@link #eps2dFor}.
+     * <p><b>It is a FRACTION OF THE CELL, and the floor is the LARGER of that term
+     * and {@link #SAMPLING_MIN_PX}.</b> The fraction term closes the gap between
+     * neighbouring splats, and that gap is the cell a splat stands for:
+     * {@code viewportArea / count}, magnified by the zoom. A fixed floor in pixels
+     * is measured in a unit the gap does not use -- the cell doubles with the
+     * render's resolution and again with every octave of zoom, while a constant
+     * does not -- so the same fraction is the same effect on every device and at
+     * every zoom, and the knob's maximum cannot fall below what the phone needs.
+     * Measured on one cloud: the sky needed 6 at the cloud's own 912x1984 frame and
+     * 15 at the 1440x3120 the phone draws it into, which is 6 x (1440/912)^2 to
+     * three figures. As a fraction of the cell both are 0.5, which is what makes
+     * one default correct for both.
+     *
+     * <p><b>The fraction term alone is not enough, and that is the artifact
+     * {@link #SAMPLING_MIN_PX} exists for.</b> The cell shrinks as the count grows,
+     * so the fraction term shrinks with it, and past a point it falls below one
+     * render pixel -- where a splat cannot be sampled at all and a smooth, bright,
+     * far region (a sky, a white wall) shows partial coverage as a fine speckle
+     * that does not shrink with density. The sampling minimum is the floor's own
+     * floor. See {@link #eps2dFor}.
      *
      * <p>The measured value: at 0.5 the sky's high-frequency energy falls to the
      * photograph's own, and the dense net it shows at 0.2 is gone.
@@ -110,6 +118,35 @@ public final class Splat {
 
     /** The top of the dev SIZE range: the cleaner-sky option at a small subject cost. */
     public static final float EPS_2D_MAX = 0.8f;
+
+    /**
+     * The smallest variance, in render-target pixels squared, at which a splat can
+     * be sampled -- the floor's own floor, and the second term of
+     * {@link #eps2dFor}'s maximum.
+     *
+     * <p><b>Derived from the reference render.</b> A clean reference renderer
+     * reaches the photograph's own high-frequency energy at {@code eps2d = 6} on a
+     * 912 px-wide frame. A variance is an area, so the same look on the 360 px-wide
+     * render target the phone actually draws into -- a 0.25 render scale of 1440,
+     * read off the device's own {@code splat: ... render=360x780 scale=0.2500}
+     * line -- is {@code 6 x (360/912)^2 = 0.935} px^2, rounded up to 1. That is
+     * sigma = one render pixel: below it a splat is smaller than the samples that
+     * would draw it, so it is hit or missed depending on where its centre lands,
+     * which is the partial-coverage speckle the fraction term cannot remove. It is
+     * rounded UP rather than to the exact 0.935 because a floor a little above the
+     * measurement only enlarges an already-undersampled splat, while one below it
+     * is the artifact itself.
+     *
+     * <p><b>It is NOT scaled by zoom, and that is the point of a separate term.</b>
+     * The cell term carries {@code zoom^2} because the gap between splats is a
+     * property of the SCENE, and a magnified render spreads those splats over more
+     * pixels. This floor is a property of the RENDER TARGET -- a splat cannot be
+     * sampled below one target pixel however the camera is zoomed -- so it is a
+     * constant in render pixels. Folding the zoom in here would let a zoom-out
+     * (0.25 is reachable) divide the minimum back toward zero and reintroduce the
+     * same artifact, smaller, which is the failure this constant exists to end.
+     */
+    public static final float SAMPLING_MIN_PX = 1f;
 
     /**
      * A cloud's identity: its path AND the number of bytes behind it.
@@ -148,27 +185,48 @@ public final class Splat {
     }
 
     /**
-     * The floor in render-target pixels squared, from the fraction the knob stores.
+     * The floor in render-target pixels squared: the LARGER of the sampling minimum
+     * and the fraction of the cell the knob stores.
      *
      * <p>This is the one resolution of the setting into a number, and it lives here
-     * rather than in the renderer so the invariance it exists for can be asserted:
-     * the floor is {@code fraction * cell}, where the cell is the area one splat
-     * stands for on screen. {@code viewportArea / count} is that area when the cloud
-     * fills the viewport -- which is the case for a photograph, whose aspect is the
-     * screen's -- and it is the same quantity the shader is compensating for, so it
-     * is the honest one to measure against. The zoom enters squared because it
-     * magnifies both the cell's width and its height.
+     * rather than in the renderer so the invariance it exists for can be asserted.
+     * It is a maximum of two quantities in the same unit, render-target pixels
+     * squared:
      *
-     * <p>A count that cannot claim a cell (0, or a viewport that is not a size)
-     * answers 0, which is the identity: a floor is an enlargement, and enlarging by
-     * nothing is the only answer that does not invent one. The caller clamps the
-     * fraction, so this cannot be handed a NaN.
+     * <ul>
+     *   <li>{@link #SAMPLING_MIN_PX} -- the smallest variance a splat can be
+     *       sampled at. It is a property of the RENDER TARGET, so it is independent
+     *       of zoom and of count, and it is what keeps the floor from falling below
+     *       the pixel grid on a low-resolution target (the phone's 0.25 render
+     *       scale) or a high-count cloud.</li>
+     *   <li>{@code fraction * cell * zoom^2}, where the cell is the area one splat
+     *       stands for on screen: {@code viewportArea / count}. That is the area
+     *       when the cloud fills the viewport -- which is the case for a photograph,
+     *       whose aspect is the screen's -- and it is the same quantity the shader
+     *       is compensating for, so it is the honest one to measure against. The
+     *       zoom enters squared because it magnifies both the cell's width and its
+     *       height.</li>
+     * </ul>
+     *
+     * <p>Taking the maximum rather than the cell term alone is what fixes the
+     * density-independent speckle on a smooth bright far region: the cell term
+     * shrinks as the count grows, and without the floor's floor it lands below a
+     * render pixel and the splats stop being sampled at all. Where the sampling
+     * minimum dominates, the SIZE knob cannot push the floor below it -- that is
+     * the point of a floor -- so the knob's effect is bounded from underneath, not
+     * removed.
+     *
+     * <p>A count or viewport that cannot claim a value (0, or a viewport that is
+     * not a size) answers 0, which is the identity: a floor is an enlargement, and
+     * enlarging by nothing is the only answer that does not invent one. The caller
+     * clamps the fraction, so this cannot be handed a NaN.
      */
     public static float eps2dFor(float fraction, int viewportW, int viewportH,
                                  int count, float zoom) {
         if (!(fraction > 0f) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
         float z = Float.isFinite(zoom) ? Math.max(0.25f, Math.min(2f, zoom)) : 1f;
-        return fraction * ((float) viewportW * viewportH / count) * z * z;
+        float cell = fraction * ((float) viewportW * viewportH / count) * z * z;
+        return Math.max(SAMPLING_MIN_PX, cell);
     }
 
     /** The product default post-blur radius, in pixels: 0 is the identity. */

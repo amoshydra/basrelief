@@ -235,9 +235,12 @@ public class SplatTest {
     }
 
     /**
-     * The floor is a fraction of the CELL, and the cell is the viewport divided by
-     * the splat count -- so one setting is one effect at every resolution and every
-     * zoom, which is the property a number of pixels cannot have.
+     * Where the cell term is the larger of the two -- above the sampling minimum --
+     * the floor is a fraction of the CELL, and the cell is the viewport divided by
+     * the splat count, so one setting is one effect at every resolution and every
+     * zoom, which is the property a number of pixels cannot have. The floor's own
+     * floor, and the density-independent speckle that forced it, are pinned by
+     * {@link #theFloorNeverFallsBelowTheSamplingMinimum}.
      *
      * <p>This is the bug it exists for, in the numbers it was measured in. One
      * cloud's smooth sky, high-frequency energy against the photograph's own: at
@@ -249,7 +252,7 @@ public class SplatTest {
      * the phone's floor is the cloud's scaled by (1440/912)^2.
      */
     @Test
-    public void theFloorIsAFractionOfTheCellNotANumberOfPixels() {
+    public void aboveTheSamplingMinimumTheFloorIsAFractionOfTheCell() {
         int count = 149504;
         float cloud = Splat.eps2dFor(0.5f, 912, 1984, count, 1f);
         float phone = Splat.eps2dFor(0.5f, 1440, 3133, count, 1f);
@@ -265,9 +268,74 @@ public class SplatTest {
     }
 
     /**
+     * The floor has a SAMPLING MINIMUM: it is never smaller than
+     * {@link Splat#SAMPLING_MIN_PX}, however small the cell term becomes.
+     *
+     * <p>This is the density-independent speckle it exists for. The cell term
+     * shrinks as the count grows -- {@code viewportArea / count} -- so a dense cloud
+     * on a low-resolution render target (the phone draws at a 0.25 render scale, a
+     * 360 px-wide target) lands below one render pixel, where a splat is smaller
+     * than the samples that would draw it and is hit or missed by where its centre
+     * happens to fall. Measured across a 150k and a 1.18M cloud the artifact did not
+     * shrink with density: doubling the count halved the cell, which halved the
+     * floor, holding the coverage constant.
+     *
+     * <p>The two properties that make it a render-TARGET property rather than a
+     * scene one are pinned here: it does NOT scale with zoom (a zoom-out must not
+     * divide it back toward zero), and it does NOT scale with the viewport (it is a
+     * constant in render pixels, so a smaller target still gets the same one).
+     */
+    @Test
+    public void theFloorNeverFallsBelowTheSamplingMinimum() {
+        // The value AND its derivation, so the number cannot move in silence: a
+        // clean reference render needs eps2d 6 at 912 px wide, and a variance scales
+        // as an area, so the phone's 360 px-wide target implies 6*(360/912)^2 =
+        // 0.935 px^2, rounded up to one render pixel.
+        assertEquals(1f, Splat.SAMPLING_MIN_PX, 0f);
+        float scaled = 6f * (360f / 912f) * (360f / 912f);
+        assertTrue("the reference's clean floor scales to under the minimum",
+                scaled < Splat.SAMPLING_MIN_PX);
+        assertTrue("but only by the rounding margin, not by a different amount",
+                Splat.SAMPLING_MIN_PX - scaled < 0.1f);
+
+        // A dense cloud on the phone's own 360x780 target: the raw cell term is
+        // below the minimum, so the minimum is the floor eps2dFor returns. (The raw
+        // term is written out by hand here because eps2dFor itself answers the max,
+        // so it cannot show its own smaller term.)
+        float raw = 0.45f * (360f * 780f / 1177600f);
+        assertTrue("the cell term really is below the minimum here",
+                raw < Splat.SAMPLING_MIN_PX);
+        assertEquals(Splat.SAMPLING_MIN_PX,
+                Splat.eps2dFor(0.45f, 360, 780, 1177600, 1f), 0f);
+
+        // NOT scaled by zoom: the raw cell term stays below the minimum at every
+        // zoom, and the floor stays exactly the minimum. Folding zoom in would let a
+        // zoom-out divide it toward zero and the artifact return.
+        for (float z : new float[] {0.25f, 0.5f, 1f, 2f}) {
+            assertTrue("the cell term must stay below the minimum at z=" + z,
+                    raw * z * z < Splat.SAMPLING_MIN_PX);
+            assertEquals("zoom must not scale the sampling minimum",
+                    Splat.SAMPLING_MIN_PX,
+                    Splat.eps2dFor(0.45f, 360, 780, 1177600, z), 0f);
+        }
+
+        // A render-target constant, not a fraction of the frame: a much smaller
+        // target does not shrink it.
+        assertEquals(Splat.SAMPLING_MIN_PX,
+                Splat.eps2dFor(0.45f, 90, 195, 1177600, 1f), 0f);
+
+        // Above the minimum the cell term is exact, so the minimum only ever lifts
+        // an undersampled floor and never clamps a well-sampled one.
+        assertEquals(0.5f * (1000f * 2000f / 100f),
+                Splat.eps2dFor(0.5f, 1000, 2000, 100, 1f), 1e-3f);
+    }
+
+    /**
      * Zoom magnifies the cell's width AND its height, so it enters squared: a floor
      * that grew linearly would close the gaps at 1x and leave them open at 2x,
-     * which is the same failure one axis over.
+     * which is the same failure one axis over. This is the CELL TERM (the numbers
+     * here are well above the sampling minimum); the minimum deliberately does not
+     * scale with zoom -- see {@link #theFloorNeverFallsBelowTheSamplingMinimum}.
      */
     @Test
     public void zoomEntersSquaredBecauseItMagnifiesBothAxes() {
