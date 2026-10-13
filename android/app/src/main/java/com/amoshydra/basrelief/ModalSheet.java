@@ -165,11 +165,14 @@ final class ModalSheet {
     //
     // ONE scrim for every device, and it is now the whole backdrop mechanism rather
     // than a fallback for one: a Dialog cannot have its background blurred, so this
-    // alpha IS the separation. .94 is opaque enough that nothing behind a modal
-    // competes with it, and deliberately short of solid -- the design's objection to
-    // a black rectangle still holds, just weakly, and at .94 the photograph is a
-    // suggestion rather than an absence.
-    static final int SCRIM = 0xF0000000;
+    // alpha IS the separation. It shipped at .94 -- opaque enough that nothing behind
+    // a modal competed with it, and deliberately short of solid -- and the user asked
+    // for .70 because at .94 the screen behind was too dark to see through. At .70
+    // the photograph behind is plainly readable rather than a suggestion, which is
+    // the design's own objection to a black rectangle finally acted on. It is still
+    // short of clear: the card must read as raised off the render behind it, and the
+    // blur call below may yet land on an OEM that composites it.
+    static final int SCRIM = 0xB3000000;
 
     /**
      * {@code SCRIM_UNBLURRED_STEP}, {@link #SCRIM_UNBLURRED} and {@link #darker} were
