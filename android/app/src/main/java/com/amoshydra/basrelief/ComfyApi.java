@@ -193,6 +193,18 @@ public final class ComfyApi {
                 throw new IOException("ComfyUI HTTP " + code + ": "
                         + new String(bytes, StandardCharsets.UTF_8));
             }
+            // A response that ends early ends the loop above CLEANLY: the stream
+            // returns -1 and there is no exception, so a truncated .splat was
+            // installed as if it were whole. Measured: a 479,232-splat cloud arrived
+            // as 165,888 (5,308,416 bytes of 15,335,424), which the renderer drew and
+            // the row reported, and the count then could not be made to change because
+            // the file really was that size. Nothing here compared what arrived with
+            // what was promised, and that comparison is the whole check.
+            int promised = c.getContentLength();
+            if (promised >= 0 && bytes.length != promised) {
+                throw new IOException("ComfyUI sent " + bytes.length + " of " + promised
+                        + " bytes for " + c.getURL().getPath() + "; the response was cut short");
+            }
             return bytes;
         } finally {
             in.close();
