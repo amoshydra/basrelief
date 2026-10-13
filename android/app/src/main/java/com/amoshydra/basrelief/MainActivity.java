@@ -5893,13 +5893,27 @@ public class MainActivity extends Activity {
      * is the "control nothing reads" lie in its other direction.
      */
     private int cloudBudget() {
-        try {
+        // Read through the map and accept ANY Number, not getInt. A budget stored as
+        // a float -- which is what every neighbouring splat pref is -- makes getInt
+        // throw ClassCastException, and the catch below used to answer the DEFAULT in
+        // silence: a 1,200,000 build came back as 150,000 with nothing in the log.
+        // That is the failure this replaces, and it is why the value is inspected
+        // rather than assumed.
+        Object raw = prefs.getAll().get(ReliefRenderer.KEY_SPLAT_BUDGET);
+        if (raw instanceof Number) {
             return com.amoshydra.basrelief.core.depth.ComfyWorkflow.clampSharpBudget(
-                    prefs.getInt(ReliefRenderer.KEY_SPLAT_BUDGET,
-                            com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET));
-        } catch (Exception e) {
-            return com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET;
+                    ((Number) raw).intValue());
         }
+        if (raw != null) {
+            // A stored value that is not a number cannot claim a budget, and a read
+            // that answers a plausible one anyway is the lie the whole file warns
+            // about. Drop it so the next write is clean, and say what it was.
+            prefs.edit().remove(ReliefRenderer.KEY_SPLAT_BUDGET).apply();
+            android.util.Log.w("Basrelief", "splat budget pref was "
+                    + raw.getClass().getSimpleName() + ", not a number; removed it, using "
+                    + com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET);
+        }
+        return com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET;
     }
 
     /** The sheet's own sentence for a budget: one string, so it cannot be restated wrongly. */
