@@ -559,7 +559,33 @@ final class SplatRenderer {
         if (STATS) logStats(now, surfaceW, surfaceH);
     }
 
-    private static final int SORT_BUCKETS = 8192;
+    /**
+     * Depth-sort buckets: the cloud's whole depth range is quantised into this many
+     * bins and the draw order is back-to-front by bin. Within a bin the order is
+     * arbitrary, because a counting sort assigns no finer key than the bin.
+     *
+     * <p><b>The bins are why a background splat can paint over a foreground one.</b>
+     * These splats are effectively opaque (alpha ~1), so the LAST one drawn wins;
+     * where a bin is wider than a splat, the splats sharing it are ordered
+     * arbitrarily and a background splat can land on top of a foreground one. At
+     * 8192 over a whole cloud the bins are wide. Measured on the actual cloud files:
+     * the beach cloud puts <b>53%</b> of its splats in buckets wider than themselves,
+     * the user's cloud <b>3.5%</b> -- but those are the big, near splats, whose
+     * mis-ordering covers many pixels. The user sees it as white noise / white stuff
+     * on the sky, a face and a wall, and it does NOT go away with density (a
+     * 1,200,000-splat cloud still shows it), which is what rules out the screen-door
+     * explanation.
+     *
+     * <p><b>This is a test of the hypothesis as much as a fix.</b> A reference
+     * renderer that sorts exactly is clean, which is the strongest evidence that the
+     * ordering is the difference -- but whether raising the bucket count is enough to
+     * clear it on a phone is for the user's eye, not for this comment. The cost is
+     * the {@link java.util.Arrays#fill} of the count array and the prefix sum over it,
+     * both over ints, so roughly a millisecond more per sort. The mapping is
+     * deliberately left linear ({@code (SORT_BUCKETS - 1) - (depths[i] - dmin) *
+     * scale}); a log-depth mapping is the likely follow-up, one change at a time.
+     */
+    private static final int SORT_BUCKETS = 262144;
 
     // ------------------------------------------------------------------ sort
 
