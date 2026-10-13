@@ -140,34 +140,43 @@ final class SplatImport {
             return;
         }
         final ComfyApi api = new ComfyApi(job.host);
-        final String tag = ComfyWorkflow.streamTag(job.itemId);
         begin(item.id);
         try {
-            byte[] side = null;
+            // THE HISTORY FOR THE STORED PROMPT ID, not the sidecar. The sidecar is a
+            // fixed filename any run may have left behind, so a resume that read it
+            // could see a previous run's `done` and fetch the wrong cloud -- or a
+            // previous run's `failed` and refuse to touch a job that is fine. The job
+            // record holds the ONE PROMPT this build submitted, and the history is
+            // keyed by exactly that, so it is the only question whose answer belongs
+            // to this job.
+            JSONObject entry = null;
             try {
-                side = api.viewIfPresent(ComfyWorkflow.sharpSidecarName(tag), "", "output");
+                JSONObject hist = new JSONObject(api.getHistory(job.promptId));
+                entry = hist.optJSONObject(job.promptId);
             } catch (Exception e) {
                 // Unreachable server: a sleeping laptop is not a lost build.
                 return;
             }
-            if (side == null) {
-                // The server has no trace of the run: re-submit from the still.
+            if (entry == null) {
+                // The server has no trace of THIS prompt: re-submit from the still.
                 LibraryItem updated = generate(app, prefs, api, item, listener);
                 if (updated != null) listener.done(updated);
                 return;
             }
-            JSONObject sc = new JSONObject(new String(side, StandardCharsets.UTF_8));
-            String state = sc.optString("state", "running");
-            if ("done".equals(state)) {
+            JSONObject status = entry.optJSONObject("status");
+            if (status != null && status.optBoolean("completed", false)) {
                 LibraryItem updated = fetch(app, prefs, api, job, item, listener);
                 if (updated != null) listener.done(updated);
-            } else if ("failed".equals(state)) {
-                String why = sc.optString("error", "the run failed on the server");
+                return;
+            }
+            if (status != null && "error".equals(status.optString("status_str", ""))) {
+                String why = ComfyWorkflow.extractExecutionError(status);
                 JobsStore.fail(prefs, job.promptId, why);
                 listener.failed(why);
+                return;
             }
-            // running: keep the record; the node is doing the work. Re-submitting
-            // here would run it twice against the same output filenames.
+            // Queued or running: keep the record; the node is doing the work.
+            // Re-submitting here would run it twice against the same output names.
         } catch (Exception e) {
             android.util.Log.w(TAG, "splat resume: " + e);
         } finally {
@@ -246,7 +255,7 @@ final class SplatImport {
 
         try {
             phase(id, listener, app.getString(R.string.splat_phase_generating));
-            poll(api, promptId, tag, id, listener);
+            poll(api, promptId);
             phase(id, listener, app.getString(R.string.splat_phase_fetching));
             return fetch(app, prefs, api,
                     new Jobs.Job(id, promptId, api.host(), startedAtMs, Jobs.Kind.SPLAT),
@@ -264,39 +273,39 @@ final class SplatImport {
         }
     }
 
-    /** Ask the history and the sidecar until the run is done or has failed. */
-    private static void poll(ComfyApi api, String promptId, String tag, String itemId,
-                             Listener listener) throws Exception {
+    /** Ask the history for THIS prompt until the run is done or has failed. */
+    private static void poll(ComfyApi api, String promptId) throws Exception {
         long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         int misses = 0;
         while (System.currentTimeMillis() < deadline) {
             try {
-                // The sidecar first: it is the run's own state, written while it runs.
-                byte[] side = api.viewIfPresent(ComfyWorkflow.sharpSidecarName(tag), "",
-                        "output");
-                if (side != null) {
-                    JSONObject sc = new JSONObject(new String(side, StandardCharsets.UTF_8));
-                    String state = sc.optString("state", "running");
-                    if ("done".equals(state)) return;
-                    if ("failed".equals(state)) {
-                        throw new ServerFailure(
-                                sc.optString("error", "the run failed on the server"));
-                    }
-                }
-                // The history: an execution error is reported there, and `completed`
-                // is the one thing that says the run is over. Outputs alone do NOT --
-                // a running entry can already carry them, and treating that as done
-                // is the bug the clip import's status read exists to prevent.
+                // THE HISTORY FOR THIS PROMPT IS THE ONLY THING ASKED, because it is
+                // the only thing that can answer for THIS run. The sidecar is a FIXED
+                // filename -- basrelief_<tag>.progress.json -- that the PREVIOUS run
+                // leaves behind saying done, so asking it first returned on the poll's
+                // very first iteration and every build completed instantly with the
+                // build before it: a 703k build produced an 806k cloud, and a rebuild
+                // looked instantaneous because nothing ever waited. Its `failed` was
+                // the worse half -- a stale failure would abort a healthy run with the
+                // last one's words. The prompt id is the job this app created, so this
+                // is the question it can answer for itself rather than one any run may
+                // answer for it.
                 JSONObject entry = null;
                 try {
                     JSONObject hist = new JSONObject(api.getHistory(promptId));
                     entry = hist.optJSONObject(promptId);
                 } catch (Exception ignored) {
-                    // A blip; the sidecar and the next poll are the retry.
+                    // A blip. An unasked history decides NOTHING -- neither done nor
+                    // failed -- and `misses` below is what turns a run of them into a
+                    // failure, so one dropped poll cannot abort a live run.
                 }
                 if (entry != null) {
                     JSONObject status = entry.optJSONObject("status");
                     if (status != null) {
+                        // `completed` is the one thing that says the run is over.
+                        // Outputs alone do NOT: a running entry can already carry them,
+                        // and treating that as done is the bug the clip import's status
+                        // read exists to prevent.
                         if (status.optBoolean("completed", false)) return;
                         String s = status.optString("status_str", "");
                         if ("error".equals(s)) {
@@ -304,6 +313,9 @@ final class SplatImport {
                         }
                     }
                 }
+                // An absent entry is not a verdict either: the server registers the
+                // prompt when it starts it, and a run queued behind another has none
+                // yet. The deadline is what bounds that wait.
                 misses = 0;
             } catch (ServerFailure e) {
                 throw e;
