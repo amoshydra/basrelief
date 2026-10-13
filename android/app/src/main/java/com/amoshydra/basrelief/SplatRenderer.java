@@ -283,14 +283,23 @@ final class SplatRenderer {
 
         GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1);
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texData);
+        // TIMED, and the three phases are separate on purpose: the buffer packing and
+        // the position mirror are CPU work this thread does not have to do -- the file
+        // read already happens on the Io executor -- while the glTexImage2D below is
+        // the driver's own upload and cannot be moved. Which of them the stall is made
+        // of decides whether the fix is to prepare the buffers elsewhere or to make the
+        // texture smaller, and they are different changes.
+        long tPack0 = System.nanoTime();
         // Whole rows, zero-padded: glTexImage2D reads DATA_W * dataRows * 16
         // bytes, and a truncated file's raw buffer can be shorter than that.
         ByteBuffer padded = ByteBuffer.allocateDirect(dataRows * DATA_W * 16)
                 .order(ByteOrder.nativeOrder());
         padded.put(cloud.raw(), 0, Math.min(cloud.raw().length, n * 32));
         padded.position(0);
+        long tPack1 = System.nanoTime();
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA32F, DATA_W, dataRows, 0,
                 GLES30.GL_RGBA, GLES30.GL_FLOAT, padded);
+        long tGl = System.nanoTime();
         nearest(texData);
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texOrder);
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R32UI, ORDER_W, orderRows, 0,
@@ -301,6 +310,12 @@ final class SplatRenderer {
         // them once per camera move, and the GPU reads everything else.
         pos = new float[n * 3];
         cloud.positions(pos);
+        long tMirror = System.nanoTime();
+        android.util.Log.i(TAG, "splat upload: n=" + n
+                + " pack=" + (tPack1 - tPack0) / 1e6f + "ms"
+                + " glData=" + (tGl - tPack1) / 1e6f + "ms"
+                + " mirror=" + (tMirror - tGl) / 1e6f + "ms"
+                + " total=" + (tMirror - tPack0) / 1e6f + "ms");
         // The cloud's own centre, for the pivot fallback. `medianDepth` is warmed
         // on the IO thread (see ReliefRenderer.requestSplat), so this is a read of a
         // memo rather than a sort on the GL thread; a cloud that was not warmed
