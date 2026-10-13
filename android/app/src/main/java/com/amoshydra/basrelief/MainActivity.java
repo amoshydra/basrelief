@@ -5,6 +5,7 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
@@ -587,7 +588,7 @@ public class MainActivity extends Activity {
      */
 ;
     private TextView hintView;
-    private DepthGenDialog depthGenDialog;
+    private BuildDialog buildDialog;
     /** The one horizontal slider control, keyed as the settings are. */
     private BasreliefSlider zoomSlider;
 
@@ -1486,10 +1487,13 @@ public class MainActivity extends Activity {
                 // re-decode every other thumbnail for it.
                 if (added != null) gallery.itemAppeared(added);
                 Toast.makeText(MainActivity.this,
-                        "Shared image loaded \u2014 set as wallpaper, or generate depth",
+                        "Shared image loaded \u2014 set as wallpaper, or build 3D",
                         Toast.LENGTH_LONG).show();
-                // open the Depth AI page for this image (it may lack depth)
-                openDepthGen();
+                // Open the 3D build dialog for this image, on the row's own mode.
+                // A share no longer assumes depth: the dialog opens with both tabs,
+                // Relief and Splat, so the user chooses rather than being pushed
+                // into a depth generation.
+                openBuildDialog();
             }
         });
     }
@@ -1521,7 +1525,7 @@ public class MainActivity extends Activity {
     /**
      * Repaint everything that can say a run is happening.
      *
-     * <p>Wired to {@link DepthGenDialog#setRunListener} because the run lives on a
+     * <p>Wired to {@link BuildDialog#setRunListener} because the run lives on a
      * worker thread in a class that knows nothing about the sheet. Registered here,
      * once, where the dialog is first opened -- and never cleared, because the
      * reference is weak and this Activity is the thing being collected.
@@ -1537,16 +1541,31 @@ public class MainActivity extends Activity {
         applyStripState();
     }
 
-    private void openDepthGen() {
-        DepthGenDialog.setRunListener(new DepthGenDialog.RunListener() {
+    /** Open the one 3D-build dialog on the tab the selected row's own mode names. */
+    void openBuildDialog() {
+        openBuildDialog(null);
+    }
+
+    /**
+     * Open the one 3D-build dialog on a named tab.
+     *
+     * <p>Every build route ends here: a share, the sheet's Depth AI / Regenerate,
+     * a fix-line "Generate a map", and the Renderer row's Splat and Rebuild. The
+     * tab is which build the caller means — Relief for anything that generates a
+     * depth map, Splat for the cloud, and <b>null</b> to let the row's stored mode
+     * decide (which is what a share does: it does not assume depth any more, it
+     * opens the dialog and shows both tabs).
+     */
+    void openBuildDialog(BuildTab.Kind tab) {
+        BuildDialog.setRunListener(new BuildDialog.RunListener() {
             @Override
             public void onRunStateChanged() {
                 onDepthRunStateChanged();
             }
         });
-        if (depthGenDialog == null) {
-            depthGenDialog = new DepthGenDialog(MainActivity.this,
-                    new DepthGenDialog.Callback() {
+        if (buildDialog == null) {
+            buildDialog = new BuildDialog(MainActivity.this,
+                    new BuildDialog.Callback() {
                         /**
                          * The map has been written and attached already.
                          *
@@ -1579,8 +1598,7 @@ public class MainActivity extends Activity {
                         }
                     });
         }
-        depthGenDialog.useCurrentImage();
-        depthGenDialog.show();
+        buildDialog.show(tab);
     }
 
     @Override
@@ -1600,7 +1618,7 @@ public class MainActivity extends Activity {
         // Collect a run that finished while the app was closed. Not optional: the
         // run is process-static and its prompt id is in prefs, so nothing else in the
         // app would ever go back and ask.
-        DepthGenDialog.resumePending(this);
+        BuildDialog.resumePending(this);
         // The index can change while the studio is backgrounded -- a playlist
         // rotation writes the same selection a tap does -- and the strip and grid
         // each read it once at build time. Re-reading is what re-rings the strip
@@ -2375,13 +2393,13 @@ public class MainActivity extends Activity {
         // generation they started and then slid the sheet over. Read on every
         // refresh rather than pushed, because the run is started from a dialog that
         // is not this class and there is no callback to hang the end on.
-        StripState drawn = DepthGenDialog.isRunning() ? StripState.PROGRESS : stripState;
+        StripState drawn = BuildDialog.isRunning() ? StripState.PROGRESS : stripState;
         // The same STATE is not always the same PICTURE: PROGRESS carries a number.
         // Guarding on the state alone would have frozen the percentage at whatever it
         // was when the run started -- a progress bar that does not progress. Read once
         // here so the guard and the text cannot disagree about it.
         int percent = drawn == StripState.PROGRESS
-                ? DepthGenDialog.progressPercent() : -1;
+                ? BuildDialog.progressPercent() : -1;
         // The pill's own palette, unconditionally: whether it is VISIBLE is
         // applyStripPillness's job, decided by whether a pill exists at all. Blending
         // the colour here as well was doing the same job in two places.
@@ -4237,6 +4255,12 @@ public class MainActivity extends Activity {
     void refreshSliders() {
         AppState state = AppState.load(this, prefs, getFilesDir());
         LibraryItem item = state.activeItem();
+        // The one 3D-build dialog follows the index too. It opens on a captured
+        // subject, so a state it could not know at open -- an embedded depth whose
+        // read has now landed, a cloud job that has started or failed -- has to
+        // arrive here or the tab would show a stale answer for the whole session.
+        // It re-derives rather than re-reads, so this is cheap and idempotent.
+        if (buildDialog != null) buildDialog.onIndexChanged();
         // What the strip and grid were last brought in step with. Recorded on
         // every refresh rather than only after a rebuild, because every in-app
         // selection reaches this method (a gallery tap, a delete of the active
@@ -4501,7 +4525,7 @@ public class MainActivity extends Activity {
                         if (item.video != null || hasStagedClip(item)) {
                             regenerateClip(item);
                         } else {
-                            openDepthGen();
+                            openBuildDialog(BuildTab.Kind.RELIEF);
                         }
                     }
                 }), new LinearLayout.LayoutParams(0,
@@ -4564,6 +4588,25 @@ public class MainActivity extends Activity {
         // Only a photo the index cannot answer needs the file, so this is the only
         // case that can open the window — and an item with a depth file therefore
         // never flickers through "unknown" on a selection.
+        if (answer.isUnknown()) requestEmbeddedDepth(item);
+        return answer;
+    }
+
+    /**
+     * The depth answer for one row, by value rather than by selection.
+     *
+     * <p>The build dialog captures its subject when it opens and can be asked about
+     * it after the selection has moved, so it needs the same one answer the fix line
+     * uses without re-reading "what is selected now". It resolves from the same
+     * caches ({@link #embeddedDepthById}, {@link #clipPlayableById}) and starts the
+     * same reads, so the dialog and the fix line cannot disagree about whether a
+     * photo has a map. Package-private: {@code BuildDialog} is the caller.
+     */
+    DepthSource.Answer depthAnswerFor(LibraryItem item) {
+        if (item == null) return DepthSource.forItem(null, null, null);
+        VideoSource.Answer video = VideoSource.forItem(item, clipPlayableAnswerOf(item));
+        DepthSource.Answer answer =
+                DepthSource.forItem(item, embeddedAnswerOf(item), video);
         if (answer.isUnknown()) requestEmbeddedDepth(item);
         return answer;
     }
@@ -4800,9 +4843,9 @@ public class MainActivity extends Activity {
         // A run in progress, and a run that just failed, are conditions too. The
         // mockup puts both in the SHEET, not only on the collapsed pill: "the sheet
         // is open, so the fix line is already the signal".
-        if (DepthGenDialog.isRunning()) {
+        if (BuildDialog.isRunning()) {
             setFixLine(getString(R.string.fix_generating,
-                            Math.max(0, DepthGenDialog.progressPercent())),
+                            Math.max(0, BuildDialog.progressPercent())),
                     getString(R.string.fix_run_in_background), new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
@@ -4827,9 +4870,9 @@ public class MainActivity extends Activity {
         // depth answer and deliberately keyed on the item's own file rather than on
         // hasDepth(): the question is whether anything is left to lose, and an
         // embedded map cannot be the thing a regeneration just destroyed.
-        if (DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
+        if (BuildDialog.lastResult() == BuildDialog.Result.FAILED
                 && ((item != null && item.depthName != null)
-                    || !DepthGenDialog.failureCause().isEmpty())) {
+                    || !BuildDialog.failureCause().isEmpty())) {
             // An error that does not say what survived leaves the user unable to tell
             // whether their depth is gone, which is the worst outcome this app has.
             setFixBorderColour(BAD_COLOUR);
@@ -4837,7 +4880,7 @@ public class MainActivity extends Activity {
                     getString(R.string.fix_try_again), new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
-                            openDepthGen();
+                            openBuildDialog(BuildTab.Kind.RELIEF);
                         }
                     },
                     getString(R.string.fix_choose_map), new View.OnClickListener() {
@@ -4885,7 +4928,7 @@ public class MainActivity extends Activity {
                                 // that emits the normal this state is missing. The
                                 // user can change checkpoint, resolution and host
                                 // there exactly as any other run.
-                                openDepthGen();
+                                openBuildDialog(BuildTab.Kind.RELIEF);
                             }
                         }, null, null, false);
                 return;
@@ -4902,7 +4945,7 @@ public class MainActivity extends Activity {
                 getString(R.string.fix_no_depth_actions), new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        openDepthGen();
+                        openBuildDialog(BuildTab.Kind.RELIEF);
                     }
                 },
                 getString(R.string.fix_choose_map), new View.OnClickListener() {
@@ -5885,168 +5928,6 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * The budget the next cloud build will send, from the dev BUDGET pref.
-     *
-     * <p>Read here rather than spelled as the constant, so the confirm states the
-     * count that will actually run — the whole point of the dev ladder is that the
-     * number is the user's, and a dialog claiming 150,000 while a 600,000 build runs
-     * is the "control nothing reads" lie in its other direction.
-     */
-    private int cloudBudget() {
-        // Read through the map and accept ANY Number, not getInt. A budget stored as
-        // a float -- which is what every neighbouring splat pref is -- makes getInt
-        // throw ClassCastException, and the catch below used to answer the DEFAULT in
-        // silence: a 1,200,000 build came back as 150,000 with nothing in the log.
-        // That is the failure this replaces, and it is why the value is inspected
-        // rather than assumed.
-        Object raw = prefs.getAll().get(ReliefRenderer.KEY_SPLAT_BUDGET);
-        if (raw instanceof Number) {
-            return com.amoshydra.basrelief.core.depth.ComfyWorkflow.clampSharpBudget(
-                    ((Number) raw).intValue());
-        }
-        if (raw != null) {
-            // A stored value that is not a number cannot claim a budget, and a read
-            // that answers a plausible one anyway is the lie the whole file warns
-            // about. Drop it so the next write is clean, and say what it was.
-            prefs.edit().remove(ReliefRenderer.KEY_SPLAT_BUDGET).apply();
-            android.util.Log.w("Basrelief", "splat budget pref was "
-                    + raw.getClass().getSimpleName() + ", not a number; removed it, using "
-                    + com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET);
-        }
-        return com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET;
-    }
-
-    /** The sheet's own sentence for a budget: one string, so it cannot be restated wrongly. */
-    private String budgetSentence(int budget) {
-        return getString(R.string.splat_confirm_body,
-                getString(R.string.splat_generator),
-                String.format(java.util.Locale.US, "%,d", budget),
-                getString(R.string.splat_estimate));
-    }
-
-    /**
-     * The sheet's budget slider, applied on every change.
-     *
-     * <p>The pref is written here so {@link #cloudBudget} -- which the build itself
-     * reads -- answers the number on the line above, and the line is restated from the
-     * same value, so the three cannot drift. {@code apply()} rather than
-     * {@code commit()}: this runs per drag frame, and a synchronous write of the whole
-     * prefs file on the UI thread is the stall the gesture rules exist to avoid.
-     */
-    private void setCloudBudget(int sliderThousands, TextView line) {
-        int minK = com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MIN / 1000;
-        int maxK = com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MAX / 1000;
-        // A callback from OUTSIDE the slider's own range is not a value the user
-        // chose. A slider whose view is detached mid-gesture -- pressing Make while a
-        // finger is still on it -- reports 0, and clampSharpBudget turns 0 into the
-        // DEFAULT, silently: that is how a 1,200,000 budget came back as 150,000 on
-        // the second and third build and not the first, when the slider happened to
-        // be released before the button was pressed. A control that cannot claim a
-        // value must not write one, which is the rule this file already states for
-        // reads. The ignored value is logged so the next occurrence names itself.
-        if (sliderThousands < minK || sliderThousands > maxK) {
-            android.util.Log.w("Basrelief", "splat budget callback out of range: "
-                    + sliderThousands + "k (the row spans " + minK + "k.." + maxK
-                    + "k); ignored rather than written as the default");
-            return;
-        }
-        int v = sliderThousands * 1000;
-        prefs.edit().putInt(ReliefRenderer.KEY_SPLAT_BUDGET, v).apply();
-        if (line != null) line.setText(budgetSentence(v));
-    }
-
-    /**
-     * The confirm that states what a cloud build will run and cost.
-     *
-     * <p>The depth dialog's shape: what runs (SHARP, on the configured server), the
-     * budget (150,000 splats) and the estimate (~10 s, ~4.8 MB). Not now / Make one.
-     * A rebuild asks the same question because it runs the same thing, and it must
-     * not silently replace a cloud the user already has.
-     */
-    void offerMakeCloud(final LibraryItem item, final boolean rebuild) {
-        if (item == null) return;
-        final ModalSheet sheet = new ModalSheet(this, 0.6f, ModalSheet.SCRIM, false);
-        sheet.grip(getString(R.string.splat_confirm_grip));
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.addView(ModalSheet.title(this, getString(rebuild
-                ? R.string.splat_confirm_rebuild_title : R.string.splat_confirm_title)));
-        // The budget lives HERE, in the flow that reads it, and not in the dev group
-        // where it used to. It is a submission-time value -- nothing on screen changes
-        // while it moves -- so the only place it can be judged is next to the button
-        // that submits it, and the number on the line above is restated from the same
-        // control rather than read back from storage. That is what makes the sheet's
-        // promise ("the number you compare by eye is the number that runs") structural
-        // instead of a coincidence: there is one value, and every part of this dialog
-        // reads it.
-        final TextView budgetLine = ModalSheet.subtitle(this, budgetSentence(cloudBudget()));
-        body.addView(budgetLine);
-        final BasreliefSlider budget = BasreliefSlider.create(this,
-                ReliefRenderer.KEY_SPLAT_BUDGET,
-                cloudBudget() / 1000,
-                com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MIN / 1000,
-                com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MAX / 1000,
-                new BasreliefSlider.ValueFormatter() {
-                    @Override
-                    public String format(int value) {
-                        return value + "k";
-                    }
-                },
-                new BasreliefSlider.OnChanged() {
-                    @Override
-                    public void onChanged(int value) {
-                        setCloudBudget(value, budgetLine);
-                    }
-                });
-        // EVERY change, not just the release. A budget that only commits on release
-        // can be submitted from a drag that never ended, and a row that is rebuilt
-        // while it is being dragged snaps back to storage -- which is how the sheet
-        // came to state one number while the build ran another.
-        budget.setOnPreview(new BasreliefSlider.OnPreview() {
-            @Override
-            public void onPreview(int value) {
-                setCloudBudget(value, budgetLine);
-            }
-        });
-        body.addView(budget.view());
-        sheet.body(body);
-        Button notNow = ModalSheet.button(this, getString(R.string.splat_confirm_not_now),
-                false, true);
-        Button go = ModalSheet.button(this, getString(rebuild
-                ? R.string.action_rebuild : R.string.splat_action_make), true, false);
-        notNow.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                sheet.dismiss();
-            }
-        });
-        go.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // The submitted number is the slider's OWN value, read HERE, and not
-                // whatever the pref happens to hold. The callbacks that keep the pref
-                // warm are unreliable in order -- a view detached mid-gesture can
-                // deliver a stale value after the release, which is how a slider
-                // showing 150k came to run a 404,000 build. The one number that is
-                // certainly what the user chose is the one the slider is displaying,
-                // so that is the one the build reads, and the pref write below is
-                // only so the next dialog opens where this one was left.
-                setCloudBudget(budget.value(), budgetLine);
-                // Two numbers, one line: what the slider is showing and what storage
-                // holds. They must agree, and when they did not the only way to tell
-                // which one was wrong was to guess -- the last three attempts each
-                // guessed a different half. This makes the next attempt state it.
-                android.util.Log.i("Basrelief", "splat budget at submit: slider="
-                        + budget.value() + "k pref=" + (cloudBudget() / 1000) + "k");
-                sheet.dismiss();
-                startCloudBuild(item);
-            }
-        });
-        sheet.footerRow(notNow, go);
-        sheet.show(this);
-    }
-
-    /**
      * Run the Make 3D build for one row, off the UI thread.
      *
      * <p>The same shape as {@link #regenerateClip}: a server round on the LONG worker
@@ -6056,6 +5937,13 @@ public class MainActivity extends Activity {
      */
     void startCloudBuild(final LibraryItem item) {
         if (item == null) return;
+        // THE SPLAT TAB'S BUILD SETS THE SPLAT MODE, here, beside the run that
+        // produces the cloud — the same statement the Relief tab makes in
+        // BuildDialog.startRun. "The tab you built on is the mode you get", so a
+        // build cannot leave the row drawing as one thing while the dialog that
+        // made it said another. It is written before the host check below so a
+        // row offered a rebuild while it was in relief mode still flips.
+        setRenderMode(item.id, com.amoshydra.basrelief.core.store.RenderMode.SPLAT);
         String host = prefs.getString("comfy_url", "");
         if (host == null || host.trim().isEmpty()) {
             Toast.makeText(MainActivity.this, R.string.video_import_no_server,
@@ -6344,7 +6232,7 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_DEPTHGEN_IMAGE) {
-            if (depthGenDialog != null) depthGenDialog.onPickedImage(data);
+            if (buildDialog != null) buildDialog.onPickedImage(data);
             return;
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;

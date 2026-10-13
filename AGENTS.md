@@ -513,11 +513,11 @@ already cost real time.
       about being a trade, not a fix.
     - **BUDGET is generation-side and is read at submission, not at draw.** It is
       the `budget` the app sends to `SharpStill`, read in `SplatImport.generate`
-      from the same pref the confirm sheet states (`MainActivity.cloudBudget`), so
+      from the same pref the build dialog's Splat tab states (`BuildDialog.cloudBudget`), so
       the number the user compares by eye is the number that runs. The ladder's own
       verdict is 150k soft, 741k right, 1.05M indistinguishable from full — and on
       the measured phone 741k ≈ 18 fps, 1.05M ≈ 13. A dev changes it and presses
-      Regenerate on one row to compare. The confirm's `~10 s · ~4.8 MB` estimate is
+      Regenerate on one row to compare. The tab's `~10 s · ~4.8 MB` estimate is
       deliberately NOT scaled by the budget: it is the node's own reference run, and
       a scaled guess would be a second, unmeasured number.
     - **The group is shown only when it can change a pixel** — the selected row is
@@ -901,7 +901,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 636 tests across thirty-five classes:
+it**. 648 tests across thirty-six classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1764,6 +1764,18 @@ every library write took the app down, so any gallery tap crashed it.
   flickers through the window on selection), that `FILE` requires the file to be
   here, that only `NONE` may say "no cloud", and that every kind is reachable
   through `Kind.values()` rather than a hand-written list that would go stale.
+- `BuildTabTest` — the one 3D-build dialog's two tabs, and the two rules a screen
+  cannot be trusted to keep: **the tab a build runs on is the mode it writes**
+  (`defaultFor`/`modeFor` are inverses, so opening a row and pressing the visible
+  button cannot silently flip how it draws — the "two answers to one question"
+  failure one level down), and **a tab offers an action it can actually perform**.
+  The traps are the state rankings: a run in flight offers `NONE` whatever the row
+  otherwise holds (a second build over the first), a failure outranks the asset it
+  left behind (the cloud from yesterday is not the thing to act on), and a depth
+  this dialog cannot replace — an embedded chunk, a clip's track — is `BUILT` with
+  no action, which is where `DepthSource.canReplace()` is read rather than
+  re-decided. Both resolvers rank the run the same way, asserted, so the two tabs
+  cannot grow two meanings of `FAILED`.
 - `VideoTracksTest` — the clip's three files, and the invariant that makes them one
   thing. §2 says *"never store one without the other"* — colour without depth renders
   **flat, with no relief and no error** — and three loose `String`s could each be null

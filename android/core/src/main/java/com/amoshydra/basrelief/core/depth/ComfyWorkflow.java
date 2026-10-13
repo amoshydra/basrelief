@@ -13,7 +13,7 @@ import java.util.List;
  * Builds the ComfyUI graph the Depth AI page submits, plus the small pure
  * helpers that go with it.
  *
- * <p>This was extracted verbatim out of {@code DepthGenDialog} so it could be
+ * <p>This was extracted verbatim out of {@code BuildDialog} so it could be
  * tested. Nothing here touches the Android framework — the only outside type is
  * {@code org.json}, which the platform provides at runtime and which is a
  * {@code testImplementation} dependency here.

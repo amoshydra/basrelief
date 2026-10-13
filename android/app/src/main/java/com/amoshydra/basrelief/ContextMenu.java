@@ -127,7 +127,7 @@ final class ContextMenu {
 
     /**
      * The mockup's {@code --bad}, the same value as {@code MainActivity}'s
-     * {@code BAD_COLOUR} and the failed-run sentence in {@code DepthGenDialog}.
+     * {@code BAD_COLOUR} and the failed-run sentence in {@code BuildDialog}.
      * A destructive command is the one thing in the menu that must not read as
      * ordinary, and the app already owns a colour whose meaning is "this is
      * bad"; a new red would be a second colour language for the same idea.

@@ -2,8 +2,12 @@ package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.depth.ComfyWorkflow;
 import com.amoshydra.basrelief.core.depth.ModelRanking;
+import com.amoshydra.basrelief.core.store.BuildTab;
+import com.amoshydra.basrelief.core.store.DepthSource;
+import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.RenderMode;
 
 import android.app.Activity;
 import android.app.Notification;
@@ -38,58 +42,73 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * The Depth AI flow: one screen to set up a ComfyUI run, and a run that
- * survives the studio being closed.
+ * The one 3D-build dialog, with two tabs: <b>Relief</b> and <b>Splat</b>.
  *
- * <p><b>What changed and why.</b> This used to be a dialog that hid the
- * endpoint behind "discovered automatically", which is fine until the server is
- * on a different machine — which it usually is — and made the user pick the image
- * again. The endpoint is now an ordinary editable field with a Test connection
- * button beside it, and the source is always the photo on screen, because depth
- * is generated <i>for a photograph</i>.
+ * <p><b>Why two tabs, and why one class.</b> There used to be two flows with two
+ * entry points — this depth panel, which a share opened whether or not the user
+ * wanted depth, and a separate "Make 3D?" confirm beside the Renderer row. The
+ * user's report was that a share <i>assume the user wants to generate depth</i>
+ * now that a splat cloud is also a way to make a photo 3D. So the depth flow
+ * dissolved into the Relief tab, the splat confirm dissolved into the Splat tab,
+ * and every build — a share, the sheet's Rebuild, a fix-line Regenerate — opens
+ * this one dialog on the tab that matches what it means. Which tab a row opens on
+ * and what each tab may offer is {@link BuildTab}, in {@code :core}, so it is a
+ * tested decision rather than a branch on each screen. The two tabs can
+ * <b>coexist on a row</b>: a depth map and a cloud are separate files, so building
+ * one never removes the other, and each tab reports its own state.
  *
- * <p><b>The panel is a {@link ModalSheet}, and the mockup is the spec.</b> It used
- * to be a bare {@code Dialog} at 92% of the screen width with no background of its
- * own, so what shipped was the platform's light-themed rounded frame inset 4% each
- * side — not the design's full-bleed card over a scrim — and every control in it
- * was a stock {@code Button}, which on a light theme arrives with its own
- * background and no text colour of ours. So: the shared modal, and
- * {@link ModalSheet}'s widgets for every button, caption and field. The one thing
- * this file still builds by hand is what the mockup draws here and nowhere else.
+ * <p><b>The tab decides the generator and the mode.</b> Building on the Relief tab
+ * runs the depth graph and sets the row's {@link RenderMode} to
+ * {@link RenderMode#RELIEF}; building on the Splat tab runs the SHARP still graph
+ * and sets it to {@link RenderMode#SPLAT}. "The tab you built on is the mode you
+ * get", so a build cannot leave a row drawing as one thing while the dialog that
+ * made it said another.
  *
- * <p><b>The server field is always visible, and that is a deliberate loss.</b> PRD
- * R-PANEL5 asks for a link that says where the app is pointed — {@code •} host
- * {@code Change} — so nobody has to remember which box they typed, and this panel
- * used to do exactly that, hiding the field whenever an address was stored. The
- * mockup draws a full-width field with the stored address as its value and a Test
- * connection row under it, and the mockup wins: an address you cannot see is an
- * address you cannot check, and "Change" is one more step between a wrong guess
- * and a working server. So there is no dot, no address line and no status line
- * beside the field any more — one note under the button is where the panel says
- * anything at all. <b>If you are here to restore R-PANEL5, read this first.</b>
+ * <p><b>The server field is shared and always visible, and that is a deliberate
+ * loss.</b> PRD R-PANEL5 asks for a link that says where the app is pointed —
+ * {@code •} host {@code Change} — so nobody has to remember which box they typed,
+ * and this panel used to do exactly that, hiding the field whenever an address was
+ * stored. The mockup draws a full-width field with the stored address as its value
+ * and a Test connection row under it, and the mockup wins: an address you cannot
+ * see is an address you cannot check. Both kinds of build need the same server, so
+ * the field sits above the tabs and both tabs read it. <b>If you are here to
+ * restore R-PANEL5, read this first.</b>
  *
- * <p><b>Setup is one screen</b> — server, model, resolution — because three
- * screens for one decision is three chances to change your mind.
+ * <p><b>The panel is a {@link ModalSheet}.</b> The mockup is the spec for its
+ * chrome; {@link ModalSheet}'s own javadoc says why every overlay in this app is a
+ * Dialog and not a sibling view.
  *
- * <p><b>A successful run applies itself.</b> No review step and no confirm
+ * <p><b>A successful depth run applies itself.</b> No review step and no confirm
  * dialog: the app asked the question on the user's behalf and the server has now
  * answered it, so there is nothing left to confirm. Regenerating is the undo,
  * which is why that needs no confirmation either.
  *
  * <p><b>The map is replaced only on success.</b> See {@link #applyMap} — this is
  * the single most important property of the class, and it is why the whole
- * success path is built as one function that ends in one write.
+ * success path is built as one function that ends in one write. A splat build is
+ * the same on its side: {@link SplatImport} writes the cloud only on success, and
+ * leaves the row untouched on a failure.
  *
  * <p><b>The run outlives the dialog.</b> R-BG1: the job lives on the server, not
  * here. So the poll loop is a daemon thread, the prompt id is written to prefs
  * before the dialog can be dismissed, and {@link #resumePending} asks the server
  * what happened when the app comes back. Nothing about a run is cancelled by
  * closing anything — collapsing the sheet is not a cancel (R-S4).
+ *
+ * <p><b>The Relief tab runs in-dialog; the Splat tab submits and continues in the
+ * tile.</b> That asymmetry is the two existing runs, not a new preference: a depth
+ * run has no persisted record (the prompt id is the whole handle), so the dialog
+ * carries it and shows its phases; a cloud build is a {@link Jobs} record with a
+ * live phase on the row, so the dialog submits it and dismisses, exactly as the
+ * old confirm did and for the same reason — the tile's ring and the sheet's cloud
+ * row are the progress, and a second copy in the dialog would be a second place to
+ * be wrong. Moving the splat run into the dialog's run block is a later change.
  */
-public final class DepthGenDialog {
+public final class BuildDialog {
 
     public interface Callback {
         /**
@@ -109,7 +128,7 @@ public final class DepthGenDialog {
          * <p>It took no item id, so its only way to find the photo was to re-read
          * the <em>currently selected</em> one — and a run takes tens of seconds, so
          * a user who switched photos in the meantime got another photo's depth map.
-         * {@link DepthGenDialog#applyMap} now does that write against the id
+         * {@link BuildDialog#applyMap} now does that write against the id
          * captured at launch, which is the only place it can be right, so an
          * implementation here must not write {@code depthName} again.
          */
@@ -212,6 +231,24 @@ public final class DepthGenDialog {
     /** Why the last run failed. Never null once {@link #result} is FAILED. */
     private static volatile String failureCause = "";
 
+    /**
+     * The row the in-flight run is for, or empty. Guards the Relief tab's own
+     * BUILDING state: {@link #isRunning()} is process-wide, so a run for photo A
+     * must not make photo B's dialog claim a build is happening.
+     */
+    private static volatile String runningItemId = "";
+
+    /**
+     * The row the last run FAILED for, or empty.
+     *
+     * <p>{@link #result} is a single process-wide outcome; without the id, a dialog
+     * opened on a photo that never ran would read FAILED and offer a retry for a
+     * failure it never had — the confident wrong answer this project keeps
+     * removing, one screen over. Cleared when a new run starts and when one
+     * succeeds.
+     */
+    private static volatile String failedItemId = "";
+
     /** Set once a run succeeds; read by Diagnostics for the map's filename. */
     private static volatile String lastMapName = "";
     /** The normal the last successful run also wrote, or empty for a flat run. */
@@ -289,11 +326,11 @@ public final class DepthGenDialog {
      * studio still holds its panel strongly for as long as it is alive, so a live
      * panel is still found; a dismissed one stops being one.
      */
-    private static volatile WeakReference<DepthGenDialog> openPanel;
+    private static volatile WeakReference<BuildDialog> openPanel;
 
     /** The open panel, or null. See {@link #openPanel} for why it is weak. */
-    private static DepthGenDialog openPanel() {
-        WeakReference<DepthGenDialog> ref = openPanel;
+    private static BuildDialog openPanel() {
+        WeakReference<BuildDialog> ref = openPanel;
         return ref == null ? null : ref.get();
     }
 
@@ -332,13 +369,39 @@ public final class DepthGenDialog {
     /** The image the depth is generated for, or null when nothing is selected. */
     private File targetImage;
 
-    // The one screen. Three blocks, always all present, so changing a value
-    // never navigates and never discards what was typed elsewhere. Only the
-    // widgets something else has to reach are fields: the rest are built and
-    // added in one method, and a field nothing reads is a field nobody maintains.
+    /**
+     * The row itself, captured with the subject.
+     *
+     * <p>The dialog needs more than its id: which tab to open on is the row's
+     * {@link RenderMode}, and what each tab may offer depends on {@link BuildTab},
+     * which reads the row's cloud, its depth and its stored mode. Captured once,
+     * like the id, so a build is described by the row the user was looking at when
+     * they asked for it.
+     */
+    private LibraryItem subjectItem;
+
+    /** The tab on screen. Set by {@link #show(BuildTab.Kind)}. */
+    private BuildTab.Kind tab = BuildTab.Kind.RELIEF;
+
+    // The one screen. Blocks are always all present, so changing a value never
+    // navigates and never discards what was typed elsewhere; {@link #render} is
+    // the single switch that decides which are visible. Only the widgets
+    // something else has to reach are fields: the rest are built and added in one
+    // method, and a field nothing reads is a field nobody maintains.
+    /** Server + Test connection. Shared by both tabs, so both read one field. */
+    private LinearLayout connectionBlock;
+    /** The Relief tab's model list and resolution. Empty until a server is tested. */
     private LinearLayout setupBlock;
+    /** The Splat tab's state line, budget line and budget slider. */
+    private LinearLayout splatBlock;
     private LinearLayout runBlock;
     private LinearLayout outcomeBlock;
+
+    private LinearLayout tabBar;
+    private Button reliefTabBtn;
+    private Button splatTabBtn;
+    private TextView titleView;
+    private TextView subtitleView;
 
     private EditText hostInput;
     private TextView serverNote;
@@ -348,8 +411,18 @@ public final class DepthGenDialog {
 
     private int resolution;
 
-    /** The footer. Hidden while a run is up, and greyed until a model is known. */
+    /** The footer's primary action. Label and meaning follow the tab and its state. */
     private Button generateBtn;
+
+    /** The Splat tab's state sentence ("no cloud yet", "N splats", "failed"). */
+    private TextView splatState;
+    /** The Relief tab's state sentence ("No depth map yet", "Has a depth map"). */
+    private TextView reliefState;
+    /** Holds {@link #reliefState} so it can stay visible when the config cannot be. */
+    private LinearLayout reliefStateBlock;
+    /** The estimate line above the budget slider, restated from the slider itself. */
+    private TextView budgetLine;
+    private BasreliefSlider budgetSlider;
 
     private TextView runStatus;
     private TextView runPercent;
@@ -500,7 +573,7 @@ public final class DepthGenDialog {
         }
     }
 
-    public DepthGenDialog(Activity activity, Callback callback) {
+    public BuildDialog(Activity activity, Callback callback) {
         this.activity = activity;
         this.callback = callback;
         this.studio = activity instanceof MainActivity ? (MainActivity) activity : null;
@@ -518,13 +591,44 @@ public final class DepthGenDialog {
     // Replace links; this class owns the panel and the run, and reports the run's
     // state so the sheet can draw it.
 
-    /** Show the panel. The subject is the photo on screen. */
+    /** Show the panel on the subject's own tab. Equivalent to {@code show(null)}. */
     public void show() {
-        // Captured here, once, so completion cannot attach to a different photo.
+        show((BuildTab.Kind) null);
+    }
+
+    /**
+     * Show the panel on a named tab — the one the caller meant.
+     *
+     * <p>An explicit tab is how a caller that knows which build it is offering
+     * says so: the Renderer row's Splat and Rebuild open the Splat tab, a depth
+     * fix-line's Regenerate opens the Relief tab. {@link #show()} is for callers
+     * that simply hand the row over, and it opens on the row's mode.
+     */
+    public void show(BuildTab.Kind wanted) {
         captureSubject();
-        openPanel = new WeakReference<DepthGenDialog>(this);
+        tab = wanted == null ? defaultTab() : wanted;
+        openPanel = new WeakReference<BuildDialog>(this);
         render();
         sheet.show(activity);
+    }
+
+    /** The tab matching the captured row's stored mode; {@link BuildTab}'s rule. */
+    private BuildTab.Kind defaultTab() {
+        return BuildTab.defaultFor(subjectItem == null ? null : subjectItem.renderMode);
+    }
+
+    /**
+     * Re-derive the panel from the live index. Called by the studio on every
+     * refresh, so a state the dialog could not know about on open — an embedded
+     * depth that has now been read, a cloud build that has started or failed —
+     * arrives without the user reopening the sheet.
+     *
+     * <p>Cheap and idempotent: it flips a handful of visibilities and sets text.
+     * It never rebuilds the model rows, which is Test connection's job alone.
+     */
+    void onIndexChanged() {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        render();
     }
 
     /** Whether a generation is in flight, wherever the user is in the app. */
@@ -532,6 +636,23 @@ public final class DepthGenDialog {
         synchronized (RUN_LOCK) {
             return run != null;
         }
+    }
+
+    /**
+     * Whether a depth run for this row is in flight.
+     *
+     * <p>{@link #isRunning()} is process-wide; the Relief tab must not claim
+     * BUILDING for a row when the run belongs to a different photo.
+     */
+    public static boolean isRunningFor(String itemId) {
+        synchronized (RUN_LOCK) {
+            return run != null && itemId != null && itemId.equals(runningItemId);
+        }
+    }
+
+    /** Whether the last depth run FAILED for this row. See {@link #failedItemId}. */
+    public static boolean isFailedFor(String itemId) {
+        return result == Result.FAILED && itemId != null && itemId.equals(failedItemId);
     }
 
     /** 0..100, or -1 when nothing is running. R-BG2. */
@@ -611,6 +732,11 @@ public final class DepthGenDialog {
             if (run != null) return; // one run at a time; already live
             run = pending;
         }
+        // A resumed run is a run for the photo its record names, so the Relief tab
+        // of a dialog opened on that photo must report BUILDING. The id is the one
+        // the record carried; a run for a different photo stays that photo's.
+        runningItemId = pending.itemId;
+        failedItemId = "";
         // No prompt id means it died between being queued and being submitted, so
         // there is nothing on the server to ask about. Drop it and let the user
         // start again rather than reporting a failure for a job that never ran.
@@ -651,8 +777,10 @@ public final class DepthGenDialog {
         if (active == null) {
             targetItemId = null;
             targetImage = null;
+            subjectItem = null;
             return;
         }
+        subjectItem = active;
         targetItemId = active.id;
         // Stored as a bare filename; resolve against this install's filesDir.
         targetImage = PrefFiles.resolve(activity.getFilesDir(), active.imageName);
@@ -670,20 +798,38 @@ public final class DepthGenDialog {
 
         LinearLayout root = new LinearLayout(activity);
         root.setOrientation(LinearLayout.VERTICAL);
-        addRow(root, ModalSheet.title(activity, activity.getString(R.string.depth_title)));
-        addRow(root, ModalSheet.subtitle(activity,
-                activity.getString(R.string.depth_panel_subtitle)));
+        titleView = ModalSheet.title(activity, activity.getString(R.string.build_title));
+        addRow(root, titleView);
+        subtitleView = ModalSheet.subtitle(activity,
+                activity.getString(R.string.build_subtitle_relief));
+        addRow(root, subtitleView);
+        // The tab bar is ABOVE the connection and the tab bodies, so the choice of
+        // what to build reads before what to build it with. The connection is shared
+        // because both builds need the same server, and one field cannot disagree
+        // with another.
+        addRow(root, buildTabs());
+        addRow(root, buildConnection());
+        // The Relief tab's own state, above its config, and OUTSIDE the config's own
+        // visibility: an embedded map or a clip has no build to configure and no
+        // button to press, and the sentence saying why is exactly what must stay.
+        reliefStateBlock = new LinearLayout(activity);
+        reliefStateBlock.setOrientation(LinearLayout.VERTICAL);
+        reliefState = text("", 13);
+        reliefState.setTextColor(ModalSheet.DIM);
+        addRow(reliefStateBlock, reliefState);
+        addRow(root, reliefStateBlock);
         addRow(root, buildSetup());
+        addRow(root, buildSplat());
         root.addView(buildOutcome());
         root.addView(buildRun());
 
-        // The mockup's .btnrow: Cancel ghost beside Generate primary. They live in
-        // the modal's footer rather than at the end of the body, which is
-        // ModalSheet's one departure from the mockup and a deliberate one — the body
-        // is this long, and a footer that scrolls away is a Generate button the user
-        // cannot find on a short screen. Cancel is in every state, because a panel
-        // with no way out of it is a trap; Generate is the setup state's alone, and
-        // {@link #render} says why the other two do without it.
+        // The mockup's .btnrow: Cancel ghost beside the primary. They live in the
+        // modal's footer rather than at the end of the body, which is ModalSheet's
+        // one departure from the mockup and a deliberate one — the body is this
+        // long, and a footer that scrolls away is a button the user cannot find on
+        // a short screen. Cancel is in every state, because a panel with no way out
+        // of it is a trap; the primary is the setup states' alone, and {@link
+        // #render} says why the run state does without it.
         Button cancel = ModalSheet.button(activity,
                 activity.getString(R.string.action_cancel), false, true);
         cancel.setOnClickListener(new View.OnClickListener() {
@@ -697,26 +843,80 @@ public final class DepthGenDialog {
         generateBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                startRun();
+                onPrimaryAction();
             }
         });
 
         ModalSheet modal = new ModalSheet(activity, MAX_HEIGHT, ModalSheet.SCRIM);
         // Every ModalSheet carries a handle bar. On this form it matters more
         // than on a short one: the sheet is tall, the content scrolls, and the
-        // Cancel/Generate footer is a commit and not a dismissal -- so before the
+        // Cancel/primary footer is a commit and not a dismissal -- so before the
         // bar this screen's only way out was Cancel, which reads as "give up on
         // the run". The bar closes without committing anything, which is the
-        // truth: a run started is a run that continues. See depth_close.
-        modal.grip(activity.getString(R.string.depth_close));
+        // truth: a run started is a run that continues.
+        modal.grip(activity.getString(R.string.build_grip));
         modal.body(root);
         modal.footerRow(cancel, generateBtn);
         return modal;
     }
 
-    private View buildSetup() {
-        setupBlock = new LinearLayout(activity);
-        setupBlock.setOrientation(LinearLayout.VERTICAL);
+    /**
+     * The two tabs: Relief and Splat, in the sheet's own button family.
+     *
+     * <p>Relief first, matching the sheet's own Renderer segment
+     * ({@code renderer_relief} then {@code renderer_splat}), so the two switches
+     * read in the same order wherever they appear.
+     */
+    private View buildTabs() {
+        tabBar = new LinearLayout(activity);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setLayoutParams(topMargin(dp(2)));
+
+        reliefTabBtn = tabButton(activity.getString(R.string.renderer_relief),
+                BuildTab.Kind.RELIEF);
+        splatTabBtn = tabButton(activity.getString(R.string.renderer_splat),
+                BuildTab.Kind.SPLAT);
+        LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        LinearLayout.LayoutParams r = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        r.leftMargin = dp(8);
+        tabBar.addView(reliefTabBtn, l);
+        tabBar.addView(splatTabBtn, r);
+        return tabBar;
+    }
+
+    private Button tabButton(String label, final BuildTab.Kind kind) {
+        Button b = ModalSheet.button(activity, label, kind == tab, false);
+        b.setMinHeight(0);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                selectTab(kind);
+            }
+        });
+        return b;
+    }
+
+    /** Switch tabs. The primary's label and action follow, and nothing else moves. */
+    private void selectTab(BuildTab.Kind kind) {
+        if (tab == kind) return;
+        tab = kind;
+        // A run in flight owns the screen; selecting a tab while one is up would
+        // hide it. The tabs are hidden then, so this is unreachable through the UI
+        // — but a programmatic switch must not be able to lose a running build.
+        render();
+    }
+
+    /**
+     * The server field, its Test connection button and the one note under it.
+     *
+     * <p>Shared by both tabs: a depth graph and a SHARP graph run on the same
+     * ComfyUI server, so one field cannot disagree with another. It sits under the
+     * tabs and above the tab bodies, and it is hidden with the bodies while a depth
+     * run is in flight, because a run is queued with its host baked in.
+     */
+    private View buildConnection() {
+        connectionBlock = new LinearLayout(activity);
+        connectionBlock.setOrientation(LinearLayout.VERTICAL);
 
         // --- server ---
         //
@@ -725,8 +925,8 @@ public final class DepthGenDialog {
         // machine, which is the normal case: discovery only ever worked on this
         // LAN, and the server is usually elsewhere. See the class javadoc for why
         // this field is shown even when an address is already stored.
-        addRow(setupBlock, ModalSheet.caption(activity,
-                activity.getString(R.string.depth_server), true));
+        addRow(connectionBlock, ModalSheet.caption(activity,
+                activity.getString(R.string.depth_server), false));
 
         hostInput = ModalSheet.field(activity, comfyBase,
                 activity.getString(R.string.depth_server_hint));
@@ -753,7 +953,7 @@ public final class DepthGenDialog {
                 persistTyped();
             }
         });
-        addRow(setupBlock, hostInput);
+        addRow(connectionBlock, hostInput);
 
         Button test = ModalSheet.button(activity,
                 activity.getString(R.string.depth_test_connection), false, false);
@@ -764,7 +964,7 @@ public final class DepthGenDialog {
                 testConnection();
             }
         });
-        setupBlock.addView(test);
+        connectionBlock.addView(test);
 
         // The one line this panel reports on: the mockup's `.note` under the button.
         // It replaces the status line that used to sit beside the field, and it is
@@ -776,11 +976,25 @@ public final class DepthGenDialog {
         // a connection problem needs to be able to paste it rather than
         // photograph it. Same reason the old status line was selectable.
         serverNote.setTextIsSelectable(true);
-        addRow(setupBlock, serverNote);
+        addRow(connectionBlock, serverNote);
+
+        return connectionBlock;
+    }
+
+    /**
+     * The Relief tab's own content: the depth model list and the output size.
+     *
+     * <p>The server field that used to head this block is now shared, above the
+     * tabs — see {@link #buildConnection}. What is left is exactly what the depth
+     * graph alone needs: which checkpoint runs, and how large a map to ask for.
+     */
+    private View buildSetup() {
+        setupBlock = new LinearLayout(activity);
+        setupBlock.setOrientation(LinearLayout.VERTICAL);
 
         // --- model ---
         addRow(setupBlock, ModalSheet.caption(activity,
-                activity.getString(R.string.depth_model), false));
+                activity.getString(R.string.depth_model), true));
         modelEmpty = text(R.string.depth_models_untested, 13);
         modelEmpty.setTextColor(ModalSheet.DIM);
         addRow(setupBlock, modelEmpty);
@@ -835,13 +1049,205 @@ public final class DepthGenDialog {
                 });
     }
 
+    // ---------------------------------------------------------------- splat tab
+
     /**
-     * The failed outcome, below the setup block.
+     * The Splat tab's content: its own state, the estimate, and the budget slider.
      *
-     * <p>Setup stays visible above it on purpose: R-PANEL6 says a failed run
-     * keeps the typed address, and the only way to keep it is not to have thrown
-     * it away. Hiding the controls would also make Retry unreachable without
-     * first re-entering everything.
+     * <p>The budget moved here from the old "Make 3D?" confirm. It is a
+     * submission-time value — nothing on screen changes while it moves — so the
+     * only place it can be judged is next to the button that submits it, and the
+     * number on the line above is restated from the same control rather than read
+     * back from storage. That is what makes the promise ("the number you compare by
+     * eye is the number that runs") structural instead of a coincidence.
+     */
+    private View buildSplat() {
+        splatBlock = new LinearLayout(activity);
+        splatBlock.setOrientation(LinearLayout.VERTICAL);
+
+        // The state, first, because it decides what the button under it will say.
+        splatState = text("", 13);
+        splatState.setTextColor(ModalSheet.DIM);
+        addRow(splatBlock, splatState);
+
+        addRow(splatBlock, ModalSheet.caption(activity,
+                activity.getString(R.string.slider_splat_budget), false));
+        budgetLine = ModalSheet.subtitle(activity, budgetSentence(cloudBudget()));
+        splatBlock.addView(budgetLine);
+        if (studio != null) {
+            budgetSlider = buildBudgetSlider();
+            // EVERY change, not just the release. A budget that only commits on
+            // release can be submitted from a drag that never ended, and a row that
+            // is rebuilt while it is being dragged snaps back to storage — which is
+            // how the sheet came to state one number while the build ran another.
+            budgetSlider.setOnPreview(new BasreliefSlider.OnPreview() {
+                @Override
+                public void onPreview(int value) {
+                    setCloudBudget(value, budgetLine);
+                }
+            });
+            splatBlock.addView(budgetSlider.view());
+        }
+        return splatBlock;
+    }
+
+    private BasreliefSlider buildBudgetSlider() {
+        return BasreliefSlider.create(studio,
+                ReliefRenderer.KEY_SPLAT_BUDGET,
+                cloudBudget() / 1000,
+                ComfyWorkflow.SHARP_BUDGET_MIN / 1000,
+                ComfyWorkflow.SHARP_BUDGET_MAX / 1000,
+                new BasreliefSlider.ValueFormatter() {
+                    @Override
+                    public String format(int value) {
+                        return value + "k";
+                    }
+                },
+                new BasreliefSlider.OnChanged() {
+                    @Override
+                    public void onChanged(int value) {
+                        setCloudBudget(value, budgetLine);
+                    }
+                });
+    }
+
+    /**
+     * The budget the next cloud build will send, from the dev BUDGET pref.
+     *
+     * <p>Read here rather than spelled as the constant, so the estimate states the
+     * count that will actually run — the whole point of the dev ladder is that the
+     * number is the user's, and a dialog claiming 150,000 while a 600,000 build runs
+     * is the "control nothing reads" lie in its other direction.
+     */
+    private int cloudBudget() {
+        // Read through the map and accept ANY Number, not getInt. A budget stored as
+        // a float -- which is what every neighbouring splat pref is -- makes getInt
+        // throw ClassCastException, and the catch below used to answer the DEFAULT in
+        // silence: a 1,200,000 build came back as 150,000 with nothing in the log.
+        // That is the failure this replaces, and it is why the value is inspected
+        // rather than assumed.
+        Object raw = prefs().getAll().get(ReliefRenderer.KEY_SPLAT_BUDGET);
+        if (raw instanceof Number) {
+            return ComfyWorkflow.clampSharpBudget(((Number) raw).intValue());
+        }
+        if (raw != null) {
+            // A stored value that is not a number cannot claim a budget, and a read
+            // that answers a plausible one anyway is the lie the whole file warns
+            // about. Drop it so the next write is clean, and say what it was.
+            prefs().edit().remove(ReliefRenderer.KEY_SPLAT_BUDGET).apply();
+            android.util.Log.w(TAG, "splat budget pref was "
+                    + raw.getClass().getSimpleName() + ", not a number; removed it, using "
+                    + ComfyWorkflow.SHARP_BUDGET);
+        }
+        return ComfyWorkflow.SHARP_BUDGET;
+    }
+
+    /** The sheet's own sentence for a budget: one string, so it cannot be restated wrongly. */
+    private String budgetSentence(int budget) {
+        return activity.getString(R.string.splat_confirm_body,
+                activity.getString(R.string.splat_generator),
+                String.format(Locale.US, "%,d", budget),
+                activity.getString(R.string.splat_estimate));
+    }
+
+    /**
+     * The budget slider's value, applied on every change and clamped to its range.
+     *
+     * <p>A callback from OUTSIDE the slider's own range is not a value the user
+     * chose. A slider whose view is detached mid-gesture — pressing Build while a
+     * finger is still on it — reports 0, and clampSharpBudget turns 0 into the
+     * DEFAULT, silently: that is how a 1,200,000 budget came back as 150,000 on the
+     * second and third build and not the first. A control that cannot claim a value
+     * must not write one, which is the rule this project already states for reads.
+     * The ignored value is logged so the next occurrence names itself.
+     */
+    private void setCloudBudget(int sliderThousands, TextView line) {
+        int minK = ComfyWorkflow.SHARP_BUDGET_MIN / 1000;
+        int maxK = ComfyWorkflow.SHARP_BUDGET_MAX / 1000;
+        if (sliderThousands < minK || sliderThousands > maxK) {
+            android.util.Log.w(TAG, "splat budget callback out of range: "
+                    + sliderThousands + "k (the row spans " + minK + "k.." + maxK
+                    + "k); ignored rather than written as the default");
+            return;
+        }
+        int v = sliderThousands * 1000;
+        prefs().edit().putInt(ReliefRenderer.KEY_SPLAT_BUDGET, v).apply();
+        if (line != null) line.setText(budgetSentence(v));
+    }
+
+    private SharedPreferences prefs() {
+        return activity.getSharedPreferences(AppState.PREFS, Activity.MODE_PRIVATE);
+    }
+
+    // ------------------------------------------------------------ tab answers
+
+    /** What the tab on screen may offer the captured subject. */
+    private BuildTab.Answer answerFor(BuildTab.Kind kind) {
+        return kind == BuildTab.Kind.SPLAT ? splatAnswer() : reliefAnswer();
+    }
+
+    /**
+     * The Relief tab's state for the subject.
+     *
+     * <p>The depth answer is the studio's own ({@code depthSourceFor}), so this tab
+     * and the fix line cannot disagree about whether the photo has a map. An unread
+     * embedded map answers {@link DepthSource.Kind#UNKNOWN}, which has neither
+     * depth nor an action to offer — the window claims nothing, and the next
+     * refresh (which the studio fires when the read lands) fills it in.
+     */
+    private BuildTab.Answer reliefAnswer() {
+        if (subjectItem == null) return BuildTab.forRelief(false, true, false, false);
+        DepthSource.Answer depth = studio == null
+                ? null : studio.depthAnswerFor(subjectItem);
+        boolean hasDepth = depth != null && depth.hasDepth();
+        boolean canAct = depth != null && depth.canReplace();
+        boolean building = isRunningFor(subjectItem.id);
+        boolean failed = !building && isFailedFor(subjectItem.id);
+        return BuildTab.forRelief(hasDepth, canAct, building, failed);
+    }
+
+    /**
+     * The Splat tab's state for the subject: the cloud file, and the row's job.
+     *
+     * <p>The job record is the same one {@link RendererRows} draws, read the same
+     * way, so the tab and the sheet's cloud row cannot disagree. A failed record is
+     * the server's own words kept until the user acts.
+     */
+    private BuildTab.Answer splatAnswer() {
+        if (subjectItem == null) return BuildTab.forSplat(false, false, false);
+        Jobs.Job job = studio == null ? null : studio.splatJob(subjectItem.id);
+        boolean failed = job != null && job.isFailed();
+        boolean building = SplatImport.isRunning(subjectItem.id)
+                || (job != null && !job.isFailed());
+        return BuildTab.forSplat(hasCloud(subjectItem), building, failed);
+    }
+
+    /** Whether the subject names a cloud file that is actually here. */
+    private boolean hasCloud(LibraryItem item) {
+        if (item.splatName == null) return false;
+        File f = PrefFiles.resolve(activity.getFilesDir(), item.splatName);
+        return f != null && f.isFile();
+    }
+
+    /** The record for the subject's cloud build, or null. */
+    private Jobs.Job splatJob() {
+        return (studio == null || subjectItem == null)
+                ? null : studio.splatJob(subjectItem.id);
+    }
+
+
+    /**
+     * The failed run's body: what happened, and which photo it was for.
+     *
+     * <p><b>No retry button, and that is the change.</b> The mockup's failed state
+     * offers "Try again" here, and while the depth flow was its own panel that was
+     * the only action on screen. The tabbed dialog grew a footer primary that is
+     * labelled from the resolved state — "Regenerate" on the Relief tab after a
+     * failure — so a second, body-local "Try again" would be two buttons for one
+     * decision. The message and the subject are the body's whole job now.
+     *
+     * <p>Setup stays visible above it on purpose: R-PANEL6 says a failed run keeps
+     * the typed address, and the only way to keep it is not to have thrown it away.
      */
     private View buildOutcome() {
         outcomeBlock = new LinearLayout(activity);
@@ -858,24 +1264,6 @@ public final class DepthGenDialog {
         outcomeSubject.setVisibility(View.GONE);
         outcomeSubject.setLayoutParams(topMargin(dp(4)));
         outcomeBlock.addView(outcomeSubject);
-
-        // One action, not two, and it is the design's word: the mockup's failed
-        // state offers "Try again" and "Choose a map", and the second of those
-        // belongs to the sheet — a map chosen from the gallery is not a generation.
-        // "Edit server" is gone because the server field is always on screen, so
-        // there is nothing left for it to reveal.
-        Button retry = ModalSheet.button(activity,
-                activity.getString(R.string.fix_try_again), false, false);
-        retry.setLayoutParams(topMargin(dp(9)));
-        retry.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Retry means retry: the same host, model and resolution, with no
-                // confirm step. There is nothing about a retry to confirm.
-                startRun();
-            }
-        });
-        outcomeBlock.addView(retry);
 
         return outcomeBlock;
     }
@@ -930,29 +1318,75 @@ public final class DepthGenDialog {
     // --------------------------------------------------------------- state → view
 
     /**
-     * Put the three blocks into the state they should be showing.
+     * Put the panel into the state the current tab and the subject call for.
      *
-     * <p>The only method that decides what is on screen, and every event ends in
-     * a call to it. That is deliberate: the panel has four states and they have
-     * to be mutually exclusive, and the way to guarantee that is one switch
-     * rather than each event deciding what to hide.
+     * <p>The one method that decides what is on screen; every event ends in a call
+     * to it. Both tabs' states come from {@link BuildTab}, so this resolves one
+     * answer per tab and switches on that rather than branching on which tab it is
+     * — which is what keeps the two tabs from growing two meanings of "built" and
+     * "failed". A depth run owns the whole screen while it is up; a splat run does
+     * not, because it is submitted and continues in the tile (see {@link
+     * #submitSplat}).
      */
     private void render() {
-        boolean running = isRunning();
-        boolean failed = !running && lastResult() == Result.FAILED;
-        setupBlock.setVisibility(running ? View.GONE : View.VISIBLE);
-        runBlock.setVisibility(running ? View.VISIBLE : View.GONE);
-        outcomeBlock.setVisibility(failed ? View.VISIBLE : View.GONE);
-        // Generate is the setup state's action. While a run is going the run block
-        // says what it is doing, and after one has failed the outcome block offers
-        // "Try again" by name — so in both of those states the footer's Generate is
-        // a second button for a decision the user has already been given a word for.
-        generateBtn.setVisibility(running || failed ? View.GONE : View.VISIBLE);
-        if (running) renderRun();
-        else renderSetup();
+        BuildTab.Answer relief = reliefAnswer();
+        BuildTab.Answer splat = splatAnswer();
+        BuildTab.Answer current = tab == BuildTab.Kind.SPLAT ? splat : relief;
+        boolean splatTab = tab == BuildTab.Kind.SPLAT;
+
+        // A depth run owns the screen. The tab bar and the connection go with it:
+        // the job is queued with its host and model baked in, so a control that
+        // appeared to change them could not.
+        boolean depthRunning = relief.state() == BuildTab.State.BUILDING;
+        int chrome = depthRunning ? View.GONE : View.VISIBLE;
+        tabBar.setVisibility(chrome);
+        connectionBlock.setVisibility(chrome);
+
+        titleView.setText(R.string.build_title);
+        subtitleView.setText(splatTab
+                ? R.string.build_subtitle_splat : R.string.build_subtitle_relief);
+        styleTab(reliefTabBtn, !splatTab);
+        styleTab(splatTabBtn, splatTab);
+
+        // A tab's body is shown only when that tab has something to configure. The
+        // relief body is hidden for an embedded map or a clip (nothing this dialog
+        // can build), which is the same refusal the fix line makes. The state
+        // sentence stays whatever the body does, because that is where it says why.
+        reliefStateBlock.setVisibility(!depthRunning && !splatTab
+                ? View.VISIBLE : View.GONE);
+        setupBlock.setVisibility(!depthRunning && !splatTab && relief.canBuild()
+                ? View.VISIBLE : View.GONE);
+        splatBlock.setVisibility(!depthRunning && splatTab ? View.VISIBLE : View.GONE);
+        runBlock.setVisibility(depthRunning ? View.VISIBLE : View.GONE);
+        outcomeBlock.setVisibility(!depthRunning && !splatTab
+                && relief.state() == BuildTab.State.FAILED ? View.VISIBLE : View.GONE);
+
+        renderBodies(relief, splat);
+
+        // The footer is the ONE action, whatever the tab: its label and whether it
+        // can be pressed both come from the resolved state, and it is hidden when
+        // there is nothing to offer (an embedded map, a run in flight, an unread
+        // window). The old separate "Try again" in the failure body is gone with it
+        // — two buttons for one decision is the duplication this file removes.
+        if (!depthRunning && current.canBuild()) {
+            generateBtn.setVisibility(View.VISIBLE);
+            generateBtn.setText(labelFor(current));
+            setUsable(generateBtn, usable(current));
+        } else {
+            generateBtn.setVisibility(View.GONE);
+        }
+        if (depthRunning) renderRun();
     }
 
-    private void renderSetup() {
+    /**
+     * The two state sentences and the depth model list's empty text.
+     *
+     * <p>Both tabs' states are resolved on every render even though only one is
+     * shown, so the hidden one is not stale for the frame it becomes visible — a
+     * tab that showed the previous row's "N splats" for one frame would read as the
+     * dialog being slow rather than as a bug.
+     */
+    private void renderBodies(BuildTab.Answer relief, BuildTab.Answer splat) {
         modelEmpty.setVisibility(modelsFetched ? View.GONE : View.VISIBLE);
         if (modelsFetched) {
             // Both texts are set whenever the list is known, because the list can
@@ -968,11 +1402,8 @@ public final class DepthGenDialog {
                             ? R.string.depth_models_unusable
                             : R.string.depth_models_none));
         }
-        // Generate needs a confirmed model. The list is the SERVER's and cannot
-        // be known before it is reached (R-PANEL2), so there is no path to a run
-        // that skipped the model choice.
-        setUsable(generateBtn, modelsFetched && !nodes.isEmpty());
-        if (lastResult() == Result.FAILED && failureCause.length() > 0) {
+        reliefState.setText(reliefStateText());
+        if (relief.state() == BuildTab.State.FAILED && failureCause.length() > 0) {
             outcomeText.setText(activity.getString(R.string.fix_no_answer) + "\n"
                     + activity.getString(R.string.depth_run_cause, failureCause));
             // Which photo it was FOR. A run outlives the panel and the user may
@@ -982,6 +1413,104 @@ public final class DepthGenDialog {
                     subjectLabel()));
             outcomeSubject.setVisibility(View.VISIBLE);
         }
+        splatState.setText(splatStateText(splat));
+    }
+
+    /** The Relief tab's sentence, from the same depth answer the actions use. */
+    private CharSequence reliefStateText() {
+        if (subjectItem == null) return activity.getString(R.string.depth_no_subject);
+        DepthSource.Answer depth = studio == null ? null : studio.depthAnswerFor(subjectItem);
+        if (depth == null) return "";
+        switch (depth.kind()) {
+            case NONE:     return activity.getString(R.string.build_relief_none);
+            case FILE:     return activity.getString(R.string.build_relief_built);
+            case EMBEDDED: return activity.getString(R.string.build_relief_embedded);
+            case TRACK:    return activity.getString(R.string.build_relief_track);
+            case UNKNOWN:
+            default:       return "";
+        }
+    }
+
+    /** The Splat tab's sentence: the cloud, the phase, or the server's own failure. */
+    private CharSequence splatStateText(BuildTab.Answer splat) {
+        Jobs.Job job = splatJob();
+        switch (splat.state()) {
+            case FAILED:
+                return activity.getString(R.string.splat_row_failed,
+                        job == null ? "" : job.error);
+            case BUILDING:
+                SplatImport.Live live = subjectItem == null
+                        ? null : SplatImport.live(subjectItem.id);
+                return live == null || live.phase.isEmpty()
+                        ? activity.getString(R.string.splat_row_building) : live.phase;
+            case BUILT:
+                return activity.getString(R.string.splat_row_built, countOf(),
+                        activity.getString(R.string.splat_generator));
+            case NONE:
+            default:
+                return activity.getString(R.string.splat_row_none);
+        }
+    }
+
+    /** How many records the cloud holds, from the file's own size. */
+    private String countOf() {
+        if (subjectItem == null || subjectItem.splatName == null) return "0";
+        File f = PrefFiles.resolve(activity.getFilesDir(), subjectItem.splatName);
+        long n = f == null ? 0 : f.length() / com.amoshydra.basrelief.core.splat.SplatCloud.RECORD_BYTES;
+        return String.format(Locale.US, "%,d", n);
+    }
+
+    /**
+     * The footer's word for the one action a tab offers.
+     *
+     * <p>The action is {@link BuildTab}'s decision; the word is this screen's. The
+     * two are separate so the rule about state can be tested in {@code :core} while
+     * the labels stay with the platform's strings.
+     */
+    private int labelFor(BuildTab.Answer answer) {
+        switch (answer.action()) {
+            case REBUILD:    return R.string.action_rebuild;
+            case REGENERATE: return R.string.action_regenerate;
+            case BUILD:
+            default:
+                return answer.tab() == BuildTab.Kind.SPLAT
+                        ? R.string.splat_action_make : R.string.depth_generate;
+        }
+    }
+
+    /**
+     * Whether the action can be pressed right now.
+     *
+     * <p>A depth run needs a confirmed model — the list is the SERVER's and cannot
+     * be known before it is reached (R-PANEL2) — and a splat build needs the still
+     * to upload. Both need a subject. This is the same rule the old Generate button
+     * carried, kept for the tab that inherited it.
+     */
+    private boolean usable(BuildTab.Answer answer) {
+        if (subjectItem == null || targetImage == null || !targetImage.exists()) return false;
+        if (answer.tab() == BuildTab.Kind.SPLAT) return true;
+        return modelsFetched && !nodes.isEmpty();
+    }
+
+    private void styleTab(Button b, boolean on) {
+        // The tab's own plate, built here rather than borrowed from ModalSheet: the
+        // selected tab is filled and the other is a hairline, and the two swap in
+        // place on every switch (constructing new Buttons would drop their listeners
+        // and re-measure the row). One helper, so the two cannot drift.
+        android.graphics.drawable.GradientDrawable d =
+                new android.graphics.drawable.GradientDrawable();
+        d.setCornerRadius(dp(11));
+        if (on) {
+            d.setColor(0xFFFFFFFF);
+        } else {
+            d.setColor(0x1AFFFFFF);
+        }
+        // setStroke CLEARS the fill on a GradientDrawable (AOSP writes setColor
+        // TRANSPARENT and installs a new stroke paint), so the colour goes on AFTER
+        // the stroke, never before. This is the trap the studio pill already paid for.
+        if (!on) d.setStroke(dp(1), 0x24FFFFFF);
+        b.setBackground(d);
+        b.setTextColor(on ? ModalSheet.INK_ON_FILL : ModalSheet.INK);
     }
 
     private void renderRun() {
@@ -1299,6 +1828,73 @@ public final class DepthGenDialog {
         }
     }
 
+    /**
+     * The footer button's one dispatch: the tab decides which build runs.
+     *
+     * <p>The button is hidden whenever {@link BuildTab} has no action to offer, so
+     * reaching here with {@link BuildTab.Action#NONE} is a bug rather than a state
+     * to handle — declined anyway, because a tap that does nothing silently is the
+     * failure this project bans.
+     */
+    private void onPrimaryAction() {
+        BuildTab.Answer answer = answerFor(tab);
+        if (!answer.canBuild()) return;
+        if (tab == BuildTab.Kind.SPLAT) submitSplat();
+        else startRun();
+    }
+
+    /**
+     * Submit the cloud build and dismiss, exactly as the old confirm did.
+     *
+     * <p>The build itself runs in {@link MainActivity#startCloudBuild}, on the LONG
+     * worker, behind a {@link Jobs} record and a live phase on the row — so the
+     * dialog's job ends here and the tile's ring and the sheet's cloud row carry
+     * the progress. A second copy of that progress in this dialog would be a second
+     * place to be wrong; see the class javadoc for why this run is not shown
+     * in-dialog the way the depth run is.
+     *
+     * <p>The submitted budget is the slider's OWN value, read here, and not
+     * whatever the pref happens to hold: a view detached mid-gesture can deliver a
+     * stale value after the release, which is how a slider showing 150k came to run
+     * a 404,000 build.
+     */
+    private void submitSplat() {
+        LibraryItem item = subjectItem;
+        if (item == null || targetImage == null || !targetImage.exists()) {
+            say(R.string.depth_no_subject);
+            return;
+        }
+        String host = hostInput.getText().toString().trim();
+        if (host.length() == 0) {
+            say(R.string.depth_endpoint_required);
+            return;
+        }
+        comfyBase = host;
+        prefs().edit().putString(KEY_HOST, host).apply();
+        if (budgetSlider != null) {
+            setCloudBudget(budgetSlider.value(), budgetLine);
+            // Two numbers, one line: what the slider is showing and what storage
+            // holds. They must agree, and when they did not the only way to tell
+            // which one was wrong was to guess. This makes the next attempt state it.
+            android.util.Log.i(TAG, "splat budget at submit: slider="
+                    + budgetSlider.value() + "k pref=" + (cloudBudget() / 1000) + "k");
+        }
+        // Acting on a failure is what clears it, exactly as the sheet's cloud row
+        // does: the record keeps the server's words visible until then.
+        Jobs.Job job = splatJob();
+        if (job != null && job.isFailed()) {
+            JobsStore.clearItem(prefs(), item.id);
+        }
+        sheet.dismiss();
+        if (studio != null) studio.startCloudBuild(item);
+    }
+
+    private void setSubjectMode(RenderMode mode) {
+        if (studio != null && targetItemId != null) {
+            studio.setRenderMode(targetItemId, mode);
+        }
+    }
+
     public void startRun() {
         if (isRunning()) return;
         // Whatever the panel last said about the connection was said about a probe,
@@ -1361,9 +1957,21 @@ public final class DepthGenDialog {
             if (run != null) return; // a run started while we were checking
             run = r;
         }
+        // The tab decides the mode: building on Relief is a request to draw the
+        // relief, so this write lives beside the run that will produce the map,
+        // not only in the sheet's segment. A splat build sets SPLAT from the other
+        // side (MainActivity.startCloudBuild) for the same reason.
+        //
+        // The run slot and its item id are set BEFORE the mode write, because the
+        // write goes through the studio and the studio refreshes this dialog: a
+        // refresh that saw `run` set but `runningItemId` still empty would show the
+        // setup state for one call, which is the state this line exists to leave.
+        runningItemId = r.itemId;
+        failedItemId = "";
         result = Result.NONE;
         failureCause = "";
         progress = 0;
+        setSubjectMode(RenderMode.RELIEF);
         // Announced here, where `run` is already set, so the studio's fix line can
         // say "Generating" for the whole wait rather than appearing when it is over.
         notifyRunStarted();
@@ -1608,7 +2216,7 @@ public final class DepthGenDialog {
                 // The files are on disk already, so there is no state in which the
                 // run is over and this has not happened. Ordered before
                 // applyMap so nothing can observe APPLIED with a stale map.
-                DepthGenDialog panel = openPanel();
+                BuildDialog panel = openPanel();
                 // Only the panel showing THIS photo. A run for photo A can complete
                 // while the user has reopened the panel for photo B, and dismissing B's
                 // panel because A finished is a panel closing under a tap.
@@ -1626,6 +2234,8 @@ public final class DepthGenDialog {
                 // runs). The outcome is `result`, not a stuck-at-100 progress.
                 progress = -1;
                 result = Result.APPLIED;
+                runningItemId = "";
+                failedItemId = "";
                 clearPending(r.app);
                 android.util.Log.i(TAG, "depth: applied " + name + " to item " + r.itemId);
                 // After the write, before the notification: the studio has to
@@ -1688,9 +2298,11 @@ public final class DepthGenDialog {
                 progress = -1;
                 failureCause = cause;
                 result = Result.FAILED;
+                runningItemId = "";
+                failedItemId = r.itemId;
                 clearPending(r.app);
                 android.util.Log.w(TAG, "depth: failed, map unchanged: " + cause);
-                DepthGenDialog panel = openPanel();
+                BuildDialog panel = openPanel();
                 if (panel != null) panel.render();
                 notifyOutcome(r.app, false, label);
                 // The studio has to be told, or its pill keeps saying "Generating"
@@ -1820,7 +2432,7 @@ public final class DepthGenDialog {
      */
     static void setProgress(int pct) {
         progress = Math.max(0, Math.min(100, pct));
-        final DepthGenDialog panel = openPanel();
+        final BuildDialog panel = openPanel();
         if (panel != null) {
             UI.post(new Runnable() {
                 @Override
@@ -1843,7 +2455,7 @@ public final class DepthGenDialog {
         UI.post(new Runnable() {
             @Override
             public void run() {
-                DepthGenDialog panel = openPanel();
+                BuildDialog panel = openPanel();
                 if (panel != null && panel.runStatus != null) panel.runStatus.setText(s);
             }
         });
@@ -2013,21 +2625,10 @@ public final class DepthGenDialog {
     }
 
     // ------------------------------------------------------------------
-    // Retained for the host's existing call sites. Each is a no-op or a
-    // delegate, and each says why, because a method that does nothing and does
-    // not say so is how the next reader goes looking for the behaviour.
+    // Retained for the host's existing call sites. The method is a no-op and
+    // says why, because a method that does nothing and does not say so is how
+    // the next reader goes looking for the behaviour.
     // ------------------------------------------------------------------
-
-    /**
-     * @deprecated the source is always the photo on screen (R-D8: a share
-     *     auto-inserts and selects, and generation only patches that item's
-     *     {@code depthName}). Kept so {@code MainActivity} compiles; it now
-     *     only re-captures the subject.
-     */
-    @Deprecated
-    public void useCurrentImage() {
-        captureSubject();
-    }
 
     /**
      * @deprecated the panel no longer takes a picked image — depth is generated

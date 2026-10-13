@@ -613,7 +613,7 @@
          Change — and the signed-off mockup draws a plain field with the stored
          address in it. The mockup wins, so there is no row to label and nothing
          says "not tested" beside a field the user can read. See the class javadoc
-         of DepthGenDialog before putting any of them back. -->
+         of BuildDialog before putting any of them back. -->
     <string name="depth_server_change">Change</string>
     <string name="depth_server_untested">Not tested</string>
     <string name="depth_models_found">%1$d models on this server</string>
@@ -685,7 +685,7 @@
 
       NOTE: this needs android.permission.POST_NOTIFICATIONS to be visible on
       Android 13+. It is NOT in the manifest, so on 33+ the notification is
-      suppressed. See DepthGenDialog.notifyOutcome.
+      suppressed. See BuildDialog.notifyOutcome.
     -->
     <string name="depth_notify_channel">Depth generation</string>
     <string name="depth_notify_channel_desc">Tells you when a generated depth map is ready.</string>
@@ -777,6 +777,20 @@
     <string name="gallery_importing">Importing — the server is generating depth and normals</string>
     <string name="gallery_import_failed">Import stopped</string>
     <string name="gallery_import_warning_glyph">⚠︎</string>
+
+    <!-- Make 3D: the one build dialog, its two tabs, and the sheet's Renderer row. -->
+    <string name="build_title">Make it 3D</string>
+    <string name="build_subtitle_relief">Build a depth map from this photo on your own ComfyUI server.</string>
+    <string name="build_subtitle_splat">Reconstruct this photo as a Gaussian splat cloud on your own ComfyUI server.</string>
+    <string name="build_grip">Close the 3D build sheet</string>
+    <!-- The Relief tab's own state sentence. "Has a depth map" is true for a file,
+         an embedded chunk and a clip's track; the last two offer no build, so the
+         tab says which it is rather than leaving the user to wonder why the button
+         is absent. -->
+    <string name="build_relief_none">No depth map yet</string>
+    <string name="build_relief_built">Has a depth map</string>
+    <string name="build_relief_embedded">Depth is inside this photo — nothing to build here</string>
+    <string name="build_relief_track">Depth is in the clip — nothing to build here</string>
 
     <!-- Make 3D: the sheet's Renderer row, the cloud's asset row, and the offer. -->
     <string name="renderer_caption">Renderer</string>

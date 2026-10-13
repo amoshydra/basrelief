@@ -8,6 +8,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.amoshydra.basrelief.core.splat.SplatCloud;
+import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.Jobs;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.PrefFiles;
@@ -76,13 +77,15 @@ final class RendererRows {
             @Override
             public void onClick(View v) {
                 // PRESSING SPLAT IS THE OFFER. Selecting the mode is the row's job;
-                // the confirm follows only when there is no cloud to show, which is
-                // what "the intent comes first, the offer follows" means.
+                // the dialog follows only when there is no cloud to show, which is
+                // what "the intent comes first, the offer follows" means. The offer
+                // is now the one build dialog, on its Splat tab, so a share, a
+                // Rebuild and this press all land in the same place.
                 boolean wasRelief = !isSplatSelected();
                 setMode(RenderMode.SPLAT);
                 LibraryItem item = activity.state().activeItem();
                 if (wasRelief && item != null && !hasCloud(item) && !isBuilding(item)) {
-                    activity.offerMakeCloud(item, false);
+                    activity.openBuildDialog(BuildTab.Kind.SPLAT);
                 }
             }
         });
@@ -265,19 +268,13 @@ final class RendererRows {
     private void onCloudAction() {
         LibraryItem item = activity.state().activeItem();
         if (item == null) return;
-        Jobs.Job job = jobFor(item);
-        if (job != null && job.isFailed()) {
-            // Acting on the failure is what clears it: the record exists to keep it
-            // visible until then, and the new build writes a fresh record.
-            JobsStore.clearItem(activity.prefs, item.id);
-            activity.refreshRendererRows();
-            activity.startCloudBuild(item);
-            return;
-        }
-        if (hasCloud(item)) {
-            activity.offerMakeCloud(item, true);
-            return;
-        }
-        activity.offerMakeCloud(item, false);
+        // EVERY route into a cloud build is the one dialog's Splat tab: the offer
+        // when there is no cloud, the rebuild when there is, and acting on a
+        // failure. The dialog reads the failure record for itself and labels its
+        // button "Regenerate"; clearing the record is part of submitting, in the
+        // dialog, so this does not clear it here — a screen that clears a state it
+        // is about to show is how the server's own words get lost before they are
+        // read.
+        activity.openBuildDialog(BuildTab.Kind.SPLAT);
     }
 }
