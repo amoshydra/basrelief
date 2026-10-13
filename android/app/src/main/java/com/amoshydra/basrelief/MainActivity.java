@@ -17,6 +17,8 @@ import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.Scene3D;
+import com.amoshydra.basrelief.core.store.SplatSource;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
@@ -305,6 +307,13 @@ public class MainActivity extends Activity {
      * only thing resolution buys in between is how abruptly it appears.
      */
     private int stripDrawnPillness = -1;
+
+    /**
+     * The outline colour the last state chose, held so {@link #applyStripPillness}
+     * can re-apply it when the pill arrives without knowing which state picked it.
+     * Starts at the idle hairline, the colour the strip is constructed with.
+     */
+    private int stripStrokeColour = 0x33FFFFFF;
 
     private LinearLayout sheetStrip;
     /**
@@ -2320,9 +2329,13 @@ public class MainActivity extends Activity {
         if (step == stripDrawnPillness) return;
         stripDrawnPillness = step;
         float p = step / 8f;
+        // The pill's chrome -- the outline and the plate -- exists only where the pill
+        // does: above the band the state is re-applied so the pill gets its colour back
+        // immediately, and below it setStripStroke clears the outline outright. Both go
+        // through the one writer, so whichever of the two callers runs last, an open
+        // sheet has no strip outline.
         if (step == 0) {
-            stripBackground.setStroke(0, 0);
-            stripBackground.setColor(Color.TRANSPARENT);
+            setStripStroke(stripStrokeColour);
         } else {
             applyStripState(true);
         }
@@ -2371,7 +2384,25 @@ public class MainActivity extends Activity {
      */
     private void setStripStroke(int colour) {
         if (stripBackground == null) return;
-        // The outline exists only where the pill does; see applyStripPillness.
+        // The colour is remembered, because applyStripPillness has to be able to
+        // re-apply it when the pill arrives without knowing which state chose it.
+        stripStrokeColour = colour;
+        // THE OUTLINE IS THE PILL'S, so it is ABSENT -- not transparent -- while the
+        // sheet is open. A zero-alpha stroke is still a stroke a compositor may
+        // anti-alias into a faint hairline, and the open sheet already draws its own
+        // top hairline from the panel; see applyStripPillness.
+        //
+        // THE GATE IS WHAT FIXES THE FIRST LAYOUT. openInitial calls applyStripState()
+        // AFTER the morph has placed the panel and cleared the stroke, so that call
+        // re-applied the state's outline to an open sheet -- an amber border on the
+        // very first frame, which survived until a collapse re-ran applyStripPillness
+        // and only then cleared it. Gating here means the outline can never reach an
+        // open sheet whatever order the two writers run in.
+        if (stripDrawnPillness == 0) {
+            stripBackground.setStroke(0, 0);
+            stripBackground.setColor(Color.TRANSPARENT);
+            return;
+        }
         stripBackground.setStroke(dp(1), colour);
         // THE CURRENT BLEND, not the base. This wrote `stripFillBase` -- the SHEET's
         // glass at 0xEB -- and so repainted the pill opaque on every state change,
@@ -2393,17 +2424,24 @@ public class MainActivity extends Activity {
         // generation they started and then slid the sheet over. Read on every
         // refresh rather than pushed, because the run is started from a dialog that
         // is not this class and there is no callback to hang the end on.
-        StripState drawn = BuildDialog.isRunning() ? StripState.PROGRESS : stripState;
+        //
+        // A CLOUD BUILD IS A RUN TOO, and it drives the SAME state with the SAME
+        // wording: the user asked for one loading text for both kinds rather than a
+        // cloud build that shows nothing. SplatImport.anyRunning is the process-wide
+        // question, exactly as BuildDialog.isRunning is for a depth run.
+        boolean depthRunning = BuildDialog.isRunning();
+        StripState drawn = (depthRunning || SplatImport.anyRunning())
+                ? StripState.PROGRESS : stripState;
         // The same STATE is not always the same PICTURE: PROGRESS carries a number.
         // Guarding on the state alone would have frozen the percentage at whatever it
         // was when the run started -- a progress bar that does not progress. Read once
         // here so the guard and the text cannot disagree about it.
-        int percent = drawn == StripState.PROGRESS
-                ? BuildDialog.progressPercent() : -1;
-        // The pill's own palette, unconditionally: whether it is VISIBLE is
-        // applyStripPillness's job, decided by whether a pill exists at all. Blending
-        // the colour here as well was doing the same job in two places.
-        int shape = Math.round(SheetMorph.shapeProgress(lastSheetFraction) * 16f);
+        //
+        // The percentage belongs to the DEPTH run. A cloud build has none -- its three
+        // phases are the sheet's cloud row's business -- so the pill reuses the
+        // existing indeterminate "Generating…" rather than inventing a number, and
+        // rather than adding a fourth generating string.
+        int percent = depthRunning ? BuildDialog.progressPercent() : -1;
         if (!force && stripDrawnState == drawn && stripDrawnPercent == percent) return;
         stripDrawnState = drawn;
         stripDrawnPercent = percent;
@@ -2415,7 +2453,7 @@ public class MainActivity extends Activity {
                 setStripMark(false);
                 break;
             case ATTENTION:
-                stripLabel.setText(R.string.pill_no_depth);
+                stripLabel.setText(R.string.pill_no_3d);
                 stripLabel.setTextColor(WARN_COLOUR);
                 // The BORDER carries the warning too. Changing only the text colour
                 // left a pill that read as informational at a glance, which is the
@@ -2426,10 +2464,18 @@ public class MainActivity extends Activity {
                 setStripMark(false);
                 break;
             case PROGRESS:
-                // The percentage comes from the same read the guard used.
-                stripLabel.setText(getString(R.string.pill_generating, percent));
+                // The percentage comes from the same read the guard used. A cloud
+                // build has none, so the pill says the indeterminate form -- the same
+                // word the clip job line uses before its first phase arrives -- rather
+                // than showing a percentage it cannot know.
+                stripLabel.setText(percent >= 0
+                        ? getString(R.string.pill_generating, percent)
+                        : getString(R.string.video_job_running_indeterminate));
                 stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                // Through the one writer, so the fill survives (setStroke clears it)
+                // and the pillness gate applies: a run in progress must not paint an
+                // outline onto an OPEN sheet either.
+                setStripStroke(0x33FFFFFF);
                 setStripMark(true);
                 break;
             default:
@@ -2661,10 +2707,21 @@ public class MainActivity extends Activity {
         // The ellipsis is on the LABEL, not on the strip. On the strip it competed
         // with the dot and the padding for room, so a long sentence compressed the
         // dot into a speck before the text shortened at all. Here the dot is fixed
-        // and the text takes what is left.
+        // and the text ellipsises against what is left of the panel.
         stripLabel.setEllipsize(TextUtils.TruncateAt.END);
-        row.addView(stripLabel, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // WRAP_CONTENT, NOT a weighted 0dp child. A 0-width child with weight 1 is
+        // measured as "whatever the parent has left over", which is nothing when the
+        // ROW is itself measured UNSPECIFIED -- so the row came back as its chrome
+        // alone, pillWidthPx fell to the 96dp floor, and the label was then laid out
+        // in ~42dp of a pill that had visibly more room. The user: the label read 'No de…' while the sheet was wide and the row was otherwise empty, in the
+        // collapsed state as well as the expanded one. WRAP_CONTENT measures the text
+        // in every pass, so the pill is as wide as its words and the ellipsis only
+        // appears when the cap genuinely bites. The dot stays fixed either way: the
+        // label's available width is the row minus the mark, so the mark is never
+        // squeezed.
+        row.addView(stripLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // WRAP_CONTENT, not MATCH_PARENT: the pill's width is what its content needs, and
         // a MATCH_PARENT child measures to whatever the parent offers -- so the cap came
@@ -3042,7 +3099,14 @@ public class MainActivity extends Activity {
      * the rounding mean something — which is the order these two fixes have to go in.
      */
     private void applySheetRadius(float top, float bottom) {
-        float[] corners = new float[]{top, top, bottom, bottom, bottom, bottom, top, top};
+        // The ORDER lives in SheetMorph.cornerRadii, where a test can read it back.
+        // Hand-written here it was {top, top, bottom, bottom, bottom, bottom, top,
+        // top} -- four correct pairs in the wrong order, which put the bottom radius
+        // on the TOP-RIGHT corner and the top radius on the BOTTOM-LEFT, so the
+        // sheet's top-right was square while its top-left was rounded. That is the
+        // reported the right side's rounding was wrong, and no screenshot at rest
+        // can tell a wrong radius from a wrong slot.
+        float[] corners = SheetMorph.cornerRadii(top, bottom);
         if (panelBackground != null) panelBackground.setCornerRadii(corners);
         if (stripBackground != null) stripBackground.setCornerRadii(corners);
     }
@@ -4612,6 +4676,34 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * <b>The one answer to "where does this row's splat cloud come from".</b>
+     *
+     * <p>Its sibling is {@link #depthSourceFor}, and it exists for the same reason:
+     * the fix line must not decide "is there a cloud" with its own file check while
+     * the sheet's cloud row decides it with another. The index says a row <i>names</i>
+     * a cloud; whether the bytes are here is a stat, and {@link SplatSource} models
+     * the window between the two so a row naming a cloud whose file has not been read
+     * answers {@link SplatSource.Kind#UNREAD} rather than "no cloud".
+     *
+     * <p>The stat is synchronous, like the two the sheet already makes on the UI
+     * thread for the same file ({@code RendererRows.hasCloud}, {@code
+     * BuildDialog.hasCloud}) — and unlike the embedded and clip reads, which decode a
+     * PNG or open containers and therefore go to the {@code Io} worker. It is one
+     * {@code isFile()} on a path the index already resolved.
+     */
+    SplatSource.Answer splatAnswerFor(LibraryItem item) {
+        if (item == null) return SplatSource.forItem(null, null);
+        return SplatSource.forItem(item, Boolean.valueOf(splatFilePresent(item)));
+    }
+
+    /** Whether the row names a cloud file that is actually on disk. */
+    private boolean splatFilePresent(LibraryItem item) {
+        if (item == null || item.splatName == null) return false;
+        File f = PrefFiles.resolve(getFilesDir(), item.splatName);
+        return f != null && f.isFile();
+    }
+
+    /**
      * Whether the selected row is a photograph or a clip that can play.
      *
      * <p><b>The one place a clip's medium is derived</b>, for the same reason
@@ -4891,58 +4983,75 @@ public class MainActivity extends Activity {
                     });
             return;
         }
-        if (depth.isUnknown()) {
-            // The window while an embedded depth map is still being read. The line
-            // says <b>nothing</b> rather than claiming an absence it has not
+        // "Is there any 3D at all" is a different question from "is there a depth
+        // map", and it is the one this line is really answering. A row with a splat
+        // cloud and no map read "No depth" while the renderer drew a Gaussian cloud
+        // in three dimensions — the reported bug — so the two sources are combined in
+        // :core, once, where both windows are modelled. See Scene3D.
+        Scene3D.Answer scene = Scene3D.resolve(depth, splatAnswerFor(item));
+        if (scene.isUnknown()) {
+            // The window while a map's chunk or a cloud's file is still being read.
+            // The line says <b>nothing</b> rather than claiming an absence it has not
             // established, and it deliberately also does not report flat lit: until
-            // the depth is known, whether this photo is shaded is not known either.
-            // The next refresh fills it in.
+            // the 3D is known, whether this photo is shaded is not known either. The
+            // next refresh fills it in.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;
         }
-        if (!depth.reportsNoDepth()) {
-            // The photograph HAS depth. Shading is the separate question: it is
-            // supplied by a normal map or it is not, and if it is not the relief is
-            // flat lit. This is the new middle state — displaced correctly, lit as a
-            // plane — and it is neither "No depth" nor a fault, so it says why there
-            // is no shading and offers the fix rather than reading as broken.
+        if (scene.has3d()) {
+            // The row has a relief or a splat, so the no-depth affordance must not
+            // appear AT ALL — not reworded, not greyed, not a smaller box. This is the
+            // user's rule: the no-depth affordance must be removed while a relief or a splat is present. It is what stops a cloud row from being told it has no depth.
             //
-            // The one resolution of that question, so this line, the renderer and the
-            // status line cannot disagree. Nothing selected is the packaged trio,
-            // which ships a normal, so it is silent like every shaded photo.
+            // Shading is the separate question, and it is about a RELIEF drawn from a
+            // depth map: supplied by a normal map or not, and if not the relief is flat
+            // lit. A cloud is reconstructed rather than displaced, so it has no normal
+            // map to be missing and the sentence is asked only when there is a map.
+            //
+            // The one resolution of the shading question, so this line, the renderer
+            // and the status line cannot disagree. Nothing selected is the packaged
+            // trio, which ships a normal, so it is silent like every shaded photo.
             //
             // Given the medium rather than left to derive it: a clip's poster can be
             // shaded while the clip itself is flat lit, and both carry identical still
             // files — so a derivation reading only the still files answers the same
             // for both and is wrong about one. That is why NormalSource takes a
             // VideoSource.Answer here.
-            NormalSource.Answer normals = NormalSource.forItem(item, videoSourceFor(state));
-            if (normals.needsNormals()) {
-                setFixLine(getString(R.string.fix_flat_lit),
-                        getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                // The ordinary Depth AI panel, and not a special
-                                // path: it already prefers MoGe, which is the model
-                                // that emits the normal this state is missing. The
-                                // user can change checkpoint, resolution and host
-                                // there exactly as any other run.
-                                openBuildDialog(BuildTab.Kind.RELIEF);
-                            }
-                        }, null, null, false);
-                return;
+            if (depth.hasDepth()) {
+                NormalSource.Answer normals =
+                        NormalSource.forItem(item, videoSourceFor(state));
+                if (normals.needsNormals()) {
+                    setFixLine(getString(R.string.fix_flat_lit),
+                            getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
+                                @Override
+                                public void onClick(View v) {
+                                    // The ordinary Depth AI panel, and not a special
+                                    // path: it already prefers MoGe, which is the model
+                                    // that emits the normal this state is missing. The
+                                    // user can change checkpoint, resolution and host
+                                    // there exactly as any other run.
+                                    openBuildDialog(BuildTab.Kind.RELIEF);
+                                }
+                            }, null, null, false);
+                    return;
+                }
             }
-            // Shaded, or the packaged trio: nothing to report. A line that can only
-            // inform is a status paragraph, and this is one sentence.
+            // 3D and nothing to fix: nothing to report. A line that can only inform is
+            // a status paragraph, and this is one sentence.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;
         }
+        // Neither a map nor a cloud: the only state that may say anything, and what it
+        // says is "no 3D" rather than "No depth". The row has no geometry at all, so
+        // naming depth alone would answer a narrower question than the one the user is
+        // looking at — the row could gain a cloud without gaining a map.
+        //
         // Two actions, and they are PEERS: the PRD settles that generating may be as
         // common as choosing, so neither is styled as the real one.
-        setFixLine(getString(R.string.fix_no_depth),
-                getString(R.string.fix_no_depth_actions), new View.OnClickListener() {
+        setFixLine(getString(R.string.fix_no_3d),
+                getString(R.string.fix_no_3d_actions), new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         openBuildDialog(BuildTab.Kind.RELIEF);
@@ -5909,6 +6018,12 @@ public class MainActivity extends Activity {
     void refreshRendererRows() {
         if (rendererRows != null) rendererRows.refresh();
         if (splatDevRows != null) splatDevRows.refresh();
+        // A cloud build's every UI update goes through here -- each phase, the
+        // completion and the failure -- so this is where the collapsed pill learns a
+        // splat run has started or ended. It is the same shape as the depth run's
+        // onDepthRunStateChanged: the state is re-read, never pushed, and
+        // applyStripState is a no-op unless the state actually moved.
+        applyStripState();
     }
 
     /**

@@ -399,12 +399,16 @@ final class SplatRenderer {
      * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
+     * @return the camera frame this draw used, or null when nothing was drawn — so
+     *         the host can place its orbit marker at the SAME pivot the cloud was
+     *         aimed at. The frame is the one reusable instance, valid until the next
+     *         call; the host consumes it immediately, in the same GL event.
      */
-    void draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
+    SplatCamera.Frame draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
               float brightnessGain, float shadowLift, float renderScale, float cloudLens,
               float eps2d, float blurPx) {
-        if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return;
+        if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return null;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
         long t0 = System.nanoTime();
@@ -560,6 +564,7 @@ final class SplatRenderer {
         drawNanosInWindow += now - d0;
         framesInWindow++;
         if (STATS) logStats(now, surfaceW, surfaceH);
+        return cam;
     }
 
     /**

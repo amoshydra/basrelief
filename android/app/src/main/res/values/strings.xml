@@ -15,7 +15,7 @@
       logcat grep, and they name facts, not English.
     - The demo map's filename, which is debug output and appears in Diagnostics.
 
-  Naming: <name> is the string's job, not its wording. `no_depth` survives a
+  Naming: <name> is the string's job, not its wording. `no_3d` survives a
   rewording; `no_depth_map_error_message` does not.
 -->
 <resources>
@@ -96,9 +96,15 @@
       to do, so the line only has to name the condition. A sentence explaining the
       consequence ("...so it will not stand out of the plane") was tried and read
       as a paragraph — the conditions are glanced at, not read.
+
+      The condition is "no 3D at all", not "no depth map": a row with a splat cloud
+      and no map draws in three dimensions, so naming depth alone put "No depth"
+      over a cloud the user could see. The line is absent entirely while a relief OR
+      a splat is present, and this wording appears only when neither is — see
+      Scene3D.
     -->
-    <string name="fix_no_depth">No depth</string>
-    <string name="fix_no_depth_actions">Generate a map</string>
+    <string name="fix_no_3d">No 3D</string>
+    <string name="fix_no_3d_actions">Generate a map</string>
     <!--
       The middle state: the photo HAS depth and therefore relief, but no normal
       map, so it is lit as a flat plane. This is not an error and the wording must
@@ -114,9 +120,13 @@
     <string name="fix_no_answer">No answer · map unchanged</string>
     <string name="fix_try_again">Try again</string>
 
-    <!-- The collapsed pill. Three states; see PillState. -->
+    <!--
+      The collapsed pill. Three states; see MainActivity.StripState. The attention
+      wording is "No 3D", the same condition the fix line names: a row with a relief
+      or a splat has no attention state at all.
+    -->
     <string name="pill_controls">Controls</string>
-    <string name="pill_no_depth">No depth</string>
+    <string name="pill_no_3d">No 3D</string>
     <string name="pill_generating">Generating · %1$d%%</string>
 
     <!-- The demo's map stays reachable from the sheet, not only a row menu -->

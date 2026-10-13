@@ -57,6 +57,20 @@ final class SplatImport {
         return itemId != null && LIVE.containsKey(itemId);
     }
 
+    /**
+     * Whether <b>any</b> cloud build is running in this process, for the collapsed
+     * pill.
+     *
+     * <p>Process-wide, exactly like {@code BuildDialog.isRunning()} for a depth run:
+     * the pill is the sheet's away-state and has no item of its own, so a build for
+     * a row the user has since scrolled away from is still the thing they started
+     * and still the thing worth showing. {@link #isRunning} stays the per-row
+     * question the sheet's cloud row asks.
+     */
+    static boolean anyRunning() {
+        return !LIVE.isEmpty();
+    }
+
     /** The live phase of this row's build, or null when nothing is running. */
     static Live live(String itemId) {
         return itemId == null ? null : LIVE.get(itemId);

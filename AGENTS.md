@@ -412,7 +412,19 @@ already cost real time.
     value. The marker and `uSplatEye` both read the frame's pivot — the marker at
     the pivot itself, the eye at the fixed camera distance above it — so they
     cannot name different pivots, and `screenToOrbit` resolves the tap through
-    the same pivot depth the draw used.
+    the same pivot depth the draw used. **And the marker is drawn in the SPLAT
+    branch too, not only after the relief's `drawRender`.** The branch that draws
+    the Gaussian cloud returns before the relief's marker call, so a row in Splat
+    mode had no origin indicator at all — the one place the pivot is otherwise
+    invisible — and it stayed that way until it was reported. `SplatRenderer.draw`
+    therefore returns the frame it drew with, and the host draws the crosshair from
+    that frame, so the marker and the cloud cannot name different pivots. The
+    marker's radius is a constant ANGLE in both modes: a fraction of the model
+    scale for the relief, a fraction of the eye-to-pivot distance for the cloud,
+    because a cloud twice as far away would otherwise draw a ring half the size.
+    The cloud may also have drawn through an offscreen target, so the host restores
+    the surface viewport before the marker — an overlay drawn into a half-size
+    target would land in the wrong place.
   - **The focal does NOT go into the ray, and that is a decision with a measurement
     behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
     camera; drawing it through this renderer's camera — fixed 45°, because it is the
@@ -918,7 +930,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 649 tests across thirty-six classes:
+it**. 662 tests across thirty-seven classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1716,7 +1728,14 @@ every library write took the app down, so any gallery tap crashed it.
   `blendColour` (the sheet's own glass to the original pill's plate, both
   recovered from `227a53f^`) are here too, and the capsule is the *same* radius
   function asked with `0` as its open radius rather than a second rule that could
-  drift from the first. Their shared trap is **no step in the last 1% of travel**,
+  drift from the first. And the eight-value array that writes them is a function
+  too, `SheetMorph.cornerRadii`, because the order — **TL, TR, BR, BL** — is a
+  separate defect from the radius's value and was reported as one: *the right side's rounding was wrong*, with the outline's top-right corner square while its
+  top-left was rounded. Hand-written at the call site the array was
+  `{top, top, bottom, bottom, bottom, bottom, top, top}`, which reads as four
+  correct pairs in the wrong order and puts the bottom radius on the top-right
+  corner. A screenshot at rest cannot tell a wrong radius from a wrong slot; reading
+  the array back corner by corner can. Their shared trap is **no step in the last 1% of travel**,
   swept at a hundredth of a percent because a snap there is invisible in any
   screenshot taken at rest and obvious in the hand. Two of the assertions here are
   written as *signed* checks per channel for a reason worth keeping: the alpha
@@ -1788,6 +1807,23 @@ every library write took the app down, so any gallery tap crashed it.
   flickers through the window on selection), that `FILE` requires the file to be
   here, that only `NONE` may say "no cloud", and that every kind is reachable
   through `Kind.values()` rather than a hand-written list that would go stale.
+- `Scene3DTest` — "is there any 3D here", combined from the two sources that can
+  supply it. It exists because the fix line asked `DepthSource` alone, so a row with
+  a splat cloud and no depth map read **"No depth"** while the renderer drew a cloud
+  in three dimensions — the reported bug, and the same lie `DepthSource` was written
+  to remove one medium over. The rule the user stated is the whole class: **as long
+  as a relief or a splat is present the no-depth affordance must not appear at all**,
+  and only a row with neither may say anything, in the words "no 3D". It is a
+  combining function rather than a fifth vocabulary: it asks neither source's
+  question again and invents no facts, so there is one place that decides what "has
+  3D" means. The trap is the one both inputs carry — **a window claims nothing** —
+  and it is why there are three kinds rather than two: an unread PNG chunk and an
+  unread cloud file are both "not known yet", so a row in either window is never told
+  it has no 3D. The second rule is the one a naive OR would get wrong: a **known
+  positive beats the other source's window**, because a row that already has a map
+  has 3D whether or not its cloud has been stat'd, and answering `UNKNOWN` there
+  would blank a line about a picture already on screen. Every kind is reachable
+  through `Kind.values()`, and only `NONE` may say "no 3D".
 - `BuildTabTest` — the one 3D-build dialog's two tabs, and the two rules a screen
   cannot be trusted to keep: **the tab a build runs on is the mode it writes**
   (`defaultFor`/`modeFor` are inverses, so opening a row and pressing the visible

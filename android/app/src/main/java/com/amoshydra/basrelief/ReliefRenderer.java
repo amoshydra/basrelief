@@ -32,6 +32,7 @@ import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 import com.amoshydra.basrelief.core.render.Splat;
+import com.amoshydra.basrelief.core.render.SplatCamera;
 import com.amoshydra.basrelief.core.splat.SplatCloud;
 
 import javax.microedition.khronos.egl.EGL10;
@@ -3667,10 +3668,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // model. Stopped once, when it is running; the next resolve re-arms it
             // if the switch goes back off.
             if (clip != null && clip.isRunning()) stopClip();
-            splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
+            SplatCamera.Frame sf = splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
                     orbitX, orbitY, panX, panY,
                     pendingBrightnessGain, pendingShadowLift, splatRenderScale,
                     splatWantedLens, splatEps2d, splatBlurPx);
+            // The orbit crosshair belongs to the cloud too, and this branch used to
+            // return before it was ever drawn -- so a row in Splat mode had no origin
+            // indicator at all, which is the one place the pivot is otherwise
+            // invisible. The frame the cloud was DRAWN with is the frame the marker
+            // is drawn with, so the crosshair, the aim and the reference eye cannot
+            // name different pivots.
+            if (showOrbitMarker && sf != null) {
+                // The cloud's draw may leave the viewport at its offscreen render
+                // size; the marker is a surface overlay.
+                GLES20.glViewport(0, 0, Math.round(surfaceW), Math.round(surfaceH));
+                drawOrbitMarker(sf);
+            }
             captureLockFrameIfWanted();
             return;
         }
@@ -3906,6 +3919,40 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * glass, and the frame's pivot is that render's own aim point.
      */
     private void drawOrbitMarker(CameraModel.Frame f) {
+        // The relief's radius is a fraction of the MODEL SCALE, which is the world
+        // size of the plane the marker sits on.
+        drawOrbitMarker(f.viewProjection, f.pivotX, f.pivotY, f.pivotZ, 0.035f * f.scale);
+    }
+
+    /**
+     * The orbit crosshair for the splat cloud, from the frame the cloud was drawn
+     * with.
+     *
+     * <p>The pivot is in the cloud's own world units and the eye keeps its distance
+     * to it, so the ring's radius is a constant <b>angle</b>: a fraction of the
+     * eye-to-pivot distance. That is the same "constant size on the glass" the
+     * relief's marker gets from {@code 0.035 * f.scale}, one medium over, and it is
+     * why the radius cannot be a fixed world number — a cloud twice as far away
+     * would draw a ring half the size.
+     */
+    private void drawOrbitMarker(SplatCamera.Frame f) {
+        float dx = f.eyeX - f.pivotX;
+        float dy = f.eyeY - f.pivotY;
+        float dz = f.eyeZ - f.pivotZ;
+        float radius = 0.035f * (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        drawOrbitMarker(f.viewProjection, f.pivotX, f.pivotY, f.pivotZ, radius);
+    }
+
+    /**
+     * The crosshair itself, from the numbers both cameras can supply.
+     *
+     * <p>One body for both modes, so the relief and the cloud cannot draw two
+     * different crosshairs: the caller passes the frame it drew with — its
+     * {@code projPanned * view}, its pivot and the radius that reads as a constant
+     * size in its own units.
+     */
+    private void drawOrbitMarker(float[] viewProjection, float px, float py, float pz,
+                                 float r) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(markerProgram);
 
@@ -3914,11 +3961,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the aim and the cards cannot name different pivots. It is the surface
         // under the origin, not the plane point behind it -- which is what makes
         // the crosshair the point the picture will hold under a tilt.
-        float r = 0.035f * f.scale;
         Matrix.setIdentityM(markerMat, 0);
-        Matrix.translateM(markerMat, 0, f.pivotX, f.pivotY, f.pivotZ);
+        Matrix.translateM(markerMat, 0, px, py, pz);
         Matrix.scaleM(markerMat, 0, r, r, 1f);
-        Matrix.multiplyMM(markerMvp, 0, f.viewProjection, 0, markerMat, 0);
+        Matrix.multiplyMM(markerMvp, 0, viewProjection, 0, markerMat, 0);
         GLES20.glUniformMatrix4fv(markerUMVP, 1, false, markerMvp, 0);
 
         ringBuffer.position(0);
