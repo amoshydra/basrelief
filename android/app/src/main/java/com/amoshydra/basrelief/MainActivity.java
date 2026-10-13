@@ -5934,8 +5934,23 @@ public class MainActivity extends Activity {
      * prefs file on the UI thread is the stall the gesture rules exist to avoid.
      */
     private void setCloudBudget(int sliderThousands, TextView line) {
-        int v = com.amoshydra.basrelief.core.depth.ComfyWorkflow.clampSharpBudget(
-                sliderThousands * 1000);
+        int minK = com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MIN / 1000;
+        int maxK = com.amoshydra.basrelief.core.depth.ComfyWorkflow.SHARP_BUDGET_MAX / 1000;
+        // A callback from OUTSIDE the slider's own range is not a value the user
+        // chose. A slider whose view is detached mid-gesture -- pressing Make while a
+        // finger is still on it -- reports 0, and clampSharpBudget turns 0 into the
+        // DEFAULT, silently: that is how a 1,200,000 budget came back as 150,000 on
+        // the second and third build and not the first, when the slider happened to
+        // be released before the button was pressed. A control that cannot claim a
+        // value must not write one, which is the rule this file already states for
+        // reads. The ignored value is logged so the next occurrence names itself.
+        if (sliderThousands < minK || sliderThousands > maxK) {
+            android.util.Log.w("Basrelief", "splat budget callback out of range: "
+                    + sliderThousands + "k (the row spans " + minK + "k.." + maxK
+                    + "k); ignored rather than written as the default");
+            return;
+        }
+        int v = sliderThousands * 1000;
         prefs.edit().putInt(ReliefRenderer.KEY_SPLAT_BUDGET, v).apply();
         if (line != null) line.setText(budgetSentence(v));
     }
