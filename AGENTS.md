@@ -491,7 +491,7 @@ already cost real time.
     until the values are known** — a field in the counted chain is a schema bump plus
     a writer at every call site for a number that may not survive the tuning. The
     product defaults are unchanged for anyone who never opens the dev group:
-    `Splat.EPS_2D_DEFAULT` = 2.5, `Splat.BLUR_DEFAULT` = 0,
+    `Splat.EPS_2D_DEFAULT` = 0.5 of the cell, `Splat.BLUR_DEFAULT` = 0,
     `ComfyWorkflow.SHARP_BUDGET` = 150k.
     - **SIZE is a coverage lift, not a blur, and that distinction is the whole
       point.** The `eps2d` floor lifts only the splats whose screen covariance is
@@ -901,7 +901,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 631 tests across thirty-five classes:
+it**. 635 tests across thirty-five classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -960,7 +960,23 @@ every library write took the app down, so any gallery tap crashed it.
   **level ladder**: every level must be a real index, the grids must not go
   backwards, and anything that is not a level — a negative, an index past the end,
   a value a newer build wrote — answers the default, because that default is the
-  look the mode shipped with and an upgrade must not move it.
+  look the mode shipped with and an upgrade must not move it. Its fifth is the
+  **floor's unit**, which is the bug it was written for. `eps2d` is a fraction of
+  the cell a splat stands for (`viewportArea / count`, magnified by the zoom), not
+  a number of pixels, because the gap it closes is the cell and a pixel is a unit
+  the cell does not use: the same setting is a different effect at every resolution
+  and every zoom, and the knob's maximum was below what the phone needed. Measured
+  on one cloud's smooth sky (high-frequency energy against the photograph's own):
+  6 px reached 0.67x at the cloud's 912x1984 frame while the 1440x3120 the phone
+  draws it into needed 15 px — and 8, the old ceiling, still left 2.1x. Both are
+  0.5 of the cell, which is what makes one default correct for both. So the test
+  asserts the *invariance* and not either pixel value: the floor over the cell is
+  the same number at both resolutions, the phone's is the cloud's scaled by the
+  square of the resolution ratio, and the zoom enters squared because it magnifies
+  both axes. A
+  cell that cannot be claimed (no splats, no viewport, a NaN fraction) answers 0,
+  which is the identity for a floor — the "a window claims nothing" rule applied to
+  a number, where a guess would be a floor derived from a count of nothing.
 - `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
   projector, the two things a shader cannot be checked for off-device. The
   container test pins the 32-byte record field for field, including that the

@@ -105,23 +105,23 @@ final class SplatDevRows {
 
     // ---------------------------------------------------------------- the rows
 
-    /** SIZE: the 2D low-pass floor, in tenths so the slider's integer range is exact. */
+    /** SIZE: the 2D low-pass floor, as a fraction of the cell, in hundredths. */
     private View sizeRow() {
         int initial = Math.round(readFloat(ReliefRenderer.KEY_SPLAT_EPS2D,
-                Splat.EPS_2D_DEFAULT) * 10f);
-        initial = Math.round(Splat.clampEps2d(initial / 10f) * 10f);
+                Splat.EPS_2D_DEFAULT) * 100f);
+        initial = Math.round(Splat.clampEps2d(initial / 100f) * 100f);
         BasreliefSlider s = BasreliefSlider.create(activity, ReliefRenderer.KEY_SPLAT_EPS2D,
-                initial, Math.round(Splat.EPS_2D_MIN * 10f), Math.round(Splat.EPS_2D_MAX * 10f),
+                initial, Math.round(Splat.EPS_2D_MIN * 100f), Math.round(Splat.EPS_2D_MAX * 100f),
                 new BasreliefSlider.ValueFormatter() {
                     @Override
                     public String format(int value) {
-                        return String.format(Locale.US, "%.1f", value / 10f);
+                        return String.format(Locale.US, "%.2f", value / 100f);
                     }
                 },
                 new BasreliefSlider.OnChanged() {
                     @Override
                     public void onChanged(int value) {
-                        float v = Splat.clampEps2d(value / 10f);
+                        float v = Splat.clampEps2d(value / 100f);
                         activity.prefs.edit()
                                 .putFloat(ReliefRenderer.KEY_SPLAT_EPS2D, v).apply();
                         activity.renderer.setSplatEps2d(v);

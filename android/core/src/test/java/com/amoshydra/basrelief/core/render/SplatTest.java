@@ -200,7 +200,7 @@ public class SplatTest {
     public void theSizeKnobClampsAndAValueThatClaimsNothingIsTheDefault() {
         assertEquals(Splat.EPS_2D_DEFAULT, Splat.clampEps2d(Splat.EPS_2D_DEFAULT), 0f);
         assertEquals("inside the range is kept exactly",
-                4f, Splat.clampEps2d(4f), 0f);
+                0.5f, Splat.clampEps2d(0.5f), 0f);
         assertEquals("below the range is the floor",
                 Splat.EPS_2D_MIN, Splat.clampEps2d(0f), 0f);
         assertEquals("below the range is the floor",
@@ -231,5 +231,88 @@ public class SplatTest {
                 0f, Splat.clampBlurPx(-2f), 0f);
         assertEquals("a NaN radius claims nothing",
                 Splat.BLUR_DEFAULT, Splat.clampBlurPx(Float.NaN), 0f);
+    }
+
+    /**
+     * The floor is a fraction of the CELL, and the cell is the viewport divided by
+     * the splat count -- so one setting is one effect at every resolution and every
+     * zoom, which is the property a number of pixels cannot have.
+     *
+     * <p>This is the bug it exists for, in the numbers it was measured in. One
+     * cloud's smooth sky, high-frequency energy against the photograph's own: at
+     * the cloud's 912x1984 frame it needed 6 px (2.5 left 3.0x, 6 reached 0.67x);
+     * at the 1440x3120 the phone draws it into it needed 15 px (2.5 left 7.3x, and
+     * 8 -- the knob's old maximum -- still left 2.1x). Both are 0.5 of the cell.
+     * So the assertion that matters is not either pixel value but that the setting
+     * is resolution-free: the floor over the cell is the same number at both, and
+     * the phone's floor is the cloud's scaled by (1440/912)^2.
+     */
+    @Test
+    public void theFloorIsAFractionOfTheCellNotANumberOfPixels() {
+        int count = 149504;
+        float cloud = Splat.eps2dFor(0.5f, 912, 1984, count, 1f);
+        float phone = Splat.eps2dFor(0.5f, 1440, 3133, count, 1f);
+        assertEquals("the cloud's own frame needs 6 px at half a cell",
+                6f, cloud, 0.1f);
+        assertEquals("and the phone's needs 15 px at the SAME setting",
+                15f, phone, 0.2f);
+        assertEquals(0.5f, cloud / (912f * 1984f / count), 1e-5f);
+        assertEquals(0.5f, phone / (1440f * 3133f / count), 1e-5f);
+        assertEquals("the phone's floor is the cloud's scaled by the resolution "
+                + "ratio squared -- a fixed number of pixels is the same at neither",
+                (1440f / 912f) * (1440f / 912f), phone / cloud, 1e-3f);
+    }
+
+    /**
+     * Zoom magnifies the cell's width AND its height, so it enters squared: a floor
+     * that grew linearly would close the gaps at 1x and leave them open at 2x,
+     * which is the same failure one axis over.
+     */
+    @Test
+    public void zoomEntersSquaredBecauseItMagnifiesBothAxes() {
+        int count = 100000;
+        float one = Splat.eps2dFor(0.5f, 1000, 2000, count, 1f);
+        float two = Splat.eps2dFor(0.5f, 1000, 2000, count, 2f);
+        assertEquals("twice the magnification is four times the floor",
+                4f, two / one, 1e-4f);
+        assertEquals("and it is still half the cell",
+                0.5f, two / (1000f * 2000f * 4f / count), 1e-5f);
+    }
+
+    /**
+     * A cell that cannot be claimed answers zero, not a guess -- the clamp's rule
+     * one level up. Zero is the identity for a floor, so a cloud the renderer has
+     * not counted draws exactly as it would with the floor off, rather than with a
+     * floor derived from a count of nothing.
+     */
+    @Test
+    public void aCellThatClaimsNothingIsTheIdentity() {
+        assertEquals("no splats", 0f, Splat.eps2dFor(0.5f, 1000, 2000, 0, 1f), 0f);
+        assertEquals("no viewport width", 0f, Splat.eps2dFor(0.5f, 0, 2000, 100, 1f), 0f);
+        assertEquals("no viewport height", 0f, Splat.eps2dFor(0.5f, 1000, 0, 100, 1f), 0f);
+        assertEquals("no fraction", 0f, Splat.eps2dFor(0f, 1000, 2000, 100, 1f), 0f);
+        assertEquals("a NaN fraction claims nothing",
+                0f, Splat.eps2dFor(Float.NaN, 1000, 2000, 100, 1f), 0f);
+        // A zoom that is not a number is 1x, not zero and not the ceiling: the
+        // camera's own range is 0.25..2, and the floor must follow the draw rather
+        // than answer a magnification it cannot produce.
+        assertEquals("a NaN zoom is 1x",
+                Splat.eps2dFor(0.5f, 1000, 2000, 100, 1f),
+                Splat.eps2dFor(0.5f, 1000, 2000, 100, Float.NaN), 0f);
+        assertEquals("the zoom clamp is the camera's own",
+                Splat.eps2dFor(0.5f, 1000, 2000, 100, 0.25f),
+                Splat.eps2dFor(0.5f, 1000, 2000, 100, -5f), 0f);
+    }
+
+    /**
+     * The shipped default is the value measured clean, pinned so an upgrade cannot
+     * quietly move the look: 0.5 of the cell, which is the 6 px the smooth sky
+     * needed at the frame the sweep was run in.
+     */
+    @Test
+    public void theShippedFloorIsTheMeasuredCleanValue() {
+        assertEquals(0.5f, Splat.EPS_2D_DEFAULT, 0f);
+        assertEquals("and it resolves to the measured 6 px at that frame",
+                6f, Splat.eps2dFor(Splat.EPS_2D_DEFAULT, 912, 1984, 149504, 1f), 0.1f);
     }
 }

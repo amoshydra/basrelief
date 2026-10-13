@@ -375,9 +375,11 @@ final class SplatRenderer {
      * @param cloudLens the cloud's own lens, as {@code focal / height}, or 0 for
      *                  unknown. See {@link com.amoshydra.basrelief.core.store.LibraryItem#splatLens};
      *                  0 draws at {@link #SOURCE_FOVY}, the demo cloud's lens.
-     * @param eps2d the dev SIZE knob: the 2D low-pass floor, clamped through
-     *              {@link Splat#clampEps2d} so a bad pref cannot reach the shader.
-     *              {@link Splat#EPS_2D_DEFAULT} is the shipped value.
+     * @param eps2d the dev SIZE knob: the 2D low-pass floor as a FRACTION OF THE
+     *              CELL, clamped through {@link Splat#clampEps2d} so a bad pref
+     *              cannot reach the shader, and resolved into render pixels by
+     *              {@link Splat#eps2dFor}. {@link Splat#EPS_2D_DEFAULT} is the
+     *              shipped value.
      * @param blurPx the dev BLUR knob: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
@@ -394,15 +396,18 @@ final class SplatRenderer {
         // Clamped here as well as at the pref read, because the renderer is the one
         // place both the dev slider and the cold reload converge and a value that
         // reached the shader unclamped would be a state no test can name.
+        // The knob stores a FRACTION OF THE CELL, not pixels; the viewport turns it
+        // into the pixels the shader works in, below. See Splat.eps2dFor for why a
+        // fixed number of pixels cannot be the setting.
         eps2d = Splat.clampEps2d(eps2d);
         blurPx = Splat.clampBlurPx(blurPx);
         boolean blur = blurPx >= 0.5f;
-        eps2dInUse = eps2d;
         blurPxInUse = blurPx;
 
         ensureOffscreen(surfaceW, surfaceH, renderScale, blur);
         int vw = fbo != 0 ? renderW : surfaceW;
         int vh = fbo != 0 ? renderH : surfaceH;
+        eps2dInUse = Splat.eps2dFor(eps2d, vw, vh, count, zoom);
 
         // The cloud's OWN lens, not the demo's. The row stores the dimensionless
         // focal/height the node measured in its sidecar, and a Gaussian's screen
@@ -482,7 +487,7 @@ final class SplatRenderer {
         GLES30.glUniform1i(uOrderW, ORDER_W);
         GLES30.glUniform1f(uNear, NEAR);
         GLES30.glUniform1f(uFudge, 1f);
-        GLES30.glUniform1f(uEps2d, eps2d);
+        GLES30.glUniform1f(uEps2d, eps2dInUse);
         GLES30.glUniform1f(uBrightnessGain, brightnessGain);
         GLES30.glUniform1f(uShadowLift, shadowLift);
         GLES30.glUniform2f(uFocal, 0.5f * vw * proj[0], 0.5f * vh * proj[5]);
@@ -1124,17 +1129,22 @@ final class SplatRenderer {
             // The 2D low-pass floor, gsplat's eps2d. It is a FLOOR, not a blur:
             // it lifts the splats whose screen covariance is too small to sample
             // and leaves the well-sampled ones alone, so a far field of ~2 px
-            // splats at 2 px spacing stops reading as a screen-door fog. Measured
-            // on the cloud that showed the striping (sky high-frequency energy /
-            // subject high-frequency energy / black holes): 0.3 -> 10.08 / 1.68 /
-            // 9.6%; 1.5 -> 5.26 / 1.46 / 1.8%; 2.5 -> 2.98 / 1.35 / 0.2%; 4.0 ->
-            // 1.27 / 1.26 / 0.0%. 2.5 is the knee and the shipped default: the
-            // stripes are gone and the subject is visually unchanged. 4.0 is the
-            // cleaner-sky option at a small subject cost. The dev SIZE knob spans
-            // 0.3..8, so a phone can re-pick that trade by eye. This is the
-            // only place the floor lives -- :core's SplatProjection::conic has no
-            // equivalent (its MIN_DET is a singularity guard, not a floor), so
-            // there is nothing to keep in step.
+            // splats at 2 px spacing stops reading as a screen-door fog.
+            //
+            // It arrives here already in render pixels, from Splat.eps2dFor, which
+            // turns the knob's fraction of the cell into the unit this line needs.
+            // That indirection is not decoration: a constant here is measured in a
+            // unit the gap does not use, and the gap is what is being closed.
+            // Measured on one cloud's smooth sky, as high-frequency energy against
+            // the photograph's own: at the cloud's 912x1984 frame, 2.5 px leaves
+            // 3.0x and 6 px reaches 0.67x; at the 1440x3120 the phone draws it
+            // into, the same two numbers are 7.3x and 3.2x, and it takes 15 px to
+            // reach 0.67x again. As a fraction of the cell all of those are 0.5.
+            // The dev SIZE knob spans 0.45..0.80, so a phone can re-pick the trade
+            // by eye at any resolution and every setting it offers works. This is
+            // the only place the floor lives --
+            // :core's SplatProjection::conic has no equivalent (its MIN_DET is a
+            // singularity guard, not a floor), so there is nothing to keep in step.
             "  cov00 += uEps2d;\n" +
             "  cov11 += uEps2d;\n" +
             "\n" +

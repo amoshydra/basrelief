@@ -76,18 +76,40 @@ public final class Splat {
     /**
      * The product default 2D low-pass floor, gsplat's {@code eps2d}: it lifts only
      * the splats whose screen covariance is too small to sample, so a far field of
-     * ~2 px splats at 2 px spacing stops reading as a screen-door fog. The measured
-     * knee is 2.5 (the stripes are gone, the subject visually unchanged); see
-     * {@link com.amoshydra.basrelief.core.splat.SplatProjection} and the shader's
-     * own record for the numbers.
+     * ~2 px splats at 2 px spacing stops reading as a screen-door fog.
+     *
+     * <p><b>It is a FRACTION OF THE CELL, not a number of pixels, and that is the
+     * whole of it.</b> The floor's job is to close the gap between neighbouring
+     * splats, and that gap is the cell a splat stands for: {@code viewportArea /
+     * count}, magnified by the zoom. A fixed floor in pixels is measured in a unit
+     * the gap does not use -- the cell doubles with the render's resolution and
+     * again with every octave of zoom, while a constant does not -- so the same
+     * setting is a different effect on every device and at every zoom, and the
+     * knob's maximum can be below what the phone needs. Measured on one cloud:
+     * the sky needed 6 at the cloud's own 912x1984 frame and 15 at the 1440x3120
+     * the phone draws it into, which is 6 x (1440/912)^2 to three figures. As a
+     * fraction of the cell both are 0.5, which is what makes one default correct
+     * for both. See {@link #eps2dFor}.
+     *
+     * <p>The measured value: at 0.5 the sky's high-frequency energy falls to the
+     * photograph's own, and the dense net it shows at 0.2 is gone.
      */
-    public static final float EPS_2D_DEFAULT = 2.5f;
+    public static final float EPS_2D_DEFAULT = 0.5f;
 
-    /** The bottom of the dev SIZE range: the value the artifact first appeared at. */
-    public static final float EPS_2D_MIN = 0.3f;
+    /**
+     * The bottom of the dev SIZE range. <b>The range is the USEFUL band, not a full
+     * sweep, and that is a deliberate product decision.</b> Measured, the floor has
+     * a narrow usable window: below about 0.4 of the cell the screen-door returns,
+     * and above about 0.8 the picture is soft for no gain. A knob that spans the
+     * broken region invites exactly the failure this setting has already shipped
+     * twice -- a user drags to a plausible-looking number that is below the cliff,
+     * sees no improvement, and concludes the mode is broken. So every setting the
+     * control offers is one that works, and the default sits in the middle of them.
+     */
+    public static final float EPS_2D_MIN = 0.45f;
 
     /** The top of the dev SIZE range: the cleaner-sky option at a small subject cost. */
-    public static final float EPS_2D_MAX = 8f;
+    public static final float EPS_2D_MAX = 0.8f;
 
     /**
      * The floor a stored value means. A non-finite value, or one below the range,
@@ -100,6 +122,30 @@ public final class Splat {
         if (value < EPS_2D_MIN) return EPS_2D_MIN;
         if (value > EPS_2D_MAX) return EPS_2D_MAX;
         return value;
+    }
+
+    /**
+     * The floor in render-target pixels squared, from the fraction the knob stores.
+     *
+     * <p>This is the one resolution of the setting into a number, and it lives here
+     * rather than in the renderer so the invariance it exists for can be asserted:
+     * the floor is {@code fraction * cell}, where the cell is the area one splat
+     * stands for on screen. {@code viewportArea / count} is that area when the cloud
+     * fills the viewport -- which is the case for a photograph, whose aspect is the
+     * screen's -- and it is the same quantity the shader is compensating for, so it
+     * is the honest one to measure against. The zoom enters squared because it
+     * magnifies both the cell's width and its height.
+     *
+     * <p>A count that cannot claim a cell (0, or a viewport that is not a size)
+     * answers 0, which is the identity: a floor is an enlargement, and enlarging by
+     * nothing is the only answer that does not invent one. The caller clamps the
+     * fraction, so this cannot be handed a NaN.
+     */
+    public static float eps2dFor(float fraction, int viewportW, int viewportH,
+                                 int count, float zoom) {
+        if (!(fraction > 0f) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
+        float z = Float.isFinite(zoom) ? Math.max(0.25f, Math.min(2f, zoom)) : 1f;
+        return fraction * ((float) viewportW * viewportH / count) * z * z;
     }
 
     /** The product default post-blur radius, in pixels: 0 is the identity. */

@@ -193,8 +193,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * path, so a user who never opens the dev group sees {@link Splat#EPS_2D_DEFAULT}
      * and {@link Splat#BLUR_DEFAULT} and nothing else.
      *
-     * <p>{@link #KEY_SPLAT_EPS2D} is the 2D low-pass floor (gsplat's {@code eps2d});
-     * {@link #KEY_SPLAT_BLUR} is the post-blur radius in render-target pixels.
+     * <p>{@link #KEY_SPLAT_EPS2D} is the 2D low-pass floor (gsplat's {@code eps2d}),
+     * stored as a fraction of the cell a splat stands for rather than in pixels --
+     * a pixel count means a different thing at every render resolution and every
+     * zoom, which is what made the knob's maximum too small on the phone. See
+     * {@link Splat#eps2dFor}. {@link #KEY_SPLAT_BLUR} is the post-blur radius in
+     * render-target pixels.
      */
     static final String KEY_SPLAT_EPS2D = "splat_eps2d";
     static final String KEY_SPLAT_BLUR = "splat_blur_px";
