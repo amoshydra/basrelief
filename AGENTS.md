@@ -37,10 +37,16 @@ cd android
 ./podman-build.sh build-image    # once: builds the SDK image (Ubuntu 22.04 + JDK 17 + SDK 36)
 ./podman-build.sh test           # JVM unit tests in :core — no device needed
 ./podman-build.sh build-apk      # also runs :core:test first; cannot skip it
-./podman-build.sh install        # build + adb install on the connected device
+./podman-build.sh install        # build-release + adb install + AOT compile: the usable build
+./podman-build.sh install-debug  # debug APK: behaviour testing only, never performance
 ./podman-build.sh build-release  # signed only if keystore.properties exists
 ./podman-build.sh clean | shell | help
 ```
+
+`install` needs exactly one device; with several attached it names them and
+asks for `-s <serial>`, `ANDROID_SERIAL`, or the serial as an argument
+(`./podman-build.sh install 192.0.2.10:5555`) rather than passing adb's
+raw "more than one device" error through.
 
 The Gradle cache is bind-mounted out of the container (`GRADLE_USER_HOME`), so
 dependencies and the Gradle distribution are downloaded once instead of on
@@ -579,6 +585,15 @@ already cost real time.
         uncapped minimum would have been 8.380 here.) The smooth region is still the
         clean reference render's **0.70× the photograph's own high-frequency
         energy**.
+      - **Provenance, marked rather than trusted.** The *cap's* own figure —
+        median `gpuMs` **56.1 → 37.7**, read as "~33% of frame time", floor
+        8.380 → 2.408 — was recorded in the commit that added the cap, **before
+        the release-install rule in Build constraints existed**, so its build's
+        provenance is unrecorded and it is very likely an un-AOT'd build. On such
+        a build the frame is CPU-dominated (`sortMs` in the hundreds of ms), and a
+        fill change's ratio does not transfer to a `status=speed` build; it must
+        not be quoted as a frame-time figure. The **`−11.5%` deletion figure above
+        WAS measured on the release APK and is the sound one.**
       - **The bottom of the range is the identity, and it is a real setting.** The
         floor once stopped at 0.45 "so that every setting the control offers is one
         that works"; that premise is what fell. SIZE is per photo, and the gap it
@@ -1078,7 +1093,31 @@ already cost real time.
 - The container bakes its own debug keystore. Without it AGP mints a fresh key
   in ephemeral storage every build, every APK gets a different signature, and
   `adb install -r` always fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —
-  whose only recovery is an uninstall, which wipes the user's settings.
+  whose only recovery is an uninstall, which wipes the user's settings. (The
+  repo's `keystore.properties` points release signing at that same throwaway
+  `android/debug.keystore`, which is why a release build installs over a debug
+  one with `-r`.)
+- **An APK that is *installed* is always `build-release`, and the install is
+  followed by the AOT compile — never the debug APK, and never an install on its
+  own.** This ROM has `dalvik.vm.usejit=false` and ART refuses to AOT a
+  **debuggable** app, so a debug install reports `arm64: [status=verify]` and runs
+  interpreter-only. Measured on a Pixel 7 Pro, same 299,008-splat cloud and
+  settings, debug/`verify` against release/`speed`: **fps 1.25 vs 50.1, `frameMs`
+  802 vs 19.95, `sortMs` 326 vs 5.55 ms** — with the GPU identical in both
+  (`gpuMs` 28–85). Every Java `O(N)` loop is 30–100× slower interpreted, and the
+  dominant CPU cost here — the depth sort — is memory-bound, which is why it is
+  catastrophic rather than merely slow, not the 1.5–2× a release-without-AOT
+  comparison shows. And the AOT step is run explicitly rather than assumed: an
+  `adb install -r` **does** invalidate whatever odex was there (measured here, a
+  non-debuggable APK lands at `arm64: [status=speed] [reason=install]`, i.e. this
+  ROM's install-time filter does a full compile) — but the install-time filter is
+  a ROM policy, not a guarantee, it can be a lighter filter or a deferred
+  background dexopt, and a debuggable app gets none at all. So `podman-build.sh install`
+  runs `cmd package compile -m speed -f` for `com.amoshydra.basrelief`
+  anyway and reports the resulting dexopt status; the debug APK is the explicit
+  `install-debug`, for behaviour only. Finally, an install does not swap code
+  under a running process — reopen the studio or re-select the wallpaper, and use
+  `am kill`, never `am force-stop`, which reverts the live wallpaper.
 
 ### Termux notes (host-side, not a build path)
 

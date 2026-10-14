@@ -32,9 +32,22 @@ texture plus an order texture, sorted alpha, one `gl_VertexID`-derived quad per 
 - **Format**: `.splat` (32 B/record) is read and rendered from the app's files dir today.
   `.ply` should be converted at generation time (3.9 GB PLYs → 2.2 GB `.splat` for one
   clip), never shipped.
-- **The Java penalty**: this device has `dalvik.vm.usejit=false` and ART refuses to AOT a
-  **debuggable** app. A release build signed with the same keystore plus
-  `cmd package compile -m speed -f` gave **1.5–2× fps** (sort 27.9 → 3.0–4.5 ms at 4×).
+- **The Java penalty, and the two numbers that are easy to conflate.** This device
+  has `dalvik.vm.usejit=false` and ART refuses to AOT a **debuggable** app, so a debug
+  install is interpreter-only. Measured on a Pixel 7 Pro, same 299,008-splat cloud and
+  settings, debug/`[status=verify]` against release/`[status=speed]`: **~40× fps**
+  (1.25 → 50.1), `sortMs` 326 → 5.55 ms, `frameMs` 802 → 19.95 ms, with the GPU
+  identical in both. Every Java `O(N)` loop is 30–100× slower interpreted, and the
+  dominant one — the depth sort — is memory-bound, which is why it is catastrophic
+  rather than merely slow. The narrower **1.5–2× fps** is a *different* comparison: a
+  release build **before** it was AOT'd against the same release build after
+  `cmd package compile -m speed -f` (sort 27.9 → 3.0–4.5 ms at 4×). There the frame is
+  already GPU-bound, so the 7× sort win shows as only 1.5–2× fps — a fact about AOT on
+  a release build, not the debug penalty. The compile is run explicitly either
+  way, because the install-time filter is a ROM policy and not a guarantee —
+  measured here a release `adb install -r` lands at `status=speed [reason=install]`,
+  but a debuggable app gets no install-time AOT at all. It is now part of
+  `podman-build.sh install` rather than a step to remember.
 
 ## Stages
 
