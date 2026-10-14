@@ -8,6 +8,16 @@ and the gate (`needsSort`'s `1e-3`). This file is the measurement of both — a
 Everything here is device work except the picture comparison, which is a
 reference render (there is no device screenshot; see *What this could not do*).
 
+> **Note added after the Origin change.** The framings below name an origin, and
+> Origin used to contribute `(-2*originX, -2*originY)` to the clip-space shift, so
+> it moved which splats were visible. Origin now names the orbit centre and does
+> **not** move the picture (`SplatCamera.frame`), so at an off-centre origin the
+> visible window — and therefore `pxPerTilt` — would now be re-measured
+> differently. The figures are left as taken; the design they justify (the floor
+> at `SHIPPED_SORT_EPS`, the crossover as a Motion, the derived gate as a lever)
+> is unchanged, and `SplatCameraTest` pins the properties rather than these
+> numbers.
+
 ## Method
 
 - **Device** `<device-serial>` (OnePlus 6T, Android 15). Bundled row *Marble bust* in

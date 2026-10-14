@@ -30,6 +30,7 @@ import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 import com.amoshydra.basrelief.core.render.Splat;
@@ -390,10 +391,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uSplat;\n" +
             "uniform float uSplatSize;\n" +
             "uniform float uSplatGrid;\n" +
-            // The eye the cards are placed against: the camera at REST -- tilt
-            // dropped, origin and zoom kept. See the splat branch below; it is
-            // deliberately not the moving camera, which is passed to nothing at
-            // all here.
+            // The eye the cards are placed against: the camera at REST, the
+            // image centre at the fixed camera distance looking straight down.
+            // See the splat branch below; it is deliberately not the moving
+            // camera, which is passed to nothing at all here. Origin no longer
+            // moves it (the camera is a turntable about the pivot), so it is a
+            // constant and the picture is pinned to the photograph.
             "uniform vec3 uSplatEye;\n" +
             // The photograph's camera, as two numbers that are both already
             // resolved in :core (Splat, with its own test): the effective focal in
@@ -459,12 +462,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // That is "the card sits at camera distance minus its own depth"
             // generalised: the old line scaled the sample's position about the
             // MODEL CENTRE, which is the same construction with the eye assumed
-            // to sit on the model's z axis. It does not, once Origin moves the
-            // camera -- Origin aims the camera at a point on the plane and puts
-            // it there -- so the whole cloud used to be placed as if the origin
-            // were still the image's centre, whatever the user set. The
-            // reference eye is therefore the camera the picture is the
-            // photograph for: tilt dropped, origin and zoom kept.
+            // to sit on the model's z axis. The reference eye is the camera the
+            // picture is the photograph for, and that camera is fixed: Origin no
+            // longer moves it (the relief's camera is a turntable about the
+            // pivot), so the picture is the photograph at every origin.
             //
             // THE MOVING EYE IS NOT IT, and the difference is the whole mode. A
             // point on the eye's ray projects to that eye's pixel whatever its
@@ -2062,12 +2063,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * How many surface pixels one whole unit of Origin moves the picture, at
-     * the zoom, image aspect and surface size of the last drawn frame.
+     * The on-screen size of one whole Origin unit, in surface pixels, at the
+     * zoom, image aspect and surface size of the last drawn frame.
      *
      * <p>For the framing rows, which turn it into finger travel per thousandth
-     * of Origin. Safe from the UI thread: a volatile read of a value the GL
-     * thread just wrote, exactly like {@link #getZoom}.
+     * of Origin. Origin no longer moves the picture (it names the orbit centre),
+     * so this is the unit's own on-screen size rather than a tracking rule. Safe
+     * from the UI thread: a volatile read of a value the GL thread just wrote,
+     * exactly like {@link #getZoom}.
      *
      * @param horizontal true for the X axis, false for Y
      * @return pixels per whole origin unit, or 0 before the first surface
@@ -2844,17 +2847,23 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 tapOrbit[0] = ndcX * 0.5f;
                 tapOrbit[1] = ndcY * 0.5f;
             }
-            orbitX = Math.max(-0.5f, Math.min(0.5f, tapOrbit[0]));
-            orbitY = Math.max(-0.5f, Math.min(0.5f, tapOrbit[1]));
+            // Clamped to the Origin row's own bound, not the picture: a tap beside
+            // the cloud names an orbit centre beside it, which the row can now ask
+            // for. See SurfaceSettings.ORIGIN_LIMIT.
+            orbitX = Math.max(-SurfaceSettings.ORIGIN_LIMIT,
+                    Math.min(SurfaceSettings.ORIGIN_LIMIT, tapOrbit[0]));
+            orbitY = Math.max(-SurfaceSettings.ORIGIN_LIMIT,
+                    Math.min(SurfaceSettings.ORIGIN_LIMIT, tapOrbit[1]));
             return true;
         }
         if (displayed == null || !displayed.isDrawable()) return false;
         recomputeScale();
-        // The camera on screen aims at the surface under the CURRENT origin, so
-        // the unprojection must use the same pivot depth the draw did -- resolved
-        // from the displayed render's field and the live orbit, which is what
-        // the steady state is drawing. A tap resolved through the plane's camera
-        // would land where the picture is not.
+        // The camera on screen is a turntable about the surface under the CURRENT
+        // origin, tilted by the live tilt, so the unprojection must use the same
+        // pivot depth and tilt the draw did -- resolved from the displayed
+        // render's field and the live orbit, which is what the steady state is
+        // drawing. A tap resolved through the plane's camera would land where
+        // the picture is not.
         camera.setPivotHeight(ReliefMesh.heightAt(displayed.field, GRID, orbitX, orbitY));
         if (!camera.screenToOrbit(ndcX, ndcY, w, h, panX, panY,
                 orbitX, orbitY, smoothX, smoothY, tapOrbit)) return false;
@@ -4000,15 +4009,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uSplatGrid, splatGrid);
         GLES20.glUniform1f(uSplatSize, Splat.cardSize(splatGrid));
         // THE REFERENCE EYE IS THE CAMERA AT REST, NOT THE MOVING ONE, and it is
-        // the same two terms CameraModel.frame builds the eye from with the tilt
-        // left out: the pivot's world x and y -- taken from the frame, so the
-        // eye, the aim point and the marker cannot name different pivots -- and
-        // the fixed camera distance. The splat branch places every card on a ray
-        // from this eye, so it must be the camera the photograph is pinned to.
+        // the same eye CameraModel.frame builds at rest: the image centre at the
+        // fixed camera distance, looking straight down. The origin no longer moves
+        // the rest eye (the camera is a turntable about the pivot), so the eye the
+        // cards are placed against is (0, 0, CAM_DIST) whatever the origin is. The
+        // splat branch places every card on a ray from this eye, so it must be the
+        // camera the photograph is pinned to.
         // Feeding it the moving eye instead lands every card on its own pixel's
         // ray and the depth stops being visible at all: no parallax, no gaps, at
         // any Depth or tilt.
-        GLES20.glUniform3f(uSplatEye, f.pivotX, f.pivotY, CameraModel.CAM_DIST);
+        GLES20.glUniform3f(uSplatEye, 0f, 0f, CameraModel.CAM_DIST);
         // The row's focal, or the documented default when it has none, and the
         // default itself as the reference the shader divides by. Both resolved in
         // :core, where the fallback is a tested function of the image height
@@ -4354,11 +4364,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // Both axes in one place, so the pair cannot be half-updated; see the
         // fields' note. Cheap enough for the per-frame call: two multiplies.
         //
-        // In SPLAT mode the Origin row's fraction IS a viewport fraction -- the
-        // camera shifts the projection so NDC (2*originX, 2*originY) lands at the
-        // centre -- so one whole Origin unit is the whole surface, and the row
-        // tracks the finger 1:1 the same way it does in relief mode. The relief's
-        // camera answer would be the wrong number here; the mode is the switch.
+        // In SPLAT mode the Origin row's fraction IS a viewport fraction: one
+        // whole Origin unit is the whole surface. The relief's answer is the
+        // picture's own on-screen size, which is the wrong unit here; the mode is
+        // the switch. Neither shifts the picture any more -- this is the row's
+        // drag sensitivity, not a tracking rule.
         if (renderMode == Framing.RENDER_SPLAT) {
             orbitPixelsPerUnitX = surfaceW;
             orbitPixelsPerUnitY = surfaceH;

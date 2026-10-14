@@ -70,11 +70,21 @@ public final class SurfaceSettings {
      */
     public static final int SPEED_MIN = 25, SPEED_MAX = 200, DEFAULT_SPEED = 100;
     /**
-     * Origin is a FRACTION of the plane, so it has a real bound: half the plane
-     * is the far stop, because that is as far as the view goes before the photo
-     * leaves the screen.
+     * Origin is a FRACTION of the plane, and its range is what the control needs
+     * rather than a bound of the model: it names the ORBIT CENTRE, which may sit
+     * outside the picture, so ±2 picture-widths is a generous, still-sane travel.
+     *
+     * <p><b>0.5 was a consequence of the shift, not a property of the model.</b>
+     * Origin used to translate the picture so the origin point landed at the
+     * centre of the screen, so at +0.5 the photo's edge was mid-screen and at +1.0
+     * the photo was entirely off screen — which is why the far stop was half a
+     * plane. Origin no longer moves the picture (the camera is a turntable about
+     * the pivot with a fixed rest eye; see {@code CameraModel.frame}), so an
+     * origin outside the photo simply means the orbit centre is outside it, and
+     * the bound can be what the control needs. See {@code FramingRows} for the
+     * slider's own derivation.
      */
-    public static final float ORIGIN_LIMIT = 0.5f;
+    public static final float ORIGIN_LIMIT = 2.0f;
     public static final float DEFAULT_ORIGIN = 0f;
     public static final float DEFAULT_PAN = 0f;
     /**

@@ -292,6 +292,50 @@ already cost real time.
   **not** negated) sampled per fragment; it is part of the loaded pair identity,
   so a photo that gains one is re-installed rather than reported as already
   showing.
+- **Origin moves the orbit centre and NOT the picture, in both backends, and the
+  reversal is deliberate.** Origin used to translate the picture so the origin point
+  landed at the CENTRE of the screen: the relief moved the camera to the pivot and
+  aimed at it (`CameraModel.frame`), and the splat subtracted `(-2*originX,
+  -2*originY)` from its clip-space shift (`SplatCamera.frame`). A tap therefore slid
+  the picture until the point touched was centred — *"readjusting the view"* — and
+  the user asked for that to stop. Both backends now mean the same thing: **at rest
+  the picture is exactly the photograph, translated by Pan alone**, at every origin
+  and every pivot depth, and Origin names only the ORBIT CENTRE.
+  - **The relief is a TURNTABLE about the pivot with a FIXED rest eye.** The eye is
+    `(0, 0, CAM_DIST)` — the image centre, looking straight down — rotated about the
+    pivot `(originX*aspect*scale, originY*scale, h*scale*zScale)`, and the
+    orientation rotates with it; at rest the rotation is the identity, so the view is
+    the photograph whatever the origin is. The pivot keeps its OWN screen position
+    under tilt (a rotation about a point leaves that point's view direction
+    unchanged), so the subject under the origin still HOLDS while the background
+    swings — the aim-at-the-pivot's job, done by the rotation axis. The angle is the
+    splat's (`TILT_RANGE / CAM_DIST * motion`), so the swing is the same at every
+    pivot depth; the old lateral slide's angle was `range / (CAM_DIST - pz)` and
+    therefore grew with the pivot's height. The card mode's reference eye
+    (`uSplatEye`) is that same fixed eye, not `(pivotX, pivotY, CAM_DIST)`.
+  - **The splat's shift is Pan's alone.** Origin still picks the ray the pivot is
+    found on and is the turntable's axis; it is not in `sx`/`sy`.
+  - **The crosshair now sits at the origin's OWN image position, not the screen
+    centre** — the visible difference, and correct: it marks the orbit centre.
+  - **The tap must stay consistent.** `SplatRenderer.tapOrigin` undoes the drawn
+    shift to reach the source camera's ray; with the shift pan-only it subtracts only
+    the pan, or the tap lands wrong. The relief's tap is unchanged: unprojecting
+    through the turntable resolves the plane point under the finger, and the pivot's
+    depth is still the ray's own surface.
+  - **An origin outside the cloud is now reachable and must not break anything.**
+    `SurfaceSettings.ORIGIN_LIMIT` is **2.0** (±2 picture-widths); the splat tap's
+    own clamp in `ReliefRenderer.screenToOrbit` derives from it. The pivot pick
+    already falls back (the nearest splat, then the reference-plane point on the
+    ray), and `SplatCameraTest` pins that a ray outside the cloud still answers a
+    finite aim — no NaN. The `FramingRows` Origin **range** still derives from
+    `ORIGIN_LIMIT` rather than a literal, and its old rationale — "where the camera's
+    pivot reaches the plane's edge", true only because the shift dragged the origin to
+    the centre — is rewritten; the warning it also carried, that the row, the stored
+    value and the render must be ONE number, stands.
+  - **THE COST, stated rather than discovered:** every existing photo with a stored
+    origin looks different — its picture loses the shift. That is a deliberate,
+    user-requested reversal, not a bug fix, and the acceptance test is the user's own
+    eye on the device.
 - **The 3D mode is one card per grid sample, DERIVED FROM `gl_VertexID`, and the
   focal is the only camera a photograph carries.** `render_3d` (a pref, read in
   `ReliefRenderer.reloadFromPrefs`, **off by default**) swaps the continuous relief
@@ -360,23 +404,17 @@ already cost real time.
     switched". No `:core` test can hold a GLSL expression, which is why this is
     written down here rather than asserted — and it survived a full green gate with
     the picture visibly wrong, so a splat change has to be looked at on a device.
-  - **The card is placed on a ray from the camera AT REST, not from the moving one,
-    and that is what makes Origin mean the same thing in both modes.** `uSplatEye` is
-    the tilt-free eye — the frame's pivot x/y at the fixed `CAM_DIST`, i.e. the same
-    pivot `CameraModel.frame` aims the camera at and the marker is drawn on — and
-    each card sits on the ray from it through its own reference-plane point, closer
-    by its own depth. Scaling the sample's position about
+  - **The card is placed on a ray from the camera AT REST, not from the moving one.**
+    `uSplatEye` is the tilt-free eye, and with the relief's camera now a turntable
+    about the pivot that eye is the FIXED rest eye `(0, 0, CAM_DIST)` — the image
+    centre looking straight down, the same camera the photograph is pinned to at every
+    origin — and each card sits on the ray from it through its own reference-plane
+    point, closer by its own depth. Scaling the sample's position about
     the MODEL CENTRE (`q * (zEye / uCamDist)`, what the branch did) is that same
-    construction with the eye assumed to sit on the model's z axis, and the assumption
-    stopped being true the moment Origin moved the camera: with Origin at a corner the
-    whole cloud was placed as if the origin were still the image's centre, whatever the
-    user set. Measured, at rest, Origin at the bottom-left, Depth 0.9 on a portrait
-    surface: a near layer is offset **bodily** by 0.54 NDC — over a quarter of the
-    screen's width, and the same offset at every sample — while the offset is zero only
-    when the origin is the image's centre, which is what the user reported as relief orbited around the bottom-left while 3D stayed centred. With the reference
-    eye the at-rest picture is exactly the photograph at every origin (the card lands
-    on its own reference pixel to float noise), and the reveal is untouched: the tilt
-    still moves the depth, as parallax and as disocclusion. **Feeding it the MOVING eye
+    construction with the eye assumed to sit on the model's z axis; that assumption
+    does not hold once the camera moves at all, and the whole cloud was then placed as
+    if the eye were the model's centre, which the user reported as relief orbiting around the bottom-left while 3D stayed centred. **Feeding it the
+    MOVING eye
     is not the fix and would destroy the mode**: a point on the eye's ray projects to
     that eye's pixel whatever its depth, so every card would land exactly on its own
     pixel and the render would be identical at every Depth and every tilt — no
@@ -386,34 +424,33 @@ already cost real time.
     (`closer = max(dist - zOff, 0.15)`), and the `h == 0` position is still exactly the
     relief's.
   - **The pivot is the SURFACE point under the origin, not the plane point behind
-    it, and the aim is what carries it.** `CameraModel.setPivotHeight` takes the
-    blurred field's height under the origin's image position (`ReliefMesh.heightAt`,
-    in model units), and `frame` aims at `(px, py, h * scale * zScale)` — the plane
-    point lifted through the same model-to-world factor `uMVP` applies. The plane
-    point was the old pivot: it held the centre while everything nearer swung,
-    which the user reported as an orbit defined only on the 2D plane, and the pivot belongs on the subject's nose rather than the
-    background. **The eye does not move
-    with the pivot's depth**: it keeps the fixed `CAM_DIST` and the pivot's own
-    x/y, so at rest it sits directly above the pivot, `lookAt`'s direction is
-    still straight down, and the view matrix is exactly the plane point's own.
-    Measured off-device over 4 aspects x 3 surfaces x 3 zooms x 4 depths x 4
-    origins x 3 tilts: the at-rest projection of the plane differs from the
-    pivot-at-zero camera by 0 (double precision), the splat card still lands on
-    its own reference pixel (7e-15), the pivot holds the centre under tilt
-    (2e-15) while the plane point under the origin swings up to 0.21 NDC, and
-    every visible card corner still moves under tilt (min 8e-6, max 1.13 NDC).
-    That is what keeps "at rest the picture is exactly the photograph" true for
-    every origin and every pivot height with NO model-scale compensation. The
-    naive `eye = pivot + CAM_DIST` would move the eye off the plane's distance
-    and shrink the picture (0.5 * 0.9 * `CAM_DIST` of pivot is a 31% zoom-out),
-    and scaling the model to compensate would zoom the whole photo as the origin
-    moved from a near subject to a far background. The pivot is the RELIEF's
+    it, and the TURNTABLE's axis is what carries it.** `CameraModel.setPivotHeight`
+    takes the blurred field's height under the origin's image position
+    (`ReliefMesh.heightAt`, in model units), and `frame` places the rotation axis at
+    `(px, py, h * scale * zScale)` — the plane point lifted through the same
+    model-to-world factor `uMVP` applies. The plane point was the old axis: the plane
+    held while everything nearer swung, which the user reported as an orbit defined only on the 2D plane, and the pivot belongs on the subject's nose rather than the
+    background. **The rest eye is FIXED** at `(0, 0, CAM_DIST)` — it does not move
+    with the pivot's depth OR with the origin — so at rest the view is the photograph
+    and the pivot keeps its own image position; the axis's depth moves the orbit and
+    the marker and nothing about the picture. Measured off-device over 4 aspects x 3
+    surfaces x 3 zooms x 4 depths x 4 origins x 3 tilts: the at-rest projection of the
+    plane is identical for every origin and every pivot height (double precision), the
+    splat card still lands on its own reference pixel (7e-15), the pivot keeps its own
+    screen position under tilt while the plane point under the origin swings up to 0.21
+    NDC, and every visible card corner still moves under tilt (min 8e-6, max 1.13 NDC).
+    No model-scale compensation is needed and none should be added — the naive
+    `eye = pivot + CAM_DIST` would move the eye off the plane's distance and shrink the
+    picture (0.5 * 0.9 * `CAM_DIST` of pivot is a 31% zoom-out), and scaling the model
+    to compensate would zoom the whole photo as the origin moved from a near subject to
+    a far background. The pivot is the RELIEF's
     surface; the splat's focal depth gain is deliberately not folded in, so the
     aim is one camera for both modes and the mode toggle does not jump. A clip's
     pivot comes from the still POSTER's field — the live depth is a GPU texture
     with no CPU copy — so it is one number per pair, like every other framing
-    value. The marker and `uSplatEye` both read the frame's pivot — the marker at
-    the pivot itself, the eye at the fixed camera distance above it — so they
+    value. The marker reads the frame's pivot and `uSplatEye` is the frame's fixed rest
+    eye — the crosshair sits on the orbit centre and the cards are placed from the
+    camera the photograph is pinned to — so they
     cannot name different pivots, and `screenToOrbit` resolves the tap through
     the same pivot depth the draw used. **And the marker is drawn in the SPLAT
     branch too, not only after the relief's `drawRender`.** The branch that draws
@@ -1057,7 +1094,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 737 tests across forty classes:
+it**. 739 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1191,14 +1228,16 @@ every library write took the app down, so any gallery tap crashed it.
 - `SplatCameraTest` — the splat cloud's camera, which used to exist only inside
   `SplatRenderer` and so could only be judged by eye on a device. It pins the
   same at-rest invariant `CameraModelTest` pins for the relief, one medium over:
-  **at rest the picture is exactly the photograph, translated by Origin and Pan,
-  at every origin and every pivot depth** — asserted as a projection through the
+  **at rest the picture is exactly the photograph, translated by Pan alone — Origin
+  names the orbit centre and does not move the picture — at every origin and every
+  pivot depth** — asserted as a projection through the
   real `Mat4` chain, never a restatement of the maths. The splat's version of
   "the eye does not move with the pivot" is that two clouds resolving very
   different pivots project every probe point identically; the eye is the source
   eye in both. Its second theme is the turntable: the tilt is a ROTATION about
-  the cloud's own surface under the origin, so the pivot holds the screen centre
-  while a point off it swings, the eye keeps its distance to the pivot, and the
+  the cloud's own surface under the origin, so the pivot keeps its OWN screen
+  position (its own image position, not the centre) while a point off it swings, the
+  eye keeps its distance to the pivot, and the
   signs are the relief's (positive tiltX moves the eye right, positive tiltY
   down in the cloud's y-down frame — a flipped axis is the parallax running the
   wrong way, which no screenshot at rest shows). Its third is the pivot pick:
@@ -1208,8 +1247,8 @@ every library write took the app down, so any gallery tap crashed it.
   cloud has nothing in front of the camera — the `DepthSource` "a window claims
   nothing" rule applied to an orbit centre. Its fourth is the **Depth knob's reach
   into the pivot**: the pick is made on the surface the SHADER draws — every splat
-  moved along the ray from the eye by `Splat.depthScale` — so the pivot, the aim
-  and the crosshair follow the knob instead of marking a point the cloud has left,
+  moved along the ray from the eye by `Splat.depthScale` — so the pivot and the
+  crosshair follow the knob instead of marking a point the cloud has left,
   and a splat the knob pushes through the eye (a moved depth of 0) is skipped
   exactly as the vertex shader's near cull drops it. The companion assertion is
   that this moves the pivot and NOT the picture: at rest the eye is the source eye
@@ -1227,7 +1266,7 @@ every library write took the app down, so any gallery tap crashed it.
   `Splat.depthScale` preserves), and above all that **tapping and then resolving is
   a fixed point**: the origin a tap produces is the image position of the splat the
   pivot picks for that origin. That is the property the old tap — the tapped SCREEN
-  fraction, which drifts by the current Origin and Pan — broke. Its sixth is the
+  fraction, which drifted by the drawn Pan shift — broke. Its sixth is the
   **sort gate**: `SplatCamera.pxPerTilt` is a max over EVERY splat, and the gate is
   the larger of `SHIPPED_SORT_EPS` and half a pixel over `pxPerTilt` — the derived
   bound may only ever
@@ -1243,12 +1282,14 @@ every library write took the app down, so any gallery tap crashed it.
   (it shrinks as the field of view narrows), and that a framing which cannot claim a
   bound falls back to the CONSTANT rather than to zero. **And its framing key
   includes Pan, which was checked and is a real trigger, not a conservative
-  inclusion:** `pxPerTilt` counts only the splats VISIBLE under the Origin+Pan
-  shift, so panning moves that window and moves the max — measured on the bundled
-  cloud at the device's framing from 439 px/tilt at pan (0, 0) to 564 at its stored
-  (-55, 451), 28% with the pivot IDENTICAL — so it stays in `SplatRenderer`'s key and
+  inclusion:** `pxPerTilt` counts only the splats VISIBLE under the Pan
+  shift, so panning moves that window and moves the max — measured on
+  `SplatCameraTest`'s cloud at the device's framing, the bound moves ~25% between pan
+  (0, 0) and (400, -400) with the pivot IDENTICAL — so it stays in `SplatRenderer`'s key and
   `SplatCameraTest`'s `panIsPartOfTheBoundsFramingKey` keeps a "pan is a no-op"
-  simplification from quietly serving a stale bound. **Motion is the boundary the
+  simplification from quietly serving a stale bound. (The shift is pan's alone now that
+  Origin no longer moves the picture; the old figure was larger because the origin was
+  in the shift too.) **Motion is the boundary the
   measurement forgot:** `SurfaceSettings.motionScale` is `motion` divided by 100 and
   multiplied by 3, so Motion
   33 (the default) is scale 1.0 and Motion 100 is 3.0, and
@@ -1626,11 +1667,14 @@ every library write took the app down, so any gallery tap crashed it.
   size stays on the line, and a relief prints `frame 16.7ms` and nothing else.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom". Its third
-  theme is the pivot at depth: the at-rest picture is unchanged for every origin
-  and every pivot height (the eye sits directly above the pivot, so the view
-  matrix is the plane's own), the pivot holds the centre under tilt while the
+  theme is the pivot at depth: **the at-rest picture is unchanged for every origin
+  and every pivot height** — the turntable's rest eye is fixed, so the view is the
+  photograph whatever the origin and whatever the
+  pivot (`originDoesNotMoveTheAtRestPicture` walks 5 origins x 3 heights x 3 depths x
+  3 zooms through the real `frame` chain) — the pivot keeps its OWN position under
+  tilt while the
   plane behind it swings, the pivot's world z is `h * scale * zScale`, and the
-  Origin tracking identity survives a pivot height because it is measured at
+  Origin travel identity survives a pivot height because it is measured at
   rest.
 - `PrefFilesTest` — the restore case, which silently costs users their image.
 - `PrefFilesContentTest` — that two files are the same image, which is what stops

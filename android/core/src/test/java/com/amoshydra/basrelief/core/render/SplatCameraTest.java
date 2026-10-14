@@ -73,15 +73,16 @@ public class SplatCameraTest {
 
     /**
      * THE INVARIANT. At rest the projection of a cloud point is the source
-     * projection of the same point, shifted by the Origin and Pan — for several
-     * origins, both pans, and, in the companion test, several pivot depths.
+     * projection of the same point, shifted by the PAN — for several origins, both
+     * pans, and, in the companion test, several pivot depths. ORIGIN does not
+     * appear: it names the orbit centre and nothing about the at-rest picture.
      *
      * <p>It is deliberately a cloud of points at different depths: the shift has
-     * to be exact at every depth, which is the whole reason the origin is a
+     * to be exact at every depth, which is the whole reason the pan is a
      * clip-space shift rather than a lateral camera move.
      */
     @Test
-    public void atRestThePictureIsThePhotographShiftedByOriginAndPan() {
+    public void atRestThePictureIsThePhotographShiftedByPan() {
         float aspect = SURFACE_W / SURFACE_H;
         float[] cloud = new float[]{
                 0f, 0f, 2.4f,
@@ -95,8 +96,8 @@ public class SplatCameraTest {
                     for (float panY : new float[]{0f, -75f}) {
                         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                                 ox, oy, panX, panY, 0f, 0f, 1f, cloud, cloud.length / 3, REF_DEPTH, 1f);
-                        float shiftX = -2f * ox - 2f * panX / SURFACE_W;
-                        float shiftY = -2f * oy + 2f * panY / SURFACE_H;
+                        float shiftX = -2f * panX / SURFACE_W;
+                        float shiftY = 2f * panY / SURFACE_H;
                         for (int i = 0, j = 0; i < cloud.length / 3; i++, j += 3) {
                             float[] want = sourceNdc(FOVY, aspect,
                                     cloud[j], cloud[j + 1], cloud[j + 2]);
@@ -154,12 +155,13 @@ public class SplatCameraTest {
     }
 
     /**
-     * Origin at the tapped screen fraction brings the tapped point to the centre:
-     * the whole point of a tap-to-orbit in this mode. The pivot for the origin
-     * {@code (ndc/2)} must project to the screen centre.
+     * Origin keeps its own image position on screen: the pivot for the origin
+     * {@code (ndc/2)} projects to that same NDC at rest. It does NOT bring the
+     * point to the centre — the origin now names the orbit centre and must not
+     * move the picture.
      */
     @Test
-    public void theOriginBringsItsRayToTheCentre() {
+    public void theOriginKeepsItsRayAtItsOwnImagePosition() {
         float aspect = SURFACE_W / SURFACE_H;
         for (float ndcX : new float[]{-0.8f, -0.3f, 0f, 0.45f, 0.9f}) {
             for (float ndcY : new float[]{-0.7f, 0f, 0.6f}) {
@@ -174,8 +176,8 @@ public class SplatCameraTest {
                         ox, oy, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, 1f);
                 assertTrue("the pivot must be the splat on the ray", f.pivotFound);
                 float[] p = project(f, f.pivotX, f.pivotY, f.pivotZ);
-                assertEquals("pivot x at ndc " + ndcX + "," + ndcY, 0f, p[0], 1e-4f);
-                assertEquals("pivot y at ndc " + ndcX + "," + ndcY, 0f, p[1], 1e-4f);
+                assertEquals("pivot x at ndc " + ndcX + "," + ndcY, ndcX, p[0], 1e-4f);
+                assertEquals("pivot y at ndc " + ndcX + "," + ndcY, ndcY, p[1], 1e-4f);
             }
         }
     }
@@ -184,9 +186,10 @@ public class SplatCameraTest {
 
     /**
      * The turntable, and the property that makes it one: under a tilt the pivot
-     * still projects to the centre (the shift centre), while a point off the pivot
-     * swings. The eye also leaves the origin and stays the same distance from the
-     * pivot — it rotates, it does not translate.
+     * keeps the SAME screen position it had at rest — which is its own image
+     * position, not the centre — while a point off the pivot swings. The eye also
+     * leaves the origin and stays the same distance from the pivot — it rotates,
+     * it does not translate.
      */
     @Test
     public void thePivotHoldsAndTheCloudSwingsUnderTilt() {
@@ -201,14 +204,19 @@ public class SplatCameraTest {
                 float[] cloud = cloudAt(tx, 0f, 2.4f,
                         0.2f, 0.15f, 3.0f,
                         -0.25f, 0.3f, 1.5f);
+                SplatCamera.Frame rest = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                        ox, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, 1f);
+                assertTrue("the pivot is the splat on the ray", rest.pivotFound);
+                float[] pRest = project(rest, rest.pivotX, rest.pivotY, rest.pivotZ);
                 SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                         ox, 0f, 0f, 0f, tilt[0], tilt[1], 1f, cloud, 3, REF_DEPTH, 1f);
-                assertTrue("the pivot is the splat on the ray", f.pivotFound);
                 float[] pivot = project(f, f.pivotX, f.pivotY, f.pivotZ);
                 assertEquals("pivot holds x (tilt " + tilt[0] + "," + tilt[1] + " origin " + ox + ")",
-                        0f, pivot[0], 1e-4f);
+                        pRest[0], pivot[0], 1e-4f);
                 assertEquals("pivot holds y (tilt " + tilt[0] + "," + tilt[1] + " origin " + ox + ")",
-                        0f, pivot[1], 1e-4f);
+                        pRest[1], pivot[1], 1e-4f);
+                // And it is the origin's own image position, not the centre.
+                assertEquals("the pivot sits at its own image x", 2f * ox, pivot[0], 1e-4f);
                 // A point away from the pivot moves: the reveal.
                 float[] other = project(f, cloud[3], cloud[4], cloud[5]);
                 assertTrue("a point off the pivot must swing",
@@ -329,12 +337,13 @@ public class SplatCameraTest {
                 0f, empty.pivotX, 1e-6f);
         assertEquals(0f, empty.pivotY, 1e-6f);
         assertEquals(REF_DEPTH, empty.pivotZ, 1e-6f);
-        // And on an off-axis origin the fallback point is on that ray.
+        // And on an off-axis origin the fallback point is on that ray, so it sits at
+        // the origin's own image position (2*orbit), not the centre.
         SplatCamera.Frame off = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                 0.25f, -0.2f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH, 1f);
         float[] p = project(off, off.pivotX, off.pivotY, off.pivotZ);
-        assertEquals(0f, p[0], 1e-4f);
-        assertEquals(0f, p[1], 1e-4f);
+        assertEquals(0.5f, p[0], 1e-4f);
+        assertEquals(-0.4f, p[1], 1e-4f);
     }
 
     /** A splat behind the camera is not under any ray. */
@@ -344,6 +353,45 @@ public class SplatCameraTest {
         SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                 0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH, 1f);
         assertEquals(1.5f, f.pivotZ, 1e-6f);
+    }
+
+    /**
+     * An origin OUTSIDE the cloud is now reachable — {@code SurfaceSettings.ORIGIN_LIMIT}
+     * is 2.0 — so its ray may hold no splat at all. The pick must still answer a
+     * finite point and the frame a finite camera: the control must not be able to
+     * produce a NaN aim, which would poison the whole view matrix.
+     *
+     * <p>With splats in front of the camera the fallback is the nearest one (a real
+     * point beats a guess); with an empty cloud it is the reference-plane point on
+     * the ray. Both are finite, and the eye/forward are too.
+     */
+    @Test
+    public void anOriginOutsideTheCloudStillResolvesAFiniteAim() {
+        float[] cloud = new float[]{0f, 0f, 2.4f, 0.1f, 0.1f, 1.5f};
+        for (float ox : new float[]{1.5f, -2f, 2f}) {
+            for (float oy : new float[]{1.8f, -1.5f}) {
+                SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                        ox, oy, 0f, 0f, 0f, 0f, 1f, cloud, 2, REF_DEPTH, 1f);
+                assertTrue("pivot x must be finite at origin " + ox + "," + oy,
+                        Float.isFinite(f.pivotX));
+                assertTrue("pivot y must be finite at origin " + ox + "," + oy,
+                        Float.isFinite(f.pivotY));
+                assertTrue("pivot z must be finite and positive at origin " + ox + "," + oy,
+                        Float.isFinite(f.pivotZ) && f.pivotZ > 0f);
+                assertTrue("the eye must be finite at origin " + ox + "," + oy,
+                        Float.isFinite(f.eyeX) && Float.isFinite(f.eyeY)
+                                && Float.isFinite(f.eyeZ));
+                assertTrue("the forward must be finite at origin " + ox + "," + oy,
+                        Float.isFinite(f.forwardX) && Float.isFinite(f.forwardY)
+                                && Float.isFinite(f.forwardZ));
+            }
+        }
+        // An empty cloud at an outside origin: the reference-plane point on the ray.
+        SplatCamera.Frame empty = camera().frame(SURFACE_W, SURFACE_H, FOVY,
+                2f, -2f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH, 1f);
+        assertFalse("an empty cloud cannot claim a splat", empty.pivotFound);
+        assertTrue(Float.isFinite(empty.pivotX) && Float.isFinite(empty.pivotY)
+                && Float.isFinite(empty.pivotZ));
     }
 
     // -------------------------------------------------- the Depth knob and the pivot
@@ -810,14 +858,14 @@ public class SplatCameraTest {
      * conservative inclusion.
      *
      * <p>{@link SplatCamera#pxPerTilt} takes the max only over the splats VISIBLE
-     * under the current Origin+Pan shift, so pan -- a screen-space offset that moves
-     * the window without changing the pivot or any splat's parallax -- changes which
+     * under the current Pan shift, so pan -- a screen-space offset that moves the
+     * window without changing the pivot or any splat's parallax -- changes which
      * splats that max is over. {@code SplatRenderer} therefore re-derives
      * {@code sortEps} on a pan, and this pins that it must: at the device's own
-     * framing, moving pan from (0, 0) to its stored (-55, 451) moves the bound by
-     * ~48% on the test cloud (and 28% on the bundled cloud) with the pivot IDENTICAL,
-     * so a future "pan is a no-op, drop it from the key" change goes red here rather
-     * than serving a stale bound to a tilt.
+     * framing, the bound moves ~25% between pan (0, 0) and (400, -400) with the
+     * pivot IDENTICAL, so a future "pan is a no-op, drop it from the key" change
+     * goes red here rather than serving a stale bound to a tilt. (Origin is no
+     * longer in the shift, so this is pan's effect alone.)
      */
     @Test
     public void panIsPartOfTheBoundsFramingKey() {
@@ -829,7 +877,7 @@ public class SplatCameraTest {
                 -0.35164642f, 0.34062168f, 0f, 0f, 0f, 0f, 3f, cloud, n, refDepth, 1f);
         float pxZero = camera().pxPerTilt(SURFACE_W, SURFACE_H, 3f, zero, cloud, n);
         SplatCamera.Frame panned = camera().frame(SURFACE_W, SURFACE_H, 100f,
-                -0.35164642f, 0.34062168f, -55f, 451f, 0f, 0f, 3f, cloud, n, refDepth, 1f);
+                -0.35164642f, 0.34062168f, 400f, -400f, 0f, 0f, 3f, cloud, n, refDepth, 1f);
         float pxPanned = camera().pxPerTilt(SURFACE_W, SURFACE_H, 3f, panned, cloud, n);
         // Pan is a clip-space shift: it does not move the pivot...
         assertEquals("pan must not move the pivot",

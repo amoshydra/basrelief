@@ -16,16 +16,24 @@ package com.amoshydra.basrelief.core.render;
  * centre. The SOURCE view is the eye at the origin looking down {@code +z} with
  * the still's vertical field of view; that is the view the cloud reconstructs, so
  * that is the view "the photograph" means. At rest this camera is exactly that
- * source view, and the Origin and Pan rows are a <b>clip-space shift</b> on top of
- * it — which is what makes the at-rest picture the photograph translated, at
- * every depth and whatever the pivot's depth is.
+ * source view, and the Pan row is a <b>clip-space shift</b> on top of it — which
+ * is what makes the at-rest picture the photograph translated by Pan, at every
+ * depth.
  *
- * <p><b>Why the origin is a shift and not a lateral camera move.</b> The relief
- * moves the eye to the pivot's x/y, which for its flat reference plane is exactly
- * a translation of the picture. A cloud has no single plane, so the same lateral
- * move would show parallax across depths at rest — the picture would not be the
+ * <p><b>Why Pan is a shift and not a lateral camera move.</b> The relief's camera
+ * is a real 3D camera, moved by the tilt and the origin's turntable; a splat cloud
+ * has no single plane, so a lateral camera move would show parallax across depths
+ * at rest and the picture would not be the
  * photograph. The shift is the only construction that keeps the invariant, and
  * the pivot's depth still drives the orbit below.
+ *
+ * <p><b>Origin does NOT translate the picture.</b> It names the orbit centre —
+ * which ray the pivot is picked from — and nothing else about the at-rest view.
+ * It used to contribute a clip-space shift that moved the pivot's ray to the
+ * screen centre, so the picture was the photograph shifted by the origin and a
+ * tap that set the origin "readjusted the view"; the shift is now Pan's alone.
+ * The pivot keeps its own image position on screen and the crosshair marks it
+ * there.
  *
  * <p><b>The pivot is the cloud's surface under the origin's ray, and the tilt is
  * a turntable about it.</b> The origin's ray is the source camera's ray through
@@ -33,8 +41,8 @@ package com.amoshydra.basrelief.core.render;
  * under it (or the reference-plane point when the cloud has nothing there). The
  * eye then rotates about that point and the orientation rotates with it, so at
  * rest ({@code R = I}) the eye is back at the source position and the view is the
- * source view; the pivot projects to the same NDC under every tilt (its view
- * vector is unchanged by {@code R}), so it holds the centre.
+ * source view; the pivot keeps its own screen position under every tilt (its view
+ * vector is unchanged by {@code R}).
  *
  * <p><b>And the pivot is the surface the SHADER draws, which is why the Depth
  * knob reaches it.</b> The vertex shader moves every splat along the ray from the
@@ -83,9 +91,9 @@ public final class SplatCamera {
     public static final class Frame {
         /** World-to-view, column-major, the layout GLSL's mat4 wants. */
         public final float[] view = new float[16];
-        /** The base perspective, before the Origin/Pan shift. */
+        /** The base perspective, before the Pan shift. */
         public final float[] proj = new float[16];
-        /** {@code T(origin + pan) * proj} — what the shader's {@code uProj} gets. */
+        /** {@code T(pan) * proj} — what the shader's {@code uProj} gets. */
         public final float[] projPanned = new float[16];
         /** {@code projPanned * view}, for a caller that projects a point (tests). */
         public final float[] viewProjection = new float[16];
@@ -96,7 +104,7 @@ public final class SplatCamera {
         public float pivotX, pivotY, pivotZ;
         /** Whether {@link #pivot} found a splat rather than falling back. */
         public boolean pivotFound;
-        /** The NDC shift from Origin + Pan. */
+        /** The NDC shift from Pan alone. */
         public float shiftX, shiftY;
     }
 
@@ -110,7 +118,9 @@ public final class SplatCamera {
      *
      * @param surfaceW,surfaceH the drawing surface, for the pan fraction
      * @param fovyDeg  the vertical field of view; Zoom is a crop of it
-     * @param orbitX,orbitY the Origin row, in {@code [-0.5, 0.5]} of the viewport
+     * @param orbitX,orbitY the Origin row: the orbit centre as a fraction of the
+     *                      viewport, allowed outside {@code [-0.5, 0.5]} (see
+     *                      {@code SurfaceSettings.ORIGIN_LIMIT})
      * @param panX,panY the Pan row, in surface pixels (the relief's unit)
      * @param tiltX,tiltY the gyro's smoothed tilt, already in the relief's sign
      * @param motion   the Motion gain; 0 parks the camera exactly as it parks the relief's
@@ -132,7 +142,8 @@ public final class SplatCamera {
         float proj0 = frame.proj[0], proj5 = frame.proj[5];
         // The origin's ray, in the camera's tangent plane: the point the source
         // camera projects to NDC (2*orbitX, 2*orbitY). At rest the pivot sits on
-        // this ray and the shift below brings it to the centre.
+        // this ray at its own image position; the turntable below turns the
+        // camera about it.
         float tanX = proj0 != 0f ? 2f * orbitX / proj0 : 0f;
         float tanY = proj5 != 0f ? -2f * orbitY / proj5 : 0f;
         pivot(positions, count, tanX, tanY, refDepth, depthMul, frame);
@@ -172,12 +183,17 @@ public final class SplatCamera {
         Mat4.lookAt(frame.view, 0, eyeX, eyeY, eyeZ,
                 eyeX + fwx, eyeY + fwy, eyeZ + fwz, upx, upy, upz);
 
-        // Origin + Pan as one clip-space shift. The relief's pan sign is kept
-        // (-2*panX/W, +2*panY/H) so the row means the same thing in both modes; the
-        // origin contributes (-2*originX, -2*originY), which moves the point at NDC
-        // (2*originX, 2*originY) — the pivot — to the centre.
-        float sx = (surfaceW > 0f ? -2f * panX / surfaceW : 0f) - 2f * orbitX;
-        float sy = (surfaceH > 0f ? 2f * panY / surfaceH : 0f) - 2f * orbitY;
+        // Pan as one clip-space shift, in the relief's sign (-2*panX/W,
+        // +2*panY/H) so the row means the same thing in both modes. The ORIGIN
+        // contributes NOTHING here: it must not move the picture, only the point
+        // the turntable turns about (the pivot, above) and the crosshair that
+        // marks it. It used to subtract (-2*originX, -2*originY), which moved the
+        // pivot's ray to the screen centre -- so the picture was the photograph
+        // shifted by the origin, and a tap that set the origin "readjusted the
+        // view". With the term gone the pivot sits at its own image position and
+        // the at-rest picture is the photograph translated by Pan alone.
+        float sx = surfaceW > 0f ? -2f * panX / surfaceW : 0f;
+        float sy = surfaceH > 0f ? 2f * panY / surfaceH : 0f;
         frame.shiftX = sx;
         frame.shiftY = sy;
         Mat4.identity(shiftMat, 0);

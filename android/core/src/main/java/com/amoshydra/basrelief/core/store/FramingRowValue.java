@@ -22,7 +22,7 @@ package com.amoshydra.basrelief.core.store;
  * it away — and {@code showablePan(0.5f, 3120)} is {@code 1}, a half-pixel of camera
  * travel rounded up to a whole pixel. A single "float to slider integer" helper shared
  * by both keys would therefore have to clamp, and the only clamp available is the
- * other's: pan clamped to Origin's ±0.5 would make every drag past half a pixel
+ * other's: pan clamped to Origin's ±2.0 would make every drag past two pixels
  * invisible, and Origin scaled by pan's pixel bound would put the far stop 3120 units
  * away. {@code ConfigTest} and {@code PerItemSettingsTest} already pin that the stored
  * pan is pixels and is not clamped to Origin's range; this is the same rule applied

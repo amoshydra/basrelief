@@ -96,8 +96,8 @@ public class PerItemSettingsTest {
     @Test
     public void originIsClampedBecauseItIsAFraction() {
         SurfaceSettings s = home(item("a").withOrigin(Surface.HOME, 9f, -9f));
-        assertEquals(0.5f, s.originX, 1e-6f);
-        assertEquals(-0.5f, s.originY, 1e-6f);
+        assertEquals(SurfaceSettings.ORIGIN_LIMIT, s.originX, 1e-6f);
+        assertEquals(-SurfaceSettings.ORIGIN_LIMIT, s.originY, 1e-6f);
     }
 
     /**

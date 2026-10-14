@@ -69,7 +69,7 @@ public class FramingRowValueTest {
         assertEquals(86500, FramingRowValue.originThousandths(86.5f));
         assertEquals(1000, FramingRowValue.originThousandths(1.0f));
         assertEquals(-1000, FramingRowValue.originThousandths(-1.0f));
-        assertTrue(SurfaceSettings.ORIGIN_LIMIT == 0.5f);
+        assertTrue(SurfaceSettings.ORIGIN_LIMIT == 2.0f);
     }
 
     // ---------------------------------------------------------------- pan
@@ -115,11 +115,11 @@ public class FramingRowValueTest {
      *
      * <ul>
      *   <li>pan through Origin's rule — scale by 1000 — would print {@code 86500},
-     *       which the row's own range throws away to {@code 500}: a 13-pixel drag
-     *       reads as the far stop. Asserted, because {@link
+     *       which the row's own range throws away to its far stop: a 13-pixel drag
+     *       reads as the edge of the reachable range. Asserted, because {@link
      *       SurfaceSettings#ORIGIN_LIMIT} is the number that would do it.
      *   <li>Origin through pan's rule would print {@code 87} thousandths of a
-     *       fraction that is 0.0865, and Origin's clamp is ±500 so nothing would
+     *       fraction that is 0.0865, and Origin's clamp is ±2000 so nothing would
      *       notice: the camera would swing 87x further than the finger asked for.
      * </ul>
      *
@@ -132,10 +132,10 @@ public class FramingRowValueTest {
         int originMax = Math.round(SurfaceSettings.ORIGIN_LIMIT * 1000f);
 
         // An 86.5-pixel pan read with Origin's rule is 86500 thousandths, and the
-        // row's own range then throws it away to the far stop: a 13-pixel drag
-        // printed as "the edge of the plane".
+        // row's own range then throws it away to the far stop.
         assertEquals(86500, FramingRowValue.originThousandths(86.5f));
-        assertEquals(500, Math.min(originMax, FramingRowValue.originThousandths(86.5f)));
+        assertEquals(originMax,
+                Math.min(originMax, FramingRowValue.originThousandths(86.5f)));
 
         // The same 8.65% camera swing read with pan's rule is 0 pixels, because a
         // fraction of a pixel is not a distance anyone aims at. Nothing complains:

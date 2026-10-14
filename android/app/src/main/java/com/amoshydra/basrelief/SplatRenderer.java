@@ -312,7 +312,7 @@ final class SplatRenderer {
      *
      * <p><b>It casts the same ray {@link SplatCamera#pivot} resolves the orbit
      * from</b>, so the tap, the pivot, the aim and the crosshair are one answer. The
-     * drawn view is the source view shifted by Origin + Pan, so the tapped pixel's
+     * drawn view is the source view shifted by Pan alone, so the tapped pixel's
      * SOURCE NDC is the drawn NDC minus that shift -- and the shift and projection
      * factors come from the frame the cloud was last DRAWN with, not recomputed, so
      * the tap lands on the picture the user saw. The Depth knob is handed through
@@ -623,13 +623,14 @@ final class SplatRenderer {
                 orbitX, orbitY, panX, panY, tiltX, tiltY, motion,
                 pos, count, refDepth, depthMulInUse);
         System.arraycopy(cam.view, 0, view, 0, 16);
-        // uProj gets the PANNED projection: the shift is what makes the at-rest
-        // picture the photograph moved by Origin and Pan, at every depth.
+        // uProj gets the PANNED projection: the pan shift is what moves the
+        // at-rest picture, at every depth. The origin is NOT in it -- it moves the
+        // orbit centre, not the picture.
         System.arraycopy(cam.projPanned, 0, proj, 0, 16);
         // The frame a later tap resolves against, from the frame this draw used. The
         // projection factors are the base perspective's (the shift is a clip-space
-        // translation and does not change them); the shift is the Origin + Pan shift
-        // the tap must undo to reach the SOURCE camera's ray. See tapOrigin.
+        // translation and does not change them); the shift is the Pan shift the tap
+        // must undo to reach the SOURCE camera's ray. See tapOrigin.
         tapProj0 = cam.proj[0];
         tapProj5 = cam.proj[5];
         tapShiftX = cam.shiftX;

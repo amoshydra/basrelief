@@ -421,9 +421,9 @@ public final class LibraryItem {
         // consumed as panX / surfaceW, so its valid range is the surface size -
         // which this class cannot know, and which differs per device and per
         // orientation. The renderer's setPan() clamps on the way in. Clamping to
-        // the origin-style +/-0.5 looked harmless and silently flattened every pan
-        // offset to almost nothing: a stored -135px became -0.5px. Do not add a
-        // range check without knowing the units.
+        // the origin-style fraction range looked harmless and silently flattened
+        // every pan offset to almost nothing: a stored -135px became -0.5px. Do not
+        // add a range check without knowing the units.
         this.home = home;
         this.lock = lockSettings;
         this.archived = archived;
