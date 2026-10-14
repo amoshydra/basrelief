@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import com.amoshydra.basrelief.core.splat.SplatProjection;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
 
 /**
@@ -67,6 +68,44 @@ public class SplatCameraTest {
         float[] proj = new float[16];
         Mat4.perspective(proj, 0, fovyDeg, aspect, SplatCamera.NEAR, SplatCamera.FAR);
         return new float[]{proj[0], proj[5]};
+    }
+
+    /** A splat's view-space position: {@code view * (x, y, z, 1)}. */
+    private static float[] viewPosition(SplatCamera.Frame f, float x, float y, float z) {
+        float[] v = {x, y, z, 1f};
+        Mat4.multiplyMV(v, 0, f.view, 0, v, 0);
+        return v;
+    }
+
+    /**
+     * The NDC a VIEW-space point projects to through the frame's panned projection
+     * -- the one the shader draws with. The pull-back scales a view position about
+     * the eye, so this is the thing that must not move.
+     */
+    private static float[] ndcOf(SplatCamera.Frame f, float vx, float vy, float depth) {
+        float[] v = {vx, vy, -depth, 1f};
+        Mat4.multiplyMV(v, 0, f.projPanned, 0, v, 0);
+        return new float[]{v[0] / v[3], v[1] / v[3]};
+    }
+
+    /**
+     * The 3-sigma extents the vertex shader would emit for a splat of size
+     * {@code s} at a view position, through {@link SplatProjection} -- the same
+     * chain, not a restatement of it. The view rotation is the frame's, in the
+     * row-major order {@code SplatProjection} wants.
+     */
+    private static float[] extents(SplatCamera.Frame f, float s,
+                                   float vx, float vy, float depth) {
+        float[] viewRot = new float[9];
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) viewRot[r * 3 + c] = f.view[c * 4 + r];
+        }
+        float[] cov2 = new float[3];
+        SplatProjection.project(s, s, s, 1f, 0f, 0f, 0f, viewRot, vx, vy, depth,
+                0.5f * SURFACE_W * f.proj[0], 0.5f * SURFACE_H * f.proj[5], cov2);
+        float[] out = new float[2];
+        SplatProjection.extents(cov2[0], cov2[1], cov2[2], 1f, out);
+        return out;
     }
 
     // ------------------------------------------------------- the at-rest picture
@@ -885,5 +924,153 @@ public class SplatCameraTest {
         // ...but it does change the visible set, and so the bound.
         assertTrue("pan must materially move the bound: " + pxZero + " vs " + pxPanned,
                 pxPanned > 1.2f * pxZero || pxPanned < 0.8f * pxZero);
+    }
+
+    // --------------------------------------------- the near-plane pull-back
+
+    /**
+     * THE PULL-BACK'S ONE PROPERTY: a splat nearer than its own minimum view
+     * distance keeps its SCREEN POSITION exactly while its projected extent shrinks
+     * by the scale, asserted by projecting through the real {@link Mat4} chain and
+     * {@link SplatProjection} -- never a restatement of the rule. This is what makes
+     * it a pull-back that does not re-frame the picture: the clamp moves the splat,
+     * not the eye.
+     */
+    @Test
+    public void thePullBackKeepsASplatOnItsPixelAndShrinksIt() {
+        float size = 0.03f;                            // 3D semi-axis, cloud units
+        float[] splat = cloudAt(0.35f, -0.28f, 0.05f); // a splat almost at the lens
+        for (float fovy : new float[]{100f, 64.3f, 45f, 33f}) {
+            SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, fovy,
+                    0.2f, -0.1f, 40f, -25f, 0f, 0f, 1f, splat, 1, REF_DEPTH, 1f);
+            float[] mv = viewPosition(f, splat[0], splat[1], splat[2]);
+            float depth = -mv[2];
+            float zmin = SplatCamera.minViewDistance(size, f.proj[5],
+                    SplatCamera.MAX_EXTENT_FRACTION);
+            assertTrue("the splat must be nearer than its minimum at fovy " + fovy
+                            + " (depth " + depth + ", min " + zmin + ")",
+                    depth < zmin);
+            float k = zmin / depth;
+            float[] before = ndcOf(f, mv[0], mv[1], depth);
+            float[] after = ndcOf(f, mv[0] * k, mv[1] * k, depth * k);
+            assertEquals("x must not move (fovy " + fovy + ")", before[0], after[0], 1e-5f);
+            assertEquals("y must not move (fovy " + fovy + ")", before[1], after[1], 1e-5f);
+            float[] e0 = extents(f, size, mv[0], mv[1], depth);
+            float[] e1 = extents(f, size, mv[0] * k, mv[1] * k, depth * k);
+            // Every Jacobian entry goes as 1/depth, so Sigma2D falls by k^2 and both
+            // extents by exactly k.
+            assertEquals("the major extent is the scale (fovy " + fovy + ")",
+                    e0[0] / k, e1[0], 1e-3f * e0[0]);
+            assertEquals("and so is the minor one (fovy " + fovy + ")",
+                    e0[1] / k, e1[1], 1e-3f * e0[1]);
+            assertTrue("the extent must actually shrink (fovy " + fovy + ")",
+                    e1[0] < 0.95f * e0[0]);
+        }
+    }
+
+    /**
+     * AND THE SPLAT IS DRAWN, NOT DROPPED: at the default fraction a clamped
+     * splat's extent stays under the radius clip's half-frame threshold at every
+     * framing and every screen position -- including the frame corner, where the
+     * Jacobian's off-axis term is largest, which is why the default is 0.1 and not
+     * nearer the threshold. Swept over a splat placed just inside its own minimum,
+     * so the reduction is the SMALLEST the rule ever applies.
+     */
+    @Test
+    public void thePullBackKeepsTheSplatUnderTheRadiusClip() {
+        float aspect = SURFACE_W / SURFACE_H;
+        float[][] ndcs = {{0f, 0f}, {0.5f, 0.5f}, {0.9f, -0.85f}, {-0.95f, 0.9f}};
+        float[] sizes = {0.005f, 0.02f, 0.05f, 0.2f};
+        float worst = 0f;
+        for (float fovy : new float[]{100f, 64.3f, 45f, 33f, 20f}) {
+            float[] proj = projectionFactors(fovy, aspect);
+            for (float[] nd : ndcs) {
+                for (float size : sizes) {
+                    float zmin = SplatCamera.minViewDistance(size, proj[1],
+                            SplatCamera.MAX_EXTENT_FRACTION);
+                    // Just inside the minimum, so k is barely above 1.
+                    float z = 0.99f * zmin;
+                    float[] splat = cloudAt(nd[0] / proj[0], -nd[1] / proj[1], z);
+                    SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, fovy,
+                            0f, 0f, 0f, 0f, 0f, 0f, 1f, splat, 1, REF_DEPTH, 1f);
+                    float[] mv = viewPosition(f, splat[0], splat[1], splat[2]);
+                    float depth = -mv[2];
+                    float k = Math.max(1f, zmin / depth);
+                    float[] e = extents(f, size, mv[0] * k, mv[1] * k, depth * k);
+                    float extent = Math.max(e[0], e[1]);
+                    if (extent > worst) worst = extent;
+                    assertTrue("the clamped splat must be drawn at fovy " + fovy
+                                    + " ndc " + nd[0] + "," + nd[1] + " size " + size
+                                    + ": extent " + extent + " vs the half-frame clip "
+                                    + 0.5f * SURFACE_H,
+                            extent <= 0.5f * SURFACE_H);
+                }
+            }
+        }
+        // And the bound is not vacuous: the sweep reaches a real fraction of it.
+        assertTrue("the corner case must approach the bound, not sit at zero: " + worst,
+                worst > 0.2f * 0.5f * SURFACE_H);
+    }
+
+    /**
+     * A CLOUD WITH NOTHING NEAR THE CAMERA IS UNTOUCHED, and here is the margin.
+     * Measured across five real clouds in the tree (149k-1.18M splats), the largest
+     * 3D axis over depth is 0.0133. The default's threshold is
+     * {@code MAX_EXTENT_FRACTION / (1.5 * proj5)}, which at the two widest framings
+     * the app offers is 0.0795 (fovy 100) and 0.0276 (fovy 45) -- five times the
+     * worst real aspect at the widest, and twice it at a typical zoom-in. So no real
+     * cloud is touched without a genuinely anomalous splat.
+     */
+    @Test
+    public void aCloudWithNothingNearTheCameraIsUntouched() {
+        float worstRealAspect = 0.0133f;
+        for (float fovy : new float[]{100f, 64.3f, 45f}) {
+            float proj5 = projectionFactors(fovy, SURFACE_W / SURFACE_H)[1];
+            float depth = 2.4f;
+            float size = worstRealAspect * depth;
+            float zmin = SplatCamera.minViewDistance(size, proj5,
+                    SplatCamera.MAX_EXTENT_FRACTION);
+            assertTrue("a real cloud's worst aspect must not be pulled back at fovy "
+                            + fovy + " (min " + zmin + " vs depth " + depth + ")",
+                    zmin <= depth);
+        }
+    }
+
+    /**
+     * The rule itself: the minimum is LINEAR in the size, INVERSE in the fraction,
+     * and depends on the two only through {@code size / depth}, so scaling a whole
+     * cloud (or the Depth knob) does not change which splats are pulled back. A
+     * projection or a fraction that cannot claim one answers 0 -- no pull-back --
+     * the "a window claims nothing" rule applied to a distance.
+     */
+    @Test
+    public void theMinimumViewDistanceIsThePinholeRelationAndClaimsNothingElse() {
+        assertEquals(0f, SplatCamera.minViewDistancePerSize(0f, 0.1f), 0f);
+        assertEquals(0f, SplatCamera.minViewDistancePerSize(-1f, 0.1f), 0f);
+        assertEquals(0f, SplatCamera.minViewDistancePerSize(Float.NaN, 0.1f), 0f);
+        assertEquals(0f, SplatCamera.minViewDistancePerSize(1f, 0f), 0f);
+        assertEquals(0f, SplatCamera.minViewDistancePerSize(1f, Float.NaN), 0f);
+        assertEquals(0f, SplatCamera.minViewDistance(0f, 1f, 0.1f), 0f);
+        assertEquals(0f, SplatCamera.minViewDistance(Float.NaN, 1f, 0.1f), 0f);
+
+        float proj5 = 0.8390996f; // 1 / tan(50 deg), the app's widest framing
+        assertEquals(1.5f * proj5 / 0.1f,
+                SplatCamera.minViewDistancePerSize(proj5, 0.1f), 1e-4f);
+        assertEquals(2f * SplatCamera.minViewDistance(0.02f, proj5, 0.1f),
+                SplatCamera.minViewDistance(0.04f, proj5, 0.1f), 1e-6f);
+        assertEquals(2f * SplatCamera.minViewDistance(0.02f, proj5, 0.1f),
+                SplatCamera.minViewDistance(0.02f, proj5, 0.05f), 1e-4f);
+
+        // Scale-invariance: the clamped depth over the splat's own depth depends on
+        // size/depth alone.
+        float ratio = 0f;
+        for (float s : new float[]{0.1f, 1f, 10f}) {
+            float size = 0.02f * s, depth = 0.05f * s;
+            float k = SplatCamera.minViewDistance(size, proj5,
+                    SplatCamera.MAX_EXTENT_FRACTION) / depth;
+            if (ratio == 0f) ratio = k;
+            else assertEquals("the pull-back ratio must be scale-invariant", ratio, k, 1e-4f);
+        }
+        assertTrue("and it must be a real pull-back: " + ratio, ratio > 1f);
     }
 }

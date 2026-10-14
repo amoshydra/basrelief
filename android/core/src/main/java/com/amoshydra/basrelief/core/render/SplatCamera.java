@@ -326,6 +326,91 @@ public final class SplatCamera {
         out.pivotFound = false;
     }
 
+    // --------------------------------------------- the near-plane pull-back
+
+    /**
+     * The largest share of the viewport's height a drawn splat's 3-sigma extent may
+     * cover, and the near-plane pull-back's one number.
+     *
+     * <p><b>What it fixes.</b> The vertex shader drops a splat whose 3-sigma extent
+     * exceeds half the frame (gsplat's radius clip) because a splat that close to
+     * the camera costs a screenful of fragments to lay down a wash. Measured on the
+     * phone at 669k splats: 922 ms a frame with those drawn, 76 ms without them.
+     * Dropping is not free -- it leaves the hole the wash was covering -- so this
+     * pull-back keeps the splat and bounds what it costs instead.
+     *
+     * <p><b>It is a MINIMUM VIEW DISTANCE, applied per splat, and that is the only
+     * construction that works.</b> A splat nearer than its own minimum is moved back
+     * along its own view ray until it sits at it: the view-space position is scaled
+     * about the eye, so the splat's screen position is EXACTLY unchanged and its
+     * projected covariance falls by the square of the scale (the perspective
+     * Jacobian goes as {@code 1/depth}). The DEPTH is what changes, so the picture
+     * is not re-framed -- and that is what "no fov compensation" has to mean here:
+     * the size is deliberately NOT scaled with the position, so a splat that was too
+     * near is drawn <em>smaller</em> rather than drawn whole.
+     *
+     * <p><b>Why it is not a camera move, and why the minimum cannot be one depth.</b>
+     * Pulling the EYE back breaks {@link #frame}'s invariant -- "at rest the picture
+     * is exactly the photograph" -- for every splat off the reference plane: a point
+     * at depth {@code z} then projects to {@code f x/(z+d)}, which equals the
+     * photograph only at the plane, whatever focal is chosen. Moving the splat
+     * instead leaves the frame untouched, which is what {@code SplatCameraTest}
+     * guards. And the threshold cannot be a single depth derived from the worst
+     * splat: a cloud's {@code size/depth} is heavy-tailed (measured across the clouds
+     * in the tree, the largest 3D axis over the median is 7-245x), so one deep
+     * outlier would pull back -- and visibly shrink -- the whole near field. Tying
+     * the minimum to each splat's OWN size touches exactly the splats whose extent is
+     * the problem. Measured on five real clouds (149k to 1.18M splats), the largest
+     * {@code size/depth} is 0.013, against the default's threshold of 0.028 at the
+     * narrowest framing the app offers, so none of them is touched at all.
+     *
+     * <p><b>The number.</b> A splat of size {@code s} at view depth {@code z} has a
+     * 3-sigma extent of about {@code 1.5 * proj5 * s / z} pixels -- {@code 3 * sigma}
+     * times the focal in pixels ({@code 0.5 * H * proj5}) over the depth -- so
+     * bounding it by {@code fraction * H} gives {@code z >= 1.5 * proj5 * s /
+     * fraction}. That bound is the ON-AXIS extent: the Jacobian's off-axis term can
+     * magnify it by up to {@code sqrt(1 + tan^2)}, which is why the default is 0.1
+     * rather than nearer the drop threshold -- even at the frame corner the clamped
+     * splat stays under the radius clip, so it is <b>drawn rather than dropped</b>,
+     * which is the whole point. What it costs is fill, and fill is linear in the
+     * square of this fraction.
+     */
+    public static final float MAX_EXTENT_FRACTION = 0.1f;
+
+    /**
+     * The minimum view distance per unit of a splat's largest 3D axis: the depth the
+     * splat must sit at for its 3-sigma extent to be at most {@code
+     * maxExtentFraction} of the viewport's height. Multiply by that axis to get the
+     * splat's own minimum -- the one uniform {@code SplatRenderer} derives per
+     * framing and the vertex shader multiplies by each splat's size.
+     *
+     * <p>This is the O(1) form of a quantity the design expected to need an
+     * {@code O(count)} pass (the nearest drawn splat's depth). It does not: the
+     * splat's size is already in the vertex data, and the minimum is proportional to
+     * it, so the only per-framing input is the projection's own {@code proj5}. A
+     * cloud with nothing near the camera is therefore untouched by construction --
+     * no splat satisfies the clamp -- with no pass over the cloud at all.
+     *
+     * <p>0 for a projection or a fraction that cannot claim one; the caller reads
+     * that as "no pull-back", the "a window claims nothing" rule applied to a
+     * distance, so a bad uniform cannot pull the whole cloud back to nowhere.
+     */
+    public static float minViewDistancePerSize(float proj5, float maxExtentFraction) {
+        if (!Float.isFinite(proj5) || proj5 <= 0f) return 0f;
+        if (!Float.isFinite(maxExtentFraction) || maxExtentFraction <= 0f) return 0f;
+        return 1.5f * proj5 / maxExtentFraction;
+    }
+
+    /**
+     * The minimum view distance for a splat whose largest 3D axis is {@code size}.
+     * See {@link #minViewDistancePerSize}; 0 when the size cannot claim one, which
+     * leaves the splat where it is.
+     */
+    public static float minViewDistance(float size, float proj5, float maxExtentFraction) {
+        if (!Float.isFinite(size) || size <= 0f) return 0f;
+        return size * minViewDistancePerSize(proj5, maxExtentFraction);
+    }
+
     // ------------------------------------------------------------- the sort gate
 
     /**

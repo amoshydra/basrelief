@@ -676,6 +676,58 @@ already cost real time.
         line): the renderer is fill-bound, so this ratio stays flat as the render scale
         changes and rises with the average splat coverage. It is a diagnostic, not a
         control — there is deliberately no user-facing knob for it.
+    - **The near-plane pull-back is a MINIMUM VIEW DISTANCE per splat, and the moment
+      it becomes a camera move it breaks the at-rest invariant.** The vertex shader's
+      radius clip drops a splat whose 3σ extent exceeds half the frame — gsplat's
+      `radius_clip`, because a splat that close to the eye costs a screenful of
+      fragments to lay down a wash; measured at 669k splats, **922 ms a frame with
+      those drawn against 76 ms without them**, which is the whole of the stutter.
+      Dropping leaves the hole the wash was covering, so a splat nearer than
+      `SplatCamera.minViewDistance` is moved back **along its own view ray** to that
+      distance instead (`mv.xyz *= zmin / depth`). That scaling keeps the splat's
+      screen position EXACTLY — both `clip.xy` and `clip.w` scale by it, so the NDC is
+      unchanged — and divides its projected covariance by the square of it, because
+      every perspective Jacobian entry goes as one over the depth. The SIZE is
+      deliberately NOT scaled with the position: that is what "no fov compensation"
+      has to mean here, and it is why the splat is drawn smaller rather than drawn
+      whole.
+      - **Pulling the EYE back instead is the one thing that must not be done.** A
+        point at depth `z` then projects to `f x / (z + d)`, which is the photograph
+        only at the reference plane, whatever focal is chosen — so `SplatCameraTest`'s
+        at-rest assertions go red for every splat off it. Moving the splat leaves the
+        frame untouched, which is exactly what those tests guard.
+      - **The minimum cannot be a single depth.** A cloud's `size / depth` is
+        heavy-tailed (the largest 3D axis over its depth, over the median, measured
+        **7–245×** across the clouds in the tree), so a threshold derived from the
+        worst splat would pull back and visibly shrink the whole near field. Tying it
+        to each splat's OWN size touches exactly the splats whose extent is the
+        problem.
+      - **And per-splat means the `O(count)` pass the design expected is not needed at
+        all.** The design looked for the nearest drawn splat's depth; but the splat's
+        size is already in the vertex data and its minimum is proportional to it, so
+        the only per-framing input is the projection's own `proj5` — one uniform,
+        `SplatCamera.minViewDistancePerSize` — and a cloud with nothing near the
+        camera is untouched by construction (no splat satisfies the clamp). Measured
+        on five real clouds (149k–1.18M splats), the largest `size / depth` is
+        **0.0133**, against a threshold of 0.0795 at fovy 100 and 0.0276 at fovy 45,
+        so none of them is touched at any normal framing (at the extreme 20° zoom a
+        mild clamp can just reach the 0.0133 cloud — which is correct: zooming in
+        magnifies extents).
+      - **`SplatCamera.MAX_EXTENT_FRACTION = 0.1` is the number, and it is not
+        arbitrary.** The bound it states is the ON-AXIS extent, and the Jacobian's
+        off-axis term magnifies it by up to `sqrt(1 + tan²)`; at the frame corner that
+        is enough to cross the clip's own 0.5 threshold, which would put the splat
+        straight back into the drop. `thePullBackKeepsTheSplatUnderTheRadiusClip`
+        walks the corners and the framings and **fails at 0.5 (mutation-checked)** —
+        so the clamp guarantees a splat is DRAWN, which is the whole point of it.
+        `thePullBackKeepsASplatOnItsPixelAndShrinksIt` pins the exact-position and
+        scaled-extent property through the real projection chain.
+      - **The device tell is `pullbackAspect=` on the `splat upload:` line** — the
+        loaded cloud's own largest `size / depth`, printed once per upload, because
+        the vertex shader cannot count what it clamped. The clamp can engage only
+        above `1 / minViewDistancePerSize(proj5, …)`, so a number below that says the
+        cloud is untouched and a number above it says which splats are being pulled
+        back.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -1133,7 +1185,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 739 tests across forty classes:
+it**. 744 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1250,7 +1302,14 @@ every library write took the app down, so any gallery tap crashed it.
   beside it — blue below 128, not a NaN — stayed pixel-perfect. The container
   test pins that condition too, so the reason the texture cannot be a float one
   is asserted rather than remembered), and that a partial trailing record is
-  dropped rather than read past.
+  dropped rather than read past. It also carries the near-plane pull-back's reach,
+  `maxSizeOverDepth` — the cloud's largest 3D axis over the depth of the splat that
+  carries it — because the vertex shader's clamp is
+  `depth < minViewDistancePerSize(proj5, …) * size` and everything in it but the
+  projection is a property of the cloud, so the device log's `pullbackAspect=` can
+  say whether the clamp engages without a pass over the GPU's data. A splat at or
+  behind the camera cannot claim an aspect, so an empty or wholly-behind cloud
+  reports no pull-back rather than a division's answer.
   The projection test pins the chain the plan states — `Sigma3D = R S S^T R^T`,
   `SigmaV = V Sigma3D V^T`, the perspective Jacobian, `Sigma2D = J SigmaV J^T`,
   the conic, the eigen extents — and above all the relation that makes the quad's
@@ -1335,7 +1394,21 @@ every library write took the app down, so any gallery tap crashed it.
   `docs/SORT-MEASUREMENTS.md`'s `183 px/tilt` is at scale 1 — which is why the
   device's live bound read as three times wrong. The derived gate beats the constant
   only below a Motion that depends on the framing (2.66 → Motion ~89 % at the
-  device's, ~1.03 → Motion ~34 % at the worst reachable).
+  device's, ~1.03 → Motion ~34 % at the worst reachable). Its seventh is the
+  **near-plane pull-back**, and it is the class's second geometry claim rather than a
+  number: `thePullBackKeepsASplatOnItsPixelAndShrinksIt` projects a splat through the
+  real chain before and after the pull-back and holds the screen position to `1e-5`
+  while both 3σ extents fall by exactly the scale — the property that makes the clamp
+  a splat move and not a camera move. `thePullBackKeepsTheSplatUnderTheRadiusClip`
+  sweeps every framing and screen corner (including the frame corner, where the
+  off-axis Jacobian term is largest) and asserts the clamped splat stays under the
+  radius clip's half-frame threshold — **it fails at `MAX_EXTENT_FRACTION = 0.5`
+  (mutation-checked)**, which is what makes 0.1 the number rather than a taste.
+  `aCloudWithNothingNearTheCameraIsUntouched` pins the measured 0.0133 real-cloud
+  aspect against the threshold at three framings, and
+  `theMinimumViewDistanceIsThePinholeRelationAndClaimsNothingElse` pins the mapping
+  (linear in size, inverse in the fraction, scale-invariant, and 0 for anything that
+  cannot claim one).
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes

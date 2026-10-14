@@ -191,4 +191,41 @@ public class SplatCloudTest {
         assertEquals("an empty cloud claims nothing", 0f,
                 SplatCloud.parse(new byte[0]).medianDepth(), 0f);
     }
+
+    /**
+     * The near-plane pull-back's reach: the largest 3D axis over the depth of the
+     * splat that carries it. One number per cloud, because the vertex shader's clamp
+     * is {@code depth < minViewDistancePerSize(proj5, …) * size} and everything but the
+     * projection is a property of the cloud — so a device log can say whether the
+     * clamp can engage without a pass over the GPU's vertex data.
+     *
+     * <p>The LARGEST axis is used, because that is the axis the projected extent
+     * follows, and its absolute value, because a negative scale is a size. A splat at
+     * or behind the camera has no depth to be over, so it cannot claim an aspect —
+     * the "a window claims nothing" rule — and that is what keeps an empty or
+     * wholly-behind cloud reporting no pull-back rather than a division's answer.
+     */
+    @Test
+    public void theMaxSizeOverDepthIsTheLargestAxisOverItsSplatDepth() {
+        byte[] a = oneRecord(0, 0, 1f, 0.1f, 0.1f, 0.1f, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] b = oneRecord(0, 0, 1f, 0.2f, -0.5f, 0.05f, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] c = oneRecord(0, 0, 10f, 1f, 1f, 1f, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] behind = oneRecord(0, 0, -1f, 9f, 9f, 9f, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[] atTheEye = oneRecord(0, 0, 0f, 9f, 9f, 9f, 0, 0, 0, 0, 0, 0, 0, 0);
+        byte[][] recs = {a, b, c};
+        byte[] all = new byte[32 * recs.length];
+        for (int i = 0; i < recs.length; i++) System.arraycopy(recs[i], 0, all, i * 32, 32);
+        assertEquals("the largest |axis| over its own depth is 0.5 / 1",
+                0.5f, SplatCloud.parse(all).maxSizeOverDepth(), 1e-6f);
+        assertEquals("a splat behind the camera cannot claim an aspect",
+                0f, SplatCloud.parse(behind).maxSizeOverDepth(), 0f);
+        assertEquals("nor one at the eye", 0f,
+                SplatCloud.parse(atTheEye).maxSizeOverDepth(), 0f);
+        assertEquals("an empty cloud claims nothing", 0f,
+                SplatCloud.parse(new byte[0]).maxSizeOverDepth(), 0f);
+        // Memoised: the second read is the same number (and the warm path relies on
+        // it staying that way).
+        SplatCloud once = SplatCloud.parse(all);
+        assertEquals(once.maxSizeOverDepth(), once.maxSizeOverDepth(), 0f);
+    }
 }

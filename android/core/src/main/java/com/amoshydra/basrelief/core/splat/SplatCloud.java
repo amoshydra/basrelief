@@ -191,6 +191,57 @@ public final class SplatCloud {
         return (count & 1) == 1 ? z[mid] : 0.5f * (z[mid - 1] + z[mid]);
     }
 
+    /** Memoised {@link #maxSizeOverDepth}; NaN until it is asked for. */
+    private float maxSizeOverDepth = Float.NaN;
+
+    /**
+     * The cloud's largest 3D axis over the depth of the splat that carries it --
+     * how near a splat is TOO near, as one number a device log can be read against.
+     *
+     * <p><b>It is the near-plane pull-back's reach.</b> The vertex shader moves any
+     * splat whose own {@code size / depth} exceeds {@code 1 /
+     * SplatCamera.minViewDistancePerSize(proj5, MAX_EXTENT_FRACTION)} back along its
+     * view ray (see {@code SplatCamera}), so this number answers "can the clamp
+     * engage for this cloud at all" without a pass over the GPU's vertex data. It is
+     * framing-independent: the Depth knob's scale preserves the ratio, and a tilt
+     * moves a view depth by well under a percent, so one number per cloud is enough.
+     *
+     * <p>0 for a cloud with nothing in front of the camera, and for a cloud whose
+     * records cannot be read -- the "a window claims nothing" rule, so a bad file
+     * cannot report a pull-back that is not happening.
+     *
+     * <p>Memoised like {@link #medianDepth} and for the same reason: it is
+     * {@code O(count)} and it is read at upload, so the caller warms it on the IO
+     * thread where the file was already read. A benign race would compute it twice
+     * to the same answer; the field write is atomic.
+     */
+    public float maxSizeOverDepth() {
+        float m = maxSizeOverDepth;
+        if (Float.isNaN(m)) {
+            m = computeMaxSizeOverDepth();
+            maxSizeOverDepth = m;
+        }
+        return m;
+    }
+
+    private float computeMaxSizeOverDepth() {
+        if (count <= 0) return 0f;
+        // One buffer and absolute reads: a ByteBuffer.wrap per record is what makes
+        // the typed accessors allocate, and this runs over every record of the cloud.
+        ByteBuffer bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        float best = 0f;
+        for (int i = 0, o = 0; i < count; i++, o += RECORD_BYTES) {
+            float z = bb.getFloat(o + 8);
+            if (!(z > 1e-4f)) continue;
+            float sx = Math.abs(bb.getFloat(o + 12));
+            float sy = Math.abs(bb.getFloat(o + 16));
+            float sz = Math.abs(bb.getFloat(o + 20));
+            float s = Math.max(sx, Math.max(sy, sz));
+            if (s / z > best) best = s / z;
+        }
+        return best;
+    }
+
     /**
      * The {@code uint8x4} colour as the float whose BIT PATTERN is that word.
      *

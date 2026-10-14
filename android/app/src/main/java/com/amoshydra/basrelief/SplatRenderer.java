@@ -118,7 +118,7 @@ final class SplatRenderer {
     // Uniform locations.
     private int uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW, uNear, uFudge,
             uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d, uDepthMul, uDepthRef,
-            uAlphaDiscard;
+            uAlphaDiscard, uMinViewDistancePerSize;
 
     // The cloud's CPU mirror.
     private int count;
@@ -465,12 +465,20 @@ final class SplatRenderer {
         alphaDropped = dropped;
         alphaShrank = shrank;
         alphaMeanExtent = (float) (extentSum / n);
+        // The near-plane pull-back's reach for THIS cloud: the largest 3D axis over
+        // the depth of the splat that carries it (SplatCloud.maxSizeOverDepth, warmed
+        // on the IO thread). The clamp can engage only where this exceeds
+        // 1/minViewDistancePerSize(proj5, ...), which is the whole of "a cloud with
+        // nothing near the camera is untouched" -- and it is worth printing, because
+        // the vertex shader cannot count what it clamped.
+        float pullbackAspect = cloud.maxSizeOverDepth();
         long tAlpha = System.nanoTime();
         android.util.Log.i(TAG, "splat upload: n=" + n
                 + " pack=" + (tPack1 - tPack0) / 1e6f + "ms"
                 + " glData=" + (tGl - tPack1) / 1e6f + "ms"
                 + " mirror=" + (tMirror - tGl) / 1e6f + "ms"
                 + " alpha=" + (tAlpha - tMirror) / 1e6f + "ms"
+                + " pullbackAspect=" + pullbackAspect
                 + " total=" + (tAlpha - tPack0) / 1e6f + "ms");
         // The cloud's own centre, for the pivot fallback. `medianDepth` is warmed
         // on the IO thread (see ReliefRenderer.requestSplat), so this is a read of a
@@ -736,6 +744,11 @@ final class SplatRenderer {
         GLES30.glUniform1f(uShadowLift, shadowLift);
         GLES30.glUniform2f(uFocal, 0.5f * vw * proj[0], 0.5f * vh * proj[5]);
         GLES30.glUniform2f(uViewport, vw, vh);
+        // The near-plane pull-back's one number, derived from the projection this
+        // draw already uses: the minimum view distance per unit of a splat's size.
+        // See SplatCamera.minViewDistancePerSize and MAX_EXTENT_FRACTION.
+        GLES30.glUniform1f(uMinViewDistancePerSize,
+                SplatCamera.minViewDistancePerSize(proj[5], SplatCamera.MAX_EXTENT_FRACTION));
         GLES30.glUniformMatrix4fv(uProj, 1, false, proj, 0);
         GLES30.glUniformMatrix4fv(uView, 1, false, view, 0);
         GLES30.glUniformMatrix3fv(uViewRot, 1, false, viewRot, 0);
@@ -1155,9 +1168,10 @@ final class SplatRenderer {
         uViewport = GLES30.glGetUniformLocation(prog, "uViewport");
         uBrightnessGain = GLES30.glGetUniformLocation(prog, "uBrightnessGain");
         uShadowLift = GLES30.glGetUniformLocation(prog, "uShadowLift");
+        uMinViewDistancePerSize = GLES30.glGetUniformLocation(prog, "uMinViewDistancePerSize");
         for (int loc : new int[] { uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW,
                 uNear, uFudge, uEps2d, uAlphaDiscard, uDepthMul, uDepthRef, uFocal, uViewport,
-                uBrightnessGain, uShadowLift }) {
+                uBrightnessGain, uShadowLift, uMinViewDistancePerSize }) {
             if (loc < 0) android.util.Log.e(TAG, "splat uniform dropped in silence");
         }
     }
@@ -1419,6 +1433,14 @@ final class SplatRenderer {
             "uniform float uFudge;\n" +
             "uniform vec2 uFocal;\n" +
             "uniform vec2 uViewport;\n" +
+            // The near-plane pull-back: the depth per unit of a splat's largest 3D
+            // axis above which it is drawn as it is, and below which it is moved
+            // back along its own view ray. SplatCamera.minViewDistancePerSize is
+            // this number; the multiply by the splat's size is the only arithmetic
+            // that cannot live in :core, because the size is in the vertex data.
+            // 0 means "no pull-back", so a projection that cannot claim one cannot
+            // pull the cloud back to nowhere.
+            "uniform float uMinViewDistancePerSize;\n" +
             "\n" +
             "layout(location = 0) in vec2 aCorner;\n" +
             "\n" +
@@ -1464,6 +1486,29 @@ final class SplatRenderer {
             "\n" +
             "  vec4 mv = uView * vec4(spPos, 1.0);\n" +
             "  float depth = -mv.z;\n" +
+            // THE NEAR-PLANE PULL-BACK. A splat nearer the eye than its own minimum
+            // view distance is moved back along its own view ray until it sits at
+            // that distance: mv.xyz is scaled about the eye, so the splat's SCREEN
+            // POSITION is exactly unchanged (ndc = proj * mv, and both clip.xy and
+            // clip.w scale by the same factor), while its projected covariance falls
+            // by the square of the scale, because the perspective Jacobian goes as
+            // 1/depth. The SIZE is deliberately not scaled with the position -- that
+            // is what "no fov compensation" means here -- so a splat that would have
+            // been a screenfilling wash is drawn as a small one instead. The
+            // alternative the radius clip below takes is to drop it, which leaves the
+            // hole the wash was covering. Mirrors SplatCamera.minViewDistance (the
+            // depth per unit size is the uniform; this line is the multiply) and
+            // SplatCamera.MAX_EXTENT_FRACTION, which SplatCameraTest pins against the
+            // real projection.
+            //
+            // The guard is depth > 0.0 because the scale is zmin/depth: a splat at or
+            // behind the eye has no ray to move along and is culled just below.
+            "  float size3d = max(max(abs(spScale.x), abs(spScale.y)), abs(spScale.z));\n" +
+            "  float zmin = uMinViewDistancePerSize * size3d;\n" +
+            "  if (depth > 0.0 && depth < zmin) {\n" +
+            "    mv.xyz *= zmin / depth;\n" +
+            "    depth = zmin;\n" +
+            "  }\n" +
             "  vColor = spCol;\n" +
             "  vQ = aCorner;\n" +
             "  vConic = vec3(0.0);\n" +

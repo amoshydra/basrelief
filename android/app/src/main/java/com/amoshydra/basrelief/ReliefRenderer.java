@@ -3554,6 +3554,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 // sort on the GL thread is the kind of stall this whole path exists
                 // to avoid.
                 c.medianDepth();
+                // And the near-plane pull-back's reach, for the same reason: it is
+                // O(count) over every record and the upload only reads it to log it.
+                c.maxSizeOverDepth();
                 return c;
             }
         }, new Io.Callback<SplatCloud>() {
