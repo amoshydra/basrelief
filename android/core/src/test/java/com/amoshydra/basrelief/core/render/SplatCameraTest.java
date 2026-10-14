@@ -6,6 +6,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
+
 /**
  * The splat camera, which used to exist only inside {@code SplatRenderer} and so
  * could only be judged by eye on a device.
@@ -611,5 +613,195 @@ public class SplatCameraTest {
             assertEquals("panX half the surface is -1 NDC", -1f, got[0], 1e-4f);
             assertEquals("panY a quarter of the surface is -0.5 NDC", -0.5f, got[1], 1e-4f);
         }
+    }
+
+    // ------------------------------------------------------------- the sort gate
+
+    /** A cloud that fills the picture at a spread of depths, deterministically. */
+    private static float[] syntheticCloud() {
+        final int N = 40;
+        float[] p = new float[N * N * 3];
+        int k = 0;
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                float u = ((i / (float) (N - 1)) * 2f - 1f) * 0.8f;
+                float v = ((j / (float) (N - 1)) * 2f - 1f) * 0.8f;
+                float z = 0.5f + 1.1f * ((i * 7 + j * 13) % 17) / 16f;
+                p[k++] = u * z;
+                p[k++] = v * z;
+                p[k++] = z;
+            }
+        }
+        return p;
+    }
+
+    private static float medianZ(float[] p) {
+        int n = p.length / 3;
+        float[] z = new float[n];
+        for (int i = 0; i < n; i++) z[i] = p[i * 3 + 2];
+        java.util.Arrays.sort(z);
+        return (n & 1) == 1 ? z[n / 2] : 0.5f * (z[n / 2 - 1] + z[n / 2]);
+    }
+
+    /**
+     * THE DERIVED BOUND'S GUARD, the shape {@code CameraModelTest}'s doze test
+     * established one medium over: the tilt the DERIVED sub-pixel bound allows moves
+     * no VISIBLE splat by more than half a pixel, at every reachable framing.
+     *
+     * <p>The bound is a max over every splat, so what this pins is that the analytic
+     * form {@link SplatCamera#pxPerTilt} agrees with the real {@link
+     * SplatCamera#frame} chain -- the same "assert the projection, never a
+     * restatement" rule the rest of this class follows. A camera constant that
+     * outgrew the arithmetic, or a visibility sign that let an off-screen splat
+     * count, goes red here rather than on a phone.
+     *
+     * <p>It is asserted at Motion 1, the tilt range's own unit -- the same unit
+     * {@code CameraModel.DOZE_EPS} is stated at. Motion scales the travel linearly,
+     * so at Motion 3 the derived sub-pixel gate is three times tighter than the
+     * constant and the FLOOR governs instead; that boundary is pinned by {@link
+     * #theGateIsNeverTighterThanTheConstantItReplaces}.
+     */
+    @Test
+    public void theDerivedBoundStaysUnderASubPixelAtEveryFraming() {
+        float[] cloud = syntheticCloud();
+        int n = cloud.length / 3;
+        float refDepth = medianZ(cloud);
+        float[] fovys = {20f, 32f, 50f, 64.3f, 100f};
+        float[] origins = {-0.4f, 0f, 0.4f};
+        float[][] pans = {{0f, 0f}, {-55f, 451f}, {200f, -300f}};
+        float worst = 0f;
+        for (float fovy : fovys) {
+            for (float ox : origins) {
+                for (float oy : origins) {
+                    for (float[] pan : pans) {
+                        SplatCamera c = camera();
+                        SplatCamera.Frame f = c.frame(SURFACE_W, SURFACE_H, fovy,
+                                ox, oy, pan[0], pan[1], 0f, 0f, 1f, cloud, n, refDepth, 1f);
+                        float px = c.pxPerTilt(SURFACE_W, SURFACE_H, 1f, f, cloud, n);
+                        assertTrue("the bound must claim some displacement at fovy=" + fovy
+                                        + " origin=" + ox + "," + oy, px > 0f);
+                        float eps = SplatCamera.SUBPIXEL_PX / px;
+                        float disp = c.tiltPixels(eps, SURFACE_W, SURFACE_H, fovy,
+                                ox, oy, pan[0], pan[1], 1f, cloud, n, refDepth, 1f);
+                        if (disp > worst) worst = disp;
+                        assertTrue("the derived bound would move the picture " + disp
+                                        + "px at fovy=" + fovy + " origin=" + ox + "," + oy
+                                        + " pan=" + pan[0] + "," + pan[1],
+                                disp <= SplatCamera.SUBPIXEL_PX);
+                    }
+                }
+            }
+        }
+        // The derivation's worst case sits near the bound; keep the two from
+        // drifting apart, the same guard CameraModelTest keeps on the doze.
+        assertTrue("the derivation's worst case has shrunk to " + worst,
+                worst > 0.3f * SplatCamera.SUBPIXEL_PX);
+    }
+
+    /**
+     * The bound is LIVE, not a constant: a narrower field of view magnifies the same
+     * world motion, so the gate must shrink with it. A constant would pass the sweep
+     * above and be exactly the near-nothing lever the measurement rejected.
+     */
+    @Test
+    public void theSortGateShrinksWithTheFieldOfView() {
+        float[] cloud = syntheticCloud();
+        int n = cloud.length / 3;
+        float refDepth = medianZ(cloud);
+        SplatCamera c = camera();
+        SplatCamera.Frame wide = c.frame(SURFACE_W, SURFACE_H, 100f,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, n, refDepth, 1f);
+        float epsWide = c.sortEps(SURFACE_W, SURFACE_H, 1f, wide, cloud, n);
+        SplatCamera.Frame narrow = c.frame(SURFACE_W, SURFACE_H, 20f,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, n, refDepth, 1f);
+        float epsNarrow = c.sortEps(SURFACE_W, SURFACE_H, 1f, narrow, cloud, n);
+        assertTrue("the gate must loosen as the field of view widens: "
+                        + epsWide + " vs " + epsNarrow,
+                epsWide > 1.2f * epsNarrow);
+    }
+
+    /**
+     * THE NO-REGRESSION GUARANTEE: at every reachable framing -- including the high
+     * Motion where the derived sub-pixel gate would be tighter than the constant --
+     * the gate is at least {@link SplatCamera#SHIPPED_SORT_EPS}. The derived bound
+     * may only ever LOOSEN the gate, so this change cannot sort more often than the
+     * constant it replaces anywhere. The Motion sweep is the point: the first
+     * attempt's form was unfloored, and at Motion 3 (the device's own) it produced
+     * 8.9e-4, i.e. a 1.13x pessimisation.
+     */
+    @Test
+    public void theGateIsNeverTighterThanTheConstantItReplaces() {
+        float[] cloud = syntheticCloud();
+        int n = cloud.length / 3;
+        float refDepth = medianZ(cloud);
+        float[] fovys = {20f, 32f, 50f, 64.3f, 100f};
+        float[] motions = {0f, 0.5f, 0.99f, 1f, 2f, 3f};
+        float[] origins = {-0.45f, 0f, 0.45f};
+        float[][] pans = {{0f, 0f}, {-55f, 451f}, {400f, -400f}};
+        for (float fovy : fovys) {
+            for (float motion : motions) {
+                for (float ox : origins) {
+                    for (float oy : origins) {
+                        for (float[] pan : pans) {
+                            SplatCamera c = camera();
+                            SplatCamera.Frame f = c.frame(SURFACE_W, SURFACE_H, fovy,
+                                    ox, oy, pan[0], pan[1], 0f, 0f, motion,
+                                    cloud, n, refDepth, 1f);
+                            float eps = c.sortEps(SURFACE_W, SURFACE_H, motion, f, cloud, n);
+                            assertTrue("the gate tightened to " + eps + " at fovy=" + fovy
+                                            + " motion=" + motion + " origin=" + ox + "," + oy
+                                            + " pan=" + pan[0] + "," + pan[1],
+                                    eps >= SplatCamera.SHIPPED_SORT_EPS);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * AND THE LEVER IS REAL: at the default Motion the derived bound is LOOSER than
+     * the constant, so the change actually skips sorts rather than being a no-op
+     * everywhere. The framing is the device's own -- the bundled row's stored
+     * {@code zoom 62} and {@code origin (-0.35164642, 0.34062168)}, {@code pan
+     * (-55, 451)}, on a 1080x2340 surface, with the bundled cloud's lens giving
+     * {@code fovy 100} -- and the Motion is the DEFAULT, which is the scale the
+     * measurement's figures are stated at.
+     */
+    @Test
+    public void theGateIsLooserThanTheConstantAtTheDefaultMotion() {
+        float[] cloud = syntheticCloud();
+        int n = cloud.length / 3;
+        float refDepth = medianZ(cloud);
+        float defaultMotion = SurfaceSettings.DEFAULT_MOTION / 100f * 3f;
+        SplatCamera c = camera();
+        SplatCamera.Frame f = c.frame(SURFACE_W, SURFACE_H, 100f,
+                -0.35164642f, 0.34062168f, -55f, 451f, 0f, 0f, defaultMotion,
+                cloud, n, refDepth, 1f);
+        float eps = c.sortEps(SURFACE_W, SURFACE_H, defaultMotion, f, cloud, n);
+        assertTrue("the gate must beat the constant at the default Motion ("
+                        + eps + ") or the lever is a no-op",
+                eps > SplatCamera.SHIPPED_SORT_EPS);
+    }
+
+    /**
+     * A framing that cannot claim a bound answers the CONSTANT, not zero: "a window
+     * claims nothing" applied to a bound, and the no-regression rule read together.
+     * An absent cloud must not tighten a gate that is shipping.
+     */
+    @Test
+    public void aFramingThatClaimsNothingFallsBackToTheConstant() {
+        SplatCamera c = camera();
+        SplatCamera.Frame f = c.frame(SURFACE_W, SURFACE_H, FOVY,
+                0f, 0f, 0f, 0f, 0f, 0f, 1f, new float[0], 0, REF_DEPTH, 1f);
+        assertEquals("no positions", SplatCamera.SHIPPED_SORT_EPS,
+                c.sortEps(SURFACE_W, SURFACE_H, 1f, f, null, 0), 0f);
+        assertEquals("an empty cloud", SplatCamera.SHIPPED_SORT_EPS,
+                c.sortEps(SURFACE_W, SURFACE_H, 1f, f, new float[0], 0), 0f);
+        float[] behind = {0f, 0f, -1f, 1f, 1f, -2f};
+        assertEquals("a cloud entirely behind the camera", SplatCamera.SHIPPED_SORT_EPS,
+                c.sortEps(SURFACE_W, SURFACE_H, 1f, f, behind, 2), 0f);
+        assertEquals("no surface", SplatCamera.SHIPPED_SORT_EPS,
+                c.sortEps(0f, SURFACE_H, 1f, f, cloudAt(0f, 0f, 2.4f), 1), 0f);
     }
 }

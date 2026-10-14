@@ -309,4 +309,248 @@ public final class SplatCamera {
         out.pivotZ = refDepth;
         out.pivotFound = false;
     }
+
+    // ------------------------------------------------------------- the sort gate
+
+    /**
+     * Half a screen pixel: the tolerance the DERIVED bound aims at.
+     *
+     * <p><b>Why a sub-pixel move cannot visibly reorder anything, and where that
+     * argument stops.</b> The order can only change when the RELATIVE view depth of
+     * two splats swaps, and under a small camera change that happens only between
+     * splats at nearly equal depth. Two splats at nearly equal depth that also
+     * overlap on screen are drawn on top of one another, so which of the two wins is
+     * not a difference the eye can name; a camera change too small to move any pixel
+     * perceptibly therefore cannot visibly reorder the cloud. That is the argument,
+     * and it is deliberately stated as what it is: <b>"sub-pixel staleness" is a
+     * weaker claim than "cannot visibly reorder"</b>, and the latter was NOT
+     * verified on a phone. What this file pins is the sub-pixel half, which is
+     * arithmetic and checkable; the visual half is the user's eye.
+     */
+    public static final float SUBPIXEL_PX = 0.5f;
+
+    /**
+     * The tilt gate the derived bound replaces -- {@code SplatRenderer.needsSort}'s
+     * constant {@code 1e-3} -- and the FLOOR under it: the derived gate is
+     * {@code max(this, SUBPIXEL_PX / pxPerTilt)}, so it may only ever LOOSEN the
+     * gate, never tighten it.
+     *
+     * <p><b>Why the floor is the right form and not merely the safe one.</b> The
+     * derived bound alone is not sub-pixel at every Motion: at the device's own
+     * Motion (the bundled row stores {@code motion 100}, and {@code motionScale} is
+     * {@code motion/100*3}, so 3.0) the exact bound is 564 px/tilt and its sub-pixel
+     * gate is 8.9e-4 -- <b>tighter</b> than the constant, which permits 0.56 px
+     * there. A gate that tightened would sort MORE than today, and there is no
+     * defect to fix: {@code 1e-3} has shipped at every Motion and no ordering
+     * artifact has been reported at high Motion. So the constant is empirically
+     * ADEQUATE where it is loose enough, and merely too tight at low Motion (where
+     * the sub-pixel gate is 2.7e-3 at Motion 33). The derived bound's job is
+     * therefore to exploit the headroom the constant leaves, not to impose a
+     * tighter physical rule than the one in the field: it raises the gate where the
+     * framing allows and leaves it exactly alone where it does not. The honest cost
+     * is recorded rather than hidden -- at Motion above ~89% the gate IS the
+     * constant, so the sub-pixel property is the constant's there, not this bound's.
+     *
+     * <p><b>Motion is the axis that moves this most, and the one the measurement
+     * forgot.</b> {@code docs/SORT-MEASUREMENTS.md}'s "183 px/tilt" is at
+     * {@code motionScale 1} (Motion 33, the default) and the doc did not say so,
+     * which is how a device at Motion 100 appeared to be three times looser than it
+     * is. {@link #pxPerTilt} scales linearly with Motion, so the crossover is
+     * {@code motionScale < 0.5 * 1/1e-3 / 183 = 2.73} -- Motion below ~91% on that
+     * cloud, measured 2.66 (Motion ~89%) on the device's own.
+     */
+    public static final float SHIPPED_SORT_EPS = 1e-3f;
+
+    /**
+     * A hair over the sampled displacement, so the bound is an inequality and not a
+     * coincidence: the arithmetic below is the displacement's first derivative, and
+     * the drawn displacement is not exactly linear in the delta (measured against
+     * the real {@link #frame} chain, 0.03-0.08% UNDER it at the deltas the gate
+     * uses). It is the derived bound's only slack -- the max below is over EVERY
+     * splat, so nothing else in it is an over-estimate.
+     */
+    private static final float LINEAR_MARGIN = 1.005f;
+
+    /** The eight tilt directions the bound is maximised over. */
+    private static final float[] DIR_COS = new float[8];
+    private static final float[] DIR_SIN = new float[8];
+
+    static {
+        for (int i = 0; i < 8; i++) {
+            double a = i * Math.PI / 4.0;
+            DIR_COS[i] = (float) Math.cos(a);
+            DIR_SIN[i] = (float) Math.sin(a);
+        }
+    }
+
+    /**
+     * The largest VISIBLE screen displacement per unit tilt at this framing,
+     * measured over EVERY splat in the cloud.
+     *
+     * <p><b>It is the cloud, not a summary of it.</b> The bound is a max over the
+     * splats, so it dominates the cloud by construction and needs no superset
+     * argument. It is {@code O(count)}, so it is deliberately NOT called per frame:
+     * {@code SplatRenderer} derives it once per framing -- at upload and whenever the
+     * zoom, origin, pan, motion or surface changes -- and reuses it while the gyro
+     * moves the tilt, which is the whole of a tilt. That is the same shape as the
+     * cloud's other one-off derivations ({@code medianDepth}, {@code refDepth}), and
+     * it is why the slab summary that preceded it was reached for at all (it
+     * over-estimated by up to 1.6x, which the floor now makes harmless but which
+     * would have thrown away the lever).
+     *
+     * <p><b>Why the pivot is in it and not in a precomputed coefficient.</b> The
+     * pivot's tangent is the ORIGIN's ray ({@code 2*orbitX/proj0}, {@code
+     * -2*orbitY/proj5}) and its depth is the frontmost splat under that ray, so both
+     * are framing values: a coefficient taken at one reference framing and scaled by
+     * zoom and motion alone would under-estimate at every other origin (measured
+     * 1.15x between a centred and the device's origin) and the gate would skip a sort
+     * it should have taken. The pivot is resolved here, per framing, from the frame
+     * the draw actually uses.
+     *
+     * <p><b>The arithmetic.</b> The tilt rotates the eye about the pivot by {@code
+     * TILT_RANGE / CAM_DIST * motion} per unit on each axis. Writing {@code U, V} for
+     * a unit tilt direction, {@code r = pivotZ / z} for a splat's depth relative to
+     * the pivot and {@code (tanXp, tanYp)} for the pivot's image tangent, the
+     * first-order screen displacement of a splat at tangent {@code (tx, ty)} is
+     *
+     * <pre>
+     *   q  = U (tx - r tanXp) + V (ty - r tanYp)
+     *   dx = fpx * s * ( U (1 - r) + tx q )
+     *   dy = fpx * s * ( V (1 - r) + ty q )
+     * </pre>
+     *
+     * with {@code fpx = surfaceH / (2 tan(fovy/2))} and {@code s = (TILT_RANGE /
+     * CAM_DIST) motion}. {@code SplatCameraTest} pins it against the real {@link
+     * #frame} chain. Only a VISIBLE splat counts: above Zoom 100% the picture is
+     * larger than the viewport and its off-screen splats have displacements nobody
+     * can see.
+     *
+     * <p>A framing that cannot claim a value (no cloud, no surface, a pivot that is
+     * not a distance) answers 0; the caller then takes the floor.
+     *
+     * @param f the rest frame, as {@link #frame} built it for this draw
+     */
+    public float pxPerTilt(float surfaceW, float surfaceH, float motion,
+                           Frame f, float[] positions, int count) {
+        if (surfaceW <= 0f || surfaceH <= 0f || positions == null || count <= 0) return 0f;
+        float proj0 = f.proj[0], proj5 = f.proj[5];
+        float pz = f.pivotZ;
+        if (proj0 == 0f || proj5 == 0f || !(pz > 0f)) return 0f;
+        float fpx = 0.5f * surfaceH * proj5;
+        float s = (TILT_RANGE / CAM_DIST) * motion;
+        if (!(fpx > 0f) || !(s > 0f)) return 0f;
+        float tanXp = f.pivotX / pz, tanYp = f.pivotY / pz;
+        float best = 0f;
+        for (int i = 0, j = 0; i < count; i++, j += 3) {
+            float x = positions[j], y = positions[j + 1], z = positions[j + 2];
+            if (!(z > 1e-4f)) continue;
+            float invz = 1f / z;
+            // The drawn NDC is (proj0*tx + shiftX, -proj5*ty + shiftY): the view
+            // flips the cloud's y-down axis, so the visibility test carries the sign.
+            float ndcx = proj0 * x * invz + f.shiftX;
+            float ndcy = -proj5 * y * invz + f.shiftY;
+            if (ndcx > 1f || ndcx < -1f || ndcy > 1f || ndcy < -1f) continue;
+            float tx = x * invz, ty = y * invz;
+            float r = pz * invz;
+            float oneR = 1f - r;
+            float ax = tx - r * tanXp, ay = ty - r * tanYp;
+            for (int k = 0; k < 8; k++) {
+                float U = DIR_COS[k], V = DIR_SIN[k];
+                float q = U * ax + V * ay;
+                float dx = U * oneR + tx * q;
+                float dy = V * oneR + ty * q;
+                float d2 = dx * dx + dy * dy;
+                if (d2 > best) best = d2;
+            }
+        }
+        return LINEAR_MARGIN * fpx * s * (float) Math.sqrt(best);
+    }
+
+    /**
+     * The sort gate's live threshold: the derived sub-pixel tilt, floored at
+     * {@link #SHIPPED_SORT_EPS} so the gate can only ever LOOSEN.
+     *
+     * <p>A framing that cannot claim a bound answers the floor -- the shipped
+     * constant -- which is both the conservative direction and the no-regression
+     * rule: an absent cloud must not tighten a gate that is shipping.
+     *
+     * @param f the rest frame, as {@link #frame} built it for this draw
+     */
+    public float sortEps(float surfaceW, float surfaceH, float motion,
+                         Frame f, float[] positions, int count) {
+        float px = pxPerTilt(surfaceW, surfaceH, motion, f, positions, count);
+        if (!(px > 0f)) return SHIPPED_SORT_EPS;
+        return Math.max(SHIPPED_SORT_EPS, SUBPIXEL_PX / px);
+    }
+
+    /**
+     * The largest visible screen displacement, in pixels, that a tilt of {@code
+     * delta} produces -- measured over EVERY splat through the real {@link #frame}
+     * chain, over the same eight directions.
+     *
+     * <p>This is the ground truth {@link #pxPerTilt} is checked against, and the
+     * shape {@link CameraModel#tiltPixels} already established for the relief: the
+     * rest frame projects every splat, each tilted frame projects it again, and the
+     * answer is the worst visible difference in pixels. It is {@code O(count)} per
+     * framing and is NOT the draw path's bound -- {@link #sortEps} is. Only a
+     * visible splat counts.
+     *
+     * @param delta tilt delta in the normalised units the gyro reports (0..1 over
+     *              {@link #TILT_RANGE})
+     */
+    public float tiltPixels(float delta, float surfaceW, float surfaceH, float fovyDeg,
+                            float orbitX, float orbitY, float panX, float panY, float motion,
+                            float[] positions, int count, float refDepth, float depthMul) {
+        if (delta == 0f || surfaceW <= 0f || surfaceH <= 0f
+                || positions == null || count <= 0) return 0f;
+        float[] restX = new float[count], restY = new float[count];
+        float[] out = new float[2];
+        Frame rest = frame(surfaceW, surfaceH, fovyDeg, orbitX, orbitY, panX, panY, 0f, 0f,
+                motion, positions, count, refDepth, depthMul);
+        for (int i = 0, j = 0; i < count; i++, j += 3) {
+            if (project(rest, positions[j], positions[j + 1], positions[j + 2], out)) {
+                restX[i] = out[0];
+                restY[i] = out[1];
+            } else {
+                restX[i] = Float.NaN;
+            }
+        }
+        float best = 0f;
+        for (int d = 0; d < 8; d++) {
+            Frame tilted = frame(surfaceW, surfaceH, fovyDeg, orbitX, orbitY, panX, panY,
+                    DIR_COS[d] * delta, DIR_SIN[d] * delta, motion,
+                    positions, count, refDepth, depthMul);
+            for (int i = 0, j = 0; i < count; i++, j += 3) {
+                if (Float.isNaN(restX[i])) continue;
+                if (Math.abs(restX[i]) > 1f || Math.abs(restY[i]) > 1f) continue;
+                if (!project(tilted, positions[j], positions[j + 1], positions[j + 2], out)) continue;
+                float dx = (out[0] - restX[i]) * surfaceW * 0.5f;
+                float dy = (out[1] - restY[i]) * surfaceH * 0.5f;
+                float disp = (float) Math.hypot(dx, dy);
+                if (disp > best) best = disp;
+            }
+        }
+        return best;
+    }
+
+    /** Scratch for {@link #project}; the drawn {@link #frame} is left untouched. */
+    private final float[] projScratch = new float[4];
+
+    /**
+     * Project a world point through a frame's {@code projPanned * view} into NDC,
+     * into {@code out}. False when the point is behind the camera, where there is no
+     * image position to have moved.
+     */
+    private boolean project(Frame f, float x, float y, float z, float[] out) {
+        projScratch[0] = x;
+        projScratch[1] = y;
+        projScratch[2] = z;
+        projScratch[3] = 1f;
+        Mat4.multiplyMV(projScratch, 0, f.viewProjection, 0, projScratch, 0);
+        float w = projScratch[3];
+        if (!(w > 0f)) return false;
+        out[0] = projScratch[0] / w;
+        out[1] = projScratch[1] / w;
+        return true;
+    }
 }

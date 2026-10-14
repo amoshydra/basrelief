@@ -96,9 +96,12 @@ fovy 100°, floor 2.4078). A near-exact sort (**1,048,576 buckets**, bucket widt
 
 The gate belongs to the **splat** camera, so the bound must be the splat
 camera's own largest visible screen displacement per unit tilt, over 8
-directions, through the real `SplatCamera.frame` chain on the real cloud:
+directions, through the real `SplatCamera.frame` chain on the real cloud.
+**Every figure below is at `motionScale` 1 — Motion 33, the default** — which the
+first version of this section failed to say, and which is why the device's numbers
+looked three times wrong (see *Motion* below):
 
-| framing | px / unit tilt | sub-pixel `eps = 0.5 / px` |
+| framing (at `motionScale` 1) | px / unit tilt | sub-pixel `eps = 0.5 / px` |
 |---|---|---|
 | the device's own (fovy 100°, origin (−0.352, 0.341), pan (−55, 451)) | 183.13 | **2.73e-3** |
 | worst reachable for this cloud (zoom 2, origin (0.35, 0.35)) | 374.15 | **1.34e-3** |
@@ -141,6 +144,44 @@ so frames are continuous. `sorts/s ≈ fps × min(1, D/eps)` — measured:
   a stronger claim than "the order cannot visibly change" — the order can still
   flip for splats within a sub-pixel depth band, and whether that shows depends
   on their overlap. That part was **not** verified on a phone.
+
+## Motion — the axis this section was stated without, and the reason it misled
+
+`SurfaceSettings.motionScale` is **`motion / 100 * 3`**, so **Motion 33 (the
+default) is `motionScale` 1.0** and **Motion 100 is `motionScale` 3.0**. The
+bound scales linearly with it, and *nothing above said which Motion it was
+stated at*. It is `motionScale` 1 (Motion 33). The device's bundled row stores
+`motion 100`, i.e. 3.0 — which is where the discrepancy came from: the device's
+live bound is three times the figures in the tables above, not a slab summary
+three times loose.
+
+Re-derived on the device's own cloud (`files/item-bundled.splat`, 403,456
+splats, pulled) at the device's own framing (fovy 100, origin
+(−0.35164642, 0.34062168), pan (−55, 451), 1080×2340), the **exact max over every
+splat** — not a summary — is:
+
+| Motion | `motionScale` | px / unit tilt | sub-pixel `eps` | vs the shipped `1e-3` |
+|---|---|---|---|---|
+| 100 (the row as found) | 3.0 | 563.74 | **8.87e-4** | **1.13× TIGHTER** |
+| 33 (the default) | 0.99 | 186.03 | **2.69e-3** | 2.69× looser |
+| 1 (the doze's unit) | 1.0 | 187.91 | 2.66e-3 | 2.66× looser |
+
+- **At Motion 100 the sub-pixel gate is tighter than the constant it would
+  replace**, so a live gate there is a *pessimisation*, not a win: it would sort
+  ~13 % more often. The shipped `1e-3` permits 0.56 px at Motion 100 and no
+  ordering artifact has been reported at high Motion, so the constant is
+  empirically adequate there — which is why the gate is
+  **`max(SHIPPED_SORT_EPS, 0.5 / pxPerTilt)`**: it may only ever *loosen*, never
+  tighten, and at Motion 100 it is exactly today's behaviour.
+- **The crossover is a Motion, and it is a function of the framing.** The derived
+  gate beats the constant when `motionScale < 0.5 / (1e-3 · pxPerTilt)`: at the
+  device framing that is **2.66 → Motion below ~89 %**, and at the worst reachable
+  framing on this cloud (fovy 34, origin (0.50, 0.10), 484.6 px/tilt) it is
+  **~1.03 → Motion below ~34 %**. So the lever is largest at wide framing and low
+  Motion, and vanishes at the top of the Motion slider.
+- The win the section above promises is therefore real **at the default Motion**
+  (~2.7× fewer sorts) and does **not exist on the device's row as it stands**.
+  That is the honest statement the first version was missing.
 
 ## The sort's real share of the frame
 

@@ -221,6 +221,24 @@ final class SplatRenderer {
     /** NDC beyond this is certainly off-screen; the CPU cull count uses it. */
     private static final float CULL_MARGIN = 1.3f;
 
+    /**
+     * The sort gate's live threshold, cached on the framing it was derived from.
+     *
+     * <p>{@code SplatCamera.sortEps} is {@code O(count)}, so it must not run per
+     * frame; but the tilt changes none of the inputs below, so it is derived once
+     * per framing (at upload and on a zoom, origin, pan, motion or surface change)
+     * and reused for every frame of a tilt. The key is exactly the set of values the
+     * bound is a function of: the resolved pivot, the projection's own factors, the
+     * Origin+Pan shift, Motion, and the surface. A framing that cannot claim a bound
+     * answers the shipped constant -- see {@code SplatCamera.SHIPPED_SORT_EPS} for
+     * why the gate is {@code max(constant, derived)} and can only ever loosen.
+     */
+    private boolean sortEpsStale = true;
+    private float sortEpsInUse = SplatCamera.SHIPPED_SORT_EPS;
+    private float boundPivotX, boundPivotY, boundPivotZ;
+    private float boundProj0, boundProj5, boundShiftX, boundShiftY, boundMotion;
+    private int boundSurfaceW, boundSurfaceH;
+
     // Frame accounting.
     private int framesInWindow;
     private long lastLogNanos;
@@ -322,6 +340,7 @@ final class SplatRenderer {
         blurActive = false;
         ready = false;
         sortPrimed = false;
+        sortEpsStale = true;
         timerExt = false;
         timerQuery = 0;
         queryOpen = false;
@@ -412,6 +431,9 @@ final class SplatRenderer {
         // them once per camera move, and the GPU reads everything else.
         pos = new float[n * 3];
         cloud.positions(pos);
+        // The gate's bound is O(count) and belongs to this cloud: mark it stale so
+        // the next draw derives it for whatever framing is then in force.
+        sortEpsStale = true;
         long tMirror = System.nanoTime();
         // The alpha-extent clip's reach: a property of the cloud's baked opacities,
         // so it is derived once here and read by the stats line. Splat.extentScaleForAlpha
@@ -615,7 +637,35 @@ final class SplatRenderer {
         viewRot[3] = view[4]; viewRot[4] = view[5]; viewRot[5] = view[6];
         viewRot[6] = view[8]; viewRot[7] = view[9]; viewRot[8] = view[10];
 
-        if (needsSort(tiltX, tiltY, orbitX, orbitY, zoom)) {
+        // The sort gate's live threshold, from the frame this draw will use. The
+        // camera has not moved if the tilt, orbit and zoom are all within it, so the
+        // order the last sort derived is still the order to draw. The threshold is
+        // this framing's own sub-pixel bound, floored at the constant it replaces so
+        // it can only ever loosen (see SplatCamera.SHIPPED_SORT_EPS).
+        //
+        // The bound is a max over every splat and so is O(count); the tilt changes
+        // none of its inputs, so it is derived once per FRAMING and reused for every
+        // frame of a tilt. The key is exactly the set of values it is a function of.
+        if (sortEpsStale || surfaceW != boundSurfaceW || surfaceH != boundSurfaceH
+                || motion != boundMotion || cam.pivotX != boundPivotX
+                || cam.pivotY != boundPivotY || cam.pivotZ != boundPivotZ
+                || cam.proj[0] != boundProj0 || cam.proj[5] != boundProj5
+                || cam.shiftX != boundShiftX || cam.shiftY != boundShiftY) {
+            sortEpsInUse = splatCamera.sortEps(surfaceW, surfaceH, motion, cam, pos, count);
+            boundSurfaceW = surfaceW;
+            boundSurfaceH = surfaceH;
+            boundMotion = motion;
+            boundPivotX = cam.pivotX;
+            boundPivotY = cam.pivotY;
+            boundPivotZ = cam.pivotZ;
+            boundProj0 = cam.proj[0];
+            boundProj5 = cam.proj[5];
+            boundShiftX = cam.shiftX;
+            boundShiftY = cam.shiftY;
+            sortEpsStale = false;
+        }
+
+        if (needsSort(tiltX, tiltY, orbitX, orbitY, zoom, sortEpsInUse)) {
             sort();
             sortedTiltX = tiltX;
             sortedTiltY = tiltY;
@@ -761,11 +811,26 @@ final class SplatRenderer {
 
     // ------------------------------------------------------------------ sort
 
+    /**
+     * Whether the draw order the last sort derived is still the order to draw.
+     *
+     * <p><b>The tilt axes use the live bound; orbit and zoom keep the constant.</b>
+     * Tilt is the axis the gyro drives continuously -- the one the measurement and
+     * the derivation cover -- so it is the one whose gate moves. Orbit and zoom are
+     * deliberate gestures that change the pivot and the field of view, and the
+     * constant they keep is already ~1 px of picture movement (an Origin delta of
+     * {@code d} shifts the drawing by {@code 2d} NDC, i.e. {@code d * surfaceW}
+     * pixels), so they are not the cost this change is about.
+     *
+     * <p>{@code tiltEps} is never below {@link SplatCamera#SHIPPED_SORT_EPS} -- see
+     * there for why the gate may only loosen -- so no path through here can sort
+     * more often than the constant did.
+     */
     private boolean needsSort(float tiltX, float tiltY, float orbitX, float orbitY,
-                              float zoom) {
+                              float zoom, float tiltEps) {
         if (!sortPrimed) return true;
-        return Math.abs(tiltX - sortedTiltX) > 1e-3f
-                || Math.abs(tiltY - sortedTiltY) > 1e-3f
+        return Math.abs(tiltX - sortedTiltX) > tiltEps
+                || Math.abs(tiltY - sortedTiltY) > tiltEps
                 || Math.abs(orbitX - sortedOrbitX) > 1e-3f
                 || Math.abs(orbitY - sortedOrbitY) > 1e-3f
                 || Math.abs(zoom - sortedZoom) > 1e-3f;
@@ -1219,6 +1284,7 @@ final class SplatRenderer {
                 + " eps2d=" + fmt(eps2dInUse)
                 + " blurPx=" + fmt(blurPxInUse)
                 + " depthMul=" + fmt(depthMulInUse)
+                + " sortEps=" + fmt(sortEpsInUse)
                 + " fps=" + fmt(fps)
                 + " frameMs=" + fmt(frameMs)
                 + " maxFrameMs=" + fmt(maxFrameNanos / 1e6f)

@@ -1059,7 +1059,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 731 tests across forty classes:
+it**. 736 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1240,7 +1240,28 @@ every library write took the app down, so any gallery tap crashed it.
   `Splat.depthScale` preserves), and above all that **tapping and then resolving is
   a fixed point**: the origin a tap produces is the image position of the splat the
   pivot picks for that origin. That is the property the old tap — the tapped SCREEN
-  fraction, which drifts by the current Origin and Pan — broke.
+  fraction, which drifts by the current Origin and Pan — broke. Its sixth is the
+  **sort gate**: `SplatCamera.pxPerTilt` is a max over EVERY splat, and the gate is
+  the larger of `SHIPPED_SORT_EPS` and half a pixel over `pxPerTilt` — the derived
+  bound may only ever
+  LOOSEN the gate, never tighten it. That floor is the whole design, not a safety
+  belt: at the device's own Motion the sub-pixel gate is *tighter* than the `1e-3`
+  it would replace, and tightening would sort more with no defect to fix, so the
+  constant is the floor and the derived term is the lever. The tests are the
+  no-regression guarantee (the gate is ≥ `1e-3` at every reachable framing,
+  *including* the Motion sweep — the unfloored first attempt produced 8.9e-4 at
+  Motion 3), that the lever is demonstrably live at the default Motion, that the
+  DERIVED bound is sub-pixel at every framing asserted against `tiltPixels` through
+  the real `frame` chain (the "assert the projection" rule), that the gate is live
+  (it shrinks as the field of view narrows), and that a framing which cannot claim a
+  bound falls back to the CONSTANT rather than to zero. **Motion is the boundary the
+  measurement forgot:** `SurfaceSettings.motionScale` is `motion` divided by 100 and
+  multiplied by 3, so Motion
+  33 (the default) is scale 1.0 and Motion 100 is 3.0, and
+  `docs/SORT-MEASUREMENTS.md`'s `183 px/tilt` is at scale 1 — which is why the
+  device's live bound read as three times wrong. The derived gate beats the constant
+  only below a Motion that depends on the framing (2.66 → Motion ~89 % at the
+  device's, ~1.03 → Motion ~34 % at the worst reachable).
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes
