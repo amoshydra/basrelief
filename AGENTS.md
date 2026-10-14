@@ -517,50 +517,39 @@ already cost real time.
       too small to sample and leaves the well-sampled ones alone, so it removes the
       screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
       (`Splat.EPS_2D_DEFAULT` = 0.5, the row spans 0.45..0.80), and the draw
-      resolves it to `max(min(Splat.samplingMinPx2(w, h), cell), fraction × cell × zoom²)` — the
-      larger of that fraction term and the sampling minimum, the floor's own floor.
-      The minimum exists because the cell (`viewportArea / count`) shrinks as the
-      count grows, so a dense cloud on a low-resolution render target falls below a
-      pixel, where a splat is hit or missed by where its centre lands and a smooth
-      bright far region shows a **density-independent speckle** the fraction term
-      cannot remove. **The minimum scales with the render target's AREA**
-      (`SAMPLING_MIN_AREA_FRACTION`, the measured clean 6 px² at 912×1984 as a
-      fraction of the target: 0.931 at 360×780, 3.72 at 720×1560, 14.90 at
-      1440×3120), because the requirement it states is an area — and that is the bug
-      it was: as a constant 1 px² it was right only at the 360-wide 0.25 render scale
-      it was derived on, 4× too small at the 720×1560 the device draws at 0.5. The
-      minimum is deliberately NOT scaled by zoom; the cell term is (the scene spreads
-      over more pixels). It is a `uniform`, not a `const`, so it moves live with no
-      recompile.
-      - **The minimum is CAPPED BY THE CELL, and the crossover is a count.** Both
-        terms are fractions of the target's area, so their ratio cancels the viewport:
-        `samplingMin / cell = count × 6/(912×1984)` — **0.50** at the 149,504-splat
-        beach the constant was derived on (where the floor genuinely works), **1.34**
-        at 403,456, **3.47** at 1,046,528. Past `912×1984/6 = 301,568` splats the
-        minimum exceeds the cell it is a minimum for, and a floor larger than the gap
-        is not closing anything: it draws every splat several times the footprint it
-        stands for, and because the ratio has no resolution in it the picture is
-        **equally soft at 25% and at 100% render scale** — the user's own report. On
-        the 6T's 403,456-splat bundled row the cap recovers **~33% of frame time**
-        (median `gpuMs` **56.1 → 37.7** over visibility-transition bursts, floor
-        8.380 → 2.408). So the floor can never need to exceed the gap: the cap is
-        inert below the crossover (the 149,504-splat beach keeps exactly its look —
-        it is the cloud the constant was derived on) and only bites above it. The
-        403,456-splat bundled row is above it: 1.34x at zoom 1 and **3.48x at the
-        6T's stored zoom 0.62**, which is why that row is the one the fix moves — and
-        why an estimate of "1.34, a modest drop" undercounts, because the *framing
-        zoom*, not the render scale, is what the on-screen gap scales by. The cap is
-        the **on-screen** cell (`area/count × zoom²`), because the gap is the on-screen
-        gap — which is why the cell term carries the zoom and the minimum does not; the
-        cap therefore does, and at zoom < 1 it pulls the minimum down to the smaller
-        gap, at zoom > 1 it lets it through. **The cap can only bite once the splats
-        already overlap**: at the crossover a splat at the minimum variance has
-        σ = `sqrt(samplingMin)` equal to the neighbour spacing `sqrt(cell)`.
-        **Consequence for the SIZE knob**: above the crossover the floor is the cell
-        itself and `fraction × cell ≤ 0.8 × cell`, so the knob cannot move it — the
-        knob is live only below the crossover (and there only once its setting exceeds
-        the minimum's share of the cell). That is honest rather than fixable: a control
-        that could only exceed the cell is the over-blur again.
+      resolves it to exactly `fraction × cell`, with the cell the ON-SCREEN one
+      (`viewportArea / count × zoom²`). **There is no second, target-area minimum**,
+      and deleting it is what made the knob live at every count.
+      - **The minimum was the SIZE knob frozen at one cloud's count.** Its
+        `SAMPLING_MIN_AREA_FRACTION` was `6 / (912 × 1984)` of the render target's
+        area — the clean 6 px² measured on the 149,504-splat beach — and
+        `EPS_2D_DEFAULT / that fraction` is **150,784 splats, 0.9% from the beach's
+        own count**. So at the default the two terms were one statement: `0.5 × cell`
+        for the beach reproduces the recorded minimum within 1% at all four render
+        targets (0.939 / 3.756 / 6.051 / 15.03 against 0.931 / 3.72 / 6.00 /
+        14.90). It could only ever place a floor *above* `fraction × cell`, and past
+        the count where it exceeded the raw cell — `1 / that fraction = 301,568`
+        splats, ratio 0.50 at the beach, 1.34 at 403,456, 3.47 at 1,046,528 — that
+        excess was over-blur. That is why it first needed the cap
+        `min(minimum, cell)` and why the cap is now gone with it.
+      - **Above the old crossover the floor drops from the cell to `fraction ×
+        cell`, so a dense cloud is sharper AND cheaper.** Measured on the 6T's
+        403,456 bundled row (scale 1.00, Motion 100, zoom 0.62, so the on-screen cell
+        is 2.408 and the default floor goes 2.408 → 1.204): median `gpuMs`
+        **37.45 → 33.16, −11.5%**, by continuous sensor draws after a visibility
+        change — the hot method, and the same method both sides. (The *original*
+        uncapped minimum would have been 8.380 here.) The smooth region is still the
+        clean reference render's **0.70× the photograph's own high-frequency
+        energy**.
+      - **The cost is at the bottom of the range on a sparse cloud, and it is
+        small.** Where `fraction × cell` already exceeded the old minimum there is no
+        change; where it did not the drop is ~10% at the lowest setting — the 149,504
+        beach at 0.45 gives 5.45 against a needed ≈6.05, so a little speckle is
+        reachable **at SIZE 0.45 on a sparse cloud**. The default 0.5 covers it
+        exactly, which is part of why it is the default. Stated, not buried.
+      - **The SIZE row is live at every count now** — it was inert above 301,568
+        splats, where the floor was the cell and `fraction × cell ≤ 0.8 × cell` could
+        only ask for more. That is the whole point of the change.
     - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
       One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
       from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
@@ -1059,7 +1048,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 736 tests across forty classes:
+it**. 734 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1119,8 +1108,8 @@ every library write took the app down, so any gallery tap crashed it.
   backwards, and anything that is not a level — a negative, an index past the end,
   a value a newer build wrote — answers the default, because that default is the
   look the mode shipped with and an upgrade must not move it. Its fifth is the
-  **floor's unit**, which is the bug it was written for. `eps2d` is a fraction of
-  the cell a splat stands for (`viewportArea / count`, magnified by the zoom), not
+  **floor's unit**, which is now the whole of it: `eps2d` is a fraction of the
+  cell a splat stands for (`viewportArea / count`, magnified by the zoom), not
   a number of pixels, because the gap it closes is the cell and a pixel is a unit
   the cell does not use: the same setting is a different effect at every resolution
   and every zoom, and the knob's maximum was below what the phone needed. Measured
@@ -1131,34 +1120,18 @@ every library write took the app down, so any gallery tap crashed it.
   asserts the *invariance* and not either pixel value: the floor over the cell is
   the same number at both resolutions, the phone's is the cloud's scaled by the
   square of the resolution ratio, and the zoom enters squared because it magnifies
-  both axes — **where the cell term is the larger of the two terms.** Below it the
-  floor does not shrink, and that floor's floor is the fix for a second, separate
-  bug: the sampling minimum is the reference's clean 6 px² at 912×1984 **as a
-  fraction of the render target's area** (`Splat.SAMPLING_MIN_AREA_FRACTION`, via
-  `Splat.samplingMinPx2`), so it is 0.931 at 360×780, 3.72 at 720×1560 and 14.90 at
-  1440×3120. As a constant 1 px² it was right only at the 360-wide target it was
-  derived on — 4× too small at the 720×1560 the device draws at 0.5 — which is why
-  the speckle survived the SIZE knob and why it appeared at 100% and 25% and did not
-  shrink with density. The test pins that the
-  minimum does NOT scale with zoom (a zoom-out must not divide it back toward zero,
-  which is the same artifact smaller), that it DOES scale with the target's area, and
-  that it never clamps a floor the cell term has already lifted. **The same test
-  carries the cap that minimum needed, which is the defect the fix revealed**: both
-  terms are fractions of the target's area, so their ratio cancels the viewport —
-  `samplingMin / cell = count × 6/(912×1984)`, 0.50 at the beach, 1.34 at 403,456,
-  3.47 at 1,046,528 — so past `1 / SAMPLING_MIN_AREA_FRACTION = 301,568` splats the
-  minimum EXCEEDS the cell it is a minimum for, drawing every splat several times its
-  footprint and leaving the picture equally soft at every render scale. Pinned: the
-  cap's **inertness below the crossover** (the floor is exactly the old maximum there,
-  which is why the 149,504-splat beach is unchanged — the 403,456-splat bundled row is
-  above it and is moved), the **crossover count** from the
-  constant and its resolution-freedom, that the floor is **monotone in count and in
-  zoom** with no step at the crossover, and that the cap only bites **once the splats
-  already overlap** (σ = `sqrt(samplingMin)` equals the spacing `sqrt(cell)` at the
-  crossover). A
-  cell that cannot be claimed (no splats, no viewport, a NaN fraction) answers 0,
-  which is the identity for a floor — the "a window claims nothing" rule applied to
-  a number, where a guess would be a floor derived from a count of nothing. Its
+  both axes. There is no second, target-area term, and **the test that pins the
+  property the deleted minimum made false** is
+  `theSizeKnobMovesTheFloorAboveTheOldCrossover`: above the count where that
+  constant's ratio exceeded 1 (301,568 splats) the floor used to be the cell, with
+  `0.8 × cell < cell`, so the knob could not move it at all — and the test walks
+  403,456 and 1,046,528 asserting the floor is exactly `fraction × cell`, below the
+  cell, and moves with the knob. The rest keep what still means something: the floor
+  is **monotone in count and in zoom** with no step anywhere in the count (the old
+  crossover included), and a cell that cannot be claimed (no splats, no viewport, a
+  NaN fraction) answers 0, which is the identity for a floor — the "a window claims
+  nothing" rule applied to a number, where a guess would be a floor derived from a
+  count of nothing. Its
   sixth is a cloud's **identity**, which is the path AND the bytes behind it and not
   the path alone: a rebuild writes the *same* filename, so a path-only identity
   answers "already showing it", the request is dropped, and the new cloud never

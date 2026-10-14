@@ -81,27 +81,36 @@ public final class Splat {
      * the splats whose screen covariance is too small to sample, so a far field of
      * ~2 px splats at 2 px spacing stops reading as a screen-door fog.
      *
-     * <p><b>It is a FRACTION OF THE CELL, and the floor is the LARGER of that term
-     * and {@link #samplingMinPx2}.</b> The fraction term closes the gap between
-     * neighbouring splats, and that gap is the cell a splat stands for:
-     * {@code viewportArea / count}, magnified by the zoom. A fixed floor in pixels
-     * is measured in a unit the gap does not use -- the cell doubles with the
-     * render's resolution and again with every octave of zoom, while a constant
-     * does not -- so the same fraction is the same effect on every device and at
-     * every zoom, and the knob's maximum cannot fall below what the phone needs.
-     * Measured on one cloud: the sky needed 6 at the cloud's own 912x1984 frame and
-     * 15 at the 1440x3120 the phone draws it into, which is 6 x (1440/912)^2 to
-     * three figures. As a fraction of the cell both are 0.5, which is what makes
-     * one default correct for both.
+     * <p><b>It is a FRACTION OF THE CELL, and that fraction is the WHOLE floor.</b>
+     * The fraction closes the gap between neighbouring splats, and that gap is the
+     * cell a splat stands for: {@code viewportArea / count}, magnified by the zoom.
+     * A fixed floor in pixels is measured in a unit the gap does not use -- the cell
+     * doubles with the render's resolution and again with every octave of zoom,
+     * while a constant does not -- so the same fraction is the same effect on every
+     * device, at every zoom and at every COUNT, and the knob's maximum cannot fall
+     * below what the phone needs. Measured on one cloud: the sky needed 6 at the
+     * cloud's own 912x1984 frame and 15 at the 1440x3120 the phone draws it into,
+     * which is 6 x (1440/912)^2 to three figures. As a fraction of the cell both
+     * are 0.5, which is what makes one default correct for both.
      *
-     * <p><b>The fraction term alone is not enough, and that is the artifact
-     * {@link #samplingMinPx2} exists for.</b> The cell shrinks as the count grows,
-     * so the fraction term shrinks with it, and past a point it falls below one
-     * render pixel -- where a splat cannot be sampled at all and a smooth, bright,
-     * far region (a sky, a white wall) shows partial coverage as a fine speckle
-     * that does not shrink with density. The sampling minimum is the floor's own
-     * floor, <b>up to the cell</b>, which is the most it can usefully be: see
-     * {@link #eps2dFor}.
+     * <p><b>There is deliberately no second, target-area term under it.</b> A
+     * "sampling minimum" of the render target's area used to be the floor's own
+     * floor, derived as the clean 6 px^2 on the 149,504-splat beach cloud -- but at
+     * this default it was the SAME statement: {@code EPS_2D_DEFAULT / (6/(912*1984))}
+     * is 150,784 splats, 0.9% from that cloud's own count, so the minimum was this
+     * knob frozen at one cloud's count and could only ever ADD a floor above
+     * {@code fraction * cell}. On the four render targets the comment above spells
+     * out, {@code 0.5 * cell} for the beach reproduces the recorded minimum to 0.9%
+     * at every one of them (0.939 / 3.756 / 6.051 / 15.03 against 0.931 / 3.72 /
+     * 6.00 / 14.90). So there is nothing it stated that the fraction does not, and
+     * everything above the fraction is the over-blur this mode has now shipped
+     * twice -- see {@link #eps2dFor}.
+     *
+     * <p>The one honest cost of removing it is at the bottom of the range: on a
+     * sparse cloud the old minimum covered the last ~10% of the way to the clean
+     * floor at the LOWEST SIZE setting (the 149,504 beach at 0.45 gives 5.45 of a
+     * needed ~6.05), so a little speckle is reachable there. The default 0.5 covers
+     * it exactly, which is part of why it is the default.
      *
      * <p>The measured value: at 0.5 the sky's high-frequency energy falls to the
      * photograph's own, and the dense net it shows at 0.2 is gone.
@@ -122,62 +131,6 @@ public final class Splat {
 
     /** The top of the SIZE range: the cleaner-sky option at a small subject cost. */
     public static final float EPS_2D_MAX = 0.8f;
-
-    /**
-     * The smallest variance at which a splat can be sampled, <b>as a fraction of
-     * the render target's area</b> -- the floor's own floor, and the term
-     * {@link #eps2dFor} caps by the cell it is a minimum for. Resolved for a target
-     * by {@link #samplingMinPx2}.
-     *
-     * <p><b>Derived from the reference render, and it is an AREA.</b> A clean
-     * reference renderer reaches the photograph's own high-frequency energy at
-     * {@code eps2d = 6} px^2 on a 912x1984 frame -- the frame the sweep was run in
-     * -- so the measurement is {@code 6 / (912 * 1984)} of the target's area. It
-     * resolves to <b>6.00</b> px^2 back at 912x1984, <b>0.931</b> at the 360x780 of
-     * a 0.25 render scale (the parent's 0.935, to the measurement's own precision),
-     * <b>3.72</b> at the 720x1560 of a 0.5 render scale, and <b>14.90</b> at
-     * 1440x3120.
-     *
-     * <p><b>THE UNIT IS A FRACTION OF THE TARGET, AND THE TARGET IS NOT ALWAYS 360
-     * WIDE -- which is the bug this is.</b> The requirement is an area: the floor's
-     * job is to bring a splat up to roughly the spacing of its neighbours, and BOTH
-     * the splat's own screen variance and that spacing scale with the render
-     * resolution squared. A constant in render pixels is therefore right at exactly
-     * one resolution. Measured with the faithful renderer on the 149504-splat beach
-     * cloud's smooth sky (high-pass std, against a clean render's 0.76 at 360x780):
-     * at the <b>720x1560</b> target the device draws into at render scale 0.5 --
-     * read off its own {@code splat: ... render=720x1560 scale=0.5000} line -- a
-     * floor of 1.0 px^2 leaves <b>12.71</b>, 2.0 leaves 5.33, and the resolved 3.72
-     * leaves <b>1.15</b>. The old constant was 4x too small at half scale, and the
-     * SIZE knob could not recover it: at 0.8 of a dense cloud's cell the term is
-     * 0.75, still under the 1.0 constant, which is why the knob changed the texture
-     * and never the region.
-     *
-     * <p><b>BOTH TERMS ARE FRACTIONS OF THE TARGET, SO THE MINIMUM IS CAPPED BY THE
-     * CELL -- and the crossover is resolution-free.</b> {@code samplingMin / cell =
-     * count * 6/(912*1984)}, which cancels the viewport entirely: <b>0.50</b> at the
-     * 149,504-splat beach the constant was derived on (where the floor is genuinely
-     * needed), <b>1.34</b> at 403,456 and <b>3.47</b> at 1,046,528. Past {@code
-     * 912*1984/6 = 301,568} splats the minimum exceeds the cell it is a minimum for,
-     * and a floor larger than the gap no longer closes anything -- it inflates every
-     * splat to several times the footprint it stands for, and the picture is equally
-     * soft at 25% and at 100% render scale because the ratio has no resolution in it.
-     * That is why {@link #eps2dFor} takes {@code min(samplingMin, cell)}: the floor
-     * can never exceed the gap it exists to close.
-     *
-     * <p><b>It is NOT scaled by zoom, and that is the point of a separate term.</b>
-     * The cell term carries {@code zoom^2} because the gap between splats is a
-     * property of the SCENE, and a magnified render spreads those splats over more
-     * pixels. This floor is a property of the render TARGET -- a splat cannot be
-     * sampled below one of ITS pixels however the camera is zoomed -- so it is a
-     * constant for a given target. The CAP is the on-screen cell and therefore does
-     * carry the zoom; the minimum itself does not, so at zoom &lt; 1 the cap pulls it
-     * down to the smaller on-screen gap and at zoom &gt; 1 it lets it through.
-     * Folding the zoom into the minimum itself would be a different thing -- it would
-     * let a zoom-out (0.25 is reachable) divide the target's own sampling floor back
-     * toward zero, which is the failure this number exists to end.
-     */
-    public static final float SAMPLING_MIN_AREA_FRACTION = 6f / (912f * 1984f);
 
     /**
      * A cloud's identity: its path AND the number of bytes behind it.
@@ -216,71 +169,31 @@ public final class Splat {
     }
 
     /**
-     * The floor in render-target pixels squared: the LARGER of the sampling minimum
-     * <b>for THIS target, capped by the cell</b>, and the fraction of the cell the
-     * knob stores.
+     * The floor in render-target pixels squared: {@code fraction} of the ON-SCREEN
+     * cell one splat stands for.
      *
-     * <p>This is the one resolution of the setting into a number, and it lives here
-     * rather than in the renderer so the invariance it exists for can be asserted.
-     * It is a maximum of two quantities in the same unit, render-target pixels
-     * squared:
+     * <p><b>This is the one resolution of the setting into a number, and it is the
+     * whole of it.</b> It lives here rather than in the renderer so the invariance it
+     * exists for can be asserted. A floor's job is to close the gap between
+     * neighbouring splats, and that gap is the cell -- {@code viewportArea / count},
+     * magnified by the zoom, because a magnified render spreads the same splats over
+     * more pixels. One setting is therefore one effect at every resolution, every
+     * count and every zoom, which a number of pixels cannot be.
      *
-     * <ul>
-     *   <li>{@code min(samplingMinPx2, cell)} -- the smallest variance a splat can
-     *       be sampled at, for this target's area, <b>capped by the cell it is a
-     *       minimum for</b>. It is a property of the RENDER TARGET, so it is
-     *       independent of zoom and of count, and it is what keeps the floor from
-     *       falling below the pixel grid on a low-resolution target or a high-count
-     *       cloud. <b>It scales with the target's area</b>, because the requirement
-     *       it states does: see {@link #SAMPLING_MIN_AREA_FRACTION}. The cap is the
-     *       ON-SCREEN cell, not the raw {@code viewportArea / count}, because the
-     *       gap the floor closes is the gap on screen -- which is also why the cell
-     *       term below carries {@code zoom^2}. Capping against the unzoomed cell
-     *       would leave a zoomed-out cloud's floor at {@code 1/zoom^2} times the
-     *       gap, the same over-blur this cap exists to remove, one axis over.</li>
-     *   <li>{@code fraction * cell * zoom^2}, where the cell is the area one splat
-     *       stands for on screen: {@code viewportArea / count}. That is the area
-     *       when the cloud fills the viewport -- which is the case for a photograph,
-     *       whose aspect is the screen's -- and it is the same quantity the shader
-     *       is compensating for, so it is the honest one to measure against. The
-     *       zoom enters squared because it magnifies both the cell's width and its
-     *       height.</li>
-     * </ul>
-     *
-     * <p><b>Why the minimum is capped, and what the cap does at zoom.</b> Both terms
-     * are fractions of the target's area, so their ratio cancels the viewport
-     * entirely: {@code samplingMin / cell = count * SAMPLING_MIN_AREA_FRACTION},
-     * which is 0.50 at the 149,504-splat beach the constant was measured on, 1.34
-     * at 403,456 and 3.47 at 1,046,528. Past {@code 1 /
-     * SAMPLING_MIN_AREA_FRACTION = 301,568} splats (at zoom 1) the minimum exceeds
-     * the cell it is a minimum for, and a floor larger than the gap is not closing
-     * anything: it draws every splat several times the footprint it stands for, and
-     * because the ratio has no resolution in it the picture is equally soft at 25%
-     * and at 100% render scale. Capping makes the floor the largest quantity that
-     * can still close the gap -- the gap itself.
-     *
-     * <p><b>The cap can only bite once the splats already overlap, and it is inert
-     * below the crossover.</b> The crossover is where the minimum equals the cell,
-     * and there a splat at the minimum variance has a standard deviation
-     * {@code sqrt(samplingMin)} equal to the neighbour spacing {@code sqrt(cell)};
-     * past it the spacing is smaller still, so the splats cover one another and no
-     * gap is left to close. Below it {@code min(samplingMin, cell) = samplingMin}
-     * and the floor is exactly the old maximum, so the 149,504-splat beach's look is
-     * unchanged -- while the 403,456-splat bundled row, at 1.34x at zoom 1 and 3.48x
-     * at the 6T's stored zoom 0.62, is the one the cap moves. At zoom &gt; 1 the cap
-     * grows with the cell (the on-screen gap is magnified) and lets the target's
-     * minimum through; at zoom &lt; 1 it shrinks with the cell and pulls the minimum
-     * down to the smaller gap, which is the honest answer because a zoomed-out
-     * cloud's splats are closer on screen.
-     *
-     * <p><b>The SIZE knob stays meaningful only below the crossover.</b> Above it
-     * the floor is the cell itself -- {@code fraction * cell <= 0.8 * cell < cell}
-     * -- so the knob cannot move it: the cap has already chosen the largest floor
-     * that closes the gap, and a control that could only exceed it would be the
-     * over-blur again. Below it the floor is {@code cell * max(count *
-     * SAMPLING_MIN_AREA_FRACTION, fraction)}, so the knob is the whole answer once
-     * its setting exceeds the minimum's share of the cell and inert below that --
-     * the pre-existing hard floor, unchanged.
+     * <p><b>There is deliberately no separate sampling minimum.</b> A second term
+     * used to sit under this fraction, {@code SAMPLING_MIN_AREA_FRACTION} of the
+     * target's area, derived as the clean 6 px^2 on a 149,504-splat cloud. But
+     * {@code EPS_2D_DEFAULT / that fraction} is 150,784 splats -- 0.9% from that
+     * cloud's own count -- so at the default it was this knob frozen at one cloud's
+     * count, and it could only ever place a floor ABOVE {@code fraction * cell}:
+     * once the count passed 301,568 (where the term exceeded the raw cell) that
+     * excess was the over-blur the mode has now shipped twice, and below it the
+     * fraction already reproduces the measured clean floor. Measured across the four
+     * render targets: {@code 0.5 * cell} for the beach gives 0.939 / 3.756 / 6.051 /
+     * 15.03 against the recorded minimum's 0.931 / 3.72 / 6.00 / 14.90, every one
+     * within 1%. So the minimum stated nothing the fraction does not, and everything
+     * above the fraction is over-blur. Removing it is also what makes the SIZE knob
+     * live at every count.
      *
      * <p>A count or viewport that cannot claim a value (0, or a viewport that is
      * not a size) answers 0, which is the identity: a floor is an enlargement, and
@@ -291,42 +204,10 @@ public final class Splat {
                                  int count, float zoom) {
         if (!(fraction > 0f) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
         float z = Float.isFinite(zoom) ? Math.max(0.25f, Math.min(2f, zoom)) : 1f;
-        float area = (float) viewportW * viewportH;
         // The ON-SCREEN cell: the area one splat stands for once the zoom has
-        // magnified it. The cap below is against this and not the raw area/count,
-        // because the gap the floor closes is the gap on screen.
-        float cell = (area / count) * z * z;
-        // The sampling minimum is a minimum FOR the cell, so it can never need to
-        // exceed it: a gap cannot be larger than the cell, and a floor larger than
-        // the gap inflates every splat past the footprint it stands for. See
-        // SAMPLING_MIN_AREA_FRACTION for the crossover this makes inert.
-        float min = Math.min(samplingMinPx2(viewportW, viewportH), cell);
-        return Math.max(min, fraction * cell);
-    }
-
-    /**
-     * The sampling minimum for a given render target, in that target's pixels
-     * squared: {@link #SAMPLING_MIN_AREA_FRACTION} of the target's area.
-     *
-     * <p><b>Why an area and not a constant.</b> The measurement behind it is a
-     * variance, and a variance is an area, so the same look on a different
-     * resolution is the same number times the resolution ratio squared. The device
-     * draws at more than one render scale -- {@code splat_scale} is a dev pref from
-     * 0.25 to 1.0, and 0.5 is reachable and was measured -- so a constant stated at
-     * one of them is wrong at every other, and the wrongness is silent: a floor
-     * that is 4x too small does not error, it just leaves the speckle in.
-     *
-     * <p>It resolves to 6.00 px^2 at the 912x1984 the sweep was run in, 0.931 at the
-     * 360x780 of a 0.25 render scale, 3.72 at the 720x1560 of a 0.5 scale, and 14.90
-     * at 1440x3120. It is deliberately NOT scaled by zoom -- see
-     * {@link #SAMPLING_MIN_AREA_FRACTION}.
-     *
-     * <p>A target that cannot claim a size answers 0, the identity: a floor derived
-     * from no target is not a floor.
-     */
-    public static float samplingMinPx2(int viewportW, int viewportH) {
-        if (viewportW <= 0 || viewportH <= 0) return 0f;
-        return SAMPLING_MIN_AREA_FRACTION * ((float) viewportW * (float) viewportH);
+        // magnified it, and the gap the floor exists to close.
+        float cell = ((float) viewportW * viewportH / count) * z * z;
+        return fraction * cell;
     }
 
     /** The product default post-blur radius, in pixels: 0 is the identity. */

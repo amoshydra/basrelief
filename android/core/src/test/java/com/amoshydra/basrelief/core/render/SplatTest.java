@@ -235,12 +235,12 @@ public class SplatTest {
     }
 
     /**
-     * Where the cell term is the larger of the two -- above the sampling minimum --
-     * the floor is a fraction of the CELL, and the cell is the viewport divided by
-     * the splat count, so one setting is one effect at every resolution and every
-     * zoom, which is the property a number of pixels cannot have. The floor's own
-     * floor, and the density-independent speckle that forced it, are pinned by
-     * {@link #theSamplingMinimumIsCappedByTheCellAndInertBelowTheCrossover}.
+     * The floor is a fraction of the CELL, and the cell is the viewport divided by
+     * the splat count, so one setting is one effect at every resolution, every count
+     * and every zoom -- which is the property a number of pixels cannot have. This
+     * is also what makes the fraction suffice on its own, with no separate
+     * target-area minimum: a floor expressed this way cannot fall below the gap it
+     * is closing however dense the cloud gets.
      *
      * <p>This is the bug it exists for, in the numbers it was measured in. One
      * cloud's smooth sky, high-frequency energy against the photograph's own: at
@@ -252,7 +252,7 @@ public class SplatTest {
      * the phone's floor is the cloud's scaled by (1440/912)^2.
      */
     @Test
-    public void aboveTheSamplingMinimumTheFloorIsAFractionOfTheCell() {
+    public void theFloorIsAFractionOfTheCellAtEveryResolution() {
         int count = 149504;
         float cloud = Splat.eps2dFor(0.5f, 912, 1984, count, 1f);
         float phone = Splat.eps2dFor(0.5f, 1440, 3133, count, 1f);
@@ -268,137 +268,62 @@ public class SplatTest {
     }
 
     /**
-     * The sampling minimum is capped by the CELL it is a minimum for, and the cap is
-     * INERT below the crossover.
+     * THE PROPERTY THAT WAS FALSE, and the whole point of deleting the minimum: the
+     * SIZE knob MOVES the floor ABOVE the old crossover.
      *
-     * <p><b>Why a cap.</b> Both the minimum and the cell are fractions of the render
-     * target's area, so their ratio cancels the viewport: {@code samplingMin / cell =
-     * count * SAMPLING_MIN_AREA_FRACTION}. Below {@code 1 /
-     * SAMPLING_MIN_AREA_FRACTION = 301,568} splats the minimum sits under the cell
-     * and does its job -- the density-independent speckle on a smooth bright far
-     * region, where a splat is smaller than the samples that would draw it. Above it
-     * the minimum EXCEEDS the cell: a floor larger than the gap between neighbours is
-     * not closing anything, it draws every splat several times the footprint it
-     * stands for, and because the ratio has no resolution in it the picture is
-     * equally soft at 25% and at 100% render scale. The floor can never need to
-     * exceed the gap it exists to close.
+     * <p>A second term used to sit under the fraction -- the clean 6 px^2 on the
+     * 149,504-splat beach, expressed as a fraction of the target's area -- and past
+     * {@code 1 / that fraction = 301,568} splats it EXCEEDED the raw cell, so the
+     * floor was the cell itself. There the knob was inert: its range tops out at
+     * 0.8 of a cell, and {@code 0.8 * cell < cell}. The floor could not move however
+     * the user dragged, which is the lie the deletion removes.
      *
-     * <p><b>The cap can only bite once the splats already overlap.</b> At the
-     * crossover the minimum equals the cell, and a splat at that variance has a
-     * standard deviation {@code sqrt(samplingMin)} equal to the neighbour spacing
-     * {@code sqrt(cell)}; above it the spacing is smaller, so the splats cover one
-     * another and there is no gap left to close. That is what makes the cap safe
-     * rather than merely convenient, and it is asserted below.
-     *
-     * <p><b>Inertness below the crossover is what keeps the derived-on look.</b> The
-     * 149,504-splat beach cloud the constant was measured on is at 0.50x, so it keeps
-     * exactly the floor it had; only a cloud whose floor has stopped doing its job is
-     * moved -- the 403,456-splat bundled row is above the crossover (1.34x at zoom 1)
-     * and is the one the cap changes. The interaction at zoom is pinned by
-     * {@link #theFloorIsMonotoneInCountAndZoom}.
+     * <p>Now the floor is {@code fraction * cell} at every count, so a dense cloud
+     * is (a) floored BELOW its cell -- sharper and cheaper -- and (b) tuned by the
+     * knob exactly as a sparse one is. Both halves are asserted here, at the 403,456
+     * bundled row (above the old crossover) and the 1,046,528 dense case (3.47x over
+     * it), and the 6T's own on-screen numbers are pinned so the size of the move is
+     * on record rather than described.
      */
     @Test
-    public void theSamplingMinimumIsCappedByTheCellAndInertBelowTheCrossover() {
-        // The value AND its derivation, so the number cannot move in silence: a
-        // clean reference render needs eps2d 6 px^2 at 912x1984, and a variance
-        // scales as an area, so the minimum is that measurement as a fraction of the
-        // target's area -- 6.00 back at the frame it was measured in, and the
-        // parent's 0.935 at the 360x780 of a 0.25 render scale.
-        assertEquals(6f / (912f * 1984f), Splat.SAMPLING_MIN_AREA_FRACTION, 0f);
-        assertEquals("6 px^2 back at the frame the sweep was run in",
-                6f, Splat.samplingMinPx2(912, 1984), 0.01f);
-        assertEquals("and the same look at a 0.25 render scale",
-                0.935f, Splat.samplingMinPx2(360, 780), 0.01f);
-
-        // BELOW THE CROSSOVER the minimum is under the cell, so the cap is inert and
-        // the floor is EXACTLY the old maximum -- max(samplingMin, fraction * cell).
-        // The count just below the crossover is included: there the minimum is still
-        // the floor, because it is still at or under the gap.
-        float min = Splat.samplingMinPx2(912, 1984);
-        for (int count : new int[] {1000, 100000, 149504, 301567}) {
-            for (float fraction : new float[] {Splat.EPS_2D_MIN, 0.5f, Splat.EPS_2D_MAX}) {
-                float cell = 912f * 1984f / count;
-                assertTrue("below the crossover the minimum must be under the cell",
-                        min <= cell);
-                assertEquals("the cap must be inert at count=" + count
-                                + " fraction=" + fraction,
-                        Math.max(min, fraction * cell),
-                        Splat.eps2dFor(fraction, 912, 1984, count, 1f), 1e-3f);
-            }
+    public void theSizeKnobMovesTheFloorAboveTheOldCrossover() {
+        // The crossover the deleted constant had: 1 / SAMPLING_MIN_AREA_FRACTION,
+        // which the file recorded as 301,568 splats.
+        int crossover = 301568;
+        for (int count : new int[] {crossover + 1, 403456, 1046528}) {
+            float cell = 912f * 1984f / count;
+            float low = Splat.eps2dFor(Splat.EPS_2D_MIN, 912, 1984, count, 1f);
+            float high = Splat.eps2dFor(Splat.EPS_2D_MAX, 912, 1984, count, 1f);
+            // (a) The knob MOVES the floor -- the property the old code lacked.
+            assertTrue("the knob must move the floor above the old crossover at "
+                            + "count=" + count + " (" + low + " vs " + high + ")",
+                    high > low);
+            // (b) The floor is exactly the fraction of the cell, so it sits BELOW
+            // the cell the old cap held it at: the sharper-and-cheaper half.
+            assertEquals("the floor is the fraction of the cell at count=" + count,
+                    Splat.EPS_2D_MIN * cell, low, 1e-4f);
+            assertEquals("the floor is the fraction of the cell at count=" + count,
+                    Splat.EPS_2D_MAX * cell, high, 1e-4f);
+            assertTrue("and so a dense cloud is floored below its cell at count=" + count,
+                    high < cell);
         }
-
-        // ABOVE THE CROSSOVER the minimum exceeds the cell, and the floor is the cell
-        // -- the largest floor that still closes the gap. The knob cannot lift it
-        // (its range tops out at 0.8 of a cell), which is the knob's inert regime.
-        int dense = 1046528;
-        float denseCell = 912f * 1984f / dense;
-        assertTrue("above the crossover the minimum must exceed the cell",
-                min > denseCell);
-        for (float fraction : new float[] {Splat.EPS_2D_MIN, Splat.EPS_2D_MAX}) {
-            assertEquals("a capped floor is the cell at fraction=" + fraction,
-                    denseCell, Splat.eps2dFor(fraction, 912, 1984, dense, 1f), 1e-4f);
-        }
-
-        // THE SAFETY PROPERTY: at the crossover a splat at the minimum variance
-        // reaches exactly its neighbour, so the cap never removes a floor that was
-        // closing a real gap -- it only removes over-coverage.
-        assertEquals("at the crossover the minimum is exactly the cell",
-                min, 912f * 1984f / 301568f, 1e-3f);
-        assertEquals("and the minimum's sigma is the neighbour spacing there",
-                (float) Math.sqrt(912f * 1984f / 301568f),
-                (float) Math.sqrt(min), 1e-3f);
-
-        // Above the minimum the cell term is exact, so the minimum only ever lifts
-        // an undersampled floor and never clamps a well-sampled one.
-        assertEquals(0.5f * (1000f * 2000f / 100f),
-                Splat.eps2dFor(0.5f, 1000, 2000, 100, 1f), 1e-3f);
-    }
-
-    /**
-     * The crossover is a COUNT, not a resolution: {@code samplingMin / cell = count *
-     * SAMPLING_MIN_AREA_FRACTION}, because both quantities are fractions of the
-     * target's area and the viewport cancels. It is 0.50 at the 149,504-splat beach
-     * the constant was measured on, 1.34 at 403,456 and 3.47 at 1,046,528, and it
-     * crosses 1 at {@code 1 / SAMPLING_MIN_AREA_FRACTION = 301,568} splats.
-     *
-     * <p>This is the arithmetic that makes the defect and the fix one statement: the
-     * floor was inflated by exactly this ratio wherever it exceeded 1, and capping it
-     * is the whole of the repair. Pinning the count means a change to the constant or
-     * to the area convention cannot move it in silence.
-     */
-    @Test
-    public void theCrossoverIsTheCountWhereTheMinimumEqualsTheCell() {
-        assertEquals("the crossover count, from the constant",
-                912f * 1984f / 6f, 1f / Splat.SAMPLING_MIN_AREA_FRACTION, 0.5f);
-        assertEquals(301568f, 1f / Splat.SAMPLING_MIN_AREA_FRACTION, 0.5f);
-
-        // Resolution-free: the same count is the same ratio on any target.
-        for (int count : new int[] {149504, 403456, 1046528}) {
-            float a = Splat.samplingMinPx2(912, 1984) / (912f * 1984f / count);
-            float b = Splat.samplingMinPx2(1440, 3120) / (1440f * 3120f / count);
-            assertEquals("the ratio must not depend on the target, count=" + count,
-                    a, b, 1e-4f);
-            assertEquals("and it is count * the constant",
-                    count * Splat.SAMPLING_MIN_AREA_FRACTION, a, 1e-4f);
-        }
-        assertEquals(0.50f, Splat.samplingMinPx2(912, 1984) / (912f * 1984f / 149504), 0.01f);
-        assertEquals(1.34f, Splat.samplingMinPx2(912, 1984) / (912f * 1984f / 403456), 0.01f);
-        assertEquals(3.47f, Splat.samplingMinPx2(912, 1984) / (912f * 1984f / 1046528), 0.01f);
-
-        // At the crossover the minimum equals the cell, so the cap changes nothing;
-        // past it the cap holds the floor at the cell -- one cell, not 3.47.
-        assertEquals(Splat.samplingMinPx2(912, 1984), 912f * 1984f / 301568f, 1e-3f);
-        assertEquals("capped at the cell, not 3.47 cells",
-                912f * 1984f / 1046528f,
-                Splat.eps2dFor(0.5f, 912, 1984, 1046528, 1f), 1e-4f);
+        // The 6T bundled row's own numbers, so the size of the move is on record: at
+        // its stored zoom 0.62 the on-screen cell is 2.4078 (the old cap's floor),
+        // and the default floor is now half of it.
+        float cell = (1080f * 2340f / 403456f) * 0.62f * 0.62f;
+        assertEquals("the bundled row's on-screen cell at zoom 0.62",
+                2.4078f, cell, 1e-3f);
+        assertEquals("and the default floor is half of it, not the cell",
+                1.2039f, Splat.eps2dFor(0.5f, 1080, 2340, 403456, 0.62f), 1e-3f);
     }
 
     /**
      * The floor is monotone in count and in zoom, which is what keeps it a floor
      * rather than a curve that dips: a denser cloud is never given a LARGER floor
      * (its cell shrinks), and a magnified cloud is never given a SMALLER one (its
-     * on-screen gap grows). Both must survive the cap -- a cap that made the floor
-     * rise with density would be the over-blur coming back from the other side.
+     * on-screen gap grows). With the target-area minimum gone the floor is a plain
+     * {@code fraction * area / count * zoom^2}, so both follow directly -- the test
+     * keeps a future term from reintroducing a step or a dip.
      */
     @Test
     public void theFloorIsMonotoneInCountAndZoom() {
@@ -414,77 +339,17 @@ public class SplatTest {
             assertTrue("the floor must not fall as zoom rises: " + z + " -> " + f, f >= prev);
             prev = f;
         }
-        // The cap does not put a step at the crossover: the floor approaches the
-        // cell continuously as the count rises.
+        // No step anywhere in the count, including where the deleted minimum's
+        // crossover used to be: the floor approaches the cell continuously.
         float below = Splat.eps2dFor(0.5f, 1440, 3120, 301567, 1f);
         float above = Splat.eps2dFor(0.5f, 1440, 3120, 301569, 1f);
-        assertEquals("no step at the crossover", below, above, 0.01f);
-    }
-
-    /**
-     * The sampling minimum scales with the render target's AREA, because the
-     * requirement it states is an area.
-     *
-     * <p>This is the defect it exists for, in the numbers it was measured in. The
-     * minimum used to be a constant 1 px^2, derived at 360x780 -- but
-     * {@code splat_scale} is a dev pref from 0.25 to 1.0 and the device draws at
-     * 0.5, so the constant was 4x too small on the target in use. Measured with the
-     * faithful renderer on the 149504-splat beach cloud's smooth sky (high-pass std,
-     * against 0.76 at 360x780): at 720x1560 a floor of 1.0 leaves <b>12.71</b> and
-     * 3.72 leaves <b>1.15</b>. So the assertion is not any single value but that the
-     * minimum is at or just above each measured clean floor at the target it was
-     * measured on -- and that the device's own target gets four times the reference
-     * target's.
-     *
-     * <p>The minimum is capped by the cell it is a minimum for, so a dense cloud's
-     * floor is its cell rather than the target's minimum: a 1.18M-splat cloud at
-     * 1440x3120 has a cell of 4.3 px^2 and is floored at that, not at the target's
-     * 14.9, which would have been 3.47 cells of over-blur -- the ratio that made the
-     * picture equally soft at every render scale. See
-     * {@link #theSamplingMinimumIsCappedByTheCellAndInertBelowTheCrossover} and
-     * {@link #theCrossoverIsTheCountWhereTheMinimumEqualsTheCell}.
-     */
-    @Test
-    public void theSamplingMinimumScalesWithTheRenderTargetArea() {
-        // The measured clean floors, at the targets they were measured on. The
-        // minimum is at or just above each, and only by the measurement's own margin.
-        assertEquals("912x1984 needed 6", 6f, Splat.samplingMinPx2(912, 1984), 0.01f);
-        assertEquals("360x780 needed 0.935", 0.935f, Splat.samplingMinPx2(360, 780), 0.01f);
-        assertEquals("720x1560 needed 3.74", 3.74f, Splat.samplingMinPx2(720, 1560), 0.02f);
-        assertEquals("1440x3120 needed 14.9", 14.9f, Splat.samplingMinPx2(1440, 3120), 0.05f);
-
-        // An area: double the resolution each way is four times the floor, and
-        // double it again is sixteen.
-        assertEquals(4f, Splat.samplingMinPx2(720, 1560)
-                / Splat.samplingMinPx2(360, 780), 1e-3f);
-        assertEquals(16f, Splat.samplingMinPx2(1440, 3120)
-                / Splat.samplingMinPx2(360, 780), 1e-2f);
-
-        // The device's own target at render scale 0.5, and a dense cloud whose cell
-        // is far below the minimum: the minimum would be 3.72, but it is capped by
-        // the cell, so the floor is the cell -- the largest floor that still closes
-        // the gap. The uncapped floor would have been 3.72, ~2 cells of over-blur.
-        assertEquals("a dense cloud's floor is capped at its cell",
-                720f * 1560f / 598016f,
-                Splat.eps2dFor(0.5f, 720, 1560, 598016, 1f), 1e-3f);
-        // A sparse cloud at the tuned 0.25 target still gets the CELL term, so the
-        // fix cannot move the look of the target it was derived on.
-        assertEquals(0.5f * (360f * 780f / 149504f),
-                Splat.eps2dFor(0.5f, 360, 780, 149504, 1f), 1e-4f);
-
-        // A target that claims no size answers the identity, like every other
-        // "a window claims nothing" number here.
-        assertEquals(0f, Splat.samplingMinPx2(0, 780), 0f);
-        assertEquals(0f, Splat.samplingMinPx2(360, 0), 0f);
+        assertEquals("no step at the old crossover", below, above, 0.01f);
     }
 
     /**
      * Zoom magnifies the cell's width AND its height, so it enters squared: a floor
      * that grew linearly would close the gaps at 1x and leave them open at 2x,
-     * which is the same failure one axis over. This is the CELL TERM (the numbers
-     * here are well above the sampling minimum); the minimum itself deliberately
-     * does not scale with zoom -- only the cap does -- see
-     * {@link #theSamplingMinimumIsCappedByTheCellAndInertBelowTheCrossover}.
+     * which is the same failure one axis over.
      */
     @Test
     public void zoomEntersSquaredBecauseItMagnifiesBothAxes() {
