@@ -198,8 +198,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * a pixel count means a different thing at every render resolution and every
      * zoom, which is what made the knob's maximum too small on the phone. The draw
      * resolves it to the larger of that fraction of the cell and the sampling
-     * minimum, so a dense cloud on a low-resolution target cannot drag the floor
-     * below one render pixel. See {@link Splat#eps2dFor}.
+     * minimum, and that minimum is itself capped by the cell -- so the floor can
+     * never exceed the gap it exists to close. See {@link Splat#eps2dFor}.
      * {@link #KEY_SPLAT_BLUR} is the post-blur radius in render-target pixels.
      * {@link #KEY_SPLAT_DEPTH} multiplies the cloud's depth: 1 is the depth the
      * node reconstructed, 0 collapses the cloud onto its reference plane (the flat
