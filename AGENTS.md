@@ -1048,7 +1048,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 734 tests across forty classes:
+it**. 735 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1227,7 +1227,14 @@ every library write took the app down, so any gallery tap crashed it.
   DERIVED bound is sub-pixel at every framing asserted against `tiltPixels` through
   the real `frame` chain (the "assert the projection" rule), that the gate is live
   (it shrinks as the field of view narrows), and that a framing which cannot claim a
-  bound falls back to the CONSTANT rather than to zero. **Motion is the boundary the
+  bound falls back to the CONSTANT rather than to zero. **And its framing key
+  includes Pan, which was checked and is a real trigger, not a conservative
+  inclusion:** `pxPerTilt` counts only the splats VISIBLE under the Origin+Pan
+  shift, so panning moves that window and moves the max — measured on the bundled
+  cloud at the device's framing from 439 px/tilt at pan (0, 0) to 564 at its stored
+  (-55, 451), 28% with the pivot IDENTICAL — so it stays in `SplatRenderer`'s key and
+  `SplatCameraTest`'s `panIsPartOfTheBoundsFramingKey` keeps a "pan is a no-op"
+  simplification from quietly serving a stale bound. **Motion is the boundary the
   measurement forgot:** `SurfaceSettings.motionScale` is `motion` divided by 100 and
   multiplied by 3, so Motion
   33 (the default) is scale 1.0 and Motion 100 is 3.0, and

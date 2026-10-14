@@ -804,4 +804,38 @@ public class SplatCameraTest {
         assertEquals("no surface", SplatCamera.SHIPPED_SORT_EPS,
                 c.sortEps(0f, SURFACE_H, 1f, f, cloudAt(0f, 0f, 2.4f), 1), 0f);
     }
+
+    /**
+     * PAN IS PART OF THE BOUND'S FRAMING KEY, and it is a real trigger rather than a
+     * conservative inclusion.
+     *
+     * <p>{@link SplatCamera#pxPerTilt} takes the max only over the splats VISIBLE
+     * under the current Origin+Pan shift, so pan -- a screen-space offset that moves
+     * the window without changing the pivot or any splat's parallax -- changes which
+     * splats that max is over. {@code SplatRenderer} therefore re-derives
+     * {@code sortEps} on a pan, and this pins that it must: at the device's own
+     * framing, moving pan from (0, 0) to its stored (-55, 451) moves the bound by
+     * ~48% on the test cloud (and 28% on the bundled cloud) with the pivot IDENTICAL,
+     * so a future "pan is a no-op, drop it from the key" change goes red here rather
+     * than serving a stale bound to a tilt.
+     */
+    @Test
+    public void panIsPartOfTheBoundsFramingKey() {
+        float[] cloud = syntheticCloud();
+        int n = cloud.length / 3;
+        float refDepth = medianZ(cloud);
+        // The device framing: Origin and Motion fixed, only Pan moved.
+        SplatCamera.Frame zero = camera().frame(SURFACE_W, SURFACE_H, 100f,
+                -0.35164642f, 0.34062168f, 0f, 0f, 0f, 0f, 3f, cloud, n, refDepth, 1f);
+        float pxZero = camera().pxPerTilt(SURFACE_W, SURFACE_H, 3f, zero, cloud, n);
+        SplatCamera.Frame panned = camera().frame(SURFACE_W, SURFACE_H, 100f,
+                -0.35164642f, 0.34062168f, -55f, 451f, 0f, 0f, 3f, cloud, n, refDepth, 1f);
+        float pxPanned = camera().pxPerTilt(SURFACE_W, SURFACE_H, 3f, panned, cloud, n);
+        // Pan is a clip-space shift: it does not move the pivot...
+        assertEquals("pan must not move the pivot",
+                zero.pivotZ, panned.pivotZ, 0f);
+        // ...but it does change the visible set, and so the bound.
+        assertTrue("pan must materially move the bound: " + pxZero + " vs " + pxPanned,
+                pxPanned > 1.2f * pxZero || pxPanned < 0.8f * pxZero);
+    }
 }

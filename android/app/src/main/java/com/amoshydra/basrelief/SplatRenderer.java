@@ -232,6 +232,19 @@ final class SplatRenderer {
      * Origin+Pan shift, Motion, and the surface. A framing that cannot claim a bound
      * answers the shipped constant -- see {@code SplatCamera.SHIPPED_SORT_EPS} for
      * why the gate is {@code max(constant, derived)} and can only ever loosen.
+     *
+     * <p><b>Pan is in the key because it genuinely moves the bound, and that was
+     * checked rather than assumed.</b> {@code SplatCamera.pxPerTilt} takes the max
+     * over the splats VISIBLE under the current shift, and pan is a screen-space
+     * offset, so panning changes which splats that max is over even though it does
+     * not change the pivot or any splat's parallax. Measured on the bundled cloud at
+     * the device's own framing the bound goes from 439 px/tilt at pan (0, 0) to 564
+     * at the stored (-55, 451) -- 28%, with the pivot identical -- so dropping pan
+     * would serve a stale bound. It is not the cost it looks like either: a pure pan
+     * moves no ordering, so {@code needsSort} does not include it and no sort runs;
+     * the derivation is what repeats. {@code SplatCameraTest}'s
+     * {@code panIsPartOfTheBoundsFramingKey} is the guard, so a future "pan is a
+     * no-op" simplification goes red instead of drifting in.
      */
     private boolean sortEpsStale = true;
     private float sortEpsInUse = SplatCamera.SHIPPED_SORT_EPS;
