@@ -367,6 +367,115 @@ public class CameraModelTest {
         assertEquals("pivot on the plane: the plane point is the fixed one", 0f, plane[1], 1e-4f);
     }
 
+    // ------------------------------------------------------------ the tilt doze
+
+    /**
+     * The doze's own derivation, tested rather than asserted: {@link
+     * CameraModel#tiltPixels} is the number the threshold is derived from, so it
+     * has to behave like a displacement. Zero at zero, never negative, and — the
+     * property the whole thing rests on — LINEAR in the delta, so a threshold
+     * stated for a sub-pixel move is not quietly a large one for a slightly
+     * different delta.
+     */
+    @Test
+    public void tiltPixelsIsZeroAtZeroNonNegativeAndLinear() {
+        CameraModel m = model();
+        m.setZoom(2f);
+        m.setPivotHeight(0.5f);
+        assertEquals("no delta, no displacement", 0f,
+                m.tiltPixels(0f, SURFACE_W, SURFACE_H), 0f);
+        float unit = m.tiltPixels(1e-3f, SURFACE_W, SURFACE_H);
+        assertTrue("a real delta must move the picture", unit > 0f);
+        for (float d : new float[]{1e-4f, 1e-3f, 5e-3f, 1e-2f}) {
+            float v = m.tiltPixels(d, SURFACE_W, SURFACE_H);
+            assertTrue("displacement must never be negative at d=" + d, v >= 0f);
+            assertEquals("displacement must be linear in the delta (d=" + d + ")",
+                    v * 2f, m.tiltPixels(2f * d, SURFACE_W, SURFACE_H),
+                    Math.max(1e-3f, v * 2e-2f));
+        }
+    }
+
+    /**
+     * The displacement grows with Zoom, which is the reason {@link
+     * CameraModel#DOZE_EPS} has to be derived at the maximum Zoom: the threshold
+     * is a single constant, so it must be safe at the framing where a tilt moves
+     * the picture the most.
+     *
+     * <p>It is the lateral term (a rotation moves an off-axis point further than
+     * an on-axis one on a flat image plane) that grows, not the depth parallax —
+     * measured, the pure parallax is flat in Zoom. Above the point where the
+     * picture fills the viewport the growth flattens, so the assertion is
+     * non-decreasing after it, not strictly increasing.
+     */
+    @Test
+    public void tiltPixelsGrowsWithZoom() {
+        float[] zooms = {0.25f, 0.5f, 1f, 1.5f, 2f};
+        float previous = -1f;
+        float[] value = new float[zooms.length];
+        for (int i = 0; i < zooms.length; i++) {
+            CameraModel m = model();
+            m.setZoom(zooms[i]);
+            m.setPivotHeight(0.5f);
+            value[i] = m.tiltPixels(1f, SURFACE_W, SURFACE_H);
+            assertTrue("displacement must grow with zoom: " + zooms[i]
+                    + " -> " + value[i] + " after " + previous, value[i] >= previous);
+            previous = value[i];
+        }
+        assertTrue("and it must actually grow from the smallest zoom",
+                value[value.length - 1] > value[0]);
+    }
+
+    /** No surface, no pixels; the caller must not be handed a number it cannot use. */
+    @Test
+    public void tiltPixelsIsZeroWithoutASurface() {
+        CameraModel m = model();
+        assertEquals(0f, m.tiltPixels(1f, 0f, SURFACE_H), 0f);
+        assertEquals(0f, m.tiltPixels(1f, SURFACE_W, 0f), 0f);
+    }
+
+    /**
+     * THE GUARD THE THRESHOLD EXISTS FOR. {@link CameraModel#DOZE_EPS} is a single
+     * constant used by a class that cannot see the framing, so it must be small
+     * enough that its worst-case displacement stays under half a pixel at EVERY
+     * reachable zoom, depth and pivot — not just the one it was measured at. If a
+     * later edit to {@link CameraModel#TILT_RANGE}, {@link CameraModel#FOV_DEG} or
+     * {@link CameraModel#CROP_MARGIN} made the picture move more per degree of
+     * tilt, this goes red rather than letting the doze become visible.
+     *
+     * <p>The sweep is the reachable framing space, including the aspect ratios a
+     * photograph can have (a landscape photo's lateral term is the largest).
+     */
+    @Test
+    public void theDozeThresholdStaysUnderASubPixelAtEveryFraming() {
+        float[] aspects = {9f / 16f, IMAGE_ASPECT, 1f, 16f / 9f};
+        float[] zooms = {0.25f, 0.5f, 1f, 1.5f, 2f};
+        float[] depths = {0f, 0.5f, 1f};
+        float[] pivots = {-0.5f, 0.5f};
+        float worst = 0f;
+        for (float aspect : aspects) {
+            for (float zoom : zooms) {
+                for (float depth : depths) {
+                    for (float pivot : pivots) {
+                        CameraModel m = model();
+                        m.setAspect(aspect);
+                        m.setZoom(zoom);
+                        m.setDepth(depth);
+                        m.setPivotHeight(pivot);
+                        float disp = m.tiltPixels(CameraModel.DOZE_EPS, SURFACE_W, SURFACE_H);
+                        if (disp > worst) worst = disp;
+                        assertTrue("the doze would move the picture " + disp
+                                        + "px at aspect=" + aspect + " zoom=" + zoom
+                                        + " depth=" + depth + " pivot=" + pivot,
+                                disp < CameraModel.DOZE_SUBPIXEL_PX);
+                    }
+                }
+            }
+        }
+        // The threshold was measured against this worst case; keep them from drifting.
+        assertTrue("the derivation's worst case has grown: " + worst,
+                worst > 0.4f * CameraModel.DOZE_SUBPIXEL_PX);
+    }
+
     /**
      * The pivot's world z is the field height through the SAME model-to-world
      * factor {@code uMVP} applies ({@code S(scale, scale, scale * zScale)}), so

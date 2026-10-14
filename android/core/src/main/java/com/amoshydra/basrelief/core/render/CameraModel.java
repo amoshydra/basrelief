@@ -25,6 +25,42 @@ public final class CameraModel {
     public static final float NEAR = 0.1f;
     public static final float FAR = 10f;
 
+    /**
+     * The largest screen displacement, in pixels, the tilt doze may allow.
+     *
+     * <p>Half a pixel: a movement smaller than this cannot carry a feature's edge
+     * from one pixel to the next, so freezing the picture at the last published
+     * tilt and resuming later is invisible. It is a bound rather than a taste, and
+     * {@link #tiltPixels} is what makes it checkable.
+     */
+    public static final float DOZE_SUBPIXEL_PX = 0.5f;
+
+    /**
+     * The tilt magnitude the doze treats as "still": below it, {@code
+     * TiltController} stops publishing tilt, so the hosts stop calling
+     * {@code requestRender()} and the GPU idles while the gyro keeps running.
+     *
+     * <p><b>Derived, not picked.</b> It is {@link #DOZE_SUBPIXEL_PX} divided by the
+     * largest per-unit-tilt displacement {@link #tiltPixels} reports over the
+     * reachable framings: measured with that method at <b>766.1 px</b> (Zoom 200%,
+     * Depth 100%, the pivot at its extreme, on a 1440x3120 surface), so {@code 0.5 /
+     * 766.1 = 6.53e-4}, rounded down to <b>6.0e-4</b> for margin. The test
+     * {@code theDozeThresholdStaysUnderASubPixelAtEveryFraming} holds it under the
+     * bound at every reachable zoom, depth and pivot, which is the guard that a
+     * later edit to {@link #TILT_RANGE} or {@link #FOV_DEG} cannot silently make the
+     * doze visible.
+     *
+     * <p><b>What it is deliberately not.</b> It is not {@code TiltController}'s
+     * {@code IDLE_EPS}, which answers a different question — ten seconds of
+     * stillness — and is about a degree, a few pixels. Folding the two together
+     * would either make the idle sleep unreachable or make the doze visible.
+     *
+     * <p>The Motion setting scales the camera's travel, and therefore this
+     * displacement, linearly; the bound is stated at Motion 1, the tilt range's own
+     * unit.
+     */
+    public static final float DOZE_EPS = 6.0e-4f;
+
     /** Everything the renderer needs for one draw, computed in a single pass. */
     public static final class Frame {
         /** {@code projPanned * view * S(scale, scale, scale * zScale)} */
@@ -175,6 +211,118 @@ public final class CameraModel {
         if (scale <= 0f || surfaceH <= 0f) return 0f;
         float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
         return (horizontal ? aspect : 1f) * scale * surfaceH / visH;
+    }
+
+    /**
+     * The largest screen displacement, in pixels, that a tilt delta of {@code
+     * delta} produces at the current framing: the worst case over the surface's
+     * depth range and the current zoom.
+     *
+     * <p><b>Why it exists.</b> The tilt doze stops publishing tilt while the phone
+     * is still, so the wallpaper stops asking for frames. Whether that is visible is
+     * exactly this number, so {@link #DOZE_EPS} is DERIVED from here rather than
+     * picked. It is not used in the draw path.
+     *
+     * <p><b>The maths, and why it is the whole surface.</b> {@link #frame}
+     * translates the eye by {@code tilt * TILT_RANGE * motion} and aims it at the
+     * pivot, so the pivot does not move and every other point moves by the parallax
+     * between its own depth and the pivot's — {@code f_px * d * (1/Z_Q - 1/Z_P)},
+     * with {@code Z = CAM_DIST - z} and {@code f_px = surfaceH / (2 tan(FOV/2))}.
+     * The camera also rotates to keep the pivot fixed, and on a flat image plane a
+     * rotation moves an off-axis point further than an on-axis one, adding a term
+     * proportional to the point's lateral offset squared. That term is why the
+     * answer grows with Zoom while the pure parallax does not: the picture's
+     * half-width is {@code 0.5 * aspect * scale}, and {@code scale} carries
+     * {@code zoom * CROP_MARGIN}. The worst case is a corner.
+     *
+     * <p><b>Only VISIBLE points count.</b> Above Zoom 100% the picture is larger
+     * than the viewport, and its off-screen corners have arbitrarily large
+     * displacements that nobody can see. The answer is the largest displacement
+     * among points that project inside the viewport at rest — what "screen
+     * displacement" means. This is asserted through the real {@link #frame} /
+     * {@code mvp} chain rather than restated as a formula, so it cannot drift from
+     * the camera it describes.
+     *
+     * <p><b>Linear in the delta.</b> Over the sub-pixel deltas this exists for, the
+     * answer is linear to better than a thousandth; {@code CameraModelTest} pins
+     * that rather than assuming it.
+     *
+     * @param delta    tilt delta in the normalised units the gyro reports (0..1 over
+     *                 {@link #TILT_RANGE})
+     * @param surfaceW drawing surface width in pixels
+     * @param surfaceH drawing surface height in pixels
+     * @return the largest visible displacement in pixels, or 0 with no surface
+     */
+    public float tiltPixels(float delta, float surfaceW, float surfaceH) {
+        if (delta == 0f || surfaceW <= 0f || surfaceH <= 0f || aspect <= 0f) return 0f;
+        if (computeScale() <= 0f) return 0f;
+
+        // A grid over the picture's unit-plane coordinates: x is already aspect
+        // scaled, so the picture's half-width is 0.5 * aspect and its half-height
+        // is 0.5. The depth is sampled too because the worst case is a corner.
+        final int N = 48, M = 4;
+        final int count = (N + 1) * (N + 1) * (M + 1);
+        float[] px = new float[count], py = new float[count], pz = new float[count];
+        float[] restX = new float[count], restY = new float[count];
+        float[] out = new float[2];
+
+        Frame rest = frame(surfaceW, surfaceH, 0f, 0f, 0f, 0f, 0f, 0f);
+        int k = 0;
+        for (int i = 0; i <= N; i++) {
+            float ux = (-0.5f + (float) i / N) * aspect;
+            for (int j = 0; j <= N; j++) {
+                float uy = -0.5f + (float) j / N;
+                for (int m = 0; m <= M; m++) {
+                    float uz = -0.5f + (float) m / M;
+                    px[k] = ux;
+                    py[k] = uy;
+                    pz[k] = uz;
+                    if (projectField(rest, ux, uy, uz, out)) {
+                        restX[k] = out[0];
+                        restY[k] = out[1];
+                    } else {
+                        restX[k] = Float.NaN; // unprojectable: skip
+                    }
+                    k++;
+                }
+            }
+        }
+
+        // The worst DIRECTION matters as well as the worst point: a tilt delta of
+        // this size could point anywhere, so eight evenly spaced directions are
+        // tried and the largest answer is kept.
+        float best = 0f;
+        for (int d = 0; d < 8; d++) {
+            double angle = d * Math.PI / 4.0;
+            float tiltX = (float) Math.cos(angle) * delta;
+            float tiltY = (float) Math.sin(angle) * delta;
+            Frame tilted = frame(surfaceW, surfaceH, 0f, 0f, 0f, 0f, tiltX, tiltY);
+            for (int p = 0; p < count; p++) {
+                if (Float.isNaN(restX[p])) continue;
+                // Off screen at rest: it cannot be a "screen displacement".
+                if (Math.abs(restX[p]) > 1f || Math.abs(restY[p]) > 1f) continue;
+                if (!projectField(tilted, px[p], py[p], pz[p], out)) continue;
+                float dx = (out[0] - restX[p]) * surfaceW * 0.5f;
+                float dy = (out[1] - restY[p]) * surfaceH * 0.5f;
+                float disp = (float) Math.hypot(dx, dy);
+                if (disp > best) best = disp;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Project a unit-plane field point through a frame's model-view-projection,
+     * into normalised device coords. Exists so {@link #tiltPixels} can project a
+     * point at any depth, which {@link #project} (plane only) cannot.
+     */
+    private boolean projectField(Frame f, float fx, float fy, float fz, float[] out) {
+        ray[0] = fx; ray[1] = fy; ray[2] = fz; ray[3] = 1f;
+        Mat4.multiplyMV(ray, 0, f.mvp, 0, ray, 0);
+        if (ray[3] == 0f) return false;
+        out[0] = ray[0] / ray[3];
+        out[1] = ray[1] / ray[3];
+        return true;
     }
 
     /**

@@ -87,6 +87,9 @@ final class SettingsSheet {
     private static final String KEY_BATTERY_SAVER = Settings.KEY_BATTERY_SAVER_FOLLOW;
     private static final String KEY_CALIBRATE_ON_WAKE = Settings.KEY_CALIBRATE_ON_WAKE;
     private static final String KEY_SLEEP_WHEN_STILL = Settings.KEY_SLEEP_WHEN_STILL;
+    // The readout's key, read by Settings.perfReadout; the switch writes it and asks
+    // MainActivity to re-read. Off by default, unlike the three above.
+    private static final String KEY_PERF_READOUT = Settings.KEY_PERF_READOUT;
     // The 3D mode's key used to live here too. It moved onto the item (the sheet's
     // Renderer row), and the legacy pref is read once by AppState's migration, so
     // this screen no longer names it at all.
@@ -288,6 +291,21 @@ final class SettingsSheet {
         box.addView(ModalSheet.readingRow(activity,
                 activity.getString(R.string.app_name) + " " + versionName(),
                 activity.getString(R.string.settings_licence)));
+
+        // The performance readout: a debug instrument, so it sits with the other
+        // diagnostics rather than among the device behaviours above. It is the one
+        // switch here that starts OFF (see Settings.KEY_PERF_READOUT), and its
+        // afterWrite is what makes it appear the moment it is flipped: the readout is
+        // in the studio window behind this dialog, and the renderer holds the numbers,
+        // so a switch that only wrote the pref would show nothing until a restart.
+        box.addView(toggle(R.string.settings_perf_readout,
+                R.string.settings_perf_readout_sub, KEY_PERF_READOUT, false,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.syncPerfReadout();
+                    }
+                }));
 
         // ---- The 3D mode is per item now, and lives on the sheet's geometry group
         // as "Renderer — Relief | Splat". It used to be a device-wide switch here in

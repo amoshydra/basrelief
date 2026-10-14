@@ -525,4 +525,89 @@ public class SplatTest {
         assertEquals("the scale is clamped, not the pref alone",
                 Splat.depthScale(1.4f, 0.68f, 99f), Splat.depthScale(1.4f, 0.68f, Splat.DEPTH_MUL_MAX), 0f);
     }
+
+    /**
+     * The alpha-extent clip: the quad is scaled to end EXACTLY where the fragment
+     * shader's discard begins, so no pixel that survived before is lost.
+     *
+     * <p>This is the whole of "invisible by construction", and it is the assertion a
+     * screenshot cannot make. The fragment stage keeps a fragment when
+     * {@code alpha * exp(-0.5 r^2) >= ALPHA_DISCARD}, so the surviving radius is
+     * {@code sqrt(2 ln(alpha / ALPHA_DISCARD))}; the vertex shader emits the quad at
+     * {@code r = 3} and scales it by {@link Splat#extentScaleForAlpha}. The test
+     * inverts that: at the scaled quad's edge the fragment's alpha is exactly the
+     * threshold, just inside it survives, and just outside it is discarded. A quad
+     * that ended a little early would clip visible colour off every faint splat; one
+     * that ended late would pay for fragments the discard then throws away -- and both
+     * look like a plausible cloud in a screenshot.
+     */
+    @Test
+    public void theQuadShrinksToExactlyWhereTheFragmentShaderDiscards() {
+        for (float a : new float[] {0.02f, 0.05f, 0.1f, 0.2f, 0.3f}) {
+            float s = Splat.extentScaleForAlpha(a);
+            assertTrue("a faint splat must shrink: a=" + a, s > 0f && s < 1f);
+            float r = 3f * s;
+            // The scaled edge IS the discard boundary.
+            assertEquals("the quad edge must be the discard boundary at a=" + a,
+                    Splat.ALPHA_DISCARD, a * (float) Math.exp(-0.5 * r * r), 1e-6f);
+            // Inside it survives, outside it is discarded.
+            assertTrue("just inside must survive at a=" + a,
+                    a * (float) Math.exp(-0.5 * (r * 0.98f) * (r * 0.98f)) > Splat.ALPHA_DISCARD);
+            assertTrue("just outside must be discarded at a=" + a,
+                    a * (float) Math.exp(-0.5 * (r * 1.02f) * (r * 1.02f)) < Splat.ALPHA_DISCARD);
+        }
+    }
+
+    /**
+     * The clip's two endpoints, which are the product's promise: an opaque splat is
+     * UNCHANGED, and a splat at or below the threshold draws nothing.
+     *
+     * <p>The identity at {@code a >= 1} is the shipped look: {@code sqrt(2 ln(255)) =
+     * 3.33 > 3}, so {@code min(1, ...)} keeps the full 3-sigma quad and the whole
+     * visible band of a high-opacity cloud is untouched. The zero at
+     * {@code a <= 1/255} is the other half: every fragment would be discarded, so the
+     * shader drops the splat. And the function is monotone -- a brighter splat never
+     * gets a smaller quad -- or the control would be a lie in one direction.
+     */
+    @Test
+    public void anOpaqueSplatIsUnchangedAndAFaintOneDrawsNothing() {
+        // a >= 1 is EXACTLY the full quad, for every value.
+        for (float a : new float[] {1f, 2f, 100f}) {
+            assertEquals("an opaque splat must keep the full quad at a=" + a,
+                    1f, Splat.extentScaleForAlpha(a), 0f);
+        }
+        // The boundary between "unchanged" and "shrunk" is alpha = thr * exp(4.5).
+        float boundary = Splat.ALPHA_DISCARD * (float) Math.exp(4.5);
+        assertEquals("the full quad survives to the boundary",
+                1f, Splat.extentScaleForAlpha(boundary), 1e-4f);
+        assertTrue("just below it shrinks", Splat.extentScaleForAlpha(boundary * 0.99f) < 1f);
+        // At the threshold exactly, and below it, nothing survives.
+        assertEquals("exactly the threshold draws nothing", 0f,
+                Splat.extentScaleForAlpha(Splat.ALPHA_DISCARD), 0f);
+        assertTrue("just above the threshold draws something",
+                Splat.extentScaleForAlpha(Splat.ALPHA_DISCARD * 1.01f) > 0f);
+        // Monotone over every alpha an 8-bit channel can carry.
+        float prev = -1f;
+        for (int b = 0; b <= 255; b++) {
+            float s = Splat.extentScaleForAlpha(b / 255f);
+            assertTrue("the extent must not fall as alpha rises (byte " + b + ")", s >= prev);
+            prev = s;
+        }
+    }
+
+    /**
+     * An opacity that claims nothing draws nothing -- the "a window claims nothing"
+     * rule applied to a number. The test is the shader's own {@code !(a > thr)}, so a
+     * NaN (which compares false against every bound) falls on the drop side rather
+     * than through it, and a zero or negative opacity is the same answer. The
+     * threshold itself is exactly {@code 1/255}, the smallest non-zero 8-bit alpha.
+     */
+    @Test
+    public void anOpacityThatClaimsNothingDrawsNothing() {
+        assertEquals(1f / 255f, Splat.ALPHA_DISCARD, 0f);
+        assertEquals(0f, Splat.extentScaleForAlpha(0f), 0f);
+        assertEquals(0f, Splat.extentScaleForAlpha(-0.5f), 0f);
+        assertEquals(0f, Splat.extentScaleForAlpha(Float.NaN), 0f);
+        assertEquals(0f, Splat.extentScaleForAlpha(Float.NEGATIVE_INFINITY), 0f);
+    }
 }

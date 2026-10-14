@@ -77,7 +77,10 @@ persisted schema (`Config`, `Library`, `LibraryItem`, `Surface`,
 `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`, `VideoTracks`), the three
 "where did this come from" vocabularies (`DepthSource`, `NormalSource`,
 `VideoSource`), and the one resolution of state into numbers
-(`Framing`, `SurfaceResolver`).
+(`Framing`, `SurfaceResolver`). It also holds the perf readout's numbers and their
+formatting (`RenderStats`), because the readout and the `splat:` log must print one
+computation and "what a missing number prints" is exactly the mapping a screenshot
+cannot check.
 
 Anything that would otherwise be untestable GL or platform code belongs here as a
 pure function of plain values — that is the whole test. `Picture` is the pattern:
@@ -564,6 +567,38 @@ already cost real time.
       `splat:` STATS line now prints `eps2d=` and `blurPx=` beside `count`/`fps`/
       `gpuMs`, so the first device session can read the cost straight off a log —
       that is what those two fields are for.
+    - **A splat's quad is clipped to the radius its own alpha survives, so the fill it
+      removes was already being paid for and thrown away.** The fragment shader
+      discards a fragment whose alpha falls below `Splat.ALPHA_DISCARD` (1/255), and
+      that boundary is a RADIUS: with `power = -0.5 r²` the fragment survives when
+      `alpha * exp(-0.5 r²) >= thr`, i.e. `r <= sqrt(2 ln(alpha/thr))`. The vertex
+      shader emits the quad at the 3σ extent `r = 3` and scales it by
+      `Splat.extentScaleForAlpha` — `keep = min(1, sqrt(2 ln(a/thr)) / 3)` — so the
+      quad covers EXACTLY the region the fragment stage keeps and **no pixel that was
+      drawn before changes**. `theQuadShrinksToExactlyWhereTheFragmentShaderDiscards`
+      inverts the mapping and pins that the scaled edge lands on the discard boundary,
+      just inside it survives and just outside it is discarded.
+      - **One threshold, and it is a uniform, not two literals.** `Splat.ALPHA_DISCARD`
+        is the source of truth; the renderer uploads it as `uAlphaDiscard` and BOTH
+        stages read it. A literal copied into VERT and FRAG is the drift this avoids:
+        the quad would end somewhere other than where the discard begins, and the
+        difference is a soft ring of clipped splats no test could name. (`check-shaders`
+        joins only string literals, so a Java constant inside a shader string would be
+        silently dropped from the compiled source — another reason it is a uniform.)
+      - **An opaque splat is the identity and a splat at the threshold draws nothing.**
+        `sqrt(2 ln 255) = 3.33 > 3`, so the full quad is kept for every `a >= 1`; the
+        quad only shrinks below `a = thr * exp(4.5) = 0.353`. At `a <= thr` every
+        fragment would be discarded, so the vertex shader drops the splat outright.
+        **Measured on the shipped demo cloud: 8.3% of splats are below 0.353 and the
+        mean extent is 0.988** — a ~2% fill cut on a high-opacity cloud, so this is a
+        small win there and a larger one on a cloud with many faint splats. The stats
+        line reports `alphaDrop=`/`alphaShrank=`/`alphaExtent=` precisely so a device
+        log says which it was, rather than a claim.
+      - **`gpuMsPerMpx` is the fill measurement the next step reads.** `gpuMs`
+        normalized by the render target's megapixels (`render=WxH` is already on the
+        line): the renderer is fill-bound, so this ratio stays flat as the render scale
+        changes and rises with the average splat coverage. It is a diagnostic, not a
+        control — there is deliberately no user-facing knob for it.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -765,6 +800,48 @@ already cost real time.
   present, so `eglSwapBuffers` re-presents the previous buffer mid-scanout and
   **tears the screen**. The draw rate is already bounded by the sensor. Pace at
   the request site if you ever need to.
+- **A doze stops the frames while the phone is still, and it is the draw-path
+  battery win — the gyro stays registered so waking is instant.** A frame is ~40 ms
+  of GPU at 150k splats and the rotation vector asks for ~50/s, so while the
+  wallpaper is visible with Motion > 0 the GPU ran at 100 % continuously. The cost
+  is `gpuMs × frames drawn`, and the only safe place to cut it is the request site
+  (the frame-pacing rule above: returning early from `onDrawFrame` tears the
+  screen). So `TiltController` gates its `listener.onTiltChanged()` — the one call
+  both hosts render from — and stops publishing while the tilt has not moved. The
+  rotation vector is deliberately NOT unregistered (that is the separate 10 s idle
+  sleep, which takes over for the long-still case and recalibrates on wake); the
+  gyro is a few hundred µA and the GPU is order 1 W, so keeping the sensor and
+  parking the frames is the whole win, and a wake needs no recalibration and no
+  glide.
+  - **The threshold is DERIVED, not picked**, and lives in `:core` where it can be
+    tested without a device. `CameraModel.tiltPixels` answers the largest visible
+    screen displacement a tilt delta produces at a framing (through the real
+    `frame`/`mvp` chain, over the surface's depth range, counting only points on
+    screen), and `CameraModel.DOZE_EPS` is the delta whose worst case is
+    `DOZE_SUBPIXEL_PX` (0.5 px) — 6.0e-4 tilt, measured at 766 px/tilt on a
+    1440x3120 surface at Zoom 200 %, Depth 100 %, the pivot at its extreme. The test
+    `theDozeThresholdStaysUnderASubPixelAtEveryFraming` is the guard: an edit to
+    `TILT_RANGE`, `FOV_DEG` or `CROP_MARGIN` that made the picture move more per
+    degree of tilt goes red rather than letting the doze become visible.
+  - **The doze is not `IDLE_EPS`.** That answers a different question (ten seconds
+    of stillness) and is ~1°, a few pixels. Folding the two together would either
+    make the idle sleep unreachable or make the doze visible. It is the persistence
+    of `move` (the tilt's deviation from its ~2 s baseline, already computed for the
+    idle detector) that separates hand jitter from a deliberate movement — not the
+    per-sample delta, which a slow nudge keeps small, and not the raw amplitude,
+    which jitter exceeds.
+  - **A running re-centre glide publishes every sample**, because it is a
+    deliberate visible movement and dozing it would freeze the glide part-way. The
+    wake threshold is at least the doze threshold (equal here, so the step the wake
+    takes is the smallest justifiable one) and a dwell (`DOZE_DWELL_MS`) before
+    dozing is the hysteresis — a `move` sitting on the threshold cannot chatter, and
+    a brief pause between movements does not doze.
+  - **A doze that works produces no `splat:` STATS line**, because that line only
+    prints while a splat draws — the instrument disappears exactly when the change
+    takes effect. `TiltController` therefore logs one `tilt:` line a second from the
+    sensor callback: `samples/s`, `publish/s` (the frames the hosts are asked for),
+    the current `move` against `dozeThresh`, and whether the doze or the idle sleep
+    is engaged.
 - **`GLUtils.texImage2D` puts bitmap row 0 at `v=0` (bottom).** The colour
   bitmap is flipped vertically so image-top = `v=1`, matching top-first depth
   sampling. Same for the depth.
@@ -782,8 +859,9 @@ already cost real time.
   (average ~8 samples, never a cached reading); time-based exponential smoothing
   (`tau = 0.2s`) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
   it unregisters the rotation-vector sensor and falls back to a low-power
-  accelerometer until a shake — **that idle-sleep is the app's real battery win**,
-  not anything in the draw path.
+  accelerometer until a shake — that idle-sleep is the **sensor-side** win; the
+  draw-path win is the doze above, which parks the frames without giving up the
+  sensor.
 - **Sensor power, and what is deliberately *not* done to it.** Three rules, each
   of which cost something to learn:
   - **The idle accelerometer is the only thing still polling once the phone is put
@@ -954,7 +1032,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 709 tests across thirty-nine classes:
+it**. 729 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1477,6 +1555,21 @@ every library write took the app down, so any gallery tap crashed it.
   from for every thousandth in the reachable range — because "the control displays
   exactly what the gesture will write" holds only while both sides call the same
   function, and two derivations of one value agree until the day one is edited.
+- `RenderStatsTest` — the two lines the studio's on-glass performance readout prints,
+  and above all **what a missing number prints**. The readout is an instrument for
+  tuning splat cost, and the bug it exists to prevent is a zero that looks measured:
+  the relief has no GPU timer and no sort, and a splat window in which the camera did
+  not move runs no sort, so a `sort 0.0ms` the backend never measured is worse than a
+  blank field — it claims the sort is free. The rule is the codebase's own, **a window
+  claims nothing**: a field with no value is OMITTED, and the sentinels are a NaN and a
+  negative count, because `0` is a real count (an empty cloud, asserted) and a real
+  time. Its second theme is the **single derivation** the readout shares with the
+  `splat:` log line: `RenderStats.fps` turns a frame count and an elapsed window into
+  fps in one place, so the log and the readout cannot report two frame rates for one
+  window, and `WINDOW_NANOS` is one constant so they cannot average two spans either.
+  The formatting is pinned because a screenshot cannot check it: the headline is one
+  decimal and blanks to an em dash, the count compacts to `741k`/`1.1M` so the render
+  size stays on the line, and a relief prints `frame 16.7ms` and nothing else.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom". Its third
   theme is the pivot at depth: the at-rest picture is unchanged for every origin

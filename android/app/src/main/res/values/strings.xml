@@ -573,6 +573,10 @@
     <string name="settings_calibrate_wake_sub">re-read neutral every time it wakes</string>
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
+    <!-- The studio's on-glass performance readout. It is a debug instrument, so the
+         label says what it is for rather than what it does; it defaults off. -->
+    <string name="settings_perf_readout">Performance readout</string>
+    <string name="settings_perf_readout_sub">fps and frame cost in the top corner</string>
     <!--
       The 3D mode used to sit here. It is per item now — the sheet's
       "Renderer — Relief | Splat" row — so this screen names no 3D key.

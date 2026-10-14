@@ -25,6 +25,7 @@ import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.render.Picture;
+import com.amoshydra.basrelief.core.render.RenderStats;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
 import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
@@ -1793,6 +1794,60 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * one lever it has - the frame rate - is the wrong one.
      */
     private long lastFrameNanos = 0L;
+
+    /**
+     * The relief's own stats window, and the snapshot the studio's readout reads.
+     *
+     * <p>The relief has no GPU timer and no sort — the two numbers the splat reports
+     * and this backend cannot — so its snapshot carries only the frame interval, plus
+     * the worse clip track's skew while a clip plays. The window is
+     * {@link RenderStats#WINDOW_NANOS}, the same one the splat's log uses, so the two
+     * backends cannot report different frame rates for one surface.
+     *
+     * <p>The counters are GL-thread-only, so they need no synchronisation; the
+     * snapshot is a fresh immutable object once a second and the UI thread reads the
+     * volatile reference and allocates nothing. Null until the first window has been
+     * measured, which the readout blanks rather than showing as a zero.
+     */
+    private long perfWindowStartNanos;
+    private long perfFrames;
+    private volatile RenderStats perfStats;
+
+    /**
+     * Account one drawn relief frame, and publish the readout's snapshot once a
+     * window.
+     *
+     * <p>Called from {@link #onDrawFrame}'s relief paths only: the splat branch
+     * publishes the splat's own numbers, and a frame the surface could not draw is not
+     * a frame the readout should count.
+     */
+    private void accountReliefFrame(long now) {
+        if (perfWindowStartNanos == 0L) {
+            perfWindowStartNanos = now;
+            return;
+        }
+        perfFrames++;
+        long windowNanos = now - perfWindowStartNanos;
+        if (windowNanos < RenderStats.WINDOW_NANOS) return;
+        float fps = RenderStats.fps((int) perfFrames, windowNanos);
+        // The clip's skew is the one cost number the relief has that the splat does
+        // not, and it is absent for a photograph. The worse of the two tracks is the
+        // one that says the picture is drifting; the once-a-second log still prints
+        // both, from the same numeric helpers.
+        float skew = RenderStats.NONE;
+        if (clip != null && clip.isRunning()) {
+            skew = RenderStats.worstOf(clip.depthSkewMs(), clip.normalSkewMs());
+        }
+        perfStats = new RenderStats(fps, RenderStats.frameMs(fps), RenderStats.NONE,
+                RenderStats.NONE, skew, RenderStats.NO_COUNT, 0, 0);
+        perfFrames = 0;
+        perfWindowStartNanos = now;
+    }
+
+    /** The readout's snapshot, or null before the first window; safe from the UI thread. */
+    RenderStats perfStats() {
+        return perfStats;
+    }
 
     private volatile float panX = 0f, panY = 0f;
     private volatile float zoom = 1f;
@@ -3727,6 +3782,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                     orbitX, orbitY, panX, panY,
                     pendingBrightnessGain, pendingShadowLift, splatRenderScale,
                     splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul);
+            // The readout reads the splat's own window here, not the relief's: the
+            // numbers on the glass are the ones the splat's log just printed. The
+            // relief's own window is abandoned while the cloud draws, so the next
+            // relief frame starts a fresh one rather than reporting a rate over the
+            // whole span the splat was on screen.
+            perfStats = splat.perfStats();
+            perfWindowStartNanos = 0L;
+            perfFrames = 0L;
             // The orbit crosshair belongs to the cloud too, and this branch used to
             // return before it was ever drawn -- so a row in Splat mode had no origin
             // indicator at all, which is the one place the pivot is otherwise
@@ -3794,6 +3857,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 if (r != null) r.run();
             }
         }
+
+        // Account the frame for the readout, and publish a window once a second. Here
+        // rather than at the top because only a frame that actually drew is a frame
+        // the readout should count; the splat branch above publishes its own.
+        accountReliefFrame(now);
 
         // Last thing in the frame, and deliberately so: the readback needs the pixels
         // that were just drawn, and it stops being possible once the buffer swaps.

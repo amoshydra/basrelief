@@ -666,6 +666,34 @@ public class MainActivity extends Activity {
     private Gallery gallery;
 
     /**
+     * The studio's on-glass performance readout, or null before {@code onCreate}
+     * builds it. See {@link #syncPerfReadout}.
+     */
+    private PerfOverlay perfOverlay;
+
+    /** How often the readout's text is rebuilt. A few Hz, never per frame. */
+    private static final long PERF_UPDATE_MS = 250L;
+
+    /**
+     * The readout's clock.
+     *
+     * <p>A {@code TextView} invalidated on every frame would add UI-thread work and
+     * layout to the very path being measured, and would change the number it reports,
+     * so the text is rebuilt a few times a second while the NUMBERS change once per
+     * stats window. It reads the renderer's volatile snapshot — never a GL call, never
+     * a wait on the GL thread — and it is stopped whenever the switch is off or the
+     * studio pauses, so a disabled readout costs no wakeups.
+     */
+    private final Runnable perfTick = new Runnable() {
+        @Override
+        public void run() {
+            if (perfOverlay == null || renderer == null) return;
+            perfOverlay.setStats(renderer.perfStats());
+            glidePump.postDelayed(this, PERF_UPDATE_MS);
+        }
+    };
+
+    /**
      * The active item id the strip and grid were last brought in step with.
      *
      * <p>Set once on launch and then in {@link #refreshSliders}, which every
@@ -806,6 +834,11 @@ public class MainActivity extends Activity {
         root.addView(glView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // The performance readout, over the render and under the sheet. Built here
+        // and toggled by syncPerfReadout, which onCreate's tail and onResume call.
+        perfOverlay = PerfOverlay.install(this, root);
+        syncPerfReadout();
 
         // gestures: tap = orbit center, single-finger drag = manual tilt
         // (no sensor), two-finger = pan + pinch zoom
@@ -1677,6 +1710,10 @@ public class MainActivity extends Activity {
         renderer.setEditSurface(editSurface);
         glView.requestRender();
         refreshStatus();
+        // Re-read the readout's switch: a Settings change while the studio was paused
+        // -- or a first launch -- is applied here, and the clock is started or stopped
+        // with it.
+        syncPerfReadout();
         sensorPolicy.setVisible(true);
     }
 
@@ -1692,6 +1729,8 @@ public class MainActivity extends Activity {
         // onDestroy removes it too; this is the foreground/background pair the
         // wallpaper's engine keeps with its visibility handler.
         glidePump.removeCallbacks(clipTick);
+        // And the readout's clock: a paused studio has no numbers to show.
+        glidePump.removeCallbacks(perfTick);
         glView.onPause();
         super.onPause();
     }
@@ -1708,6 +1747,7 @@ public class MainActivity extends Activity {
         // view tree after every studio visit.
         glidePump.removeCallbacks(clipTick);
         glidePump.removeCallbacks(glideTick);
+        glidePump.removeCallbacks(perfTick);
         // And the ring, which spins at 60 Hz while a depth run outlives the studio.
         if (stripRing != null) stripRing.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
@@ -6832,6 +6872,23 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    /**
+     * Show or hide the performance readout, and start or stop its clock.
+     *
+     * <p>The single reader of {@link Settings#KEY_PERF_READOUT}: the Settings switch
+     * writes the key and calls this, and {@code onCreate} and {@code onResume} call it
+     * so the readout follows the stored value. Absent — not greyed — when the switch is
+     * off, the same "a control that cannot change anything is a lie" rule the surface
+     * segment follows.
+     */
+    void syncPerfReadout() {
+        if (perfOverlay == null) return;
+        boolean on = Settings.perfReadout(prefs);
+        perfOverlay.setVisible(on);
+        glidePump.removeCallbacks(perfTick);
+        if (on) glidePump.post(perfTick);
     }
 
     void refreshStatus() {

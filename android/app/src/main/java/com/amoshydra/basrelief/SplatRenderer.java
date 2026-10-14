@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.Locale;
 
 import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.RenderStats;
 import com.amoshydra.basrelief.core.render.Splat;
 import com.amoshydra.basrelief.core.render.SplatCamera;
 import com.amoshydra.basrelief.core.splat.SplatCloud;
@@ -116,7 +117,8 @@ final class SplatRenderer {
 
     // Uniform locations.
     private int uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW, uNear, uFudge,
-            uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d, uDepthMul, uDepthRef;
+            uFocal, uViewport, uBrightnessGain, uShadowLift, uEps2d, uDepthMul, uDepthRef,
+            uAlphaDiscard;
 
     // The cloud's CPU mirror.
     private int count;
@@ -170,6 +172,23 @@ final class SplatRenderer {
     private float depthMulInUse = Splat.DEPTH_MUL_DEFAULT;
 
     /**
+     * The alpha-extent clip's reach over the loaded cloud, for the stats line: how
+     * many splats it drops outright, how many it shrinks, and the mean extent factor
+     * across the whole cloud.
+     *
+     * <p><b>These are a property of the CLOUD, not of the camera</b> -- the baked
+     * opacity is per record -- so they are derived once at {@link #upload} and read
+     * by the per-second log. They exist because the saving the clip buys depends
+     * entirely on the cloud's opacity distribution, which a screenshot cannot state:
+     * a high-opacity cloud keeps nearly every full quad, and the honest report of
+     * that is a number in a log rather than a claim. {@link Splat#extentScaleForAlpha}
+     * is the mapping the vertex shader mirrors.
+     */
+    private int alphaDropped;
+    private int alphaShrank;
+    private float alphaMeanExtent = 1f;
+
+    /**
      * The frame the cloud was last DRAWN with, for resolving a tap: the projection's
      * own factors and the Origin + Pan shift. The tap's ray is the SOURCE camera's,
      * so the tapped pixel's source NDC is the drawn NDC minus this shift -- and the
@@ -213,6 +232,18 @@ final class SplatRenderer {
     private long windowStartNanos;
     private float gpuMs;
 
+    /**
+     * The last window's numbers, for the studio's on-glass readout.
+     *
+     * <p>Published from {@link #logStats} — the SAME computation the log prints, not a
+     * second one that agrees today — and read on the UI thread through {@link
+     * #perfStats()}. A fresh immutable object once a window; the UI thread does one
+     * volatile read and allocates nothing, and it never waits on the GL thread for a
+     * number. Null until the first window has been measured, which the readout blanks
+     * rather than showing as a zero.
+     */
+    private volatile RenderStats perfStats;
+
     private boolean timerExt;
     private int timerQuery;
     private boolean queryOpen;
@@ -231,6 +262,17 @@ final class SplatRenderer {
 
     int count() {
         return count;
+    }
+
+    /**
+     * The last stats window, for the studio's readout, or null before the first.
+     *
+     * <p>Safe from the UI thread: a volatile read of an immutable object. The GL
+     * thread publishes it in {@link #logStats}, so the readout and the log line carry
+     * one computation.
+     */
+    RenderStats perfStats() {
+        return perfStats;
     }
 
     /**
@@ -302,6 +344,9 @@ final class SplatRenderer {
         releaseTextures();
         ready = false;
         count = 0;
+        alphaDropped = 0;
+        alphaShrank = 0;
+        alphaMeanExtent = 1f;
         if (cloud == null || cloud.count == 0) return false;
         // A queued upload can run before this GL thread has a current context (the
         // platform creates the engine's context lazily). Every GL entry point is
@@ -368,11 +413,30 @@ final class SplatRenderer {
         pos = new float[n * 3];
         cloud.positions(pos);
         long tMirror = System.nanoTime();
+        // The alpha-extent clip's reach: a property of the cloud's baked opacities,
+        // so it is derived once here and read by the stats line. Splat.extentScaleForAlpha
+        // is the mapping the vertex shader mirrors, so this counts exactly the splats
+        // the shader will drop (every fragment discarded) or shrink.
+        int[] col = new int[4];
+        int dropped = 0, shrank = 0;
+        double extentSum = 0.0;
+        for (int i = 0; i < n; i++) {
+            cloud.color(i, col);
+            float s = Splat.extentScaleForAlpha(col[3] / 255f);
+            extentSum += s;
+            if (s <= 0f) dropped++;
+            else if (s < 1f) shrank++;
+        }
+        alphaDropped = dropped;
+        alphaShrank = shrank;
+        alphaMeanExtent = (float) (extentSum / n);
+        long tAlpha = System.nanoTime();
         android.util.Log.i(TAG, "splat upload: n=" + n
                 + " pack=" + (tPack1 - tPack0) / 1e6f + "ms"
                 + " glData=" + (tGl - tPack1) / 1e6f + "ms"
                 + " mirror=" + (tMirror - tGl) / 1e6f + "ms"
-                + " total=" + (tMirror - tPack0) / 1e6f + "ms");
+                + " alpha=" + (tAlpha - tMirror) / 1e6f + "ms"
+                + " total=" + (tAlpha - tPack0) / 1e6f + "ms");
         // The cloud's own centre, for the pivot fallback. `medianDepth` is warmed
         // on the IO thread (see ReliefRenderer.requestSplat), so this is a read of a
         // memo rather than a sort on the GL thread; a cloud that was not warmed
@@ -594,6 +658,11 @@ final class SplatRenderer {
         GLES30.glUniform1f(uNear, NEAR);
         GLES30.glUniform1f(uFudge, 1f);
         GLES30.glUniform1f(uEps2d, eps2dInUse);
+        // The alpha discard threshold: ONE number, from Splat.ALPHA_DISCARD, that both
+        // stages read -- the fragment stage's discard and the vertex stage's quad-extent
+        // clip (Splat.extentScaleForAlpha). Uploaded rather than written into the shader
+        // so the two cannot drift apart.
+        GLES30.glUniform1f(uAlphaDiscard, Splat.ALPHA_DISCARD);
         // The depth multiplier and the plane it scales about. The plane is the
         // cloud's own median depth (the pivot's fallback), so 0 flattens onto the
         // cloud's centre rather than onto the camera; the shader mirrors
@@ -631,8 +700,11 @@ final class SplatRenderer {
             // came back black while the same draw straight to the surface was fine.
             // A fullscreen triangle sampling the colour texture is the operation the
             // blur already performs, at radius 0, where the kernel is exactly a copy
-            // -- so this needs no new program and no new buffer. The blit is kept as
-            // the fallback for a driver where the blur program will not build, so
+            // -- so this needs no new program and no new buffer. At radius 0 BLUR_FRAG
+            // now early-outs to a single fetch (see its own note); before that it ran
+            // the whole 13-tap loop with twelve weights of exactly zero, which was
+            // 13 fetches per pixel over the whole surface for a copy. The blit is kept
+            // as the fallback for a driver where the blur program will not build, so
             // the worst case is the behaviour that shipped.
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             if (ensureBlurProgram()) {
@@ -998,6 +1070,7 @@ final class SplatRenderer {
         uNear = GLES30.glGetUniformLocation(prog, "uNear");
         uFudge = GLES30.glGetUniformLocation(prog, "uFudge");
         uEps2d = GLES30.glGetUniformLocation(prog, "uEps2d");
+        uAlphaDiscard = GLES30.glGetUniformLocation(prog, "uAlphaDiscard");
         uDepthMul = GLES30.glGetUniformLocation(prog, "uDepthMul");
         uDepthRef = GLES30.glGetUniformLocation(prog, "uDepthRef");
         uFocal = GLES30.glGetUniformLocation(prog, "uFocal");
@@ -1005,7 +1078,7 @@ final class SplatRenderer {
         uBrightnessGain = GLES30.glGetUniformLocation(prog, "uBrightnessGain");
         uShadowLift = GLES30.glGetUniformLocation(prog, "uShadowLift");
         for (int loc : new int[] { uProj, uView, uViewRot, uData, uOrder, uDataW, uOrderW,
-                uNear, uFudge, uEps2d, uDepthMul, uDepthRef, uFocal, uViewport,
+                uNear, uFudge, uEps2d, uAlphaDiscard, uDepthMul, uDepthRef, uFocal, uViewport,
                 uBrightnessGain, uShadowLift }) {
             if (loc < 0) android.util.Log.e(TAG, "splat uniform dropped in silence");
         }
@@ -1114,11 +1187,32 @@ final class SplatRenderer {
             lastLogNanos = now;
             return;
         }
-        if (now - lastLogNanos < 1_000_000_000L) return;
-        float secs = (now - lastLogNanos) / 1e9f;
-        float fps = framesInWindow / secs;
-        float frameMs = 1000f / Math.max(fps, 0.001f);
+        if (now - lastLogNanos < RenderStats.WINDOW_NANOS) return;
+        long windowNanos = now - lastLogNanos;
+        // ONE computation. The log below prints these locals and the readout reads the
+        // snapshot built from them, so the two cannot report two frame rates for one
+        // window -- which is the whole reason RenderStats.fps is a :core function.
+        float fps = RenderStats.fps(framesInWindow, windowNanos);
+        float frameMs = RenderStats.frameMs(fps);
+        // The log's own long-standing shape: a window that ran no sort prints 0. The
+        // READOUT omits it, because "no sort measured" is not "sort cost 0" -- so the
+        // presence check below is the one place the two presentations differ.
         float sortMs = sortsInWindow > 0 ? sortNanosInWindow / 1e6f / sortsInWindow : 0f;
+        float drawMs = drawNanosInWindow / 1e6f / Math.max(1, framesInWindow);
+        int rw = fbo != 0 ? renderW : surfaceW;
+        int rh = fbo != 0 ? renderH : surfaceH;
+        float mpx = rw * rh / 1e6f;
+        // GPU time per megapixel of the render target: the fill intensity, and the
+        // number the next step reads. The renderer is fill-bound, so gpuMs tracks the
+        // target's AREA -- this ratio stays flat as the render scale changes and rises
+        // with the average splat coverage. The alpha-extent clip is a fill reduction,
+        // so its effect shows up here beside alphaShrank/alphaExtent.
+        float gpuMsPerMpx = mpx > 0f ? gpuMs / mpx : 0f;
+        // The readout's snapshot: the same numbers, with the sort marked ABSENT when
+        // none ran rather than carried as a zero.
+        perfStats = new RenderStats(fps, frameMs, gpuMs,
+                sortsInWindow > 0 ? sortMs : RenderStats.NONE, RenderStats.NONE,
+                count, rw, rh);
         android.util.Log.i(TAG, "splat: count=" + count
                 + " eps2d=" + fmt(eps2dInUse)
                 + " blurPx=" + fmt(blurPxInUse)
@@ -1128,10 +1222,14 @@ final class SplatRenderer {
                 + " maxFrameMs=" + fmt(maxFrameNanos / 1e6f)
                 + " sortMs=" + fmt(sortMs)
                 + " sorts/s=" + sortsInWindow
-                + " drawMs=" + fmt(drawNanosInWindow / 1e6f / Math.max(1, framesInWindow))
+                + " drawMs=" + fmt(drawMs)
                 + " gpuMs=" + fmt(gpuMs)
+                + " gpuMsPerMpx=" + fmt(gpuMsPerMpx)
                 + " scale=" + fmt(scaleInUse)
-                + " render=" + (fbo != 0 ? renderW + "x" + renderH : surfaceW + "x" + surfaceH)
+                + " render=" + rw + "x" + rh
+                + " alphaDrop=" + alphaDropped
+                + " alphaShrank=" + alphaShrank
+                + " alphaExtent=" + fmt(alphaMeanExtent)
                 + " culled=" + lastCulled + "/" + count);
         framesInWindow = 0;
         sortsInWindow = 0;
@@ -1205,6 +1303,13 @@ final class SplatRenderer {
             // (Splat.EPS_2D_DEFAULT's home) moves it live on the GL thread with no
             // recompile and no restart.
             "uniform float uEps2d;\n" +
+            // The alpha below which the fragment shader discards. ONE number for both
+            // stages (Splat.ALPHA_DISCARD, uploaded as a uniform): the fragment stage
+            // compares a fragment's alpha against it, and this stage clips the quad to
+            // the radius at which that comparison would throw the fragment away -- see
+            // the uAlphaDiscard use below and Splat.extentScaleForAlpha, whose test
+            // pins that the clipped quad ends exactly where the discard begins.
+            "uniform float uAlphaDiscard;\n" +
             // The dev DEPTH knob and the plane it scales about. Mirrors
             // Splat.depthScale, which the :core test pins: 1 is the node's depth,
             // 0 collapses the cloud onto the plane. See the use below for why the
@@ -1288,6 +1393,26 @@ final class SplatRenderer {
             "    gl_Position = vec4(0.0, 0.0, -2.0, 1.0);\n" +
             "    return;\n" +
             "  }\n" +
+            "\n" +
+            // THE ALPHA-EXTENT CLIP. The fragment shader discards a fragment whose
+            // alpha falls below uAlphaDiscard, and that boundary is a RADIUS: with
+            // power = -0.5 r^2 in the Mahalanobis radius r the conic defines, the
+            // fragment survives when a * exp(-0.5 r^2) >= uAlphaDiscard, i.e.
+            // r <= sqrt(2 ln(a / thr)). The quad below is emitted at r = 3 (uFudge is
+            // fixed at 1), so scaling it by min(1, sqrt(2 ln(a/thr)) / 3) makes the
+            // quad cover exactly the region the fragment stage keeps. Nothing that was
+            // drawn before changes: every fragment the smaller quad removes is one the
+            // discard was already throwing away. Mirrors Splat.extentScaleForAlpha,
+            // whose test pins that the clipped edge lands exactly on the discard
+            // boundary. A splat at or below the threshold has NO surviving radius, so
+            // it is dropped outright -- free, because every one of its fragments would
+            // have been discarded. The test is the fragment shader's own !(a > thr),
+            // so a NaN falls on the drop side rather than through it.
+            "  if (!(spCol.a > uAlphaDiscard)) {\n" +
+            "    gl_Position = vec4(0.0, 0.0, -2.0, 1.0);\n" +
+            "    return;\n" +
+            "  }\n" +
+            "  float keep = min(1.0, sqrt(2.0 * log(spCol.a / uAlphaDiscard)) / 3.0);\n" +
             "\n" +
             "  float n = inversesqrt(max(dot(q4, q4), 1e-6));\n" +
             "  q4 *= n;\n" +
@@ -1382,7 +1507,7 @@ final class SplatRenderer {
             "  e1 = el > 1e-9 ? e1 / el : vec2(1.0, 0.0);\n" +
             "  vec2 e2 = vec2(e1.y, -e1.x);\n" +
             "\n" +
-            "  vec2 offsetPx = aCorner.x * r1 * e1 + aCorner.y * r2 * e2;\n" +
+            "  vec2 offsetPx = keep * (aCorner.x * r1 * e1 + aCorner.y * r2 * e2);\n" +
             "  vec2 offsetNdc = offsetPx * 2.0 / uViewport;\n" +
             "  vec4 clip = uProj * mv;\n" +
             "  vec2 ndc = clip.xy / clip.w;\n" +
@@ -1401,6 +1526,13 @@ final class SplatRenderer {
             "\n" +
             "uniform float uBrightnessGain;\n" +
             "uniform float uShadowLift;\n" +
+            // The alpha discard threshold. It is Splat.ALPHA_DISCARD, uploaded as a
+            // uniform, and it is the SAME number the vertex shader clips the quad
+            // extent against (see VERT's uAlphaDiscard) -- so the quad ends exactly
+            // where this discard begins and a pixel that survived before still does.
+            // It was a literal 0.00392156862 (1/255) here; a second literal in VERT
+            // is the drift this avoids.
+            "uniform float uAlphaDiscard;\n" +
             "\n" +
             "in vec4 vColor;\n" +
             "in vec2 vQ;\n" +
@@ -1418,7 +1550,7 @@ final class SplatRenderer {
             "    discard;\n" +
             "  }\n" +
             "  float a = vColor.a * exp(power);\n" +
-            "  if (a < 0.00392156862) {\n" +
+            "  if (a < uAlphaDiscard) {\n" +
             "    discard;\n" +
             "  }\n" +
             // The picture grade, the same one multiply and one mix the relief's
@@ -1463,14 +1595,32 @@ final class SplatRenderer {
             "}\n";
 
     /**
-     * One axis of the separable Gaussian.
+     * One axis of the separable Gaussian, and the upscale copy.
      *
      * <p>The offsets are whole pixels and the weights are a Gaussian of sigma
      * {@code radius/2}, so {@code radius} is the kernel's half-width in pixels --
      * the number the label states. The loop is a fixed {@code -6..6} with a
      * weight that is zero beyond the radius, so the cost is constant whenever the
-     * pass runs at all and no dynamic loop bound can reach the driver. The pass is
-     * skipped entirely at radius &lt; 0.5, which is why 0 is exactly the identity.
+     * pass runs at all and no dynamic loop bound can reach the driver. The blur
+     * passes are skipped entirely at radius &lt; 0.5, which is why 0 is exactly the
+     * identity for the BLUR row.
+     *
+     * <p><b>The same program performs the upscale copy at radius 0, and there a
+     * radius below the blur's own minimum is ONE fetch, not thirteen.</b> The loop's
+     * weight is zero for every off-centre tap at radius 0 -- {@code step(0.001, |fi|)}
+     * is 1 for every {@code |fi| >= 1} -- so the twelve off-centre taps contribute
+     * nothing but were still fetched, because {@code w} depends on a uniform and the
+     * compiler cannot fold the loop away. That was thirteen fetches per pixel over the
+     * whole surface, the fixed cost that survived every render scale. The early-out
+     * below reduces the copy to the one tap that carries the answer.
+     *
+     * <p><b>It is bit-identical, and here is the argument so it can be falsified.</b>
+     * At radius 0 the loop leaves {@code sum = texture(vUv) * 1.0 + Σ(texture(...) * 0.0)}
+     * and {@code wsum = 1.0}, so {@code sum / wsum} is the centre texel: adding exact
+     * zeros to a finite value, and dividing by exactly 1, are both the identity in IEEE
+     * 754. What would break it is a <b>non-finite off-centre texel</b>, because
+     * {@code Inf * 0.0} is NaN and would poison the sum -- and the source is an RGBA8
+     * render target, whose normalised samples are always finite, so it cannot.
      */
     private static final String BLUR_FRAG =
             "#version 300 es\n" +
@@ -1482,6 +1632,10 @@ final class SplatRenderer {
             "in vec2 vUv;\n" +
             "out vec4 outColor;\n" +
             "void main() {\n" +
+            // The copy path (radius 0) is a single fetch; the same threshold the Java
+            // side uses to decide the blur passes run at all (blurPx >= 0.5f). A
+            // uniform branch, so it is coherent across the whole draw.
+            "  if (uBlurRadius < 0.5) { outColor = texture(uBlurTex, vUv); return; }\n" +
             "  float sigma = max(uBlurRadius, 0.5) * 0.5;\n" +
             "  float twoSigma2 = 2.0 * sigma * sigma;\n" +
             "  vec4 sum = vec4(0.0);\n" +
