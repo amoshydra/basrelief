@@ -165,6 +165,33 @@ public class PerItemSettingsTest {
     }
 
     /**
+     * A stored SIZE of 0 round-trips and is not rewritten upward.
+     *
+     * <p>The bug this pins: `0` used to be clamped UP to 0.45 on construction, so a
+     * user dragging SIZE to the new bottom would have had the value silently raised
+     * and the control would not move — a knob that lies about what it stores. It also
+     * pins that `0` is written at all: it is not the default 0.5, so the
+     * omit-if-default rule does not apply and the key must be present.
+     *
+     * <p><b>No schema bump is needed, and this is the reason.</b> `0` was previously
+     * clamped up on write, so no stored blob contains it, and every existing photo
+     * keeps exactly the value it had; the range simply grew downward. A negative is
+     * still the bottom, so a hand-edited blob cannot resurrect the old floor either.
+     */
+    @Test
+    public void aStoredSizeOfZeroRoundTripsAndIsNotRewrittenToTheOldFloor() {
+        LibraryItem it = item("a").withSplatSize(Surface.HOME, 0f);
+        assertEquals("0 is kept on write", 0f, home(it).splatEps2d, 0f);
+        assertTrue("and it is written, because it is not the default",
+                home(it).toJson().toString().contains("splat_eps2d"));
+
+        LibraryItem r = Library.parse(libraryOf(it)).activeItem();
+        assertEquals("0 survives the round trip", 0f, home(r).splatEps2d, 0f);
+        assertEquals(Splat.EPS_2D_MIN, home(
+                item("a").withSplatSize(Surface.HOME, -1f)).splatEps2d, 1e-6f);
+    }
+
+    /**
      * The splat look clamps to the useful band, and a value that cannot claim one
      * answers the default rather than a NaN.
      *

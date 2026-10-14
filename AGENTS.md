@@ -516,7 +516,8 @@ already cost real time.
       point.** The `eps2d` floor lifts only the splats whose screen covariance is
       too small to sample and leaves the well-sampled ones alone, so it removes the
       screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
-      (`Splat.EPS_2D_DEFAULT` = 0.5, the row spans 0.45..0.80), and the draw
+      (`Splat.EPS_2D_DEFAULT` = 0.5, the row spans **0..0.80** — the bottom is no
+      floor), and the draw
       resolves it to exactly `fraction × cell`, with the cell the ON-SCREEN one
       (`viewportArea / count × zoom²`). **There is no second, target-area minimum**,
       and deleting it is what made the knob live at every count.
@@ -541,12 +542,20 @@ already cost real time.
         uncapped minimum would have been 8.380 here.) The smooth region is still the
         clean reference render's **0.70× the photograph's own high-frequency
         energy**.
-      - **The cost is at the bottom of the range on a sparse cloud, and it is
-        small.** Where `fraction × cell` already exceeded the old minimum there is no
-        change; where it did not the drop is ~10% at the lowest setting — the 149,504
-        beach at 0.45 gives 5.45 against a needed ≈6.05, so a little speckle is
-        reachable **at SIZE 0.45 on a sparse cloud**. The default 0.5 covers it
-        exactly, which is part of why it is the default. Stated, not buried.
+      - **The bottom of the range is the identity, and it is a real setting.** The
+        floor once stopped at 0.45 "so that every setting the control offers is one
+        that works"; that premise is what fell. SIZE is per photo, and the gap it
+        closes is the cell, so one shared minimum made every cloud obey the sparsest
+        cloud's requirement — a dense cloud, which needs no lift, was smeared to
+        provide one. At `0` the floor vanishes and the splat is drawn at its own
+        covariance, so the picture is purely the cloud's density — which is what the
+        count measurements say determines sharpness. Below about 0.4 of the cell on a
+        SPARSE cloud the screen-door returns: the 149,504 beach at 0.5 of the cell
+        resolves to the ≈6 px its sky needed, and at 0 it gets no lift at all. That is
+        a real look reachable on purpose rather than a broken region the control
+        refuses to enter, and the default 0.5 sits in the middle of the useful band.
+        **No schema bump**: `0` was previously clamped *up* on write, so no stored
+        blob contains it and every existing photo keeps its value.
       - **The SIZE row is live at every count now** — it was inert above 301,568
         splats, where the floor was the cell and `fraction × cell ≤ 0.8 × cell` could
         only ask for more. That is the whole point of the change.
@@ -1048,7 +1057,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 735 tests across forty classes:
+it**. 737 tests across forty classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1120,7 +1129,12 @@ every library write took the app down, so any gallery tap crashed it.
   asserts the *invariance* and not either pixel value: the floor over the cell is
   the same number at both resolutions, the phone's is the cloud's scaled by the
   square of the resolution ratio, and the zoom enters squared because it magnifies
-  both axes. There is no second, target-area term, and **the test that pins the
+  both axes. **The bottom of the range is the identity, and a test walks it**:
+  `theBottomOfTheRangeIsNoFloor` pins `EPS_2D_MIN == 0`, that `eps2dFor(0, …)` is 0
+  at a sparse AND a dense count and both ends of the zoom clamp — so the picture is
+  purely the cloud's density there — and that the default 0.5 still lifts, so the two
+  ends of the range are two looks rather than a value and its guard. There is no
+  second, target-area term, and **the test that pins the
   property the deleted minimum made false** is
   `theSizeKnobMovesTheFloorAboveTheOldCrossover`: above the count where that
   constant's ratio exceeded 1 (301,568 splats) the floor used to be the cell, with
@@ -1754,7 +1768,8 @@ every library write took the app down, so any gallery tap crashed it.
   than skipping it — the weak version re-parses `toJson()`, which is already v5 and
   proves nothing; a default value must write **no key**, so an untouched library's
   items stay byte-identical; the four look values round-trip and clamp to their
-  useful band; and a single-field edit must not reset the values it does not name,
+  useful band, **including a SIZE of 0, which must not be clamped up to the old
+  0.45 floor**; and a single-field edit must not reset the values it does not name,
   which shipped broken once — `withDepth` reset Motion, brightness and shadow,
   because the values it did not pass had been added after it was written, and the
   four splat rows are exactly that shape of value one version later.

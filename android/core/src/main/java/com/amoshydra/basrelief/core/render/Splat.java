@@ -106,11 +106,12 @@ public final class Splat {
      * everything above the fraction is the over-blur this mode has now shipped
      * twice -- see {@link #eps2dFor}.
      *
-     * <p>The one honest cost of removing it is at the bottom of the range: on a
-     * sparse cloud the old minimum covered the last ~10% of the way to the clean
-     * floor at the LOWEST SIZE setting (the 149,504 beach at 0.45 gives 5.45 of a
-     * needed ~6.05), so a little speckle is reachable there. The default 0.5 covers
-     * it exactly, which is part of why it is the default.
+     * <p>The default is the value measured clean, and the range below it is now a
+     * real reach: on the 149,504-splat beach the default's 0.5 of the cell resolves
+     * to the ~6 px the smooth sky needed, while {@link #EPS_2D_MIN}'s 0 leaves that
+     * sparse cloud with no lift at all -- a little speckle, reachable on purpose. A
+     * denser cloud needs none of it, which is the whole reason the bottom is the
+     * identity.
      *
      * <p>The measured value: at 0.5 the sky's high-frequency energy falls to the
      * photograph's own, and the dense net it shows at 0.2 is gone.
@@ -118,16 +119,25 @@ public final class Splat {
     public static final float EPS_2D_DEFAULT = 0.5f;
 
     /**
-     * The bottom of the SIZE range. <b>The range is the USEFUL band, not a full
-     * sweep, and that is a deliberate product decision.</b> Measured, the floor has
-     * a narrow usable window: below about 0.4 of the cell the screen-door returns,
-     * and above about 0.8 the picture is soft for no gain. A knob that spans the
-     * broken region invites exactly the failure this setting has already shipped
-     * twice -- a user drags to a plausible-looking number that is below the cliff,
-     * sees no improvement, and concludes the mode is broken. So every setting the
-     * control offers is one that works, and the default sits in the middle of them.
+     * The bottom of the SIZE range: <b>no floor at all</b>, so a splat is drawn at
+     * its own covariance and the picture is purely the cloud's density.
+     *
+     * <p><b>It is the no-help end of the control, not a guard.</b> The floor was
+     * once floored at 0.45 "so that every setting the control offers is one that
+     * works", and that premise is exactly what fell: SIZE is per photo, and the gap
+     * it closes is the cell {@code viewportArea / count}, so one shared minimum made
+     * every cloud obey the sparsest cloud's requirement -- a dense cloud, which needs
+     * no lift, was smeared to satisfy a sparse one. At {@code 0} the floor vanishes
+     * and the cloud's own density is the whole of the spacing, which is what the
+     * count measurements say actually determines sharpness.
+     *
+     * <p>The range therefore runs from the identity to the cleaner-sky option, with
+     * the default in the middle. Below about 0.4 of the cell on a SPARSE cloud the
+     * screen-door returns; that is a real look now reachable on purpose rather than a
+     * broken region the control refuses to enter, and it is why the default is not
+     * the bottom.
      */
-    public static final float EPS_2D_MIN = 0.45f;
+    public static final float EPS_2D_MIN = 0f;
 
     /** The top of the SIZE range: the cleaner-sky option at a small subject cost. */
     public static final float EPS_2D_MAX = 0.8f;
@@ -156,10 +166,13 @@ public final class Splat {
     }
 
     /**
-     * The floor a stored value means. A non-finite value, or one below the range,
-     * answers the default rather than the floor: a pref that cannot claim a value
-     * must not be read as one -- the "a window claims nothing" rule applied to a
-     * number, so a NaN cannot reach the shader as a NaN.
+     * The floor a stored value means. The range is closed, so a value inside it is
+     * kept exactly -- including {@link #EPS_2D_MIN}'s {@code 0}, which is a real
+     * setting (no floor) and must not be rewritten upward -- one below it clamps to
+     * the bottom, and one above it to the top. A non-finite value answers the default
+     * rather than a bound: a pref that cannot claim a number must not be read as one
+     * -- the "a window claims nothing" rule applied to a number, so a NaN cannot
+     * reach the shader as a NaN.
      */
     public static float clampEps2d(float value) {
         if (!Float.isFinite(value)) return EPS_2D_DEFAULT;
@@ -197,8 +210,10 @@ public final class Splat {
      *
      * <p>A count or viewport that cannot claim a value (0, or a viewport that is
      * not a size) answers 0, which is the identity: a floor is an enlargement, and
-     * enlarging by nothing is the only answer that does not invent one. The caller
-     * clamps the fraction, so this cannot be handed a NaN.
+     * enlarging by nothing is the only answer that does not invent one. A fraction of
+     * 0 -- {@link #EPS_2D_MIN}, the bottom of the SIZE range -- is that same
+     * identity, so the splat is left at its own covariance. The caller clamps the
+     * fraction, so this cannot be handed a NaN.
      */
     public static float eps2dFor(float fraction, int viewportW, int viewportH,
                                  int count, float zoom) {

@@ -185,27 +185,33 @@ public class SplatTest {
     }
 
     /**
-     * The dev SIZE knob's clamp, and the one wrong answer a screenshot cannot tell
+     * The SIZE knob's clamp, and the one wrong answer a screenshot cannot tell
      * from the right one: a value that cannot claim a number.
      *
      * <p>The floor is a quantity the shader adds to a covariance, so a NaN reaching
-     * it poisons every splat's conic and the whole cloud disappears; a value below
-     * the range is the artifact's own setting (the screen-door returns) and a value
-     * above it is a look nobody measured. So a non-finite pref answers the DEFAULT,
-     * not the nearest bound — that is the {@code DepthSource} "a window claims
-     * nothing" rule applied to a number, and it is the assertion that would fail if
-     * this were written as a plain min/max, where {@code NaN} compares false and
-     * falls through to the value.
+     * it poisons every splat's conic and the whole cloud disappears, while a value
+     * above the range is a look nobody measured. So a non-finite pref answers the
+     * DEFAULT, not the nearest bound — that is the {@code DepthSource} "a window
+     * claims nothing" rule applied to a number, and it is the assertion that would
+     * fail if this were written as a plain min/max, where {@code NaN} compares false
+     * and falls through to the value.
+     *
+     * <p><b>The bottom is now the identity, and it is a real setting rather than a
+     * value to rewrite upward.</b> A stored {@code 0} used to clamp up to 0.45; it
+     * now reads back as {@code 0}, because "no floor" is the no-help end of a
+     * per-photo control and not a missing number. A negative still clamps to that
+     * same bottom.
      */
     @Test
     public void theSizeKnobClampsAndAValueThatClaimsNothingIsTheDefault() {
+        assertEquals("the range's bottom is the identity", 0f, Splat.EPS_2D_MIN, 0f);
         assertEquals(Splat.EPS_2D_DEFAULT, Splat.clampEps2d(Splat.EPS_2D_DEFAULT), 0f);
         assertEquals("inside the range is kept exactly",
                 0.5f, Splat.clampEps2d(0.5f), 0f);
+        assertEquals("the no-help end is stored as 0, not rewritten up to the old floor",
+                0f, Splat.clampEps2d(0f), 0f);
         assertEquals("below the range is the floor",
-                Splat.EPS_2D_MIN, Splat.clampEps2d(0f), 0f);
-        assertEquals("below the range is the floor",
-                Splat.EPS_2D_MIN, Splat.clampEps2d(-3f), 0f);
+                0f, Splat.clampEps2d(-3f), 0f);
         assertEquals("above the range is the ceiling",
                 Splat.EPS_2D_MAX, Splat.clampEps2d(100f), 0f);
         assertEquals("a NaN claims nothing and must be the default, not a NaN",
@@ -397,6 +403,37 @@ public class SplatTest {
         assertEquals(0.5f, Splat.EPS_2D_DEFAULT, 0f);
         assertEquals("and it resolves to the measured 6 px at that frame",
                 6f, Splat.eps2dFor(Splat.EPS_2D_DEFAULT, 912, 1984, 149504, 1f), 0.1f);
+    }
+
+    /**
+     * `0` is the bottom of the SIZE range and it means NO FLOOR: the splat is left
+     * at its own covariance, which is what makes the picture purely the cloud's
+     * density. This is the assertion a screenshot cannot make -- a tiny floor and no
+     * floor draw almost alike -- so it is an exact identity, swept across a sparse and
+     * a dense count and both ends of the zoom clamp.
+     *
+     * <p><b>Why the bottom is the identity rather than a guard.</b> The gap the floor
+     * closes is the cell {@code viewportArea / count}, and SIZE is per photo, so one
+     * shared minimum made a dense cloud obey a sparse one's requirement -- the dense
+     * cloud needed no lift and was smeared to provide one. At {@code 0} the fraction
+     * is the whole statement, and the cloud's own density is the spacing.
+     */
+    @Test
+    public void theBottomOfTheRangeIsNoFloor() {
+        assertEquals("the stated range's bottom is the identity", 0f, Splat.EPS_2D_MIN, 0f);
+        assertEquals("the top is unchanged", 0.8f, Splat.EPS_2D_MAX, 0f);
+        for (int count : new int[] {149504, 403456, 1046528}) {
+            for (float z : new float[] {0.25f, 0.62f, 1f, 2f}) {
+                assertEquals("no floor at count=" + count + " zoom=" + z,
+                        0f, Splat.eps2dFor(Splat.EPS_2D_MIN, 1440, 3120, count, z), 0f);
+                assertEquals("an explicit 0 is the same identity",
+                        0f, Splat.eps2dFor(0f, 1440, 3120, count, z), 0f);
+            }
+        }
+        // And 0 is NOT the default: the shipped 0.5 still places a floor, so the two
+        // ends of the range are two different looks on one cloud.
+        assertTrue("the default still lifts",
+                Splat.eps2dFor(Splat.EPS_2D_DEFAULT, 1440, 3120, 149504, 1f) > 0f);
     }
 
     /**
