@@ -383,13 +383,12 @@ public class MainActivity extends Activity {
      * The navigation bar's height, cached from the one place insets are read.
      *
      * <p>The pill floats {@link #PILL_BOTTOM_INSET_DP} off the bottom edge, and on
-     * 35+ the bar is <i>shown</i> whenever the sheet is collapsed — so at exactly
-     * the moment the pill exists, the bar is the thing it has to clear. Asking for
-     * this inside {@link #applySheetPosition} would mean a {@code WindowInsets}
-     * read per frame, which is not something a drag can do; {@link
-     * #sheetFootInset} already resolves the value correctly for both API paths, so
-     * the listener that receives the insets stores it and the morph reads the
-     * field.
+     * 35+ the navigation bar is persistent — so at every moment the pill exists,
+     * the bar is the thing it has to clear. Asking for this inside
+     * {@link #applySheetPosition} would mean a {@code WindowInsets} read per
+     * frame, which is not something a drag can do; {@link #sheetFootInset} already
+     * resolves the value correctly for both API paths, so the listener that
+     * receives the insets stores it and the morph reads the field.
      */
     private int navBarInsetPx;
 
@@ -1847,33 +1846,26 @@ public class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
             }
-            // Keep the window edge-to-edge; the bar's own visibility is decided
-            // below. LAYOUT_HIDE_NAVIGATION is the layout half and is still the
-            // flag path.
+            // Edge-to-edge, with the navigation bar PERSISTENT. The layout flags
+            // are what let the content draw behind the bars; the bar itself is not
+            // ours to hide on 35+, and this is the deliberate change from the
+            // immersive model below -- an edge-to-edge app keeps the system's own
+            // navigation, and the sheet reserves its height through the inset
+            // {@link #sheetFootInset} already reads. It used to disappear whenever
+            // the sheet was collapsed ("full-bleed wallpaper") and come back when
+            // it was expanded, which moved the pill's floor and the sheet's foot
+            // with a state the user did not ask to change the system UI.
             window.getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-            // Show or hide the bar through the controller, which is the supported
-            // path on API 30+. The deprecated HIDE_NAVIGATION flag is not reliable
-            // under Android 15's enforced edge-to-edge, and hiding is exactly what
-            // the collapsed state asks for. Collapsed is the component's own
-            // committed state, the same one the pill and the drag settle follow, so
-            // "away" means one thing rather than three.
             android.view.WindowInsetsController controller =
                     window.getDecorView().getWindowInsetsController();
             if (controller != null) {
-                // A swipe may reveal the bar transiently; otherwise it stays gone,
-                // which is what "fully invisible" means.
-                controller.setSystemBarsBehavior(
-                        android.view.WindowInsetsController
-                                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                if (sheet != null && sheet.isCollapsed()) {
-                    controller.hide(WindowInsets.Type.navigationBars());
-                } else {
-                    controller.show(WindowInsets.Type.navigationBars());
-                }
+                controller.show(WindowInsets.Type.navigationBars());
             }
+            // Unconditional, because the bar is: the foot's reserved height is the
+            // one inset, not one that appears and goes with the sheet.
             requestSheetInsets();
             return;
         }
@@ -3846,12 +3838,9 @@ public class MainActivity extends Activity {
             // return to with 1.0 — which is the bug a single key would have.
             prefs.edit().putFloat(KEY_SHEET_OPEN, fraction).apply();
         }
-        // Expanded, back is discoverable and the bar composites over the render;
-        // collapsed, the wallpaper must be full-bleed. 26–34 keep their
-        // always-immersive flags.
-        if (Build.VERSION.SDK_INT >= 35 && panel != null && panel.isAttachedToWindow()) {
-            applySystemUi();
-        }
+        // No system-UI call here any more: on 35+ the navigation bar is
+        // persistent (see applySystemUi), and 26-34 are immersive whichever way the
+        // sheet sits, so the sheet's committed state no longer decides the bars.
         if (collapsed) dismissHintIfShown();
     }
 
