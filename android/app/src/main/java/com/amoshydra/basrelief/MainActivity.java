@@ -1880,12 +1880,13 @@ public class MainActivity extends Activity {
     /**
      * Re-read the bottom system-bar inset into the sheet's foot.
      *
-     * <p>The bar is shown or hidden as the sheet collapses, so the inset the
-     * reserved foot space is built from is not constant. Asking again is what
-     * keeps the foot clear on a three-button bar — the tallest case, and the one
-     * that was reported — where the bar covers the last ~48dp of the screen. It
-     * is safe on every API: on 26–34 the bar never appears and the inset stays
-     * zero.
+     * <p>Asked for once the window exists (a listener installed on a detached view
+     * is never called) and again from {@link #applySystemUi}, which is the path a
+     * focus change re-runs. On 35+ the bar is persistent, so this resolves the
+     * same height every time; on 26–34 the bar is hidden with the immersive flags
+     * and a swipe can reveal it, which is the case the re-read exists for. It is
+     * what keeps the foot clear on a three-button bar — the tallest case, and the
+     * one that was reported — where the bar covers the last ~48dp of the screen.
      */
     private void requestSheetInsets() {
         if (sheetScroll == null) return;
@@ -1902,10 +1903,10 @@ public class MainActivity extends Activity {
      * guaranteed -- which is exactly why the foot was still under a three-button
      * bar: the listener ran once with inset 0 and the inset was never re-read.
      * The bar's height REGARDLESS of visibility is the right number on
-     * 35+, because the bar is visible whenever the sheet is expanded and the sheet
-     * has no height whenever the bar is hidden, so reserving it can never be wasted
-     * space. Below 35 the app hides the bar outright with the immersive flags and
-     * the current visibility is the honest value.
+     * 35+, because the bar is persistent there (see {@link #applySystemUi}) and
+     * the ignored-visibility form is the one that cannot be caught mid-animation
+     * reporting 0. Below 35 the app hides the bar with the immersive flags until a
+     * swipe reveals it, and the current visibility is the honest value.
      */
     private int sheetFootInset(WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= 35) {
