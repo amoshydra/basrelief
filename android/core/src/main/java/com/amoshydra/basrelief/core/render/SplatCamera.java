@@ -2,12 +2,13 @@ package com.amoshydra.basrelief.core.render;
 
 /**
  * The splat cloud's camera: where the eye sits, which way it looks, and the
- * clip-space shift the Origin and Pan rows apply.
+ * clip-space shift the Pan row applies.
  *
  * <p><b>It is the relief's camera one medium over, and it lives in {@code :core}
  * for the same reason {@link CameraModel} does.</b> The values that are easy to
- * get quietly wrong here — "at rest the picture is exactly the photograph, at
- * every origin and every pivot depth" and "the pivot holds the centre under tilt"
+ * get quietly wrong here — "at rest, at the default Depth, the picture is exactly
+ * the photograph, at every origin and every pivot depth" and "the pivot holds the
+ * centre under tilt"
  * — are statements about a projection, not about GL, so they are asserted without
  * a device. The renderer keeps only the uniforms.
  *
@@ -17,8 +18,10 @@ package com.amoshydra.basrelief.core.render;
  * the still's vertical field of view; that is the view the cloud reconstructs, so
  * that is the view "the photograph" means. At rest this camera is exactly that
  * source view, and the Pan row is a <b>clip-space shift</b> on top of it — which
- * is what makes the at-rest picture the photograph translated by Pan, at every
- * depth.
+ * is what makes the at-rest picture the photograph translated by Pan, at the
+ * DEFAULT Depth. (The Depth knob itself is a Z-only displacement, so at other
+ * values the cloud is deliberately not where the node measured it; see
+ * {@link Splat#depthScale}.)
  *
  * <p><b>Why Pan is a shift and not a lateral camera move.</b> The relief's camera
  * is a real 3D camera, moved by the tilt and the origin's turntable; a splat cloud
@@ -45,15 +48,16 @@ package com.amoshydra.basrelief.core.render;
  * vector is unchanged by {@code R}).
  *
  * <p><b>And the pivot is the surface the SHADER draws, which is why the Depth
- * knob reaches it.</b> The vertex shader moves every splat along the ray from the
- * eye by {@link Splat#depthScale} before it is drawn, so the cloud's surface
- * under the origin sits at the MOVED depth; a pivot resolved from the node's own
- * depths would mark a point the cloud is no longer at at any multiplier but 1.
- * {@link #pivot} therefore picks on the moved depth and returns the moved point,
- * so the crosshair, the aim and the cloud cannot name different pivots. At rest
- * the pivot's value does not enter the view at all — the eye is the source eye
- * whatever the pivot is — so this moves the orbit and the marker and nothing
- * about the picture.
+ * knob reaches it.</b> The vertex shader applies {@link Splat#depthScale} to each
+ * splat's {@code z} alone before it is drawn — a Z-only displacement, so x and y
+ * stay in their image position and the at-rest picture changes with the knob — so
+ * the cloud's surface under the origin sits at the MOVED depth; a pivot resolved
+ * from the node's own depths would mark a point the cloud is no longer at at any
+ * multiplier but 1. {@link #pivot} therefore picks on the moved depth and returns
+ * the moved point, so the crosshair, the aim and the cloud cannot name different
+ * pivots. The pivot's value still does not enter the VIEW: the eye is the source
+ * eye whatever the pivot is, so this moves the orbit and the marker, while what
+ * the knob does to the picture is the displacement itself.
  *
  * <p>Not thread-safe and mutable, exactly as {@link CameraModel} is: the renderer
  * owns one and only ever touches it on the GL thread. {@link #frame} writes into
@@ -226,15 +230,15 @@ public final class SplatCamera {
      * ray: a window claims nothing, but the orbit must not vanish.
      *
      * <p><b>The pick is made on the surface the SHADER draws, not on the node's
-     * own depths.</b> The Depth knob moves every splat along the ray from the eye
-     * by {@link Splat#depthScale} before it is drawn, so the surface under the
-     * origin is at the MOVED depth; a pivot resolved from the raw positions marks
+     * own depths.</b> The Depth knob is a Z-ONLY displacement ({@link
+     * Splat#depthScale}): the shader writes {@code spPos.z = z * scale} and leaves
+     * x and y where they are, so the drawn image position is {@code x / movedZ},
+     * not {@code x / z}. The radial test below therefore compares against the
+     * MOVED image position, and a pivot resolved from the raw positions would mark
      * a point the cloud is no longer at at any multiplier but 1 — the reported
-     * "the origin did not follow the depth". The scale preserves {@code x/z} and
-     * {@code y/z}, so the ray's radial test is unchanged; what moves is the depth
-     * ordering and the chosen point. A splat the knob pushed through the eye — a
-     * moved depth of 0, which the vertex shader's near cull drops — is skipped
-     * here too, so the orbit can never aim at a point that is not drawn.
+     * "the origin did not follow the depth". A splat the knob pushed through the
+     * eye — a moved depth of 0, which the vertex shader's near cull drops — is
+     * skipped here too, so the orbit can never aim at a point that is not drawn.
      */
     public void pivot(float[] positions, int count, float tanX, float tanY,
                       float refDepth, float depthMul, Frame out) {
@@ -303,10 +307,11 @@ public final class SplatCamera {
      * point's image position is the tapped pixel's own: a window claims nothing, but
      * a tap still names a point.
      *
-     * <p>The Depth knob reaches the PICK (a splat it pushes through the eye is
-     * skipped, as in {@link #pivot}) but not the answer: {@link Splat#depthScale}
-     * preserves {@code x/z}, so the picked splat's image position is the same at
-     * every multiplier.
+     * <p>The Depth knob reaches the PICK and the ANSWER both: {@link
+     * Splat#depthScale} is a Z-only displacement, so a picked splat's image
+     * position is {@code x / movedZ} and moves with the multiplier — which is the
+     * picture the shader draws, and therefore the origin a tap on it must name. A
+     * splat it pushes through the eye is skipped, as in {@link #pivot}.
      *
      * @param positions the cloud's xyz mirror, {@code count * 3} floats
      * @param tanX,tanY the ray in the source camera's tangent plane

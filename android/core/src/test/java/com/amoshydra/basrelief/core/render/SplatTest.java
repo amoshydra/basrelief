@@ -459,15 +459,18 @@ public class SplatTest {
     }
 
     /**
-     * The dev DEPTH knob: the identity at 1.0, the flat photograph at 0.0, and the
-     * one property that makes both true at once -- every splat stays on the ray
-     * from the eye through its own image pixel, so at rest the picture does not
-     * move whatever the multiplier is.
+     * The DEPTH knob: the identity at 1.0, the flat photograph at 0.0, and the
+     * moved depth in between -- {@code ref + mul * (z - ref)}, applied to
+     * {@code z} alone. It is a Z-ONLY displacement, so at other multipliers the
+     * cloud is deliberately not where the node measured it (it reads like Relief's
+     * depth intensity), and the pivot resolves on the same moved depth so the
+     * crosshair and the tap name the surface the shader draws.
      *
-     * <p>This is the assertion a screenshot cannot make. A multiplier applied to
-     * {@code z} alone would still look like a plausible cloud, but the at-rest
-     * picture would slide as the knob moved -- the failure this pins is the
-     * difference between "more parallax" and "a different photograph".
+     * <p>This is the assertion a screenshot cannot make. A whole-vector scale about
+     * the reference would leave each splat on the ray from the eye through its own
+     * image pixel and the at-rest picture put -- the ray-preserving property the
+     * mode used to have -- so pinning the moved depth, and not a ratio of
+     * positions, is what says which displacement is live.
      */
     @Test
     public void theDepthKnobIsTheIdentityAtOneAndFlattensAtZero() {
@@ -483,14 +486,16 @@ public class SplatTest {
             assertEquals("mul 0 puts every splat on the plane",
                     ref, z * Splat.depthScale(z, ref, 0f), 1e-5f);
         }
-        // THE INVARIANT: the image position (x/z) is preserved by the scale, so the
-        // at-rest picture is the photograph at every multiplier. The same scale
-        // applies to the splat's size, which is why its angular size is unchanged.
-        float x = 0.31f;
+        // The moved depth the shader writes, which is z * scale applied to z ALONE:
+        // the Z-only displacement. At mul != 1 the cloud is deliberately not where
+        // the node measured it (it reads like Relief's depth intensity), and the
+        // pivot resolves on this same moved depth so the crosshair and the tap
+        // name the surface the shader draws.
         for (float mul : new float[] {0f, 0.5f, 1f, 2f, 3f}) {
-            float s = Splat.depthScale(0.9f, ref, mul);
-            assertEquals("the ray is preserved at mul=" + mul,
-                    x / 0.9f, (x * s) / (0.9f * s), 1e-6f);
+            float z = 0.9f;
+            float moved = z * Splat.depthScale(z, ref, mul);
+            assertEquals("the moved depth is ref + mul*(z-ref) at mul=" + mul,
+                    ref + mul * (z - ref), moved, 1e-5f);
         }
         // Deeper is deeper: the moved depth rises with the multiplier.
         float prev = Float.NEGATIVE_INFINITY;
@@ -500,7 +505,8 @@ public class SplatTest {
             prev = moved;
         }
         // A depth or a plane that claims nothing answers the identity, not a
-        // division: a splat behind the camera has no ray to move along.
+        // division: a splat at or behind the eye has no depth to move, and a plane
+        // that is not a distance cannot be the reference.
         assertEquals(1f, Splat.depthScale(0f, ref, 0f), 0f);
         assertEquals(1f, Splat.depthScale(-1f, ref, 2f), 0f);
         assertEquals(1f, Splat.depthScale(1f, 0f, 0f), 0f);
@@ -509,10 +515,11 @@ public class SplatTest {
     }
 
     /**
-     * The dev DEPTH knob's clamp, with the same rule the SIZE and BLUR knobs
+     * The DEPTH knob's clamp, with the same rule the SIZE and BLUR knobs
      * follow: inside the range is kept exactly, outside it is the nearest bound,
      * and a value that cannot claim a number is the DEFAULT rather than a bound --
-     * a NaN reaching the position scale would move every splat to the eye.
+     * a NaN reaching the shader's depth scale would take every splat's depth with
+     * it.
      */
     @Test
     public void theDepthKnobClampsAndAValueThatClaimsNothingIsTheDefault() {

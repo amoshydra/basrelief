@@ -1339,11 +1339,17 @@ every library write took the app down, so any gallery tap crashed it.
   read is 0, so an absent file cannot collide with a loaded one. Its seventh is the
   **shape knob** the sheet's splat group gained after the look knobs. The DEPTH
   multiplier is pinned as the identity at 1 for every depth and as the flat
-  photograph at 0 (every splat on the reference plane), and above all by the
-  invariant that makes both true at once: the scale it applies leaves each splat on
-  the ray from the eye through its own image pixel, so the at-rest picture is the
-  photograph at every value and only the parallax moves. A NaN is the default, not a
-  bound, and a depth or plane that claims nothing is the identity.
+  photograph at 0 (every splat on the reference plane, the moved depth equal to the
+  reference for every z). **It is a Z-ONLY displacement and the at-rest picture
+  therefore DOES move with the knob** -- `depthScale` returns the moved depth over
+  the original, the shader applies it to `spPos.z` alone (x and y stay in their
+  image position), and the pivot resolves on the same moved depth so the crosshair
+  and the tap name the surface the shader draws. That is the deliberate change from
+  the ray-preserving form (which scaled the whole vector about the reference and
+  left the picture put at every value): it makes Splat's Depth read like Relief's,
+  whose intensity also changes the at-rest surface. The cost is that Pan Z is what
+  gives the picture room when the near splats are pushed toward the eye. A NaN is
+  the default, not a bound, and a depth or plane that claims nothing is the identity.
 - `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
   projector, the two things a shader cannot be checked for off-device. The
   container test pins the 32-byte record field for field, including that the
@@ -1381,9 +1387,9 @@ every library write took the app down, so any gallery tap crashed it.
 - `SplatCameraTest` — the splat cloud's camera, which used to exist only inside
   `SplatRenderer` and so could only be judged by eye on a device. It pins the
   same at-rest invariant `CameraModelTest` pins for the relief, one medium over:
-  **at rest the picture is exactly the photograph, translated by Pan alone — Origin
-  names the orbit centre and does not move the picture — at every origin and every
-  pivot depth** — asserted as a projection through the
+  **at rest, at the default Depth, the picture is exactly the photograph, translated
+  by Pan alone — Origin names the orbit centre and does not move the picture — at
+  every origin and every pivot depth** — asserted as a projection through the
   real `Mat4` chain, never a restatement of the maths. The splat's version of
   "the eye does not move with the pivot" is that two clouds resolving very
   different pivots project every probe point identically; the eye is the source
@@ -1399,14 +1405,15 @@ every library write took the app down, so any gallery tap crashed it.
   ray's radius holds none, and the reference-plane point on the ray only when the
   cloud has nothing in front of the camera — the `DepthSource` "a window claims
   nothing" rule applied to an orbit centre. Its fourth is the **Depth knob's reach
-  into the pivot**: the pick is made on the surface the SHADER draws — every splat
-  moved along the ray from the eye by `Splat.depthScale` — so the pivot and the
-  crosshair follow the knob instead of marking a point the cloud has left,
-  and a splat the knob pushes through the eye (a moved depth of 0) is skipped
-  exactly as the vertex shader's near cull drops it. The companion assertion is
-  that this moves the pivot and NOT the picture: at rest the eye is the source eye
-  whatever the pivot is, so the same probe points project identically at every
-  multiplier. Zoom is a crop of the same camera and
+  into the pivot**: the pick is made on the surface the SHADER draws — the Z-only
+  displacement `Splat.depthScale` applies to each splat's `z` alone, so the drawn
+  image position is `x / movedZ` — so the pivot and the crosshair follow the knob
+  instead of marking a point the cloud has left, and a splat the knob pushes
+  through the eye (a moved depth of 0) is skipped exactly as the vertex shader's
+  near cull drops it. The companion assertion is only that the pivot MOVES: the
+  at-rest picture changes with the multiplier deliberately (see `SplatTest`'s
+  depth knob), so the projection-identity check went with the ray-preserving scale
+  that made it true. Zoom is a crop of the same camera and
   Pan is a screen-pixel shift at every depth, both pinned. Its fifth is the **tap**:
   a tap resolves the origin by RAY-CASTING into the cloud — the image position of
   the frontmost splat under the ray through the tapped pixel — through the same
@@ -1415,10 +1422,10 @@ every library write took the app down, so any gallery tap crashed it.
   on the ray and not the nearest in image space, that a ray holding no splat falls
   back the way the pivot does (the nearest splat, then the reference-plane point on
   the ray), that a splat the Depth knob pushes through the eye is skipped, that the
-  answer does not depend on the Depth knob (the image position is `x/z`, which
-  `Splat.depthScale` preserves), and above all that **tapping and then resolving is
-  a fixed point**: the origin a tap produces is the image position of the splat the
-  pivot picks for that origin. That is the property the old tap — the tapped SCREEN
+  tap's answer follows the Depth knob as the shader's displacement does (the drawn
+  image position is `x / movedZ`), and above all that **tapping and then resolving
+  is a fixed point**: the origin a tap produces is the image position of the splat
+  the pivot picks for that origin. That is the property the old tap — the tapped SCREEN
   fraction, which drifted by the drawn Pan shift — broke. Its sixth is the
   **sort gate**: `SplatCamera.pxPerTilt` is a max over EVERY splat, and the gate is
   the larger of `SHIPPED_SORT_EPS` and half a pixel over `pxPerTilt` — the derived

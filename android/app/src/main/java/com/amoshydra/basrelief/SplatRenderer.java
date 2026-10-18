@@ -191,7 +191,7 @@ final class SplatRenderer {
 
     /**
      * The frame the cloud was last DRAWN with, for resolving a tap: the projection's
-     * own factors and the Origin + Pan shift. The tap's ray is the SOURCE camera's,
+     * own factors and the Pan shift. The tap's ray is the SOURCE camera's,
      * so the tapped pixel's source NDC is the drawn NDC minus this shift -- and the
      * DRAWN frame's numbers are used rather than recomputed so the tap lands on the
      * picture the user actually saw. Written in {@link #draw}.
@@ -207,8 +207,8 @@ final class SplatRenderer {
     private float camFocalX, camFocalY;
 
     /**
-     * The camera, as pure math in {@code :core}: the source view, the Origin/Pan
-     * shift, and the turntable about the cloud's surface under the origin. It
+     * The camera, as pure math in {@code :core}: the source view, the Pan shift,
+     * and the turntable about the cloud's surface under the origin. It
      * lives there so the at-rest invariant is asserted without a device; see
      * {@link SplatCamera}.
      */
@@ -317,8 +317,9 @@ final class SplatRenderer {
      * SOURCE NDC is the drawn NDC minus that shift -- and the shift and projection
      * factors come from the frame the cloud was last DRAWN with, not recomputed, so
      * the tap lands on the picture the user saw. The Depth knob is handed through
-     * only for the pick (a splat it pushes through the eye is skipped); the answer is
-     * that splat's image position, which the knob does not move.
+     * for the pick AND the answer: a splat it pushes through the eye is skipped,
+     * and the answer is that splat's drawn image position, which the Z-only
+     * displacement moves with the knob.
      *
      * @param ndcX,ndcY the tapped pixel in the drawn camera's NDC
      * @param out receives the origin fraction; must hold 2 floats
@@ -572,18 +573,20 @@ final class SplatRenderer {
      * @param blurPx the splat Blur: a separable post-blur radius in render-target
      *               pixels, clamped through {@link Splat#clampBlurPx}; 0 is the
      *               identity and skips both passes entirely.
-     * @param depthMul the splat Depth: a multiplier on the cloud's depth, clamped
-     *                 through {@link Splat#clampDepthMul} and applied in the vertex
-     *                 shader as {@link Splat#depthScale} on each splat's position AND
-     *                 size. 1 is the node's own depth, 0 collapses the cloud onto the
-     *                 reference plane (the flat photograph). At rest the picture is
-     *                 the photograph at every value; only the parallax changes. The
+     * @param depthMul the splat Depth: the multiplier of the Z-only displacement,
+     *                 clamped through {@link Splat#clampDepthMul} and applied in
+     *                 the vertex shader as {@link Splat#depthScale} to each splat's
+     *                 {@code z} alone -- x and y stay in their image position, so
+     *                 the at-rest picture changes with the knob the way Relief's
+     *                 depth intensity does. 1 is the node's own depth, 0 collapses
+     *                 the cloud onto the reference plane (the flat photograph). The
      *                 CPU sort still reads the node's own positions, and that is
-     *                 consistent: the scale is monotonic in depth, so it cannot
-     *                 reorder the cloud. The PIVOT, by contrast, is resolved on the
-     *                 moved depth -- see {@link SplatCamera#pivot} -- because it is
-     *                 the surface the shader draws, so the crosshair and the aim
-     *                 follow the knob rather than marking a point the cloud has left.
+     *                 consistent: the displacement is monotonic in depth, so it
+     *                 cannot reorder the cloud. The PIVOT, by contrast, is resolved
+     *                 on the moved depth -- see {@link SplatCamera#pivot} -- because
+     *                 it is the surface the shader draws, so the crosshair and the
+     *                 aim follow the knob rather than marking a point the cloud has
+     *                 left.
      * @return the camera frame this draw used, or null when nothing was drawn — so
      *         the host can place its orbit marker at the SAME pivot the cloud was
      *         aimed at. The frame is the one reusable instance, valid until the next
@@ -630,9 +633,9 @@ final class SplatRenderer {
         float fovy = sourceFovy / Math.max(0.25f, Math.min(2f, zoom));
         fovy = Math.max(MIN_FOVY, Math.min(MAX_FOVY, fovy));
 
-        // The camera, all of it in :core: the source view, the Origin/Pan shift,
-        // and the turntable about the cloud's own surface under the origin. See
-        // SplatCamera for why the origin is a shift and not a lateral move.
+        // The camera, all of it in :core: the source view, the Pan shift, and the
+        // turntable about the cloud's own surface under the origin. See SplatCamera
+        // for why Pan is a shift and not a lateral camera move.
         // The Depth knob is handed to the camera as well as the shader: the pivot
         // is the surface the shader DRAWS, so it must be resolved on the moved
         // depth or the crosshair and the orbit stay at the old height.
@@ -1415,10 +1418,10 @@ final class SplatRenderer {
             // the uAlphaDiscard use below and Splat.extentScaleForAlpha, whose test
             // pins that the clipped quad ends exactly where the discard begins.
             "uniform float uAlphaDiscard;\n" +
-            // The dev DEPTH knob and the plane it scales about. Mirrors
-            // Splat.depthScale, which the :core test pins: 1 is the node's depth,
-            // 0 collapses the cloud onto the plane. See the use below for why the
-            // scale is per-splat and applies to the size as well as the position.
+            // The DEPTH knob's multiplier and the plane it displaces about.
+            // Mirrors Splat.depthScale, which the :core test pins: 1 is the node's
+            // depth, 0 collapses the cloud onto the plane. See the use below for
+            // the Z-only displacement and what it deliberately leaves alone.
             "uniform float uDepthMul;\n" +
             "uniform float uDepthRef;\n" +
             "\n" +
@@ -1477,15 +1480,13 @@ final class SplatRenderer {
             "  vec4 spCol = unpack_unorm_4x8(B.z);\n" +
             "  vec4 q4 = unpack_unorm_4x8(B.w) * 2.0 - 1.0;\n" +
             "\n" +
-            // THE DEV DEPTH KNOB. A splat sits on the ray from the eye through its
-            // own image pixel, at its own depth, so moving it ALONG that ray changes
-            // the depth and leaves the photograph alone: scaling the whole vector by
-            // (ref + mul*(z - ref)) / z keeps it on the ray, and the same factor on
-            // its size keeps its angular size its footprint's at every depth. So at
-            // rest the picture is the photograph at every multiplier and only the
-            // parallax under tilt changes; 0 lands every splat on the reference
+            // THE DEPTH KNOB. The moved depth is ref + mul*(z - ref), written back
+            // into z ALONE -- a Z-only displacement, the way Relief's depth
+            // intensity changes the surface: x and y stay in their image position,
+            // so the at-rest picture changes with the knob rather than being the
+            // photograph at every multiplier. 0 lands every splat on the reference
             // plane, which is the flat photograph. Mirrors Splat.depthScale, whose
-            // test pins the identity at 1 and the ray invariance.
+            // :core test pins the identity at 1 and the moved depth.
             //
             // The max(..., 0) floors the moved depth: a multiplier above 1 can push
             // a near splat past the eye, and a splat there would render mirrored --

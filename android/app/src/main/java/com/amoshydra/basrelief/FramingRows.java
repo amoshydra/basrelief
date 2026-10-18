@@ -128,9 +128,17 @@ final class FramingRows {
      * <p>Zero before the surface exists, which the slider treats as "use the
      * range rule"; see BasreliefSlider.unitTravel.
      */
-    /** Z-pan (camera distance) as a pan-family row: same range feel, global pref. */
+    private static float originTravel(MainActivity activity, boolean isX) {
+        return activity.renderer.getOrbitPixelsPerUnit(isX)
+                * ORIGIN_DRAG_FACTOR / 1000f;
+    }
+
+    /**
+     * Pan Z (camera distance) as a pan-family row: one value per photo and per
+     * surface, written to the same index every other framing gesture writes to.
+     */
     private static View zpan(final MainActivity activity) {
-        int initial = Math.round(activity.renderer.getCamDist() * 100f);
+        int initial = read(activity, "zpan", false);
         BasreliefSlider.ValueFormatter fmt = new BasreliefSlider.ValueFormatter() {
             @Override
             public String format(int value) {
@@ -184,11 +192,6 @@ final class FramingRows {
         activity.dimWhileInteracting(slider);
         activity.sliders.put("zpan", slider);
         return slider.view();
-    }
-
-    private static float originTravel(MainActivity activity, boolean isX) {
-        return activity.renderer.getOrbitPixelsPerUnit(isX)
-                * ORIGIN_DRAG_FACTOR / 1000f;
     }
 
     /** Build the whole section: Origin caption, X, Y, Pan caption, X, Y. */
@@ -353,15 +356,12 @@ final class FramingRows {
 
     /** One axis's stored value as a slider integer, on the surface being edited. */
     private static int read(MainActivity activity, String key, boolean fraction) {
-        // Z-pan first, and before the "no item" answer below: it is a GLOBAL pref,
-        // not a value on a row, so it has a value with an empty gallery too. Reading
-        // it after `item == null` returned 0 made the row show 0.00 over a pref that
-        // was not 0 -- the "a row must display what the gesture will write" rule.
         LibraryItem item = activity.state().activeItem();
         if (item == null) return 0;
         SurfaceSettings f = item.settings(activity.editSurface);
         if ("zpan".equals(key)) {
-            // Per photo and per surface, read exactly as panX/panY are.
+            // Pan Z is a value on the row, per photo and per surface, read exactly
+            // as panX/panY are -- so it answers "nothing selected" like they do.
             float v = f.panZ;
             if (!Float.isFinite(v)) v = SurfaceSettings.DEFAULT_PAN_Z;
             if (v < SurfaceSettings.PAN_Z_MIN) v = SurfaceSettings.PAN_Z_MIN;

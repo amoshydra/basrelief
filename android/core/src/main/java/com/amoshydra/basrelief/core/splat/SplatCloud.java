@@ -203,8 +203,10 @@ public final class SplatCloud {
      * SplatCamera.minViewDistancePerSize(proj5, MAX_EXTENT_FRACTION)} back along its
      * view ray (see {@code SplatCamera}), so this number answers "can the clamp
      * engage for this cloud at all" without a pass over the GPU's vertex data. It is
-     * framing-independent: the Depth knob's scale preserves the ratio, and a tilt
-     * moves a view depth by well under a percent, so one number per cloud is enough.
+     * framing-independent -- a tilt moves a view depth by well under a percent -- so
+     * one number per cloud is enough. The Depth knob is NOT in it: its Z-only
+     * displacement moves a splat's depth without moving its size, so the drawn
+     * {@code size / depth} can differ from this number at any multiplier but 1.
      *
      * <p>0 for a cloud with nothing in front of the camera, and for a cloud whose
      * records cannot be read -- the "a window claims nothing" rule, so a bad file

@@ -14,11 +14,12 @@ import com.amoshydra.basrelief.core.store.SurfaceSettings;
  * could only be judged by eye on a device.
  *
  * <p>The property this class exists for is the same one {@code CameraModelTest}
- * pins for the relief, one medium over: <b>at rest the picture is exactly the
- * photograph — translated by the Origin and Pan rows — at every origin and every
- * pivot depth.</b> For a cloud that means the at-rest projection equals the SOURCE
- * view's, shifted by {@code (-2*originX, -2*originY)} and the pan, at every depth,
- * and the pivot's depth changes nothing about it.
+ * pins for the relief, one medium over: <b>at rest, at the default Depth, the
+ * picture is exactly the photograph — translated by Pan alone, Origin naming the
+ * orbit centre and not moving the picture — at every origin and every pivot
+ * depth.</b> For a cloud that means the at-rest projection equals the SOURCE
+ * view's, shifted by the pan, at every depth, and the pivot's depth changes
+ * nothing about it.
  *
  * <p>The second property is that the pivot holds the screen centre under a tilt
  * while everything else swings: the turntable turns the camera about the cloud's
@@ -436,17 +437,17 @@ public class SplatCameraTest {
     // -------------------------------------------------- the Depth knob and the pivot
 
     /**
-     * THE REPORTED BUG. The Depth knob moves every splat along the ray from the
-     * eye, so the cloud's surface under the origin is at a different depth — and
-     * the pivot, the aim and the crosshair must move with it. Resolved from the
-     * node's own positions they would mark a surface that is no longer there at
-     * any multiplier but 1: the origin indicator sat at the old height while the
-     * cloud was at twice it.
+     * THE REPORTED BUG. The Depth knob moves every splat's DEPTH — a Z-only
+     * displacement, x and y staying in their image position — so the cloud's
+     * surface under the origin is at a different depth, and the pivot, the aim and
+     * the crosshair must move with it. Resolved from the node's own positions they
+     * would mark a surface that is no longer there at any multiplier but 1: the
+     * origin indicator sat at the old height while the cloud was at twice it.
      *
      * <p>The assertion is against the SHADER's own arithmetic, {@link
-     * Splat#depthScale}, applied to the picked splat's position: the pivot must be
-     * exactly the point the vertex shader draws that splat at, not a second
-     * derivation of it that could drift from the first.
+     * Splat#depthScale}, applied to the picked splat: the pivot must be exactly
+     * where the vertex shader draws that splat — x and y untouched, z at the moved
+     * depth — not a second derivation of it that could drift from the first.
      */
     @Test
     public void thePivotFollowsTheDepthKnob() {
@@ -473,17 +474,16 @@ public class SplatCameraTest {
     }
 
     /**
-     * THE INVARIANT THE KNOB EXISTS FOR, at the pivot's own level: moving the
-     * pivot must not move the picture. At rest the eye is the source eye whatever
-     * the pivot is, so a cloud drawn at a different multiplier — its pivot at a
-     * different height — projects every fixed world point identically. This is the
-     * pivot-side companion to {@code SplatTest}'s ray-preservation assertion, and
-     * it is what makes "the marker follows the depth" a fix and not a re-framing.
+     * The pivot MOVES with the knob, at the pivot's own level — which is what makes
+     * "the marker follows the depth" a fix and not a re-framing. The old form of
+     * this test also asserted the picture held still at every multiplier; that was
+     * true of the ray-preserving scale and is deliberately false of the Z-only one
+     * (see {@code SplatTest}), so what is pinned here is the pivot's own movement,
+     * while the eye stays the source eye at every multiplier.
      */
     @Test
     public void theDepthKnobMovesThePivot() {
         float[] cloud = {0.04f, 0.06f, 5f, 0.3f, -0.2f, 1.2f, -0.5f, 0.4f, 3.3f};
-        float[] probes = {-0.4f, 0f, 2.4f, 0.5f, 0.3f, 0.7f, 0f, -0.2f, 6f};
         SplatCamera.Frame base = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                 0.2f, -0.1f, 30f, -20f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, 1f);
         for (float mul : new float[]{0f, 0.5f, 2f, 3f}) {
@@ -491,9 +491,11 @@ public class SplatCameraTest {
                     0.2f, -0.1f, 30f, -20f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, mul);
             assertTrue("the pivot must actually move at mul=" + mul,
                     Math.abs(f.pivotZ - base.pivotZ) > 1e-3f);
-            // (B) Z-only displacement changes the at-rest picture with the knob, so
-            // the projection is no longer required to be identical; the pivot still
-            // moves, which is the property under test here.
+            // The knob moves the splats, not the camera: the eye is the source eye
+            // whatever the pivot's moved depth is.
+            assertEquals(0f, f.eyeX, 0f);
+            assertEquals(0f, f.eyeY, 0f);
+            assertEquals(0f, f.eyeZ, 0f);
         }
     }
 
@@ -631,24 +633,29 @@ public class SplatCameraTest {
     }
 
     /**
-     * The tap does not depend on the Depth knob. The origin is the picked splat's
-     * IMAGE POSITION, and {@link Splat#depthScale} preserves {@code x/z}, so the
-     * answer is the same at every multiplier -- the dependence that made the old tap
-     * land away from the point that was touched.
+     * The tap follows the Depth knob, exactly as the pivot does: the origin is the
+     * picked splat's image position on the surface the SHADER draws, and the Z-only
+     * displacement moves it to {@code x / movedZ}, so the answer changes with the
+     * multiplier. That is the picture the tap must name; "the same at every
+     * multiplier" was the ray-preserving form's claim, and it is no longer true.
      */
     @Test
-    public void theTapDoesNotDependOnTheDepthKnob() {
+    public void theTapFollowsTheDepthKnob() {
         float[] cloud = new float[6];
         System.arraycopy(cloudAt(0.052f, 0.031f, 2.0f), 0, cloud, 0, 3);
         System.arraycopy(cloudAt(0.045f, 0.026f, 7.0f), 0, cloud, 3, 3);
         float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
-        // (B) Z-only displacement: the tap's answer changes with the knob, because the
-        // image position moves with depth. Only the mul=1 case is pinned here.
         float[] out = new float[2];
         camera().originForRay(cloud, 2, 0.050f, 0.030f, REF_DEPTH, 1f,
                 f[0], f[1], out);
         assertEquals("at mul 1 it is the front splat's image position",
                 0.052f * f[0] * 0.5f, out[0], 1e-6f);
+        // mul 0.5 about ref 2.4: the front splat's z=2 moves to 2.2, so its drawn
+        // image position is 0.104/2.2 -- a different answer from the raw x/z above.
+        camera().originForRay(cloud, 2, 0.050f, 0.030f, REF_DEPTH, 0.5f,
+                f[0], f[1], out);
+        assertEquals("at mul 0.5 it is the MOVED image position",
+                0.104f / 2.2f * f[0] * 0.5f, out[0], 1e-6f);
     }
 
     // ------------------------------------------------------------------- zoom
@@ -1027,7 +1034,7 @@ public class SplatCameraTest {
     /**
      * The rule itself: the minimum is LINEAR in the size, INVERSE in the fraction,
      * and depends on the two only through {@code size / depth}, so scaling a whole
-     * cloud (or the Depth knob) does not change which splats are pulled back. A
+     * cloud does not change which splats are pulled back. A
      * projection or a fraction that cannot claim one answers 0 -- no pull-back --
      * the "a window claims nothing" rule applied to a distance.
      */

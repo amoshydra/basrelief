@@ -3483,19 +3483,14 @@ public class MainActivity extends Activity {
                 if (pointers.size() >= 2) {
                     // pinch zoom (relative to two-finger start, no drift)
                     if (startDist > 0f) {
-                        if (renderer.isSplatMode()) {
-                            float newCam = pinchStartCamDist * (startDist / pointerDistance());
-                            float camBefore = renderer.getCamDist();
-                            renderer.setCamDist(newCam);
-                            if (camBefore != renderer.getCamDist()) framingMoved = true;
-                            setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
-                        } else {
-                            float newCam = pinchStartCamDist * (startDist / pointerDistance());
-                            float camBefore = renderer.getCamDist();
-                            renderer.setCamDist(newCam);
-                            if (camBefore != renderer.getCamDist()) framingMoved = true;
-                            setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
-                        }
+                        // ONE branch, both modes: the pinch drives Pan Z, the camera
+                        // distance, and it is the same value on either surface -- so
+                        // a mode test here would be a branch whose arms are identical.
+                        float newCam = pinchStartCamDist * (startDist / pointerDistance());
+                        float camBefore = renderer.getCamDist();
+                        renderer.setCamDist(newCam);
+                        if (camBefore != renderer.getCamDist()) framingMoved = true;
+                        setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
                         // Zoom belongs to the photo, so a pinch frames this one
                         // and leaves every other photo at its own zoom -- and to the
                         // surface being edited, like every other adjustment. This was
@@ -4305,9 +4300,6 @@ public class MainActivity extends Activity {
      * is unwriteable either.
      */
     private void persist(final String key, final int value) {
-        // Z-pan is a device-level pref (global), not a per-photo value, so it
-        // bypasses the index entirely. The renderer already moved on the GL
-        // thread via applyStoredSlider; this just makes it survive a restart.
         final boolean isDepth = "intensity".equals(key);
         final boolean isZoom = "zoom".equals(key);
         final boolean isMotion = "motion".equals(key);

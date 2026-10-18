@@ -2813,8 +2813,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // tapped SCREEN fraction, which is the source image position only while
         // nothing has shifted the picture, so after the first tap (or with any Pan)
         // it landed away from the point that was touched. The cast is the SOURCE
-        // camera's ray, so neither the Depth knob nor the pivot's depth can move it.
-        // See SplatRenderer.tapOrigin and SplatCamera.originForRay.
+        // camera's ray, so neither the Depth knob nor the pivot's depth can move the
+        // ray -- they reach the pick and the answer, which is the drawn surface's
+        // image position. See SplatRenderer.tapOrigin and SplatCamera.originForRay.
         //
         // The relief path below is unchanged: its surface is a field with one
         // unambiguous depth, so there is nothing to cast -- unprojecting through the
@@ -3655,7 +3656,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * screen — the failure the wallpaper paid for twice, once as a black surface
      * and once as a cloud that never retried.
      */
-    public boolean isSplatMode() { return useSplat(); }
     private boolean useSplat() {
         String want = splatWantedPath;
         return want != null && splat != null && splat.isReady() && want.equals(splatLoadedPath);

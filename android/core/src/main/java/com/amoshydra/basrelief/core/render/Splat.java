@@ -137,14 +137,6 @@ public final class Splat {
      * broken region the control refuses to enter, and it is why the default is not
      * the bottom.
      */
-    /**
-     * The bottom of the SIZE range: a NEGATIVE floor, an experiment. It subtracts
-     * from each splat's screen covariance instead of lifting it, so splats whose
-     * natural covariance is smaller than the magnitude get dropped (holes) and
-     * the rest get sharper. 0 is still the identity (no floor); negative values
-     * trade density for sharpness and can produce screen-door holes. Watch the
-     * {@code alphaDrop=} / stats line and the visual result.
-     */
     public static final float EPS_2D_MIN = 0f;
 
     /** The top of the SIZE range: the cleaner-sky option at a small subject cost. */
@@ -322,47 +314,16 @@ public final class Splat {
     }
 
     /**
-     * The scale a splat's position AND size take to multiply its depth about the
-     * reference plane <b>without moving its image position</b> -- the vertex shader
-     * mirrors this line, and the test pins the identity it exists for.
+     * The scale a splat's depth takes: {@code (ref + mul * (z - ref)) / z}, the
+     * moved depth over the original. The SHADER applies it to {@code z} alone
+     * (Z-only displacement, {@code spPos.z = z * scale}), so the at-rest picture
+     * changes with the knob the way Relief's depth intensity does, rather than the
+     * whole vector scaling along the ray from the eye and leaving the picture put.
      *
-     * <p><b>Why a per-splat scale and not a multiply on {@code z}.</b> A cloud's
-     * splats each sit on the ray from the eye through their own image pixel, at
-     * their own depth, so moving one along that ray is what changes the depth and
-     * leaves the photograph alone. Scaling only {@code z} would drag the splat off
-     * its ray and the at-rest picture would move; scaling the whole vector by
-     * {@code (ref + mul*(z - ref)) / z} keeps it on the ray, and the same factor on
-     * the splat's own size keeps its angular size its footprint's at every depth --
-     * exactly the property the relief's cards carry, which is why at rest the
-     * picture is the photograph at EVERY multiplier and only the parallax changes.
-     *
-     * <p>{@code mul == 1} is the identity for every {@code z}: the cloud is the one
-     * the node measured. {@code mul == 0} puts every splat on the reference plane
-     * {@code refDepth}, which projects to the same pixels -- the flat photograph.
-     * The result is floored at 0 so a multiplier above 1 cannot push a near splat
-     * through the eye and render it mirrored; such a splat collapses to the eye and
-     * the existing near-plane cull drops it.
-     *
-     * <p>A depth or reference that cannot claim a value answers 1, the identity: a
-     * splat behind the camera has no ray to move along, and a plane that is not a
-     * distance cannot be one.
-     */
-    /**
-     * Z-only displacement (matches Relief's depth intensity): the moved depth is
-     * {@code mul * z}, applied to {@code z} alone so the at-rest picture changes
-     * with the knob (Relief's behaviour). Returns the multiplier itself; callers
-     * apply it to {@code z} only, leaving {@code x} and {@code y} in place.
-     *
-     * <p>{@code refDepth} is retained in the signature for caller compatibility
-     * and is deliberately ignored: the displacement is about the eye, not the
-     * cloud's median, so increasing depth pushes splats away from the viewer.
-     */
-    /**
-     * (A) scale about the eye: every splat's depth is multiplied by {@code mul},
-     * so increasing depth pushes the whole cloud away from the viewer (and
-     * decreasing pulls it closer). The ray is preserved, so the at-rest picture
-     * is unchanged and only the parallax under tilt changes. {@code refDepth} is
-     * retained for caller compatibility and is deliberately ignored.
+     * <p>This is also what {@link SplatCamera#pivot} resolves the orbit centre
+     * with, so the crosshair and the tap name the surface the shader draws. A
+     * moved depth at or below 0 is the shader's "pushed through the eye" -- culled
+     * there, and skipped here.
      */
     public static float depthScale(float z, float refDepth, float mul) {
         if (!Float.isFinite(z) || z <= 1e-4f) return 1f;
