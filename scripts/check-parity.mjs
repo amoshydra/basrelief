@@ -239,6 +239,51 @@ function stripJavaComments(text) {
 }
 
 /**
+ * The tilt smoother has ONE home: {@code TiltFilter}, in :core.
+ *
+ * <p>Two callers step it — {@code ReliefRenderer}, which smooths the tilt it
+ * draws with, and {@code TiltController}, whose doze gate must measure the DRAWN
+ * value rather than the raw reading. A second copy of the step or of its
+ * constants in either caller would be a second answer to one question, and it
+ * would fail silently: the gate would keep working, just around the wrong
+ * threshold, with the picture visibly stepping when it woke. No :core test can
+ * see :app and no JVM gate runs the shader-free GL path, so the claim is checked
+ * where it can be — on the text of the two files that are allowed to step it.
+ *
+ * <p>The ban is on the step's ARITHMETIC ({@code Math.exp}), not on the word:
+ * both callers must step {@code TiltFilter}, and no :app file may declare a copy
+ * of the two constants. {@code SpringSettle}'s own {@code Math.exp} is a different
+ * thing (the sheet's spring), so only these two files are checked for it.
+ */
+function checkTiltSmoothing() {
+  const appDir = join(root, 'android/app/src/main/java/com/amoshydra/basrelief');
+  const before = failures.length;
+  for (const f of ['ReliefRenderer.java', 'TiltController.java']) {
+    const text = stripJavaComments(readFileSync(join(appDir, f), 'utf8'));
+    if (text.includes('Math.exp(')) {
+      failures.push(`${f} derives a smoothing step of its own (Math.exp) — ` +
+        `the tilt filter lives in :core/TiltFilter, and two copies drift`);
+    }
+    for (const call of ['TiltFilter.approach(', 'TiltFilter.alphaFor(']) {
+      if (!text.includes(call)) {
+        failures.push(`${f} does not call ${call} — the doze gate and the draw ` +
+          `must step the SAME filter`);
+      }
+    }
+  }
+  for (const f of readdirSync(appDir).filter((n) => n.endsWith('.java'))) {
+    const text = stripJavaComments(readFileSync(join(appDir, f), 'utf8'));
+    if (/(SMOOTHING_TAU|ATTACK_ERROR)\s*=/.test(text)) {
+      failures.push(`${f} declares a copy of SMOOTHING_TAU or ATTACK_ERROR — ` +
+        `the tilt filter's constants have one home, in :core/TiltFilter`);
+    }
+  }
+  if (failures.length === before) {
+    console.log('tilt filter: one step and one set of constants, stepped by both callers');
+  }
+}
+
+/**
  * The four defects this guards are one defect: the same visual built more than
  * once, so a fix lands in one copy and not the others. Habits cannot enforce
  * that; the two exact claims can be checked, so they are:
@@ -308,6 +353,7 @@ checkDocLinks();
 checkTestCounts();
 checkParity();
 checkModalInvariants();
+checkTiltSmoothing();
 
 if (failures.length) {
   console.error(`\ncheck-parity: ${failures.length} problem(s)\n`);

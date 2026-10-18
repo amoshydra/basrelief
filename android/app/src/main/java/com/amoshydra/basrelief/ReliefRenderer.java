@@ -36,6 +36,7 @@ import com.amoshydra.basrelief.core.render.ReliefMesh;
 import com.amoshydra.basrelief.core.render.Splat;
 import com.amoshydra.basrelief.core.render.SplatCamera;
 import com.amoshydra.basrelief.core.splat.SplatCloud;
+import com.amoshydra.basrelief.core.render.TiltFilter;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -95,30 +96,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     // FOV / camera distance / crop margin / tilt range live in CameraModel —
     // do NOT duplicate them here, or the two will drift apart.
-    // Smoothing time constant (seconds) — display-refresh independent, so the
-    // feel is the same at 60/90/120 Hz. This is the value used for SMALL errors,
-    // i.e. sensor jitter while the phone is held still; it is what stops the
-    // relief from shimmering when you are not moving.
-    private static final float SMOOTHING_TAU = 0.2f;
-
-    // Fast attack / slow release, on top of the above.
     //
-    // A single time constant cannot tell a deliberate movement from a sensor
-    // wobble, so it treats both identically: with tau=0.2 the filter closes only
-    // ~9.5% of the gap per frame at 50 Hz, and a 30 degree tilt takes ~460 ms to
-    // get 90% of the way there. That reads as "the gyro lags".
-    //
-    // So the fraction followed per frame is raised once the error is large:
-    // below ATTACK_ERROR the exponential applies unchanged (jitter stays
-    // smoothed), above it alpha saturates at 1 and the value snaps in a single
-    // frame. Same idea as a camera autofocus that snaps when swung somewhere
-    // new and glides when nearly there.
-    //
-    // This is a FEEL constant. Lower it if the motion reads as twitchy; raise it
-    // if mid-movement still feels like it lags. Tilt is normalised as
-    // roll/RANGE_DEG with RANGE_DEG = 25, so 0.125 here is about 3 degrees of
-    // phone rotation, not 7.
-    private static final float ATTACK_ERROR = 0.125f;
+    // The tilt smoother's constants and its step function live in TiltFilter, in
+    // :core, and NOT here — because TiltController's doze gate has to apply the
+    // SAME filter to the same signal (the gate decides "is the DRAWN picture
+    // moving", and the drawn value is this filter's output). Two copies of the
+    // tau, the fast attack and the blend would be two answers to one question;
+    // one class makes the mirror structural. See TiltFilter for why the gate
+    // cannot simply read smoothX/smoothY.
     /** Depth default: 90% of the maximum the camera allows at this zoom. */
     private static final int DEFAULT_DEPTH = 90;
     // Relief grid resolution: (GRID+1)^2 vertices, and the depth field's size.
@@ -2738,24 +2723,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return applyPending(decodePair(imagePath, depthPath, normalPath, focal));
     }
 
-    /**
-     * One axis of the tilt smoother: exponential for small errors, instant for
-     * large ones.
-     *
-     * @param alpha the exponential step for this frame, from SMOOTHING_TAU
-     */
-    private static float approach(float smooth, float target, float alpha) {
-        float err = target - smooth;
-        float a = alpha;
-        float mag = Math.abs(err);
-        if (mag > ATTACK_ERROR) {
-            a = 1f;                 // deliberate movement: snap
-        } else if (mag * 8f > a) {
-            a = mag * 8f;           // blend smoothly into the fast regime
-        }
-        return smooth + err * a;
-    }
-
     private void writeStatus(String status) {
         context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
                 .edit().putString("status", status).apply();
@@ -3767,13 +3734,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
 
         recomputeScale();
-        float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
+        // The step for this frame, from the shared filter: the same function and
+        // the same constants TiltController's doze gate steps per sensor sample,
+        // which is what lets the gate answer "has the value this draw will show
+        // moved?" — see TiltFilter. The gap cap lives in alphaFor too, so both
+        // callers clamp a stall the same way.
+        float alpha = TiltFilter.alphaFor((now - lastFrameNanos) / 1e9f);
         lastFrameNanos = now;
-        float alpha = 1f - (float) Math.exp(-dt / SMOOTHING_TAU);
-        // Fast attack: a big error means the user is moving, so follow it at once
-        // instead of easing in over ~460 ms. See ATTACK_ERROR.
-        smoothX = approach(smoothX, targetX, alpha);
-        smoothY = approach(smoothY, targetY, alpha);
+        // Fast attack, inside approach: a big error means the user is moving, so
+        // follow it at once instead of easing in over ~460 ms. See TiltFilter.
+        smoothX = TiltFilter.approach(smoothX, targetX, alpha);
+        smoothY = TiltFilter.approach(smoothY, targetY, alpha);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 

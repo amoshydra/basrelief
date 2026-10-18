@@ -78,7 +78,8 @@ android/app  ──depends on──▶  android/core
 `:core` exists so the maths that is easy to get quietly wrong is testable
 without a device. It holds depth→geometry (`ReliefMesh`), the camera
 (`CameraModel`), the picture adjustments (`Picture`), the splat mode's numbers
-(`Splat`), a vendored `Mat4`, the prefs path scheme (`PrefFiles`), the whole
+(`Splat`), the tilt smoother both the draw and the doze gate step
+(`TiltFilter`), a vendored `Mat4`, the prefs path scheme (`PrefFiles`), the whole
 persisted schema (`Config`, `Library`, `LibraryItem`, `Surface`,
 `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`, `VideoTracks`), the three
 "where did this come from" vocabularies (`DepthSource`, `NormalSource`,
@@ -952,25 +953,78 @@ already cost real time.
     `theDozeThresholdStaysUnderASubPixelAtEveryFraming` is the guard: an edit to
     `TILT_RANGE`, `FOV_DEG` or `CROP_MARGIN` that made the picture move more per
     degree of tilt goes red rather than letting the doze become visible.
+  - **The gate watches the FILTERED tilt, not the raw reading, and that is the
+    difference between a doze that engages and one that chatters.** The quantity is
+    the smoothed tilt's movement **since the last movement publish** — not the raw
+    reading's deviation from its ~2 s baseline. The raw signal carries the phone's
+    own sensor and desk noise, which the renderer's `SMOOTHING_TAU` filter removes
+    before anything is drawn, so the gate's raw movement straddles its own threshold
+    while the drawn picture does not move: measured on the 6T, `move` ran
+    **6e-5 … 1.6e-3** around `dozeThresh = 6.0e-4` and the wallpaper published at
+    **~50/s with `asleep=false`** — the full ~0.86 A, 3.5-4.0 W of a continuously
+    drawn wallpaper, for a picture that was not moving. The same desk, same protocol,
+    after this change: **~2 publishes/s, `dozing=true`, with `move` still running up
+    to 1.9e-3** — the raw quantity above the threshold while the filtered one
+    (`fMove`, **1e-5 … 5.7e-4**) is below it. Referencing the last publish rather than
+    the sample before it is also what bounds the frozen frame: the drift accumulated
+    while dozing is exactly the quantity the wake fires on, so the first frame after a
+    wake steps by less than `DOZE_EPS` (plus the renderer's own intentional `tau`
+    lag, which is there whatever the doze does) and the renderer eases the rest. The
+    two quantities are printed side by side on the `tilt:` line (`move` raw, `fMove`
+    filtered) precisely because a log that prints only the outcome cannot say which
+    one drove a decision.
+  - **Inside the dwell with less than the bound travelled, NOTHING is drawn, and
+    that is the point of the reference.** The gate's third branch used to publish
+    every sample — "keep drawing while the movement settles" — which made sense while
+    its quantity was the raw deviation from the baseline and could bound nothing. Once
+    the quantity is "movement since the last frame", a publish inside the dwell is by
+    definition a frame the gate has proven cannot be visibly different from the one on
+    screen. It was also the bulk of the frames that remained: a crossing costs ONE
+    frame, and the dwell's settling published twelve more per crossing. Measured, same
+    desk and protocol: dropping it took the same window from **~14 publishes/s to
+    ~2/s**, with `dozing=true` and no publishes at all for four to six consecutive
+    seconds in most windows. The honest cost is stated rather than hidden: while the
+    phone
+    moves only a little (below `bound × 50`, i.e. a very slow deliberate tilt) the
+    picture is sampled at the crossing rate rather than the sensor's, with every step
+    under the bound — `DOZE_SUBPIXEL_PX` is what makes that acceptable, and the user's
+    eye on a slow tilt is the acceptance test.
+  - **The gate's filter is the renderer's, and it is one function, not a mirror
+    kept in step by hand.** `TiltFilter` (in `:core`) holds the tau, the fast attack
+    and the step; `ReliefRenderer` steps it once per drawn frame and `TiltController`
+    once per sensor sample, fed the same presented tilt — so the gate measures the
+    value that is about to be drawn. The gate needs its own state (the renderer's
+    `smoothX`/`smoothY` advance only while it draws, so a gate reading them would
+    freeze the moment it dozed and never wake), and the two are consistent because
+    `tau` is a TIME CONSTANT: the same elapsed time is the same step at either
+    cadence, which `TiltFilterTest` asserts rather than assumes. The fast attack is
+    deliberately part of the mirror: a gate with only the exponential would lag the
+    target exactly while a deliberate movement is under way — the one moment the
+    bound matters — and so would allow a wake bigger than the bound. And the mirror
+    is enforced, not merely documented: `scripts/check-parity.mjs` fails if either
+    caller derives a step of its own (`Math.exp`) or declares a copy of the
+    constants, because a second copy would keep working around the wrong threshold
+    with nothing to say so.
   - **The doze is not `IDLE_EPS`.** That answers a different question (ten seconds
-    of stillness) and is ~1°, a few pixels. Folding the two together would either
-    make the idle sleep unreachable or make the doze visible. It is the persistence
-    of `move` (the tilt's deviation from its ~2 s baseline, already computed for the
-    idle detector) that separates hand jitter from a deliberate movement — not the
-    per-sample delta, which a slow nudge keeps small, and not the raw amplitude,
-    which jitter exceeds.
+    of stillness) and is ~1°, a few pixels; it is the raw reading's deviation from
+    its baseline that feeds it, deliberately, because that stage answers "has the
+    phone been moved" and the filtered signal would hide a slow deliberate movement
+    from it. Folding the two together would either make the idle sleep unreachable or
+    make the doze visible.
   - **A running re-centre glide publishes every sample**, because it is a
     deliberate visible movement and dozing it would freeze the glide part-way. The
     wake threshold is at least the doze threshold (equal here, so the step the wake
     takes is the smallest justifiable one) and a dwell (`DOZE_DWELL_MS`) before
-    dozing is the hysteresis — a `move` sitting on the threshold cannot chatter, and
-    a brief pause between movements does not doze.
+    dozing is the hysteresis — a filtered movement sitting on the threshold cannot
+    chatter, and a brief pause between movements does not doze. Since the reference
+    is what bounds the frames, the dwell now only delays the `dozing` flag; it no
+    longer costs a single frame of its own.
   - **A doze that works produces no `splat:` STATS line**, because that line only
     prints while a splat draws — the instrument disappears exactly when the change
     takes effect. `TiltController` therefore logs one `tilt:` line a second from the
     sensor callback: `samples/s`, `publish/s` (the frames the hosts are asked for),
-    the current `move` against `dozeThresh`, and whether the doze or the idle sleep
-    is engaged.
+    the current `move` and `fMove` against `dozeThresh`, and whether the doze or the
+    idle sleep is engaged.
 - **`GLUtils.texImage2D` puts bitmap row 0 at `v=0` (bottom).** The colour
   bitmap is flipped vertically so image-top = `v=1`, matching top-first depth
   sampling. Same for the depth.
@@ -986,7 +1040,8 @@ already cost real time.
   handles both forms; see its test for the restore case.
 - **Gyro:** `TYPE_ROTATION_VECTOR`; re-calibrate on every visibility change
   (average ~8 samples, never a cached reading); time-based exponential smoothing
-  (`tau = 0.2s`) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
+  (`tau = 0.2s`, `TiltFilter.SMOOTHING_TAU`, so the doze gate and the draw step one
+  filter) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
   it unregisters the rotation-vector sensor and falls back to a low-power
   accelerometer until a shake — that idle-sleep is the **sensor-side** win; the
   draw-path win is the doze above, which parks the frames without giving up the
@@ -1185,7 +1240,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 744 tests across forty classes:
+it**. 747 tests across forty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1777,6 +1832,20 @@ every library write took the app down, so any gallery tap crashed it.
   The formatting is pinned because a screenshot cannot check it: the headline is one
   decimal and blanks to an em dash, the count compacts to `741k`/`1.1M` so the render
   size stays on the line, and a relief prints `frame 16.7ms` and nothing else.
+- `TiltFilterTest` — the tilt smoother, which two callers step at two different
+  sample rates: `ReliefRenderer` once per drawn frame, `TiltController`'s doze gate
+  once per sensor sample. It pins the rule (the exponential below `ATTACK_ERROR`,
+  the blend into it, a snap at and above it, no overshoot, monotone and symmetric
+  in the error) and, above all, **the property that lets one function serve both
+  rates**: the gap is a TIME CONSTANT, so two half-steps land where one whole step
+  does — a fraction hard-coded per frame would pass on the renderer and make the
+  gate drift with the sensor rate. It also pins the clamp: a gap past `MAX_DT`
+  (which is *below* tau) takes one capped step rather than becoming a snap, and a
+  gap that cannot claim a number (NaN, negative, infinite) takes no step at all —
+  the "a window claims nothing" rule applied to a step. The *mirror* itself is not
+  a unit test's to hold, because both call sites are in `:app` and no `:core` test
+  can see them: `scripts/check-parity.mjs` fails if either caller derives a
+  smoothing step of its own or declares a copy of the constants.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom". Its third
   theme is the pivot at depth: **the at-rest picture is unchanged for every origin
@@ -2298,7 +2367,9 @@ every library write took the app down, so any gallery tap crashed it.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the
-file wrong.
+file wrong. That script also holds the two claims no JVM test can see: the paths
+this file names exist, and the tilt smoother has one home (no `:app` caller may
+derive its own smoothing step or declare its own copy of the constants).
 
 If `meshMatchesGoldenOutput` goes red, **read the diff and decide whether the
 geometry change was intended** before regenerating. `RegenerateGoldens` is a
