@@ -174,11 +174,13 @@ public class FramingRowValueTest {
                 new SurfaceSettings(90, FramingRowValue.zoomPercent(1.376f), 60,
                         0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED,
                         SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE).zoom);
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z).zoom);
         assertEquals(1.376f, new SurfaceSettings(90, FramingRowValue.zoomPercent(1.376f),
                 60, 0f, 0f, 0f, 0f, 0, 0, 0f, 0f, SurfaceSettings.DEFAULT_SPEED,
                 SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE).zoomScale(), 0.005f);
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z).zoomScale(), 0.005f);
     }
 
     // --------------------------------------------------------- the round trip
@@ -199,7 +201,8 @@ public class FramingRowValueTest {
                 0.2577801f, -0.15712592f, 86.5f, -126f, 0, 0, 0f, 0f,
                 SurfaceSettings.DEFAULT_SPEED,
                 SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z);
         assertEquals(258, FramingRowValue.originThousandths(stored.originX));
         assertEquals(-157, FramingRowValue.originThousandths(stored.originY));
         assertEquals(87, FramingRowValue.showablePan(stored.panX, 3120));

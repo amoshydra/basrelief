@@ -316,7 +316,8 @@ public final class LibraryItem {
                         SurfaceSettings.DEFAULT_SPLAT_DEPTH,
                         SurfaceSettings.DEFAULT_SPLAT_EPS2D,
                         SurfaceSettings.DEFAULT_SPLAT_BLUR,
-                        SurfaceSettings.DEFAULT_SPLAT_SCALE),
+                        SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                        SurfaceSettings.DEFAULT_PAN_Z),
                 null);
     }
 
@@ -834,7 +835,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** The Zoom slider, 25..200, on one surface. */
@@ -842,7 +843,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -853,7 +854,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -866,7 +867,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, v,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** Origin, a fraction of the plane, on one surface. */
@@ -874,7 +875,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
                 s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
@@ -882,7 +883,18 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, x, y, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
+    }
+
+    /**
+     * Pan Z: the camera distance, 1.0 is the source camera. Per photo and per
+     * surface exactly as Pan X/Y are, because it is the same kind of choice.
+     */
+    public LibraryItem withPanZ(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
+                s.originX, s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, v));
     }
 
     /** Brightness and shadow, -100..100, on one surface. Render-time only. */
@@ -890,7 +902,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, s.panX, s.panY, brightness, shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -915,7 +927,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                v, s.splatEps2d, s.splatBlur, s.splatScale));
+                v, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** The splat cloud's Size: the 2D floor as a fraction of a splat's cell. */
@@ -923,7 +935,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, v, s.splatBlur, s.splatScale));
+                s.splatDepth, v, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** The splat cloud's Blur: a post-blur radius in render-target pixels. */
@@ -931,7 +943,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, v, s.splatScale));
+                s.splatDepth, s.splatEps2d, v, s.splatScale, s.panZ));
     }
 
     /** The splat cloud's Resolution: the fraction of the surface it is drawn at. */
@@ -939,7 +951,7 @@ public final class LibraryItem {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
                 s.lightAzimuth, s.lightElevation, s.speed,
-                s.splatDepth, s.splatEps2d, s.splatBlur, v));
+                s.splatDepth, s.splatEps2d, s.splatBlur, v, s.panZ));
     }
 
     /**
@@ -1342,7 +1354,8 @@ public final class LibraryItem {
                     SurfaceSettings.DEFAULT_SPLAT_DEPTH,
                     SurfaceSettings.DEFAULT_SPLAT_EPS2D,
                     SurfaceSettings.DEFAULT_SPLAT_BLUR,
-                    SurfaceSettings.DEFAULT_SPLAT_SCALE);
+                    SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                    SurfaceSettings.DEFAULT_PAN_Z);
         }
         return SurfaceSettings.defaults();
     }

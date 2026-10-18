@@ -213,7 +213,7 @@ public class PerItemSettingsTest {
 
         SurfaceSettings low = home(item("a")
                 .withSplatDepth(Surface.HOME, -1f)
-                .withSplatSize(Surface.HOME, 0f)
+                .withSplatSize(Surface.HOME, -9f)
                 .withSplatBlur(Surface.HOME, -1f)
                 .withSplatScale(Surface.HOME, 0.01f));
         assertEquals(Splat.DEPTH_MUL_MIN, low.splatDepth, 1e-6f);
@@ -320,7 +320,7 @@ public class PerItemSettingsTest {
                 .withIntensity(Surface.HOME, 80)
                 .editSettings(Surface.LOCK, s -> s.with(25, 120, 10, 0f, 0f, 0f, 0f, 0, 0,
                         s.lightAzimuth, s.lightElevation, s.speed,
-                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
 
         LibraryItem r = Library.parse(libraryOf(it)).activeItem();
         assertTrue(r.hasOwnLockSettings());

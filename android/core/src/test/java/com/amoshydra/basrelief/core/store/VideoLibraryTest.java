@@ -180,7 +180,8 @@ public class VideoLibraryTest {
                         0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
                         SurfaceSettings.DEFAULT_SPEED,
                         SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE));
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                        SurfaceSettings.DEFAULT_PAN_Z));
 
         String color = base.video.color;
         String depth = base.video.depth;

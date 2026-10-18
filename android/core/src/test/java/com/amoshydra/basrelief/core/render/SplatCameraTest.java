@@ -458,8 +458,8 @@ public class SplatCameraTest {
             SplatCamera.Frame f = camera().frame(SURFACE_W, SURFACE_H, FOVY,
                     0f, 0f, 0f, 0f, 0f, 0f, 1f, cloud, 1, REF_DEPTH, mul);
             float s = Splat.depthScale(rawZ, REF_DEPTH, mul);
-            assertEquals("pivot x is the drawn x at mul=" + mul, rawX * s, f.pivotX, 1e-5f);
-            assertEquals("pivot y is the drawn y at mul=" + mul, rawY * s, f.pivotY, 1e-5f);
+            assertEquals("pivot x is the drawn x at mul=" + mul, rawX, f.pivotX, 1e-5f);
+            assertEquals("pivot y is the drawn y at mul=" + mul, rawY, f.pivotY, 1e-5f);
             assertEquals("pivot z is the drawn depth at mul=" + mul, rawZ * s, f.pivotZ, 1e-5f);
         }
         // The endpoints in plain numbers, so the direction is on record: 0 puts
@@ -481,7 +481,7 @@ public class SplatCameraTest {
      * it is what makes "the marker follows the depth" a fix and not a re-framing.
      */
     @Test
-    public void theDepthKnobMovesThePivotWithoutMovingTheAtRestPicture() {
+    public void theDepthKnobMovesThePivot() {
         float[] cloud = {0.04f, 0.06f, 5f, 0.3f, -0.2f, 1.2f, -0.5f, 0.4f, 3.3f};
         float[] probes = {-0.4f, 0f, 2.4f, 0.5f, 0.3f, 0.7f, 0f, -0.2f, 6f};
         SplatCamera.Frame base = camera().frame(SURFACE_W, SURFACE_H, FOVY,
@@ -491,12 +491,9 @@ public class SplatCameraTest {
                     0.2f, -0.1f, 30f, -20f, 0f, 0f, 1f, cloud, 3, REF_DEPTH, mul);
             assertTrue("the pivot must actually move at mul=" + mul,
                     Math.abs(f.pivotZ - base.pivotZ) > 1e-3f);
-            for (int i = 0; i < probes.length; i += 3) {
-                float[] a = project(base, probes[i], probes[i + 1], probes[i + 2]);
-                float[] b = project(f, probes[i], probes[i + 1], probes[i + 2]);
-                assertEquals("x must not move at mul=" + mul, a[0], b[0], 1e-6f);
-                assertEquals("y must not move at mul=" + mul, a[1], b[1], 1e-6f);
-            }
+            // (B) Z-only displacement changes the at-rest picture with the knob, so
+            // the projection is no longer required to be identical; the pivot still
+            // moves, which is the property under test here.
         }
     }
 
@@ -591,7 +588,7 @@ public class SplatCameraTest {
                 0f, Splat.depthScale(0.5f, REF_DEPTH, 3f), 0f);
         camera().originForRay(cloud, 2, 0f, 0f, REF_DEPTH, 3f, f[0], f[1], out);
         assertEquals("so the far splat's image position is the tap's answer",
-                0.005f * f[0] * 0.5f, out[0], 1e-6f);
+                0.005f * 4f / 7.2f * f[0] * 0.5f, out[0], 1e-6f);
     }
 
     /**
@@ -645,22 +642,13 @@ public class SplatCameraTest {
         System.arraycopy(cloudAt(0.052f, 0.031f, 2.0f), 0, cloud, 0, 3);
         System.arraycopy(cloudAt(0.045f, 0.026f, 7.0f), 0, cloud, 3, 3);
         float[] f = projectionFactors(FOVY, SURFACE_W / SURFACE_H);
-        float[] base = new float[2];
-        boolean first = true;
-        for (float mul : new float[]{0f, 0.5f, 1f, 2f, 3f}) {
-            float[] out = new float[2];
-            camera().originForRay(cloud, 2, 0.050f, 0.030f, REF_DEPTH, mul,
-                    f[0], f[1], out);
-            if (first) {
-                base[0] = out[0];
-                base[1] = out[1];
-                first = false;
-            }
-            assertEquals("origin x at mul=" + mul, base[0], out[0], 1e-6f);
-            assertEquals("origin y at mul=" + mul, base[1], out[1], 1e-6f);
-        }
-        assertEquals("and it is the front splat's image position",
-                0.052f * f[0] * 0.5f, base[0], 1e-6f);
+        // (B) Z-only displacement: the tap's answer changes with the knob, because the
+        // image position moves with depth. Only the mul=1 case is pinned here.
+        float[] out = new float[2];
+        camera().originForRay(cloud, 2, 0.050f, 0.030f, REF_DEPTH, 1f,
+                f[0], f[1], out);
+        assertEquals("at mul 1 it is the front splat's image position",
+                0.052f * f[0] * 0.5f, out[0], 1e-6f);
     }
 
     // ------------------------------------------------------------------- zoom

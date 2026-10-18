@@ -109,9 +109,18 @@ public final class SplatCamera {
     }
 
     private final Frame frame = new Frame();
+    private float camDistScale = 1f;
     private final float[] shiftMat = new float[16];
     /** Scratch for {@link #originForRay}; the drawn {@link #frame} is left untouched. */
     private final Frame tapPick = new Frame();
+
+    /** Camera-distance (dolly) scale; >1 pulls the eye back for depth room. */
+    public void setCamDistScale(float v) {
+        if (!Float.isFinite(v)) v = 1f;
+        if (v < 0.5f) v = 0.5f;
+        if (v > 5f) v = 5f;
+        camDistScale = v;
+    }
 
     /**
      * Build one frame's camera.
@@ -152,14 +161,15 @@ public final class SplatCamera {
         // relief's — positive tiltX moves the eye +x (right), positive tiltY moves
         // it +y in this frame (down), which is the same visual direction the relief
         // moves it in its y-up world.
-        float a = tiltX * (TILT_RANGE / CAM_DIST) * motion;
-        float b = tiltY * (TILT_RANGE / CAM_DIST) * motion;
+        float a = tiltX * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
+        float b = tiltY * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
         float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
         float cb = (float) Math.cos(b), sb = (float) Math.sin(b);
 
         float px = frame.pivotX, py = frame.pivotY, pz = frame.pivotZ;
         // r = E0 - P = -P, through Ry(-a) then Rx(b).
-        float rx = -px, ry = -py, rz = -pz;
+        float dolly = CAM_DIST * (camDistScale - 1f);
+        float rx = -px, ry = -py, rz = -pz - dolly;
         float yx = rx * ca - rz * sa;
         float yy = ry;
         float yz = rx * sa + rz * ca;
@@ -241,24 +251,24 @@ public final class SplatCamera {
             float x = positions[j], y = positions[j + 1], z = positions[j + 2];
             // Behind or on the camera: no image position, so not under any ray.
             if (!(z > 1e-4f)) continue;
-            // The scale the shader applies to this splat's whole vector. It keeps
-            // the ray (x/z is invariant) and moves the depth, and 0 is the shader's
-            // "pushed through the eye" -- culled there, skipped here.
+            // The moved depth the shader writes (Z-only displacement): x and y stay
+            // in place, so the drawn image position is x / sz, y / sz.
             float dscl = Splat.depthScale(z, refDepth, depthMul);
             if (!(dscl > 0f)) continue;
-            float sx = x * dscl, sy = y * dscl, sz = z * dscl;
-            float invz = 1f / z;
+            float sz = z * dscl;
+            if (!(sz > 1e-4f)) continue;
+            float invz = 1f / sz;
             float dx = x * invz - tanX;
             float dy = y * invz - tanY;
             float d2 = dx * dx + dy * dy;
             if (d2 < nearD2) {
                 nearD2 = d2;
-                nearX = sx; nearY = sy; nearZ = sz;
+                nearX = x; nearY = y; nearZ = sz;
                 near = true;
             }
             if (d2 <= r2 && sz < frontZ) {
                 frontZ = sz;
-                frontX = sx; frontY = sy;
+                frontX = x; frontY = y;
                 front = true;
             }
         }

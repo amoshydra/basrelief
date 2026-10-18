@@ -743,6 +743,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private volatile float splatRenderScale = 1f;
     private volatile float splatEps2d = Splat.EPS_2D_DEFAULT;
+    private volatile float camDist = 1f;
     private volatile float splatBlurPx = Splat.BLUR_DEFAULT;
     private volatile float splatDepthMul = Splat.DEPTH_MUL_DEFAULT;
 
@@ -2081,6 +2082,15 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void setSplatEps2d(float v) {
         splatEps2d = Splat.clampEps2d(v);
     }
+    public void setCamDist(float v) {
+        if (!Float.isFinite(v)) v = 1f;
+        if (v < 0.5f) v = 0.5f;
+        if (v > 5f) v = 5f;
+        camDist = v;
+        camera.setCamDistScale(v);
+    }
+    public float getCamDist() { return camDist; }
+
 
     /**
      * Live write for the splat Blur row: the post-blur radius in render-target
@@ -2216,6 +2226,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void saveFramingToPrefs() {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
         final int pct = FramingRowValue.zoomPercent(zoom);
+        final float pz = camDist;
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         AppState st = AppState.load(context, p, context.getFilesDir());
         final String id = st.activeId();
@@ -2240,7 +2251,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 Surface on = editSurface;
                 return item.withOrigin(on, ox, oy)
                         .withPan(on, px, py)
-                        .withZoom(on, pct);
+                        .withZoom(on, pct)
+                        .withPanZ(on, pz);
             }
         });
     }
@@ -2251,6 +2263,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         panX = 0f;
         panY = 0f;
         zoom = 1f;
+        setCamDist(1f);
     }
 
     /**
@@ -3149,6 +3162,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         splatEps2d = lerp(glideFrom.splatEps2d, glideTo.splatEps2d, e);
         splatBlurPx = lerp(glideFrom.splatBlur, glideTo.splatBlur, e);
         splatRenderScale = lerp(glideFrom.splatScale, glideTo.splatScale, e);
+        // Pan Z eases with the rest: a home<->lock glide crosses two camera
+        // distances and must move between them, not snap at the end.
+        setCamDist(lerp(glideFrom.panZ, glideTo.panZ, e));
     }
 
     private static float lerp(float a, float b, float t) {
@@ -3186,7 +3202,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 pendingBrightnessGain, pendingShadowLift,
                 lightAzimuth, lightElevation,
                 sourceKind, renderMode, speed,
-                splatDepthMul, splatEps2d, splatBlurPx, splatRenderScale);
+                splatDepthMul, splatEps2d, splatBlurPx, splatRenderScale, camDist);
     }
 
     /**
@@ -3298,6 +3314,9 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         splatEps2d = f.splatEps2d;
         splatBlurPx = f.splatBlur;
         splatRenderScale = f.splatScale;
+        // Pan Z, the camera distance, per photo and per surface like Pan X/Y. Set
+        // with the rest so a resolve always wins and the snapshot reports it.
+        setCamDist(f.panZ);
         // An explicit apply ends any glide in flight: it is the caller saying where
         // the view IS, and a tween arguing with that is a smear, not an ease.
         glideFrom = null;
@@ -3349,6 +3368,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // context rather than once per process.
         splatGrid = Splat.gridForLevel(p.getInt(KEY_RENDER_3D_LEVEL, 0));
         splatLevelLogged = false;
+
+
         // The index owns the selection, so one dereference gives the files and the
         // settings together and cannot come back naming a photo that was deleted.
         // Loaded once: this runs on the GL thread at cold start, and each load
@@ -3634,6 +3655,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * screen — the failure the wallpaper paid for twice, once as a black surface
      * and once as a cloud that never retried.
      */
+    public boolean isSplatMode() { return useSplat(); }
     private boolean useSplat() {
         String want = splatWantedPath;
         return want != null && splat != null && splat.isReady() && want.equals(splatLoadedPath);
@@ -3763,7 +3785,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             SplatCamera.Frame sf = splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
                     orbitX, orbitY, panX, panY,
                     pendingBrightnessGain, pendingShadowLift, splatRenderScale,
-                    splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul);
+                    splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul, camDist);
             // The readout reads the splat's own window here, not the relief's: the
             // numbers on the glass are the ones the splat's log just printed. The
             // relief's own window is abandoned while the cloud draws, so the next
@@ -3877,6 +3899,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // for the same reason the framing is: during a fade two photographs are
         // on screen and each aims at its own subject.
         camera.setPivotHeight(ReliefMesh.heightAt(r.field, GRID, fr.orbitX, fr.orbitY));
+        camera.setCamDistScale(camDist);
         // One shared reusable Frame, so this allocates nothing; its values must
         // be consumed before the next call, which the uniform uploads do.
         CameraModel.Frame f = camera.frame(surfaceW, surfaceH, fr.panX, fr.panY,

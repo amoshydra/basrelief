@@ -738,6 +738,8 @@ final class BasreliefSlider extends LinearLayout {
         else if ("splat_budget".equals(key)) res = R.string.slider_splat_budget;
         else if ("splat_scale".equals(key)) res = R.string.slider_splat_resolution;
         else if ("splat_depth_mul".equals(key)) res = R.string.slider_splat_depth;
+        else if ("splat_zpan".equals(key)) res = R.string.slider_splat_zpan;
+        else if ("zpan".equals(key)) res = R.string.slider_splat_zpan;
         else res = 0;
         return res == 0 ? key : a.getString(res);
     }

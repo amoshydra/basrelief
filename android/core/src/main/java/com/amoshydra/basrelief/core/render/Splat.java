@@ -137,6 +137,14 @@ public final class Splat {
      * broken region the control refuses to enter, and it is why the default is not
      * the bottom.
      */
+    /**
+     * The bottom of the SIZE range: a NEGATIVE floor, an experiment. It subtracts
+     * from each splat's screen covariance instead of lifting it, so splats whose
+     * natural covariance is smaller than the magnitude get dropped (holes) and
+     * the rest get sharper. 0 is still the identity (no floor); negative values
+     * trade density for sharpness and can produce screen-door holes. Watch the
+     * {@code alphaDrop=} / stats line and the visual result.
+     */
     public static final float EPS_2D_MIN = 0f;
 
     /** The top of the SIZE range: the cleaner-sky option at a small subject cost. */
@@ -217,7 +225,8 @@ public final class Splat {
      */
     public static float eps2dFor(float fraction, int viewportW, int viewportH,
                                  int count, float zoom) {
-        if (!(fraction > 0f) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
+        if (!Float.isFinite(fraction) || viewportW <= 0 || viewportH <= 0 || count <= 0) return 0f;
+        if (fraction == 0f) return 0f;
         float z = Float.isFinite(zoom) ? Math.max(0.25f, Math.min(2f, zoom)) : 1f;
         // The ON-SCREEN cell: the area one splat stands for once the zoom has
         // magnified it, and the gap the floor exists to close.
@@ -233,7 +242,7 @@ public final class Splat {
      * speckle is gone several times over and the detail cost is obvious; a larger
      * radius is a different effect (a defocus), not a cleaner version of this one.
      */
-    public static final float BLUR_MAX = 6f;
+    public static final float BLUR_MAX = 12f;
 
     /**
      * The radius a stored value means. Negative and non-finite answer the identity,
@@ -256,7 +265,7 @@ public final class Splat {
      * rasterised at. Below a quarter the picture is softer than the fill it saves,
      * so this is the useful floor rather than a bound on a divisor.
      */
-    public static final float RENDER_SCALE_MIN = 0.25f;
+    public static final float RENDER_SCALE_MIN = 0.1f;
 
     /** The top of the RESOLUTION range: straight to the surface, no offscreen blit. */
     public static final float RENDER_SCALE_MAX = 1f;
@@ -298,7 +307,7 @@ public final class Splat {
      * anything a single-image reconstruction is entitled to and is where the holes a
      * deeper cloud opens stop reading as parallax; the useful band is below it.
      */
-    public static final float DEPTH_MUL_MAX = 3f;
+    public static final float DEPTH_MUL_MAX = 5f;
 
     /**
      * The depth multiplier a stored value means. A non-finite value answers the
@@ -337,6 +346,23 @@ public final class Splat {
      * <p>A depth or reference that cannot claim a value answers 1, the identity: a
      * splat behind the camera has no ray to move along, and a plane that is not a
      * distance cannot be one.
+     */
+    /**
+     * Z-only displacement (matches Relief's depth intensity): the moved depth is
+     * {@code mul * z}, applied to {@code z} alone so the at-rest picture changes
+     * with the knob (Relief's behaviour). Returns the multiplier itself; callers
+     * apply it to {@code z} only, leaving {@code x} and {@code y} in place.
+     *
+     * <p>{@code refDepth} is retained in the signature for caller compatibility
+     * and is deliberately ignored: the displacement is about the eye, not the
+     * cloud's median, so increasing depth pushes splats away from the viewer.
+     */
+    /**
+     * (A) scale about the eye: every splat's depth is multiplied by {@code mul},
+     * so increasing depth pushes the whole cloud away from the viewer (and
+     * decreasing pulls it closer). The ray is preserved, so the at-rest picture
+     * is unchanged and only the parallax under tilt changes. {@code refDepth} is
+     * retained for caller compatibility and is deliberately ignored.
      */
     public static float depthScale(float z, float refDepth, float mul) {
         if (!Float.isFinite(z) || z <= 1e-4f) return 1f;

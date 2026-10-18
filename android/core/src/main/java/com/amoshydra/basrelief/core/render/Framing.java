@@ -158,6 +158,14 @@ public final class Framing {
     public final float splatScale;
 
     /**
+     * Pan Z: the camera distance as a multiplier, per photo and per surface like
+     * Pan X/Y. Compared by {@link #sameAs} for the same reason the splat look is:
+     * two frames at different camera distances are two different pictures, so a
+     * change must paint rather than answer "already showing".
+     */
+    public final float panZ;
+
+    /**
      * Whether this row will be drawn from a clip, as far as the index knows.
      *
      * <p><b>Deliberately not "can play".</b> Whether the clips decode is a file and
@@ -222,7 +230,8 @@ public final class Framing {
                 && near(splatDepth, other.splatDepth)
                 && near(splatEps2d, other.splatEps2d)
                 && near(splatBlur, other.splatBlur)
-                && near(splatScale, other.splatScale);
+                && near(splatScale, other.splatScale)
+                && near(panZ, other.panZ);
         // `bundled` is deliberately NOT compared, and the reason is structural rather
         // than a preference: Framing.ofValues -- which builds every snapshot -- hard-codes
         // it to false, so a sameAs that required it could NEVER no-op for the bundled
@@ -353,6 +362,7 @@ public final class Framing {
             this.splatEps2d = SurfaceSettings.DEFAULT_SPLAT_EPS2D;
             this.splatBlur = SurfaceSettings.DEFAULT_SPLAT_BLUR;
             this.splatScale = SurfaceSettings.DEFAULT_SPLAT_SCALE;
+            this.panZ = SurfaceSettings.DEFAULT_PAN_Z;
             return;
         }
         this.depth = s.depthFraction();
@@ -377,6 +387,7 @@ public final class Framing {
         this.splatEps2d = s.splatEps2d;
         this.splatBlur = s.splatBlur;
         this.splatScale = s.splatScale;
+        this.panZ = s.panZ;
     }
 
     /**
@@ -450,10 +461,31 @@ public final class Framing {
                                    float lightAzimuth, float lightElevation,
                                    float sourceKind, float renderMode, float speed,
                                    float splatDepth, float splatEps2d, float splatBlur,
-                                   float splatScale) {
+                                   float splatScale, float panZ) {
         return new Framing(depth, zoom, motion, orbitX, orbitY, panX, panY,
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
-                renderMode, speed, splatDepth, splatEps2d, splatBlur, splatScale);
+                renderMode, speed, splatDepth, splatEps2d, splatBlur, splatScale, panZ);
+    }
+
+    /**
+     * @deprecated The form that <b>cannot say Pan Z</b> — it always says the source
+     * camera — for the same reason the other short forms cannot say a field: a
+     * snapshot that cannot reproduce a field compares unequal to the frame on screen
+     * and repaints. Kept only so callers that have not moved yet still compile; a
+     * renderer handing back what it is drawing must use the nineteen-argument form.
+     */
+    @Deprecated
+    public static Framing ofValues(float depth, float zoom, float motion,
+                                   float orbitX, float orbitY, float panX, float panY,
+                                   float brightnessGain, float shadowLift,
+                                   float lightAzimuth, float lightElevation,
+                                   float sourceKind, float renderMode, float speed,
+                                   float splatDepth, float splatEps2d, float splatBlur,
+                                   float splatScale) {
+        return ofValues(depth, zoom, motion, orbitX, orbitY, panX, panY,
+                brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
+                renderMode, speed, splatDepth, splatEps2d, splatBlur, splatScale,
+                SurfaceSettings.DEFAULT_PAN_Z);
     }
 
     /**
@@ -473,7 +505,8 @@ public final class Framing {
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
                 renderMode, speed,
                 SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z);
     }
 
     /**
@@ -494,7 +527,8 @@ public final class Framing {
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, sourceKind,
                 RENDER_RELIEF, speed,
                 SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z);
     }
 
     /**
@@ -520,7 +554,8 @@ public final class Framing {
                 brightnessGain, shadowLift, lightAzimuth, lightElevation, SOURCE_STILL,
                 RENDER_RELIEF, DEFAULT_SPEED,
                 SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE);
+                SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                SurfaceSettings.DEFAULT_PAN_Z);
     }
 
     private Framing(float depth, float zoom, float motion,
@@ -529,7 +564,7 @@ public final class Framing {
                     float lightAzimuth, float lightElevation, float sourceKind,
                     float renderMode, float speed,
                     float splatDepth, float splatEps2d, float splatBlur,
-                    float splatScale) {
+                    float splatScale, float panZ) {
         this.depth = depth;
         this.zoom = zoom;
         this.motion = motion;
@@ -548,6 +583,7 @@ public final class Framing {
         this.splatEps2d = splatEps2d;
         this.splatBlur = splatBlur;
         this.splatScale = splatScale;
+        this.panZ = panZ;
         this.bundled = false;
     }
 }

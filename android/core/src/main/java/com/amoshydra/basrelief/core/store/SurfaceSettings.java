@@ -123,6 +123,15 @@ public final class SurfaceSettings {
     public static final float DEFAULT_SPLAT_BLUR = Splat.BLUR_DEFAULT;
     public static final float DEFAULT_SPLAT_SCALE = Splat.RENDER_SCALE_DEFAULT;
 
+    /**
+     * Pan Z: the camera distance as a multiplier, stored per photo and per
+     * surface exactly as Pan X/Y are. 1.0 is the source camera; above pulls the
+     * eye back (smaller picture, more depth room), below comes closer (bigger).
+     */
+    public static final float PAN_Z_MIN = 0.5f;
+    public static final float PAN_Z_MAX = 5.0f;
+    public static final float DEFAULT_PAN_Z = 1.0f;
+
     // ----------------------------------------------------------------- state
 
     public final int depth;
@@ -134,6 +143,8 @@ public final class SurfaceSettings {
     public final float originY;
     public final float panX;
     public final float panY;
+    /** Pan Z: camera distance, 1.0 is the source camera. See {@link #PAN_Z_MIN}. */
+    public final float panZ;
     public final int brightness;
     public final int shadow;
     /** Azimuth in degrees, wrapped into [0, 360); see {@link LightDirection}. */
@@ -156,7 +167,7 @@ public final class SurfaceSettings {
                 DEFAULT_ADJUST, DEFAULT_ADJUST,
                 DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION, DEFAULT_SPEED,
                 DEFAULT_SPLAT_DEPTH, DEFAULT_SPLAT_EPS2D, DEFAULT_SPLAT_BLUR,
-                DEFAULT_SPLAT_SCALE);
+                DEFAULT_SPLAT_SCALE, DEFAULT_PAN_Z);
     }
 
     public SurfaceSettings(int depth, int zoom, int motion,
@@ -164,7 +175,7 @@ public final class SurfaceSettings {
                            int brightness, int shadow,
                            float lightAzimuth, float lightElevation, int speed,
                            float splatDepth, float splatEps2d, float splatBlur,
-                           float splatScale) {
+                           float splatScale, float panZ) {
         this.depth = clamp(depth, DEPTH_MIN, DEPTH_MAX);
         this.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
         this.motion = clamp(motion, MOTION_MIN, MOTION_MAX);
@@ -187,6 +198,10 @@ public final class SurfaceSettings {
         this.splatEps2d = Splat.clampEps2d(splatEps2d);
         this.splatBlur = Splat.clampBlurPx(splatBlur);
         this.splatScale = Splat.clampRenderScale(splatScale);
+        // Pan Z clamps here like every other bound; a NaN answers the identity
+        // rather than reaching the camera.
+        this.panZ = Float.isFinite(panZ)
+                ? Math.max(PAN_Z_MIN, Math.min(PAN_Z_MAX, panZ)) : DEFAULT_PAN_Z;
     }
 
     // ------------------------------------------------------------- accessors
@@ -223,17 +238,17 @@ public final class SurfaceSettings {
                                 int brightness, int shadow,
                                 float lightAzimuth, float lightElevation, int speed,
                                 float splatDepth, float splatEps2d, float splatBlur,
-                                float splatScale) {
+                                float splatScale, float panZ) {
         return new SurfaceSettings(depth, zoom, motion, originX, originY,
                 panX, panY, brightness, shadow, lightAzimuth, lightElevation, speed,
-                splatDepth, splatEps2d, splatBlur, splatScale);
+                splatDepth, splatEps2d, splatBlur, splatScale, panZ);
     }
 
     /** The light angles, with every other value read from this instance. */
     public SurfaceSettings withLight(float azimuthDegrees, float elevationDegrees) {
         return with(depth, zoom, motion, originX, originY, panX, panY,
                 brightness, shadow, azimuthDegrees, elevationDegrees, speed,
-                splatDepth, splatEps2d, splatBlur, splatScale);
+                splatDepth, splatEps2d, splatBlur, splatScale, panZ);
     }
 
     // ------------------------------------------------------------- serialise
@@ -271,6 +286,9 @@ public final class SurfaceSettings {
             if (splatEps2d != DEFAULT_SPLAT_EPS2D) o.put("splat_eps2d", (double) splatEps2d);
             if (splatBlur != DEFAULT_SPLAT_BLUR) o.put("splat_blur", (double) splatBlur);
             if (splatScale != DEFAULT_SPLAT_SCALE) o.put("splat_scale", (double) splatScale);
+            // Pan Z, the same rule: written only when it is not the default, so an
+            // untouched item stays byte-identical.
+            if (panZ != DEFAULT_PAN_Z) o.put("pan_z", (double) panZ);
         } catch (Exception ignored) {
             // A JSONObject put cannot fail on these types. If it somehow does, the
             // value is lost rather than the write: an item with default settings
@@ -311,7 +329,11 @@ public final class SurfaceSettings {
                 (float) o.optDouble("splat_depth", DEFAULT_SPLAT_DEPTH),
                 (float) o.optDouble("splat_eps2d", DEFAULT_SPLAT_EPS2D),
                 (float) o.optDouble("splat_blur", DEFAULT_SPLAT_BLUR),
-                (float) o.optDouble("splat_scale", DEFAULT_SPLAT_SCALE));
+                (float) o.optDouble("splat_scale", DEFAULT_SPLAT_SCALE),
+                // Pan Z: absent is the source camera, which is what every item
+                // written before the field existed carries -- so an upgrade changes
+                // no photo's framing. The constructor clamps.
+                (float) o.optDouble("pan_z", DEFAULT_PAN_Z));
     }
 
     // ----------------------------------------------------------------- utils

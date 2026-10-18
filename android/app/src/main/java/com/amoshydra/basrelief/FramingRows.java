@@ -128,6 +128,64 @@ final class FramingRows {
      * <p>Zero before the surface exists, which the slider treats as "use the
      * range rule"; see BasreliefSlider.unitTravel.
      */
+    /** Z-pan (camera distance) as a pan-family row: same range feel, global pref. */
+    private static View zpan(final MainActivity activity) {
+        int initial = Math.round(activity.renderer.getCamDist() * 100f);
+        BasreliefSlider.ValueFormatter fmt = new BasreliefSlider.ValueFormatter() {
+            @Override
+            public String format(int value) {
+                return String.format(java.util.Locale.US, "%.2f", value / 100f);
+            }
+        };
+        BasreliefSlider.OnChanged changed = new BasreliefSlider.OnChanged() {
+            @Override
+            public void onChanged(int v) {
+                float _v = v / 100f;
+                if (!Float.isFinite(_v)) _v = SurfaceSettings.DEFAULT_PAN_Z;
+                if (_v < SurfaceSettings.PAN_Z_MIN) _v = SurfaceSettings.PAN_Z_MIN;
+                if (_v > SurfaceSettings.PAN_Z_MAX) _v = SurfaceSettings.PAN_Z_MAX;
+                final float val = _v;
+                final String id = activity.state().activeId();
+                if (id == null) return;
+                LibraryStore.editItem(activity.prefs, id, new LibraryStore.Editor() {
+                    @Override
+                    public LibraryItem edit(LibraryItem item) {
+                        return item.withPanZ(activity.editSurface, val);
+                    }
+                });
+                activity.glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.renderer.reloadFromPrefs();
+                    }
+                });
+                activity.glView.requestRender();
+            }
+        };
+        BasreliefSlider slider = BasreliefSlider.create(activity, "zpan", initial,
+                50, 500, fmt, changed);
+        slider.setOnPreview(new BasreliefSlider.OnPreview() {
+            @Override
+            public void onPreview(int v) {
+                float _v = v / 100f;
+                if (!Float.isFinite(_v)) _v = SurfaceSettings.DEFAULT_PAN_Z;
+                if (_v < SurfaceSettings.PAN_Z_MIN) _v = SurfaceSettings.PAN_Z_MIN;
+                if (_v > SurfaceSettings.PAN_Z_MAX) _v = SurfaceSettings.PAN_Z_MAX;
+                final float val = _v;
+                activity.glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.renderer.setCamDist(val);
+                    }
+                });
+                activity.glView.requestRender();
+            }
+        });
+        activity.dimWhileInteracting(slider);
+        activity.sliders.put("zpan", slider);
+        return slider.view();
+    }
+
     private static float originTravel(MainActivity activity, boolean isX) {
         return activity.renderer.getOrbitPixelsPerUnit(isX)
                 * ORIGIN_DRAG_FACTOR / 1000f;
@@ -145,6 +203,7 @@ final class FramingRows {
         box.addView(caption(activity, R.string.framing_pan_caption));
         box.addView(axis(activity, "panX", false));
         box.addView(axis(activity, "panY", false));
+        box.addView(zpan(activity));
 
         // The row is built before the first layout pass, when glView has no size;
         // panLimit() falls back to the display metrics there. This listener
@@ -294,9 +353,21 @@ final class FramingRows {
 
     /** One axis's stored value as a slider integer, on the surface being edited. */
     private static int read(MainActivity activity, String key, boolean fraction) {
+        // Z-pan first, and before the "no item" answer below: it is a GLOBAL pref,
+        // not a value on a row, so it has a value with an empty gallery too. Reading
+        // it after `item == null` returned 0 made the row show 0.00 over a pref that
+        // was not 0 -- the "a row must display what the gesture will write" rule.
         LibraryItem item = activity.state().activeItem();
         if (item == null) return 0;
         SurfaceSettings f = item.settings(activity.editSurface);
+        if ("zpan".equals(key)) {
+            // Per photo and per surface, read exactly as panX/panY are.
+            float v = f.panZ;
+            if (!Float.isFinite(v)) v = SurfaceSettings.DEFAULT_PAN_Z;
+            if (v < SurfaceSettings.PAN_Z_MIN) v = SurfaceSettings.PAN_Z_MIN;
+            if (v > SurfaceSettings.PAN_Z_MAX) v = SurfaceSettings.PAN_Z_MAX;
+            return Math.round(v * 100f);
+        }
         boolean isX = key.endsWith("X");
         if (fraction) return FramingRowValue.originThousandths(isX ? f.originX : f.originY);
         // Shown clamped to the same bound the renderer uses, not as stored: a pan
@@ -317,6 +388,9 @@ final class FramingRows {
      */
     private static int fromRenderer(MainActivity activity, String key, boolean fraction) {
         boolean isX = key.endsWith("X");
+        if ("zpan".equals(key)) {
+            return Math.round(activity.renderer.getCamDist() * 100f);
+        }
         if (fraction) {
             return FramingRowValue.originThousandths(
                     isX ? activity.renderer.getOrbitX() : activity.renderer.getOrbitY());
@@ -431,6 +505,7 @@ final class FramingRows {
         setSlider(activity, "originY", true);
         setSlider(activity, "panX", false);
         setSlider(activity, "panY", false);
+        setSlider(activity, "zpan", false);
     }
 
     /**

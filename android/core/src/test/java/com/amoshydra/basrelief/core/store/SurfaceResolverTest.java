@@ -478,7 +478,7 @@ public class SurfaceResolverTest {
                 .editSettings(Surface.LOCK,
                         s -> s.with(25, 100, 33, 0f, 0f, 0f, 0f, 0, 0,
                                 s.lightAzimuth, s.lightElevation, s.speed,
-                                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
 
         SurfaceResolver lockEngine = SurfaceResolver.of(35, SurfaceResolver.FLAG_LOCK);
         assertEquals(Surface.LOCK, lockEngine.surface());
@@ -517,7 +517,7 @@ public class SurfaceResolverTest {
         LibraryItem tuned = base.editSettings(Surface.LOCK,
                 s -> s.with(20, 100, 33, 0f, 0f, 0f, 0f, 0, 0,
                         s.lightAzimuth, s.lightElevation, s.speed,
-                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
         assertTrue(tuned.hasOwnLockSettings());
         assertEquals(20, tuned.settings(Surface.LOCK).depth);
         assertEquals("home must be untouched by a lock edit",

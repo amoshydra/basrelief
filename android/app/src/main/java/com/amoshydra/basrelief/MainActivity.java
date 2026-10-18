@@ -758,6 +758,7 @@ public class MainActivity extends Activity {
     private float lastMidX, lastMidY;
     private float startDist = -1f;
     private float pinchStartZoom = 1f;
+    private float pinchStartCamDist = 1f;
     private float downX, downY;
     private long downTime;
     private boolean tapCandidate = false;
@@ -3461,6 +3462,7 @@ public class MainActivity extends Activity {
                 tapCandidate = false;
                 if (pointers.size() == 2) {
                     pinchStartZoom = renderer.getZoom();
+                    pinchStartCamDist = renderer.getCamDist();
                     startDist = pointerDistance();
                     lastMidX = pointerMidX();
                     lastMidY = pointerMidY();
@@ -3481,13 +3483,19 @@ public class MainActivity extends Activity {
                 if (pointers.size() >= 2) {
                     // pinch zoom (relative to two-finger start, no drift)
                     if (startDist > 0f) {
-                        float newZoom = pinchStartZoom * (pointerDistance() / startDist);
-                        float zoomBefore = renderer.getZoom();
-                        renderer.setZoom(newZoom);
-                        // Compared, not assumed: setZoom clamps to [0.25, 2], so a
-                        // pinch at either stop leaves the renderer exactly where it was
-                        // and this is not a change worth persisting.
-                        if (zoomBefore != renderer.getZoom()) framingMoved = true;
+                        if (renderer.isSplatMode()) {
+                            float newCam = pinchStartCamDist * (startDist / pointerDistance());
+                            float camBefore = renderer.getCamDist();
+                            renderer.setCamDist(newCam);
+                            if (camBefore != renderer.getCamDist()) framingMoved = true;
+                            setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
+                        } else {
+                            float newCam = pinchStartCamDist * (startDist / pointerDistance());
+                            float camBefore = renderer.getCamDist();
+                            renderer.setCamDist(newCam);
+                            if (camBefore != renderer.getCamDist()) framingMoved = true;
+                            setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
+                        }
                         // Zoom belongs to the photo, so a pinch frames this one
                         // and leaves every other photo at its own zoom -- and to the
                         // surface being edited, like every other adjustment. This was
@@ -3506,7 +3514,6 @@ public class MainActivity extends Activity {
                         // slider in this app follows; see BasreliefSlider's own note.
                         // The pinch's zoom is committed by endFramingGesture, in the
                         // same single write as its pan and origin.
-                        setZoomSlider(FramingRowValue.zoomPercent(renderer.getZoom()));
                     }
                     // pan by midpoint delta
                     float mx = pointerMidX();
@@ -4022,7 +4029,7 @@ public class MainActivity extends Activity {
     }
 
     private String formatValue(String key, int value) {
-        if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
+        if (key.equals("zoom")) return String.format(Locale.US, "%.0f°", 45f / (value / 100f));
         // Two decimals, unlike Zoom's one: the slider's step is a percent, so 0.75
         // and 0.8 are both reachable and a rate that rounds to the same string for
         // two different values is a control that lies about what it stored.
@@ -4298,6 +4305,9 @@ public class MainActivity extends Activity {
      * is unwriteable either.
      */
     private void persist(final String key, final int value) {
+        // Z-pan is a device-level pref (global), not a per-photo value, so it
+        // bypasses the index entirely. The renderer already moved on the GL
+        // thread via applyStoredSlider; this just makes it survive a restart.
         final boolean isDepth = "intensity".equals(key);
         final boolean isZoom = "zoom".equals(key);
         final boolean isMotion = "motion".equals(key);
@@ -4574,7 +4584,8 @@ public class MainActivity extends Activity {
         // at insert time from the renderer row's own position, like rendererInsertIndex,
         // rather than a saved integer.
         int at = splatInsertIndex();
-        splatDepthRow = addSlider("splat_depth_mul", splatDepthSliderValue(s), 0, 300);
+        splatDepthRow = addSlider("splat_depth_mul", splatDepthSliderValue(s),
+                Math.round(Splat.DEPTH_MUL_MIN * 100f), Math.round(Splat.DEPTH_MUL_MAX * 100f));
         sheetContent.addView(splatDepthRow, at++);
         splatSizeRow = addSlider("splat_eps2d", splatSizeSliderValue(s),
                 Math.round(Splat.EPS_2D_MIN * 100f), Math.round(Splat.EPS_2D_MAX * 100f));
@@ -4621,6 +4632,8 @@ public class MainActivity extends Activity {
         float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_BLUR : s.splatBlur;
         return Math.round(Splat.clampBlurPx(v) * 10f);
     }
+
+
 
     private static int splatScaleSliderValue(SurfaceSettings s) {
         float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_SCALE : s.splatScale;

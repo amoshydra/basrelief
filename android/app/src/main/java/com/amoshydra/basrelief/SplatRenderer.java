@@ -141,6 +141,7 @@ final class SplatRenderer {
      * falls back to, so an orbit cannot vanish.
      */
     private float refDepth = SOURCE_TARGET_Z;
+    private float camDistScale = 1f;
 
     // Offscreen target: the picture is drawn at `renderScale` of the surface and
     // blitted up. Fragment work is what scales with pixels and splats are soft.
@@ -507,6 +508,14 @@ final class SplatRenderer {
         return true;
     }
 
+    /** Pan Z: the camera distance, clamped; the draw hands it in each frame. */
+    private static float clampCamDist(float v) {
+        if (!Float.isFinite(v)) return 1f;
+        if (v < 0.5f) return 0.5f;
+        if (v > 5f) return 5f;
+        return v;
+    }
+
     /** Drop the GPU side of the current cloud, keeping the program. */
     void releaseTextures() {
         if (texData != 0 || texOrder != 0) {
@@ -583,7 +592,7 @@ final class SplatRenderer {
     SplatCamera.Frame draw(float surfaceWf, float surfaceHf, float tiltX, float tiltY, float motion,
               float zoom, float orbitX, float orbitY, float panX, float panY,
               float brightnessGain, float shadowLift, float renderScale, float cloudLens,
-              float eps2d, float blurPx, float depthMul) {
+              float eps2d, float blurPx, float depthMul, float camDist) {
         if (!isReady() || surfaceWf <= 0f || surfaceHf <= 0f) return null;
         int surfaceW = Math.max(1, Math.round(surfaceWf));
         int surfaceH = Math.max(1, Math.round(surfaceHf));
@@ -627,6 +636,8 @@ final class SplatRenderer {
         // The Depth knob is handed to the camera as well as the shader: the pivot
         // is the surface the shader DRAWS, so it must be resolved on the moved
         // depth or the crosshair and the orbit stay at the old height.
+        camDistScale = clampCamDist(camDist);
+        splatCamera.setCamDistScale(camDistScale);
         SplatCamera.Frame cam = splatCamera.frame(surfaceW, surfaceH, fovy,
                 orbitX, orbitY, panX, panY, tiltX, tiltY, motion,
                 pos, count, refDepth, depthMulInUse);
@@ -1309,6 +1320,7 @@ final class SplatRenderer {
                 + " eps2d=" + fmt(eps2dInUse)
                 + " blurPx=" + fmt(blurPxInUse)
                 + " depthMul=" + fmt(depthMulInUse)
+                + " camDist=" + fmt(camDistScale)
                 + " sortEps=" + fmt(sortEpsInUse)
                 + " fps=" + fmt(fps)
                 + " frameMs=" + fmt(frameMs)
@@ -1478,11 +1490,9 @@ final class SplatRenderer {
             // The max(..., 0) floors the moved depth: a multiplier above 1 can push
             // a near splat past the eye, and a splat there would render mirrored --
             // floored, it collapses to the eye and the near cull below drops it.
-            "  float zr = uDepthRef;\n" +
-            "  float z2 = zr + uDepthMul * (spPos.z - zr);\n" +
-            "  float dscl = spPos.z > 1e-4 ? max(z2, 0.0) / spPos.z : 1.0;\n" +
-            "  spPos *= dscl;\n" +
-            "  spScale *= dscl;\n" +
+            "  float _z2 = uDepthRef + uDepthMul * (spPos.z - uDepthRef);\n" +
+            "  if (_z2 < 0.0) _z2 = 0.0;\n" +
+            "  spPos.z = _z2;\n" +
             "\n" +
             "  vec4 mv = uView * vec4(spPos, 1.0);\n" +
             "  float depth = -mv.z;\n" +

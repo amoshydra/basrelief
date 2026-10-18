@@ -96,10 +96,10 @@ public class FramingTest {
         // NOT their defaults so the varied vectors below differ from them.
         Framing a = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
                 Framing.SOURCE_STILL, Framing.RENDER_RELIEF, 1f,
-                1.2f, 0.6f, 1.5f, 0.7f);
+                1.2f, 0.6f, 1.5f, 0.7f, 1.35f);
         Framing b = Framing.ofValues(90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f,
                 Framing.SOURCE_STILL, Framing.RENDER_RELIEF, 1f,
-                1.2f, 0.6f, 1.5f, 0.7f);
+                1.2f, 0.6f, 1.5f, 0.7f, 1.35f);
         assertTrue("equal values must compare equal", a.sameAs(b));
         assertTrue(a.sameAs(a));
         assertFalse("a different item must not", a.sameAs(null));
@@ -125,60 +125,63 @@ public class FramingTest {
             }
         }
         assertEquals("sameAs must compare every float field, and there are this many",
-                18, numeric.size());
+                19, numeric.size());
 
         // One call per field: the same vector with exactly one component moved. The
         // last four are the splat look (Depth, Size, Blur, Resolution), added when
         // they moved off the global prefs into the counted chain.
         float[][] varied = {
                 {91f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // depth
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // depth
                 {90f, 1.5f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // zoom
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // zoom
                 {90f, 1.4f, 34f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // motion
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // motion
                 {90f, 1.4f, 33f, 0.2f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // orbitX
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // orbitX
                 {90f, 1.4f, 33f, 0.1f, 0.3f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // orbitY
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // orbitY
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 15f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // panX
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // panX
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -2f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // panY
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // panY
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 1f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // brightness
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // brightness
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 1f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // shadow
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // shadow
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 126f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // azimuth
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // azimuth
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 52f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // elevation
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // elevation
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 1f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // sourceKind
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // sourceKind
                 // The draw path. Compared where `bundled` is not, because a relief
                 // and a cloud at identical numbers are two pictures.
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 1f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // renderMode
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // renderMode
                 // A CLIP's rate. It is compared where `bundled` is not, because it
                 // changes what is drawn -- a frame at 0.5x is a different picture.
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 0.5f,
-                        1.2f, 0.6f, 1.5f, 0.7f},   // speed
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.35f},   // speed
                 // The splat look: a cloud at a different Depth, Size, Blur or
                 // Resolution is a different picture, so sameAs must see each.
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.3f, 0.6f, 1.5f, 0.7f},   // splatDepth
+                        1.3f, 0.6f, 1.5f, 0.7f, 1.35f},   // splatDepth
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.7f, 1.5f, 0.7f},   // splatEps2d
+                        1.2f, 0.7f, 1.5f, 0.7f, 1.35f},   // splatEps2d
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 2.5f, 0.7f},   // splatBlur
+                        1.2f, 0.6f, 2.5f, 0.7f, 1.35f},   // splatBlur
                 {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
-                        1.2f, 0.6f, 1.5f, 0.5f},   // splatScale
+                        1.2f, 0.6f, 1.5f, 0.5f, 1.35f},   // splatScale
+                // Pan Z: a different camera distance is a different picture.
+                {90f, 1.4f, 33f, 0.1f, 0.2f, 14f, -3f, 0f, 0f, 125f, 51f, 0f, 0f, 1f,
+                        1.2f, 0.6f, 1.5f, 0.7f, 1.5f},   // panZ
         };
         assertEquals("one varied vector per float field", numeric.size(), varied.length);
         for (float[] v : varied) {
             Framing moved = Framing.ofValues(v[0], v[1], v[2], v[3], v[4], v[5], v[6],
                     v[7], v[8], v[9], v[10], v[11], v[12], v[13],
-                    v[14], v[15], v[16], v[17]);
+                    v[14], v[15], v[16], v[17], v[18]);
             assertFalse("a moving value must make sameAs false", a.sameAs(moved));
         }
     }
@@ -579,7 +582,7 @@ public class FramingTest {
                 .editSettings(Surface.LOCK, s -> s.with(s.depth, s.zoom, s.motion,
                         s.originX, s.originY, s.panX, s.panY, 0, -100,
                         s.lightAzimuth, s.lightElevation, s.speed,
-                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale));
+                        s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
         assertEquals(2f, home(item).brightnessGain, 1e-6f);
         assertEquals(0f, home(item).shadowLift, 1e-6f);
         assertEquals(1f, Framing.of(item, Surface.LOCK).brightnessGain, 1e-6f);
@@ -626,7 +629,8 @@ public class FramingTest {
                 .editSettings(Surface.LOCK, s -> s.with(30, 140, 80, 0.1f, -0.2f,
                         -40f, 15f, -20, 35, 200f, 15f, SurfaceSettings.DEFAULT_SPEED,
                         SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
-                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE));
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                        SurfaceSettings.DEFAULT_PAN_Z));
 
         assertTrue(item.hasOwnLockSettings());
         Framing onLock = Framing.of(item, Surface.LOCK);

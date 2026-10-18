@@ -59,7 +59,7 @@
     <!-- Sliders. The value is appended by the view, not folded into the name. -->
     <string name="slider_depth">Depth</string>
     <string name="slider_motion">Motion</string>
-    <string name="slider_zoom">Zoom</string>
+    <string name="slider_zoom">FOV</string>
     <string name="slider_brightness">Brightness</string>
     <string name="slider_shadow">Shadow</string>
     <!--
@@ -595,6 +595,7 @@
     <string name="slider_splat_budget">Budget</string>
     <string name="slider_splat_resolution">Resolution</string>
     <string name="slider_splat_depth">Depth</string>
+    <string name="slider_splat_zpan">Pan Z</string>
     <string name="settings_licence">MIT</string>
     <!-- The sheet's grip. It has no label on screen, so a screen reader is told
          what it is; "Done" would be a lie, because the bar closes the sheet

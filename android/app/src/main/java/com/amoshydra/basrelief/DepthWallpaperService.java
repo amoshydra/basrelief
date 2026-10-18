@@ -808,6 +808,12 @@ public class DepthWallpaperService extends WallpaperService {
                     // playing sends the next reader to the still path.
                     + " preview=" + (preview == null ? "-" : preview.getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep, nrm, focal)
+                    + " zoom=" + framing.zoom
+                    + " oX=" + framing.orbitX + " oY=" + framing.orbitY
+                    + " pX=" + framing.panX + " pY=" + framing.panY
+                    + " pZ=" + framing.panZ
+                    + " sD=" + framing.splatDepth + " sE=" + framing.splatEps2d
+                    + " sS=" + framing.splatScale
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             // Publish what the LOCK engine is showing, so a HOME engine starting on the
             // unlock can make its first frame this rather than its own. See lockFramingShowing.

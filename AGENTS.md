@@ -1715,13 +1715,15 @@ every library write took the app down, so any gallery tap crashed it.
     decoder that cannot keep up.
     Both decoders of a clip get the same rate for the same reason they get the same
     lead: two rates are two frame indices by construction.
-  - **`Framing` has EIGHTEEN float fields and the count is asserted, so a new one
-    cannot be added silently.** `SurfaceSettings.with` takes sixteen arguments and
-    `Framing.ofValues` eighteen; every writer and every test call site fails to
+  - **`Framing` has NINETEEN float fields and the count is asserted, so a new one
+    cannot be added silently.** `SurfaceSettings.with` takes seventeen arguments and
+    `Framing.ofValues` nineteen; every writer and every test call site fails to
     compile when a field is added, which is the only mechanical guard there is. The
     writers carry the new field through rather than resetting it -- the `withDepth`
     scar one field over -- and `FramingTest` drives one varied vector per field so a
-    nineteenth cannot be forgotten. `speed` IS compared by `sameAs`, unlike
+    twentieth cannot be forgotten. The nineteenth is `panZ`: Pan Z (camera distance)
+    became per photo and per surface like Pan X/Y, and it is compared for the same
+    reason the splat look is -- a different camera distance is a different picture. `speed` IS compared by `sameAs`, unlike
     `bundled`: a frame at 0.5x is a different picture from the same frame at 1x, and
     the no-op-paint guard has to see the difference or a speed change snaps. The
     last four are the splat look (`splatDepth`/`splatEps2d`/`splatBlur`/`splatScale`),

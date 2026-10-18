@@ -93,6 +93,7 @@ public final class CameraModel {
      * same quantity the vertex shader displaces by. 0 is the plane.
      */
     private float pivotHeight;
+    private float camDistScale = 1f;
 
     private final Frame frame = new Frame();
     private final float[] proj = new float[16];
@@ -155,6 +156,14 @@ public final class CameraModel {
         if (!Float.isFinite(pivotHeight)) pivotHeight = 0f;
         this.pivotHeight = Math.max(-0.5f, Math.min(0.5f, pivotHeight));
     }
+    /** Camera-distance (dolly) scale; >1 pulls the eye back. */
+    public void setCamDistScale(float v) {
+        if (!Float.isFinite(v)) v = 1f;
+        if (v < 0.5f) v = 0.5f;
+        if (v > 5f) v = 5f;
+        camDistScale = v;
+    }
+
 
     public float getAspect() {
         return aspect;
@@ -203,7 +212,7 @@ public final class CameraModel {
     public float screenPixelsPerOrbit(boolean horizontal, float surfaceH) {
         float scale = computeScale();
         if (scale <= 0f || surfaceH <= 0f) return 0f;
-        float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
+        float visH = 2f * CAM_DIST * camDistScale * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
         return (horizontal ? aspect : 1f) * scale * surfaceH / visH;
     }
 
@@ -324,7 +333,7 @@ public final class CameraModel {
      */
     public float maxZScale() {
         float s = computeScale();
-        return s <= 0f ? 0f : (0.9f * CAM_DIST) / s;
+        return s <= 0f ? 0f : (0.9f * CAM_DIST * camDistScale) / s;
     }
 
     /**
@@ -406,14 +415,14 @@ public final class CameraModel {
         // The angle is the splat's -- TILT_RANGE / CAM_DIST per unit tilt, times
         // motion -- so the swing is the same at every pivot depth, unlike the old
         // lateral slide whose angle was range / (CAM_DIST - pz).
-        float a = tiltX * (TILT_RANGE / CAM_DIST) * motion;
-        float b = tiltY * (TILT_RANGE / CAM_DIST) * motion;
+        float a = tiltX * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
+        float b = tiltY * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
         float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
         float cb = (float) Math.cos(b), sb = (float) Math.sin(b);
 
         // d = restEye - pivot, rotated by R = Rx(b) * Ry(a). At rest R = I and
         // the eye is the rest eye (0, 0, CAM_DIST).
-        float dx = -px, dy = -py, dz = CAM_DIST - pz;
+        float dx = -px, dy = -py, dz = CAM_DIST * camDistScale - pz;
         float ex = ca * dx + sa * dz;
         float ey = sb * sa * dx + cb * dy - sb * ca * dz;
         float ez = -cb * sa * dx + sb * dy + cb * ca * dz;
