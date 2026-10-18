@@ -1102,15 +1102,16 @@ public class MainActivity extends Activity {
                 ? addSlider("intensity",
                         s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
                 : null;
-        // Immediately after the caption it belongs under, derived here rather than
-        // saved: see depthInsertIndex for the bug a saved index caused.
-        if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
-        // The renderer row, in the same geometry group: the depth group already
-        // answers "what is this item's geometry", and a cloud is the same question
-        // answered in 3D. Placed directly under the depth row (or under the caption
-        // when there is none) so it reads as the group's other axis.
+        // The renderer row FIRST, directly under the caption, and the Depth row
+        // after it -- one order for both modes. The cloud's own rows (Depth, Size,
+        // Blur, Resolution) sit under the same toggle, so the mode switch must not
+        // move the Depth control across it: it used to be above in Relief and below
+        // in Splat, which read as the control jumping when the toggle was tapped.
         rendererRows = new RendererRows(this);
         sheetContent.addView(rendererRows.view(), rendererInsertIndex());
+        // Immediately after the renderer row, derived here rather than saved: see
+        // depthInsertIndex for the bug a saved index caused.
+        if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
         motionCaption = sectionLabel(
                 heading(R.string.group_motion, R.string.group_motion_surface));
         // The launch state of the first-caption rule: without a depth row the caption
@@ -3907,17 +3908,22 @@ public class MainActivity extends Activity {
      * know that its neighbours were added after it was written.
      */
     private int depthInsertIndex() {
+        // Under the renderer row when it is there: the Depth control and the mode
+        // it belongs to are one group, and the row must not move across the
+        // toggle when the mode changes. Falls back to the caption, which is the
+        // sibling that is always present.
+        if (rendererRows != null) {
+            int at = sheetContent.indexOfChild(rendererRows.view());
+            if (at >= 0) return at + 1;
+        }
         int at = reliefCaption == null ? -1 : sheetContent.indexOfChild(reliefCaption);
         return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
 
-    /** Where the renderer row belongs: directly under the depth row, or the caption. */
+    /** Where the renderer row belongs: directly under the caption it labels. */
     private int rendererInsertIndex() {
-        if (depthBarRow != null) {
-            int at = sheetContent.indexOfChild(depthBarRow);
-            if (at >= 0) return at + 1;
-        }
-        return depthInsertIndex();
+        int at = reliefCaption == null ? -1 : sheetContent.indexOfChild(reliefCaption);
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
 
     /**
@@ -4599,6 +4605,14 @@ public class MainActivity extends Activity {
 
     /** Where the splat rows belong: directly under the Renderer row. */
     private int splatInsertIndex() {
+        // After the relief Depth row when the row is present, so the four cloud
+        // rows follow it rather than pushing it down; the exact slot does not
+        // matter (the Depth row is hidden in Splat mode), only that the cloud's
+        // own Depth is the first look row.
+        if (depthBarRow != null) {
+            int at = sheetContent.indexOfChild(depthBarRow);
+            if (at >= 0) return at + 1;
+        }
         int at = rendererRows == null ? -1 : sheetContent.indexOfChild(rendererRows.view());
         return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
