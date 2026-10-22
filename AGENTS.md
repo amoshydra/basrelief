@@ -4,14 +4,19 @@ Gyro-driven "3D photo": an image plus a depth map become a displaced relief
 surface that moves as you tilt the device. Ships as an Android live wallpaper
 with a built-in studio screen.
 
-**Android is the product.** `src/` is an older web port kept as a reference for
-the original camera model. It is NOT being kept in sync, so do not treat the two
-as expected to match — see *Known drift*. Its demo assets in `public/assets/`
-are the **old** demo and are regenerated only by `npm run gen:assets`; replacing
+**Android is the product.** The old web port now lives under `reference/`, at
+`reference/webgl-port/` — a Vite + three.js app kept as a reference for the
+original camera model and the embedded-depth reader, and for nothing else. It is
+NOT being kept in sync, so do not treat the two as expected to match — see *Known
+drift* — and do not start the planned web gallery by editing it. Its demo assets
+in `reference/webgl-port/public/assets/` are the **old** demo and are regenerated
+only by `pnpm run gen:assets` from that directory; replacing
 `android/app/src/main/res/raw/` does not touch them, so the two demos now differ.
-All three files there are referenced by `src/main.js` (`image.png`, `depth.png`,
-and `photo-with-depth.png`, which carries its depth in a `dePH` chunk) — replace
-all three or the web port breaks.
+All three files there are referenced by `reference/webgl-port/src/main.js`
+(`image.png`, `depth.png`, and `photo-with-depth.png`, which carries its depth in
+a `dePH` chunk) — replace all three or the web port breaks. The only JS project
+is that one: it uses **pnpm** (`reference/webgl-port/pnpm-lock.yaml`), and the
+repository root has no `package.json`.
 
 ## Design prototypes
 
@@ -60,13 +65,15 @@ worked, because the build still succeeds. Override the location with
 `GRADLE_CACHE_DIR`, or opt out entirely with `GRADLE_NO_CACHE=1`.
 
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
-every push, plus a `vite` build for the web and a `guards` job: AGENTS.md's paths
+every push, plus a pnpm/vite build of the reference port and a `guards` job: AGENTS.md's paths
 and the port parity, `scripts/check-shaders.mjs`, which compiles every GLSL
 shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
 float handed to `JSONObject.put`. It invokes the scripts from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
 
-Web (reference port, not maintained): `npm install && npm run build`.
+Web (reference port, not maintained): in `reference/webgl-port/`, `pnpm install`
+then `pnpm run build` (or `pnpm dev` to serve it over HTTPS for the gyro). See
+`reference/webgl-port/README.md`.
 
 ## Architecture
 
@@ -1033,7 +1040,8 @@ already cost real time.
 - **GLES2 has no `glPointSize`** — set it in the vertex shader.
 - **Embedded depth** lives in a custom PNG ancillary chunk, keys `dEPt`/`dePH`,
   case-insensitive. The payload is either a whole PNG or raw `w*h` 8-bit grey,
-  with dimensions from IHDR. `DepthPng.java` / `src/png-depth.js`.
+  with dimensions from IHDR. `DepthPng.java` /
+  `reference/webgl-port/src/png-depth.js`.
 - **Store image/depth as filenames, not absolute paths.** With
   `allowBackup="true"` an absolute path survives a restore but points at the old
   device's `filesDir`, and the user silently loses their image. `PrefFiles`
@@ -1229,8 +1237,8 @@ already cost real time.
 ### Termux notes (host-side, not a build path)
 
 `/tmp` is often not writable — use `$(mktemp -d)`. `#!/usr/bin/env` shebangs
-fail (no `/usr/bin/env` on Android), which is why the npm scripts invoke vite via
-`node node_modules/vite/bin/vite.js`. Shared storage is
+fail (no `/usr/bin/env` on Android), which is why the reference port's pnpm
+scripts invoke vite via `node node_modules/vite/bin/vite.js`. Shared storage is
 `~/storage/shared/Download/`; copy APKs there and install from the file manager,
 since launching the installer programmatically is unreliable on some devices.
 There is no longer a build script that runs here — everything builds through

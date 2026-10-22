@@ -3,7 +3,7 @@
  *   public/assets/image.png  (color)
  *   public/assets/depth.png  (grayscale, white = near)
  *
- * Run: npm run gen:assets
+ * Run from reference/webgl-port: pnpm run gen:assets
  */
 import { PNG } from 'pngjs';
 import { writeFileSync, mkdirSync } from 'node:fs';

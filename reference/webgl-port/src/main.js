@@ -44,7 +44,7 @@ const blobUrl = (bytes, type = 'image/png') =>
     /* fall through to the two-file demo */
   }
   scene.loadPair(DEFAULT_IMAGE, DEFAULT_DEPTH).catch(() => {
-    statusEl.textContent = 'demo assets missing — run: npm run gen:assets';
+    statusEl.textContent = 'demo assets missing — run: pnpm run gen:assets';
   });
 })();
 

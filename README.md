@@ -3,10 +3,12 @@
 Turn a photo + its depth map into a real 3D **relief** that tilts with your phone.
 Two apps share one effect and one camera model:
 
-- **Web demo** (`src/`, Vite + three.js) — run in any mobile browser.
 - **Android live wallpaper** (`android/`, plain Java + OpenGL ES 2) — a gyro-driven
   live wallpaper plus a full editing "studio" screen. No AndroidX, no Maven
-  dependencies.
+  dependencies. **This is the product.**
+- **Reference WebGL port** (`reference/webgl-port/`, Vite + three.js) — an older
+  browser implementation kept for the original camera model and the
+  embedded-depth reader. Not maintained in sync with the app; see its README.
 
 ## How it works
 
@@ -21,12 +23,17 @@ Because the depth map is 8-bit, its quantisation terraces are smoothed by a
 **separable float box blur** (radius `width/78`) applied before tessellation —
 without it, grazing light turns those terraces into visible contour lines.
 
-## Web demo
+## Reference WebGL port
+
+Reference only — not the product, and not kept in sync with the Android app.
+The source of truth for behaviour is `android/`.
 
 ```
-npm install
-npm run dev            # HTTPS on :5173 — required for gyro in browsers
-npm run gen:assets     # regenerate the synthetic demo image+depth pair
+cd reference/webgl-port
+pnpm install
+pnpm dev               # HTTPS on :5173 — required for gyro in browsers
+pnpm run build         # static bundle in reference/webgl-port/dist
+pnpm run gen:assets    # regenerate the synthetic demo image+depth pair
 ```
 
 Controls (touch-first): tap = set orbit centre, two-finger drag = pan,
@@ -110,17 +117,21 @@ Two payload forms are accepted:
 2. **Raw 8-bit gray** — exactly `width × height` bytes, row-major, dimensions from
    the file's IHDR (this is the format your ComfyUI/Depth Anything V2 export uses).
 
-The generator (`scripts/generate-assets.mjs`) embeds a PNG payload as `dePH`.
+The generator (`reference/webgl-port/scripts/generate-assets.mjs`) embeds a PNG
+payload as `dePH`.
 
 ## Project layout
 
 ```
-src/                web app (Vite + three.js)
-  scene.js          camera model, relief geometry, pan/zoom/orbit
-  tilt.js           deviceorientation handling
-  png-depth.js      embedded-depth chunk parser (dePH/dEPt)
-  main.js           UI wiring
-scripts/            web asset generator
+reference/webgl-port/   reference web app (Vite + three.js), not maintained
+  src/
+    scene.js            camera model, relief geometry, pan/zoom/orbit
+    tilt.js             deviceorientation handling
+    png-depth.js        embedded-depth chunk parser (dePH/dEPt)
+    main.js             UI wiring
+  scripts/              web asset generator
+  public/assets/        the port's own (old) demo trio
+scripts/                repo guards (parity, shaders, JSON puts)
 android/
   podman-build.sh   canonical build (containerised Gradle)
   Dockerfile        Ubuntu 22.04 + JDK 17 + Android SDK 36

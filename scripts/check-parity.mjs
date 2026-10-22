@@ -199,7 +199,7 @@ function checkParity() {
     {
       name: 'DEPTH_BLUR_FRACTION',
       why: 'the 8-bit depth banding fix is this exact fraction',
-      web: 'src/scene.js',
+      web: 'reference/webgl-port/src/scene.js',
       android: 'android/core/src/main/java/com/amoshydra/basrelief/core/render/ReliefMesh.java',
     },
   ];

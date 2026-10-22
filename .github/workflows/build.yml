@@ -5,7 +5,7 @@ name: build
 #     the regression net for the depth-banding fix, so a refactor of the blur or
 #     the sampling cannot land without a red build.
 #   - check-parity: every path AGENTS.md mentions must exist, and the constants
-#     the web and Android ports must share must still agree.
+#     the reference WebGL port and the Android app must still agree.
 #   - check-shaders: every GLSL shader the app keeps in Java compiles. The Android
 #     build cannot see this -- shaders compile at runtime on the GL thread -- and
 #     a reserved word in one has already crashed both the studio and the live
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # No npm install: the script is plain Node with no dependencies, so this
+      # No package install: the script is plain Node with no dependencies, so this
       # stays fast and cannot break for an unrelated reason.
       - name: AGENTS.md links + web/Android parity
         run: node scripts/check-parity.mjs
@@ -78,17 +78,24 @@ jobs:
           retention-days: 14
 
   web:
-    name: web (vite build)
+    # The port is under reference/ and is NOT maintained in sync with the app.
+    # The job exists only so the reference keeps compiling; it is not a product
+    # gate. Package manager is pnpm, the repository convention.
+    name: reference web port (vite build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: .
+        working-directory: reference/webgl-port
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
+          cache: pnpm
+          cache-dependency-path: reference/webgl-port/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
