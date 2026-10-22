@@ -548,7 +548,12 @@ public class LibraryItemTest {
                 .withAdjust(Surface.HOME, -12, 18)
                 .withSettings(Surface.LOCK, sample().settings(Surface.LOCK)
                         .with(30, 120, 20, 0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
-                                SurfaceSettings.DEFAULT_SPEED));
+                                SurfaceSettings.DEFAULT_SPEED,
+                                SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                                SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                                SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                                SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                                SurfaceSettings.DEFAULT_PAN_Z));
 
         LibraryItem hidden = full.withArchived(true);
         assertTrue(hidden.hasOwnLockSettings());
@@ -706,22 +711,273 @@ public class LibraryItemTest {
      * anywhere. The full enumeration over every mutator is in
      * {@link VideoLibraryTest}; this is the item-level half.
      */
-    @Test
-    public void aDepthWriteOnAClipKeepsTheClip() {
-        LibraryItem shaded = sample()
-                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4", "a-normal.mp4"))
-                .withIntensity(Surface.HOME, 70)
-                .withMotion(Surface.HOME, 55);
-        LibraryItem remapped = shaded.withDepth("b-depth.png");
+    // ----------------------------------------------------------------- splats
 
-        assertEquals("the poster's map is what withDepth writes", "b-depth.png",
-                remapped.depthName);
-        assertNull("and its normal is cleared with it, as always", remapped.normalName);
-        assertNotNull("but the clip is a different asset and rides along",
-                remapped.video);
-        assertEquals("a.mp4", remapped.video.color);
-        assertEquals("a-normal.mp4", remapped.video.normal);
-        assertEquals(70, remapped.settings(Surface.HOME).depth);
-        assertEquals(55, remapped.settings(Surface.HOME).motion);
+    /**
+     * The splat name survives the item's own round trip, and a row with no cloud
+     * writes no key at all — the byte-stability property every optional field here
+     * is held to, and the reason one more nullable name needed no schema version.
+     */
+    @Test
+    public void splatNameSurvivesARoundTripAndIsAbsentWhenNull() {
+        LibraryItem cloud = sample().withSplat("item-a1b2c3d4.splat");
+        assertTrue(cloud.hasSplat());
+        assertTrue("a row with a cloud writes the key", cloud.toJson().contains("\"splat\""));
+        LibraryItem back = LibraryItem.fromJson(json(cloud.toJson()));
+        assertNotNull(back);
+        assertEquals("item-a1b2c3d4.splat", back.splatName);
+        assertTrue(back.hasSplat());
+
+        LibraryItem none = sample();
+        assertFalse(none.hasSplat());
+        assertNull(none.splatName);
+        assertFalse("a row with no cloud must not write a key", none.toJson().contains("splat"));
+        assertNull(LibraryItem.fromJson(json(none.toJson())).splatName);
+    }
+
+    /**
+     * The cloud's lens survives the round trip and a row with none writes no key.
+     *
+     * <p>It is a dimensionless {@code focal / height}, so the units are in the name
+     * and it is deliberately a separate field from {@link LibraryItem#focal} — which
+     * is in pixels and belongs to the colour image the relief reads its depth scale
+     * from. Folding the two into one number would put two units in one value and let
+     * a clip's focal overwrite a cloud's.
+     */
+    @Test
+    public void splatLensSurvivesARoundTripAndIsAbsentWhenUnknown() {
+        LibraryItem cloud = sample().withSplat("item-a1b2c3d4.splat", 0.8647f);
+        assertEquals(0.8647f, cloud.splatLens, 0f);
+        assertTrue("a known lens is written", cloud.toJson().contains("splat_lens"));
+        LibraryItem back = LibraryItem.fromJson(json(cloud.toJson()));
+        assertNotNull(back);
+        assertEquals("the cloud's lens must survive the round trip",
+                0.8647f, back.splatLens, 0f);
+
+        LibraryItem none = sample().withSplat("item-a1b2c3d4.splat");
+        assertEquals(0f, none.splatLens, 0f);
+        assertFalse("an unknown lens must not write a key",
+                none.toJson().contains("splat_lens"));
+        assertEquals(0f, LibraryItem.fromJson(json(none.toJson())).splatLens, 0f);
+    }
+
+    /**
+     * A stored value that cannot be a lens ratio is "unknown", not a ratio. The
+     * constructor is what refuses it, so a hand-edited blob cannot put a negative
+     * or NaN value into the projection the cloud is drawn through.
+     */
+    @Test
+    public void aLensThatCannotBeARatioIsUnknown() {
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":-0.5}")).splatLens, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":\"NaN\"}")).splatLens, 0f);
+        assertEquals(0f, LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"added_at\":1,"
+                        + "\"splat_lens\":0}")).splatLens, 0f);
+    }
+
+    /**
+     * The two-arg writer is the one that sets the lens with the cloud it describes;
+     * the one-arg form carries whatever lens the row already has, so a caller
+     * attaching a cloud whose camera it does not know cannot erase a measured one.
+     */
+    @Test
+    public void withSplatCarriesTheLensAndThePairedFormSetsIt() {
+        LibraryItem measured = sample().withSplat("a.splat", 0.8f);
+        LibraryItem renamed = measured.withSplat("b.splat");
+        assertEquals("the one-arg form carries the lens", 0.8f, renamed.splatLens, 0f);
+        LibraryItem reset = measured.withSplat("b.splat", 0f);
+        assertEquals("the paired form can clear it", 0f, reset.splatLens, 0f);
+    }
+
+    /** The restore rule, one name over: a path is reduced to its basename. */
+    @Test
+    public void aSplatPathIsStoredAsABareFilename() {
+        LibraryItem item = sample().withSplat("/old/device/files/item-a1b2c3d4.splat");
+        assertEquals("item-a1b2c3d4.splat", item.splatName);
+        assertFalse(item.splatName.contains("/"));
+        // and the literal "null" heals to absent, like every other name
+        LibraryItem literal = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"splat\":\"null\"}"));
+        assertNotNull(literal);
+        assertNull(literal.splatName);
+    }
+
+    /** The writer sets it and null clears it: a cloud is optional, unlike a clip. */
+    @Test
+    public void withSplatSetsAndClears() {
+        LibraryItem cloud = sample().withSplat("a.splat");
+        assertEquals("a.splat", cloud.splatName);
+        LibraryItem cleared = cloud.withSplat(null);
+        assertNull(cleared.splatName);
+        assertFalse(cleared.hasSplat());
+        // and the clear is the only difference
+        assertEquals(cloud.imageName, cleared.imageName);
+        assertEquals(cloud.depthName, cleared.depthName);
+    }
+
+    /** The splat filename derives from the id, like every other generated name. */
+    @Test
+    public void splatFileNameIsUniquePerItemAndDerivedFromTheId() {
+        assertEquals("item-" + ID + ".splat", LibraryItem.splatFileName(ID));
+        assertEquals("must stay a bare filename",
+                LibraryItem.splatFileName(ID), LibraryItem.normaliseName(LibraryItem.splatFileName(ID)));
+        assertFalse("a splat must not collide with the still",
+                LibraryItem.splatFileName(ID).equals(LibraryItem.imageFileName(ID)));
+        assertFalse("nor with the clip",
+                LibraryItem.splatFileName(ID).equals(LibraryItem.videoFileName(ID)));
+    }
+
+    /**
+     * <b>The {@code withDepth} scar, three dimensions over.</b> A splat is exactly
+     * the shape of value that was added after the writers existed, so a writer that
+     * forgot it would quietly turn a user's 3D reconstruction back into a flat
+     * relief, with no error anywhere. Every mutator is enumerated rather than one
+     * convenient pair.
+     */
+    @Test
+    public void everyMutatorCarriesTheSplat() {
+        LibraryItem base = sample()
+                .withSplat("a.splat", 0.8f)
+                .withDepthAndNormal("d.png", "n.png")
+                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        LibraryItem[] results = new LibraryItem[] {
+                base.withIntensity(Surface.HOME, 70),
+                base.withZoom(Surface.HOME, 140),
+                base.withMotion(Surface.HOME, 55),
+                base.withSpeed(Surface.HOME, 150),
+                base.withOrigin(Surface.HOME, 0.2f, -0.3f),
+                base.withPan(Surface.HOME, 12f, -8f),
+                base.withAdjust(Surface.HOME, 5, -5),
+                base.withLight(Surface.HOME, 200f, 40f),
+                base.withSettings(Surface.HOME, base.settings(Surface.HOME)),
+                base.withDepth("b-depth.png"),
+                base.withDepthAndNormal("c-depth.png", "c-normal.png"),
+                base.withFiles("b.png", "b-depth.png"),
+                base.withFilesAndVideo("b.png", "b-depth.png", null, null, 500f),
+                base.withVideo(VideoTracks.of("b.mp4", "b-depth.mp4")),
+                base.withLabel("Beach"),
+                base.withLastUsedAt(99L),
+                base.withArchived(true),
+                base.copySettingsFrom(sample(), Surface.LOCK),
+        };
+        for (LibraryItem r : results) {
+            assertEquals("a mutator dropped the splat: " + r, "a.splat", r.splatName);
+            assertEquals("a mutator dropped the cloud's lens: " + r, 0.8f, r.splatLens, 0f);
+            assertTrue(r.hasSplat());
+        }
+    }
+
+    /** A splat and a clip are independent: neither write clears the other. */
+    @Test
+    public void aClipWriteKeepsTheSplatAndASplatWriteKeepsTheClip() {
+        LibraryItem clip = sample().withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        LibraryItem cloud = clip.withSplat("a.splat");
+        assertNotNull("attaching a cloud must not drop the clip", cloud.video);
+        assertEquals("a.mp4", cloud.video.color);
+        LibraryItem reclipped = cloud.withVideo(VideoTracks.of("b.mp4", "b-depth.mp4"));
+        assertEquals("a.splat", reclipped.splatName);
+    }
+
+    /** A blob written before the splat existed parses with null, which is the relief. */
+    @Test
+    public void anOldBlobWithNoSplatKeyParsesWithoutOne() {
+        LibraryItem old = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"depth\":\"a-depth.png\","
+                        + "\"added_at\":1}"));
+        assertNotNull(old);
+        assertNull(old.splatName);
+        assertFalse(old.hasSplat());
+    }
+
+    // ------------------------------------------------------------ render mode
+
+    /**
+     * The render mode survives the round trip, and the relief — the default — writes
+     * no key, so a library of ordinary photographs is byte-identical to one this
+     * build never touched.
+     */
+    @Test
+    public void renderModeSurvivesARoundTripAndReliefIsAbsent() {
+        LibraryItem cloud = sample().withRenderMode(RenderMode.SPLAT);
+        assertTrue(cloud.isSplatMode());
+        assertTrue("a splat row writes the key", cloud.toJson().contains("\"render\""));
+        LibraryItem back = LibraryItem.fromJson(json(cloud.toJson()));
+        assertNotNull(back);
+        assertEquals(RenderMode.SPLAT, back.renderMode);
+
+        LibraryItem relief = sample();
+        assertEquals(RenderMode.RELIEF, relief.renderMode);
+        assertFalse(relief.isSplatMode());
+        assertFalse("a relief row must not write a key", relief.toJson().contains("render"));
+        assertEquals(RenderMode.RELIEF,
+                LibraryItem.fromJson(json(relief.toJson())).renderMode);
+    }
+
+    /** A null mode is refused, not read as the relief; an unknown one degrades. */
+    @Test
+    public void aNullModeIsRefusedAndAnUnknownOneIsTheRelief() {
+        try {
+            sample().withRenderMode(null);
+            org.junit.Assert.fail("a null render mode must be refused");
+        } catch (IllegalArgumentException expected) {
+            // the point
+        }
+        LibraryItem future = LibraryItem.fromJson(json(
+                "{\"id\":\"" + ID + "\",\"image\":\"a.png\",\"render\":\"hologram\"}"));
+        assertNotNull(future);
+        assertEquals(RenderMode.RELIEF, future.renderMode);
+    }
+
+    /**
+     * <b>The {@code withDepth} scar one field over.</b> A render mode added after the
+     * writers existed is exactly the shape of value a writer forgets, and forgetting
+     * it would silently switch a user's cloud back to the relief with no error.
+     */
+    @Test
+    public void everyMutatorCarriesTheRenderMode() {
+        LibraryItem base = sample()
+                .withRenderMode(RenderMode.SPLAT)
+                .withSplat("a.splat", 0.8f)
+                .withDepthAndNormal("d.png", "n.png")
+                .withVideo(VideoTracks.of("a.mp4", "a-depth.mp4"));
+        LibraryItem[] results = new LibraryItem[] {
+                base.withIntensity(Surface.HOME, 70),
+                base.withZoom(Surface.HOME, 140),
+                base.withMotion(Surface.HOME, 55),
+                base.withSpeed(Surface.HOME, 150),
+                base.withOrigin(Surface.HOME, 0.2f, -0.3f),
+                base.withPan(Surface.HOME, 12f, -8f),
+                base.withAdjust(Surface.HOME, 5, -5),
+                base.withLight(Surface.HOME, 200f, 40f),
+                base.withSettings(Surface.HOME, base.settings(Surface.HOME)),
+                base.withDepth("b-depth.png"),
+                base.withFiles("b.png", "b-depth.png"),
+                base.withFilesAndVideo("b.png", "b-depth.png", null, null, 500f),
+                base.withVideo(VideoTracks.of("b.mp4", "b-depth.mp4")),
+                base.withSplat(null),
+                base.withLabel("Beach"),
+                base.withLastUsedAt(99L),
+                base.withArchived(true),
+                base.copySettingsFrom(sample(), Surface.LOCK),
+        };
+        for (LibraryItem r : results) {
+            assertEquals("a mutator dropped the render mode: " + r,
+                    RenderMode.SPLAT, r.renderMode);
+            assertEquals("a mutator dropped the cloud's lens: " + r, 0.8f, r.splatLens, 0f);
+            assertTrue(r.isSplatMode());
+        }
+    }
+
+    /** Switching back to the relief keeps the cloud: the mode is not the asset. */
+    @Test
+    public void switchingToReliefKeepsTheCloud() {
+        LibraryItem cloud = sample().withSplat("a.splat").withRenderMode(RenderMode.SPLAT);
+        LibraryItem relief = cloud.withRenderMode(RenderMode.RELIEF);
+        assertEquals("a.splat", relief.splatName);
+        assertFalse(relief.isSplatMode());
     }
 }

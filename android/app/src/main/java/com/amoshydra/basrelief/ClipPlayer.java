@@ -271,11 +271,34 @@ final class ClipPlayer {
      * reads as a huge skew rather than as "nothing has played yet".
      */
     private static String skewMs(ClipDecoder colour, ClipDecoder track) {
-        if (colour == null || track == null) return "-";
+        float v = skewValueMs(colour, track);
+        return Float.isNaN(v) ? "-" : (Math.round(v) + "ms");
+    }
+
+    /**
+     * The depth track's skew against the colour, in ms, or NaN when either side has no
+     * frame yet.
+     *
+     * <p>Numeric rather than a formatted string, because the studio's on-glass readout
+     * shows the worse track's skew and the log shows both — one derivation, two
+     * presentations. {@link #skewMs} formats the same value for the log line.
+     */
+    float depthSkewMs() {
+        return skewValueMs(color, depth);
+    }
+
+    /** The normal track's skew against the colour, in ms, or NaN; see {@link #depthSkewMs}. */
+    float normalSkewMs() {
+        return skewValueMs(color, normal);
+    }
+
+    /** The skew itself, in whole ms, or NaN. See {@link #skewMs} for the absent case. */
+    private static float skewValueMs(ClipDecoder colour, ClipDecoder track) {
+        if (colour == null || track == null) return Float.NaN;
         long a = colour.lastAbsPts();
         long b = track.lastAbsPts();
-        if (a < 0 || b < 0) return "-";
-        return String.valueOf(Math.abs(a - b) / 1000L) + "ms";
+        if (a < 0 || b < 0) return Float.NaN;
+        return (float) (Math.abs(a - b) / 1000L);
     }
 
     /**

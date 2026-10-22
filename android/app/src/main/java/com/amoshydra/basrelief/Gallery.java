@@ -754,7 +754,12 @@ final class Gallery {
         // the playable answer: that opens an UNREAD window for every unread row and
         // would blank the mark on rows nothing has read, while a clip whose files
         // are missing still falls back to its poster frame and is still a clip.
-        return item.video != null ? CornerMark.State.CLIP : CornerMark.State.NONE;
+        if (item.video != null) return CornerMark.State.CLIP;
+        // The 3D badge: the corner slot's one spare state. A row that has a cloud is
+        // a row that can draw in 3D, and this is the one place the difference is
+        // stated -- a clip keeps ▶ (it is the stronger claim about the medium), and
+        // a still with a cloud gets the badge.
+        return item.splatName != null ? CornerMark.State.SPLAT : CornerMark.State.NONE;
     }
 
     /**

@@ -50,6 +50,8 @@ final class CornerMark extends FrameLayout {
         RING,
         /** A clip that plays. */
         CLIP,
+        /** A row with a Gaussian splat cloud. */
+        SPLAT,
         /** An import that stopped and needs the user. */
         FAILED
     }
@@ -134,6 +136,12 @@ final class CornerMark extends FrameLayout {
                 ringView.setVisibility(GONE);
                 showGlyph(activity.getString(R.string.gallery_clip_glyph), WHITE,
                         activity.getString(R.string.gallery_is_clip));
+                break;
+            case SPLAT:
+                stop();
+                ringView.setVisibility(GONE);
+                showGlyph(activity.getString(R.string.gallery_splat_glyph), WHITE,
+                        activity.getString(R.string.gallery_has_splat));
                 break;
             case FAILED:
                 stop();

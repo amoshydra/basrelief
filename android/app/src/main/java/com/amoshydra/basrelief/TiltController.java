@@ -7,6 +7,9 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 
+import com.amoshydra.basrelief.core.render.CameraModel;
+import com.amoshydra.basrelief.core.render.TiltFilter;
+
 /**
  * Fused rotation-vector tilt, calibrated to the neutral pose captured at
  * start. Exposes normalized x/y in [-1, 1] (x = left/right, y = front/back).
@@ -17,12 +20,36 @@ import android.hardware.SensorManager;
  * {@link #beginGlide} for the mechanism and the reasons. Deliberate movement
  * is untouched.
  *
- * Idle power saving: if the device stays still (tilt within ~1° of a slowly
- * tracking baseline) for IDLE_SLEEP_MS, the rotation-vector listener is
- * unregistered — the caller only renders on onTiltChanged, so rendering stops
- * with it. A low-power accelerometer takes over, and a shake (acceleration
- * deviating from gravity by more than SHAKE_MPS2) or a fresh start() wakes it,
- * recalibrating to the current pose.
+ * Idle power saving has two stages, and they are deliberately different things:
+ *
+ * <ul>
+ *   <li><b>Doze</b> (short still): below {@link #DOZE_EPS} of movement for
+ *       {@link #DOZE_DWELL_MS}, publishing stops but the rotation vector stays
+ *       registered, so the wallpaper stops requesting frames while the gyro keeps
+ *       running. Waking is immediate and needs no recalibration — the next sample
+ *       that moves publishes at once — because nothing was torn down.</li>
+ *   <li><b>Sleep</b> (long still): after IDLE_SLEEP_MS the rotation-vector listener
+ *       is unregistered, a low-power accelerometer takes over, and a shake or a
+ *       fresh start() wakes it, recalibrating to the current pose.</li>
+ * </ul>
+ *
+ * <p>Doze is what actually cuts GPU time: a frame costs ~40 ms of GPU at 150k
+ * splats, the sensor asks for ~50/s, and the GPU was therefore busy continuously.
+ * The rotation vector is a few hundred µA and the GPU is order 1 W, so parking the
+ * frames while keeping the sensor is the whole win. The doze threshold is DERIVED
+ * from the camera, not picked — see {@link CameraModel#DOZE_EPS}.
+ *
+ * <p><b>The gate watches the FILTERED tilt, not the raw reading.</b> What the doze
+ * must not do is freeze a picture that is visibly moving, and the picture is the
+ * <i>smoothed</i> tilt — so the gate measures {@link TiltFilter}'s output (the
+ * renderer's own filter, stepped here once per sample), against that filtered
+ * value at the last movement publish. Measuring the raw reading instead is what
+ * made the doze chatter: raw tilt carries the phone's own sensor and desk noise,
+ * which the renderer's {@code SMOOTHING_TAU} filter removes before it is drawn, so
+ * the gate's movement straddled the threshold while the drawn picture did not
+ * move. The filter's state is deliberately separate from the renderer's, because
+ * the renderer's only advances while it draws and a gate that read it would freeze
+ * the moment it dozed and could never wake.
  */
 public final class TiltController implements SensorEventListener {
 
@@ -36,6 +63,44 @@ public final class TiltController implements SensorEventListener {
     private static final long IDLE_SLEEP_MS = 10000; // still for this long -> sleep
     private static final float IDLE_EPS = 0.04f; // ~1° of tilt counts as activity
     private static final float SHAKE_MPS2 = 1.2f; // accel deviation from gravity to wake
+
+    /**
+     * The filtered tilt movement below which the picture is treated as still, so
+     * publishing stops (the "doze"). DERIVED in {@link CameraModel}: it is the
+     * delta whose worst-case visible displacement is half a pixel at every
+     * reachable framing. Do not hand-edit it — change the camera constants or
+     * {@link CameraModel#DOZE_SUBPIXEL_PX} and let the {@code :core} test re-derive.
+     *
+     * <p>It is applied to the {@link TiltFilter}'d tilt's movement since the last
+     * movement publish, which is what makes the frozen frame's staleness at most
+     * this value: the drift the gate accumulates while dozing is exactly the
+     * quantity it wakes on.
+     */
+    private static final float DOZE_EPS = CameraModel.DOZE_EPS;
+
+    /**
+     * The magnitude that ends a doze.
+     *
+     * <p>At least {@link #DOZE_EPS}, and here equal to it, so the step the wake
+     * takes is the smallest one that can be justified: the drawn value is frozen
+     * within a sub-pixel of where the target was, and the renderer eases the rest.
+     * A larger wake threshold would mean the picture had moved further before the
+     * wake fired, i.e. a bigger step, so the hysteresis is the DWELL below rather
+     * than a second, larger threshold.
+     */
+    private static final float WAKE_EPS = DOZE_EPS;
+
+    /**
+     * How long the tilt must stay still before the doze engages.
+     *
+     * <p>This is the hysteresis: without it a {@code move} sitting on the threshold
+     * would chatter doze/wake, each wake costing a frame. It is longer than the
+     * renderer's {@code SMOOTHING_TAU} (0.2 s), so a brief pause between two
+     * deliberate movements — shorter than the time the picture itself takes to
+     * settle — does not doze, and it bounds the chatter to a few times a second.
+     * It is short enough that a phone put down stops drawing almost at once.
+     */
+    private static final long DOZE_DWELL_MS = 250;
 
     /**
      * The idle sensor's reporting period, in microseconds.
@@ -96,7 +161,7 @@ public final class TiltController implements SensorEventListener {
     // to remove. The slider's minimum IS the floor, so no value a user can reach is
     // ever clamped -- the clamp in glideRate() is only a guard against a pref
     // written by hand or restored from a backup.
-    // If ATTACK_ERROR or SMOOTHING_TAU in ReliefRenderer changes, re-check this
+    // If ATTACK_ERROR or SMOOTHING_TAU in TiltFilter changes, re-check this
     // budget and move GLIDE_MIN_MS with it.
     private static final float RECENTRE_RATE = 0.7f;        // tilt units per second
     private static final float RECENTRE_MIN_SECONDS = 0.3f; // floor, so no re-centre is a one-frame pop
@@ -165,6 +230,43 @@ public final class TiltController implements SensorEventListener {
      */
     private boolean powerSave;
     private float idleBaseX, idleBaseY;
+
+    /**
+     * Whether publishing is currently dozed: the rotation vector is still
+     * registered (so a wake is one sample and no recalibration), but
+     * {@link Listener#onTiltChanged()} is not called, so the host does not ask for
+     * a frame. Distinct from {@link #asleep}, which unregisters the sensor.
+     */
+    private boolean dozing;
+    /** When the tilt last moved more than the doze threshold, for the dwell. */
+    private long lastDozeActiveNanos;
+
+    /**
+     * The gate's own smoothed tilt: the mirror of the renderer's
+     * {@code smoothX}/{@code smoothY}, stepped here once per sample with
+     * {@link TiltFilter} so it follows the value that is actually DRAWN rather
+     * than the raw reading. Sensor-thread only.
+     */
+    private float filtX, filtY;
+
+    /**
+     * The filtered tilt at the last movement publish. The filtered movement is the
+     * distance from here, so this is what bounds how stale the frozen frame can be
+     * — see {@link #DOZE_EPS}. Sensor-thread only.
+     */
+    private float dozeRefX, dozeRefY;
+
+    /** The previous sample's time, for the mirror's own {@code dt}. */
+    private long lastSampleNanos;
+
+    // Doze diagnostic. The {@code splat:} STATS line only prints while a splat
+    // draws, so a doze that works produces no line at all -- the instrument
+    // disappears exactly when the change takes effect. These counters are logged
+    // from the sensor callback instead, so a device log states samples/s and
+    // publishes/s (the frames the doze removed) whether or not anything draws.
+    private int sampleCount;
+    private int publishCount;
+    private long lastDiagNanos;
 
     /**
      * Re-centre glide. {@link #viewX} / {@link #viewY} are what the accessors
@@ -262,6 +364,7 @@ public final class TiltController implements SensorEventListener {
         sensorManager.unregisterListener(this); // both rotation-vector and accelerometer
         asleep = false;
         registered = false;
+        dozing = false;
     }
 
     /**
@@ -279,6 +382,20 @@ public final class TiltController implements SensorEventListener {
         idleBaseX = 0f;
         idleBaseY = 0f;
         lastMoveNanos = System.nanoTime();
+        // A fresh calibration is a fresh start for the doze too: the next samples
+        // are the settle ones, which publish through the calibration path, and the
+        // dwell clock must not already be expired.
+        dozing = false;
+        lastDozeActiveNanos = lastMoveNanos;
+        // And the gate's filter restarts at the new neutral, because that is where
+        // the presented tilt is about to be (the re-centre glide eases to it), so
+        // the mirror is in step with the renderer's the whole way rather than
+        // lagging by a re-centre's worth of tilt.
+        filtX = 0f;
+        filtY = 0f;
+        dozeRefX = 0f;
+        dozeRefY = 0f;
+        lastSampleNanos = lastMoveNanos;
     }
 
     /** Reset only the calibration/settle state (used for auto-recal). */
@@ -331,9 +448,11 @@ public final class TiltController implements SensorEventListener {
                 pendingRecentring = false;
                 beginGlide(); // before the listener reads getX()/getY()
             }
-            listener.onTiltChanged();
+            publish();
             return;
         }
+
+        sampleCount++;
 
         // relative rotation since neutral: rel = neutralRot^T * rot
         SensorManager.getRotationMatrixFromVector(rot, event.values);
@@ -364,13 +483,16 @@ public final class TiltController implements SensorEventListener {
         // for the wallpaper, where nobody is watching the framing anyway.
 
         // idle detection: a slowly-tracking baseline separates still-holding
-        // (sensor jitter, ~<1°) from real motion; still for IDLE_SLEEP_MS -> sleep
+        // (sensor jitter, ~<1°) from real motion; still for IDLE_SLEEP_MS -> sleep.
+        // Deliberately on the RAW reading: that stage answers "has the phone been
+        // moved", and a filtered signal would hide a slow deliberate movement from
+        // it. This is also why the two quantities are printed side by side below.
         long now = System.nanoTime();
         idleBaseX += (x - idleBaseX) * 0.01f;
         idleBaseY += (y - idleBaseY) * 0.01f;
         float move = (float) Math.hypot(x - idleBaseX, y - idleBaseY);
         if (move > IDLE_EPS) {
-            lastMoveNanos = System.nanoTime();
+            lastMoveNanos = now;
         } else if (!asleep && now - lastMoveNanos > IDLE_SLEEP_MS * 1_000_000L) {
             // Gated because a user can turn it off. Checked here rather than in
             // goToSleep(), which is also the path out of a sleep, so the flag means
@@ -387,8 +509,134 @@ public final class TiltController implements SensorEventListener {
             }
         }
 
+        // The gate's mirror of the renderer's smoother, stepped on EVERY sample so
+        // it tracks the value being drawn rather than the reading it came from. The
+        // input is the PRESENTED tilt -- what setTilt will be handed -- because that
+        // is the renderer's own input, so the two filters see one signal and differ
+        // only in sample rate. advanceGlide() runs first so the value used is this
+        // frame's.
         advanceGlide();
+        float dt = (now - lastSampleNanos) / 1e9f;
+        lastSampleNanos = now;
+        float alpha = TiltFilter.alphaFor(dt);
+        filtX = TiltFilter.approach(filtX, viewX, alpha);
+        filtY = TiltFilter.approach(filtY, viewY, alpha);
+        // How far the DRAWN value has travelled since the last frame was asked for.
+        // Measured from that reference rather than from the previous sample, so a
+        // movement's whole travel counts while a jitter that nets out does not --
+        // and the distance accumulated while dozing is exactly this quantity, which
+        // is what bounds the frozen frame's staleness. See DOZE_EPS.
+        float filteredMove = (float) Math.hypot(filtX - dozeRefX, filtY - dozeRefY);
+
+        // The doze diagnostic, logged BEFORE the gate can return, so a line still
+        // appears while the doze is suppressing publishes -- which is exactly the
+        // state it exists to make readable. samples/s is the gyro rate; publish/s is
+        // how often the hosts are asked to draw, so the gap between them is the
+        // frames the doze removed. move is the raw reading against its baseline (the
+        // idle sleep's signal) and fMove the filtered movement the gate decides on;
+        // both are printed so a log says which quantity a decision came from.
+        maybeLogDiagnostic(now, move, filteredMove);
+
+        if (gliding) {
+            // A re-centre glide is a deliberate visible movement by construction:
+            // dozing it would freeze the glide part-way and then jump when it woke.
+            // Always publish, and keep the dwell clock AND the reference fresh so
+            // the doze cannot engage on the sample after a glide ends, and no
+            // crossing accumulates across it.
+            dozing = false;
+            lastDozeActiveNanos = now;
+            dozeRefX = filtX;
+            dozeRefY = filtY;
+            publish();
+            return;
+        }
+
+        if (dozing) {
+            // Waking is immediate and needs no recalibration: the sensor never
+            // stopped. The step the renderer takes is bounded by DOZE_EPS because
+            // the wake fires on the first sample past the threshold and the drawn
+            // value was frozen within a sub-pixel of the target -- see
+            // CameraModel.DOZE_EPS. WAKE_EPS is >= DOZE_EPS, so a value sitting on
+            // the threshold cannot chatter (the dwell below is the other half).
+            if (filteredMove > WAKE_EPS) {
+                dozing = false;
+                lastDozeActiveNanos = now;
+                dozeRefX = filtX;
+                dozeRefY = filtY;
+                publish();
+            }
+            // else: still dozing. No publish, so no requestRender() -- the point.
+            return;
+        }
+
+        if (filteredMove > DOZE_EPS) {
+            // The picture has moved by the visible bound since the last frame it
+            // was asked for, so draw it and make this the new reference. Publishes
+            // therefore happen once per bound of travel -- which is the sample rate
+            // while the phone is actually moving fast, and a handful a second while
+            // it is only drifting.
+            dozeRefX = filtX;
+            dozeRefY = filtY;
+            lastDozeActiveNanos = now;
+            publish();
+        } else if (now - lastDozeActiveNanos > DOZE_DWELL_MS * 1_000_000L) {
+            // Still for the whole dwell: engage the doze. Nothing is published, so
+            // the last frame stands and the GPU goes idle, while the rotation vector
+            // stays registered -- which is what makes the next real movement wake
+            // instantly, with no recalibration and no glide.
+            dozing = true;
+        }
+        // else: inside the dwell and less than the visible bound has travelled since
+        // the last frame, so there is NOTHING to draw: the frame on screen is within
+        // a sub-pixel of where this draw would put it. This branch used to publish
+        // every sample -- the old gate's "keep drawing while the movement settles",
+        // which made sense when its quantity was the raw deviation from the baseline
+        // and could not bound anything. It is now provably redundant, and it was the
+        // bulk of the frames measured after this change: a crossing costs one frame,
+        // and the dwell's settling cost twelve more per crossing.
+    }
+
+    /** The one place the listener is called, so the diagnostic counts every publish. */
+    private void publish() {
+        publishCount++;
         listener.onTiltChanged();
+    }
+
+    /**
+     * One line a second, from the sensor callback rather than the draw.
+     *
+     * <p>The {@code splat:} STATS line only prints while a splat draws, so a doze
+     * that works produces no line at all -- the instrument vanishes exactly when
+     * the change takes effect. This is independent of drawing: it reports the gyro
+     * rate, the publish rate (the frames the hosts are asked for), the current
+     * {@code move} and filtered movement {@code fMove} against the threshold, and
+     * whether the doze or the idle sleep is engaged, so a device log states how many
+     * frames the doze removed.
+     *
+     * <p><b>Both movement quantities are on the line on purpose.</b> {@code move} is
+     * the raw reading against its 2 s baseline -- the idle sleep's signal -- and
+     * {@code fMove} is the filtered movement the doze gate decides on. Printing only
+     * the outcome cannot distinguish "the gate said no" from "the gate never ran",
+     * and printing only one movement cannot say which quantity drove the decision;
+     * the whole change is readable off this line.
+     */
+    private void maybeLogDiagnostic(long now, float move, float filteredMove) {
+        if (lastDiagNanos == 0) {
+            lastDiagNanos = now;
+            return;
+        }
+        if (now - lastDiagNanos < 1_000_000_000L) return;
+        float secs = (now - lastDiagNanos) / 1e9f;
+        android.util.Log.i("Basrelief", "tilt: samples/s=" + Math.round(sampleCount / secs)
+                + " publish/s=" + Math.round(publishCount / secs)
+                + " move=" + move
+                + " fMove=" + filteredMove
+                + " dozeThresh=" + DOZE_EPS
+                + " dozing=" + dozing
+                + " asleep=" + asleep);
+        lastDiagNanos = now;
+        sampleCount = 0;
+        publishCount = 0;
     }
 
     // ------------------------------------------------------------ re-centre glide
@@ -398,7 +646,7 @@ public final class TiltController implements SensorEventListener {
      *
      * <p><b>Why the glide is here and not in the renderer.</b> The renderer has a
      * deliberate fast-attack mode for real hand movement
-     * ({@code ReliefRenderer.ATTACK_ERROR}: snap in one frame once the error
+     * ({@link TiltFilter#ATTACK_ERROR}: snap in one frame once the error
      * exceeds ~3 degrees of phone rotation), which is right for a hand and
      * wrong for a re-centre. A re-centre used to hard-zero x and y, and since
      * the phone is very often picked up at a different angle from the one it was
@@ -480,6 +728,10 @@ public final class TiltController implements SensorEventListener {
     private void goToSleep() {
         asleep = true;
         registered = false;
+        // The sleep supersedes the doze: it unregisters the rotation vector, which
+        // is the thing the doze deliberately keeps. Clear the flag so the next
+        // start()/wakeUp() begins awake.
+        dozing = false;
         sensorManager.unregisterListener(this);
         if (accelerometer != null) {
             sensorManager.registerListener(this, accelerometer,
@@ -489,6 +741,8 @@ public final class TiltController implements SensorEventListener {
 
     private void wakeUp() {
         asleep = false;
+        dozing = false;
+        lastDozeActiveNanos = System.nanoTime();
         sensorManager.unregisterListener(this);
         if (rotationSensor != null) {
             // Normally the neutral follows the pose the phone was shaken into, since
@@ -501,7 +755,7 @@ public final class TiltController implements SensorEventListener {
             registerRotationVector();
             registered = true;
         }
-        listener.onTiltChanged(); // trigger a fresh render
+        publish(); // trigger a fresh render
     }
 
     /**

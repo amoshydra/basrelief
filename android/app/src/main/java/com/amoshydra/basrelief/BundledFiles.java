@@ -53,11 +53,17 @@ final class BundledFiles {
     /** The demo's depth map. Loaded as a pair with {@link #IMAGE}. */
     static final String DEPTH = LibraryItem.depthFileName(Library.BUNDLED_ID);
 
-    /**
-     * The demo's normal map. The third file, and the one that decides whether a
-     * fresh install lands shaded or flat lit.
-     */
+    /** The demo's normal map. The third file, and the one that decides whether a
+     * fresh install lands shaded or flat lit. */
     static final String NORMAL = LibraryItem.normalFileName(Library.BUNDLED_ID);
+
+    /**
+     * The demo's splat cloud. The fourth file, and the one that makes the demo an
+     * ordinary 3D row rather than a debug path: it is copied by the same seed and
+     * named by the same per-id scheme, so the bundled item carries a real
+     * {@code splatName} and the dialog's Splat tab can show its count.
+     */
+    static final String SPLAT = LibraryItem.splatFileName(Library.BUNDLED_ID);
 
     /**
      * Put the demo's files in {@code filesDir} if they are not already there.
@@ -89,28 +95,32 @@ final class BundledFiles {
         File image = new File(filesDir, IMAGE);
         File depth = new File(filesDir, DEPTH);
         File normal = new File(filesDir, NORMAL);
+        File splat = new File(filesDir, SPLAT);
 
         // Copy only what is missing, so an upgraded install missing the normal
         // copies 176 KB and not the 2.5 MB image beside it.
         boolean wantImage = !image.isFile();
         boolean wantDepth = !depth.isFile();
         boolean wantNormal = !normal.isFile();
-        if (!wantImage && !wantDepth && !wantNormal) {
-            return new String[]{IMAGE, DEPTH, NORMAL};
+        boolean wantSplat = !splat.isFile();
+        if (!wantImage && !wantDepth && !wantNormal && !wantSplat) {
+            return new String[]{IMAGE, DEPTH, NORMAL, SPLAT};
         }
 
         File stagedImage = new File(filesDir, IMAGE + ".part");
         File stagedDepth = new File(filesDir, DEPTH + ".part");
         File stagedNormal = new File(filesDir, NORMAL + ".part");
+        File stagedSplat = new File(filesDir, SPLAT + ".part");
         try {
             if (wantImage) copy(context, R.raw.image, stagedImage);
             if (wantDepth) copy(context, R.raw.depth, stagedDepth);
             if (wantNormal) copy(context, R.raw.normal, stagedNormal);
+            if (wantSplat) copy(context, R.raw.demo, stagedSplat);
             // Renamed into place. The image and depth are the pair: if either
             // cannot be moved, nothing is kept, because a half pair renders flat
-            // with no relief and no error. The normal is renamed independently --
-            // a failed normal copy leaves a real, shaded-less demo and the sheet
-            // says so.
+            // with no relief and no error. The normal and the cloud are renamed
+            // independently -- a failed one of those leaves a real, renderable demo
+            // (flat lit, or relief-only) and the sheet says so.
             if (wantImage && !stagedImage.renameTo(image)) {
                 throw new IOException("staged image would not move");
             }
@@ -121,11 +131,17 @@ final class BundledFiles {
             if (wantNormal) {
                 haveNormal = stagedNormal.renameTo(normal);
             }
-            // The pair must be there; a normal that did not move is only flat lit.
+            boolean haveSplat = splat.isFile();
+            if (wantSplat) {
+                haveSplat = stagedSplat.renameTo(splat);
+            }
+            // The pair must be there; a normal or cloud that did not move is a
+            // degraded demo, not a failed copy.
             if (!image.isFile() || !depth.isFile()) {
                 throw new IOException("the demo pair is incomplete after the copy");
             }
-            return new String[]{IMAGE, DEPTH, haveNormal ? NORMAL : null};
+            return new String[]{IMAGE, DEPTH, haveNormal ? NORMAL : null,
+                    haveSplat ? SPLAT : null};
         } catch (IOException | RuntimeException e) {
             // The rare states are a full disk and a packaged asset that will not
             // open. Neither is worth a crash on the read path -- the wallpaper
@@ -136,11 +152,13 @@ final class BundledFiles {
             stagedImage.delete();
             stagedDepth.delete();
             stagedNormal.delete();
+            stagedSplat.delete();
             // Only delete what this call was creating; a pre-existing pair must not
             // be destroyed by a failed normal copy.
             if (wantImage) image.delete();
             if (wantDepth) depth.delete();
             if (wantNormal) normal.delete();
+            if (wantSplat) splat.delete();
             return null;
         }
     }

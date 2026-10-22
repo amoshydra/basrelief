@@ -41,6 +41,16 @@ final class Settings {
     static final String KEY_SLEEP_WHEN_STILL = "gyro_sleep_when_still";
 
     /**
+     * Draw the studio's on-glass performance readout: fps over the frame cost.
+     *
+     * <p>The one switch here that defaults OFF. The three above describe behaviour the
+     * app already had, so an upgrading user must not find them changed; this one is a
+     * debug instrument that did not exist, so an upgrading user must not find it
+     * appear. The reader is {@code MainActivity.syncPerfReadout}.
+     */
+    static final String KEY_PERF_READOUT = "perf_readout";
+
+    /**
      * Every one of these defaults to on.
      *
      * <p>Deliberately: each describes behaviour the app had before the switch
@@ -54,13 +64,17 @@ final class Settings {
     }
 
     private static boolean flag(SharedPreferences prefs, String key) {
-        if (prefs == null) return DEFAULT;
+        return flag(prefs, key, DEFAULT);
+    }
+
+    private static boolean flag(SharedPreferences prefs, String key, boolean fallback) {
+        if (prefs == null) return fallback;
         try {
-            return prefs.getBoolean(key, DEFAULT);
+            return prefs.getBoolean(key, fallback);
         } catch (Exception e) {
             // Wrong type for the key — a restored backup, or an older build that wrote
             // a String under this name. Degrade to the behaviour the app already had.
-            return DEFAULT;
+            return fallback;
         }
     }
 
@@ -94,5 +108,16 @@ final class Settings {
      */
     static boolean sleepWhenStill(SharedPreferences prefs) {
         return flag(prefs, KEY_SLEEP_WHEN_STILL);
+    }
+
+    /**
+     * Whether the studio draws its performance readout.
+     *
+     * <p>The one reader, and it is {@code MainActivity.syncPerfReadout}: the switch
+     * writes the key and calls that, and onCreate and onResume call it so the readout
+     * follows the stored value. Defaults off; see {@link #KEY_PERF_READOUT}.
+     */
+    static boolean perfReadout(SharedPreferences prefs) {
+        return flag(prefs, KEY_PERF_READOUT, false);
     }
 }

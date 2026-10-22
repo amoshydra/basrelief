@@ -491,6 +491,51 @@ public class SheetMorphTest {
         assertEquals(PILL_R, SheetMorph.cornerRadiusFor(1f, PILL, 0f, PILL_R), 1e-4f);
     }
 
+    /**
+     * The eight-value array's <b>order</b>: TL, TR, BR, BL, each an x/y pair.
+     *
+     * <p>This is a separate defect from the radius's value and it was reported as
+     * one: <i>the right side's rounding was wrong</i>, with the outline's top-right
+     * corner square while its top-left was rounded. The hand-written array at the
+     * call site was {@code {top, top, bottom, bottom, bottom, bottom, top, top}},
+     * which reads as four correct pairs in the wrong order — the bottom radius lands
+     * on the top-right corner and the top radius on the bottom-left. A screenshot at
+     * rest cannot tell a wrong radius from a wrong slot; reading the array back can.
+     */
+    @Test
+    public void theCornerRadiiArrayIsTopLeftTopRightBottomRightBottomLeft() {
+        float[] r = SheetMorph.cornerRadii(11f, 22f);
+        assertEquals(8, r.length);
+        assertEquals("top-left x", 11f, r[0], 0f);
+        assertEquals("top-left y", 11f, r[1], 0f);
+        assertEquals("top-right x", 11f, r[2], 0f);
+        assertEquals("top-right y", 11f, r[3], 0f);
+        assertEquals("bottom-right x", 22f, r[4], 0f);
+        assertEquals("bottom-right y", 22f, r[5], 0f);
+        assertEquals("bottom-left x", 22f, r[6], 0f);
+        assertEquals("bottom-left y", 22f, r[7], 0f);
+    }
+
+    /**
+     * Each corner is square in x/y, and the two sides of a row carry the same
+     * number — which is what makes the outline symmetric rather than rounded on one
+     * side and square on the other.
+     */
+    @Test
+    public void bothSidesOfEveryCornerAgree() {
+        float[] r = SheetMorph.cornerRadii(7f, 3f);
+        for (int corner = 0; corner < 4; corner++) {
+            assertEquals("corner " + corner + " is not square in x/y",
+                    r[corner * 2], r[corner * 2 + 1], 0f);
+        }
+        assertEquals("top-left vs top-right", r[0], r[2], 0f);
+        assertEquals("bottom-left vs bottom-right", r[6], r[4], 0f);
+        // And the sheet's own pair is not the pill's: a wrong slot would also pass a
+        // symmetric check if both ends were the same number, so the two ends differ
+        // here on purpose.
+        assertTrue(r[0] != r[4]);
+    }
+
     // --------------------------------------------------------------- the insets
 
     /**

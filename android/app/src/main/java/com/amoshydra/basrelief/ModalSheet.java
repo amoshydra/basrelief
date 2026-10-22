@@ -119,27 +119,28 @@ import com.amoshydra.basrelief.core.render.SheetHeight;
  * and then opened up, without scrolling ever moving the card out from under the
  * finger.
  *
- * <p><b>The backdrop is blurred where the platform can blur, and darker where it
- * cannot.</b> This card is a real Dialog window, so on API 31+ it can ask the
- * compositor to blur what is behind it — the studio's render, the wallpaper, whatever
- * app is under — with {@link Window#setBackgroundBlurRadius}, gated on
- * {@link #blurSupported(Context)}. <b>Being able to blur and being allowed to are two
- * different things</b>, and the second is why the window is built from the plain
- * non-fullscreen theme with {@code FLAG_FULLSCREEN} cleared: the blur region is composited
- * only for a translucent, <i>floating</i> window, and a fullscreen theme is neither. The
- * user reached the same conclusion independently from the other direction — at
- * {@code targetSdk 36} on Android 15+ an app is edge-to-edge already and
- * {@code FLAG_FULLSCREEN} is deprecated and ignored, so the theme name had become a
- * liability that could only subtract capabilities. The size is requested explicitly rather
- * than inherited, since a Dialog takes its layout params from the theme at attach time.
- * Below 31 there is no such call and some 31+ devices report
- * no cross-window blur support at all, in which case WMS draws nothing and leaves the
- * window background transparent. So the scrim carries the difference instead:
- * {@link #SCRIM} is the blurred value and {@link #darker} adds
- * nothing — see the {@link #SCRIM} note for the measurement that removed the second
- * value and left the scrim doing the work on its own. <b>None of this touches
- * the studio sheet</b> — it is a view beside the {@code GLSurfaceView} in the same
- * window, which cannot be blurred from inside itself without a per-frame screenshot.
+ * <p><b>The backdrop is blurred where the platform can blur.</b> This card is a real
+ * Dialog window, so on API 31+ it asks the compositor to blur what is behind it — the
+ * studio's render, the wallpaper, whatever app is under — with
+ * {@link Window#setBackgroundBlurRadius}, gated on {@link #blurSupported(Context)}.
+ * <b>Being able to blur and being allowed to are two different things, and the second
+ * is the THEME, not the window type.</b> The radius is composited only for a
+ * theme-translucent window: {@code DecorView.updateBackgroundBlurRadius} multiplies it
+ * by {@code mCrossWindowBlurEnabled && mWindow.isTranslucent()}, and
+ * {@code PhoneWindow.isTranslucent()} is the {@code android:windowIsTranslucent}
+ * attribute and nothing else. So the window is built from {@code R.style.ModalWindow}
+ * (see {@code res/values/themes.xml}), which sets that attribute and a transparent
+ * {@code windowBackground} — the blur is layered <i>under</i> the window background, so
+ * an opaque one paints over the blur it just asked for. The earlier finding that a
+ * dialog could not do this — "a floating window is {@code TYPE_APPLICATION_OVERLAY},
+ * which needs {@code SYSTEM_ALERT_WINDOW}" — was wrong, and AOSP's own "Window blurs"
+ * page implements the effect on an <i>activity</i> with a translucent theme and names
+ * dialogs as an intended host. Below 31 there is no such call and some 31+ devices
+ * report no cross-window blur support at all, in which case WMS draws nothing and
+ * leaves the window background transparent; the scrim carries the difference then.
+ * <b>None of this touches the studio sheet</b> — it is a view beside the
+ * {@code GLSurfaceView} in the same window, which cannot be blurred from inside itself
+ * without a per-frame screenshot.
  *
  * <p><b>The backdrop is the fourth dismissal, and a confirm opts out.</b> Tapping
  * outside the card closes it, through {@link #dismiss()} so it animates like the grip
@@ -163,39 +164,49 @@ final class ModalSheet {
     // The mockup's tokens. --scrim is rgba(0,0,0,.62); the depth screen deliberately
     // passes a lighter one, which is a difference in the design and not an accident.
     //
-    // ONE scrim for every device, and it is now the whole backdrop mechanism rather
-    // than a fallback for one: a Dialog cannot have its background blurred, so this
-    // alpha IS the separation. .94 is opaque enough that nothing behind a modal
-    // competes with it, and deliberately short of solid -- the design's objection to
-    // a black rectangle still holds, just weakly, and at .94 the photograph is a
-    // suggestion rather than an absence.
-    static final int SCRIM = 0xF0000000;
+    // The scrim is drawn OVER the window's backdrop blur, so the blur's contrast reaches
+    // the eye multiplied by (1 - scrimAlpha) — which is why a scrim over a real blur can
+    // be lighter than one over nothing. It shipped at .94 -- opaque enough that nothing
+    // behind a modal competed with it, and deliberately short of solid -- and the user
+    // asked for .70 because at .94 the screen behind was too dark to see through. At .70
+    // the photograph behind is plainly readable through the blur rather than a
+    // suggestion. It is still short of clear: the card must read as raised off the render
+    // behind it. Tuning it against the blur is the next step, and needs the device.
+    static final int SCRIM = 0xB3000000;
 
     /**
-     * {@code SCRIM_UNBLURRED_STEP}, {@link #SCRIM_UNBLURRED} and {@link #darker} were
-     * deleted rather than left at zero.
+     * {@code SCRIM_UNBLURRED_STEP}, {@code SCRIM_UNBLURRED} and {@code darker} were
+     * deleted rather than left at zero, and one of the reasons they were deleted for was
+     * itself wrong.
      *
-     * <p><b>Why the split existed and why it was wrong.</b> A scrim is drawn OVER
-     * the window's blur, so the blur's contrast reaches the eye multiplied by
-     * {@code 1 - scrimAlpha}. That is real, and it drove a light scrim on
-     * blur-capable devices (.30) and a heavy one elsewhere (.85) on the theory that
-     * the blur would then be visible. <b>It never was.</b> Measured on a Pixel 7 Pro
-     * with a dialog open over a bright photograph: the call lands
+     * <p><b>Why the split existed.</b> A scrim is drawn OVER the window's blur, so the
+     * blur's contrast reaches the eye multiplied by {@code 1 - scrimAlpha}. That is real,
+     * and it drove a light scrim on blur-capable devices (.30) and a heavy one elsewhere
+     * (.85) on the theory that the blur would then be visible.
+     *
+     * <p><b>Why it was deleted, and what was actually happening.</b> Measured on a
+     * Pixel 7 Pro with a dialog open over a bright photograph: the call lands
      * ({@code blur=true sdk=37 radius=74}), the window is {@code fmt=TRANSLUCENT},
      * {@code fillxfill} and not {@code FLAG_FULLSCREEN}, the compositor has
-     * {@code KawaseDualFilterV2} with {@code disableBackgroundBlur=false} — and
-     * nothing appears. Two independent reasons, and neither is fixable from here:
-     * AOSP composites a background blur only for a window that is translucent and
-     * <i>floating</i>, and a {@link android.app.Dialog} is {@code ty=BASE_APPLICATION};
-     * a floating window is {@code TYPE_APPLICATION_OVERLAY}, which needs
-     * {@code SYSTEM_ALERT_WINDOW}, a permission a wallpaper studio should not hold.
-     * And {@code dumpsys SurfaceFlinger} on sdk 37 prints no {@code blurRadius} field
-     * at all — zero entries device-wide — so the shell cannot even confirm it.
+     * {@code KawaseDualFilterV2} with {@code disableBackgroundBlur=false} — and nothing
+     * appeared. The conclusion drawn was that a dialog cannot blur its backdrop at all,
+     * because "AOSP composites a background blur only for a window that is translucent
+     * and <i>floating</i>, and a Dialog is {@code ty=BASE_APPLICATION}; a floating window
+     * is {@code TYPE_APPLICATION_OVERLAY}, which needs {@code SYSTEM_ALERT_WINDOW}". The
+     * call was kept as a free maybe and the split was collapsed to one scrim.
      *
-     * <p><b>So the scrim is the separation on every device</b>, which is what it was
-     * before anyone mistook it for a progressive enhancement. The blur call is still
-     * made, because it costs nothing and may land on an OEM that composites it, but
-     * the design no longer depends on it.
+     * <p><b>That conclusion was wrong.</b> The window <i>was</i> translucent by format
+     * and <i>not</i> translucent by theme, and the theme is what counts:
+     * {@code DecorView.updateBackgroundBlurRadius} forces the radius to 0 unless
+     * {@code mWindow.isTranslucent()}, which is {@code PhoneWindow}'s cached
+     * {@code android:windowIsTranslucent} theme attribute. The opaque activity theme the
+     * dialog was built from made that false, so the radius never reached the compositor —
+     * a capability that was present and withheld by a theme name, reported for several
+     * sessions as a platform limitation. See {@code res/values/themes.xml}.
+     *
+     * <p><b>So the split's reasoning is now sound and its values are not.</b> A lighter
+     * scrim on a blur-capable device is exactly right, and it is a change that has to be
+     * judged on a screen: it is left as one value until the blur has been looked at.
      */
 
     static final int CARD = 0xFF171B21;
@@ -254,8 +265,9 @@ final class ModalSheet {
      * <p><b>Not the same property as the scrim's alpha.</b> This is a window
      * attribute, so it blurs the studio's GL surface and the wallpaper behind the
      * dialog as well as any app underneath; the scrim then darkens what comes
-     * through. Both are needed and neither substitutes for the other, which is why
-     * is called on devices that cannot use it; see {@link #SCRIM}.
+     * through. Both are needed and neither substitutes for the other — the scrim is
+     * what a device with no blur falls back on, and what keeps the card legible over
+     * the blur where there is one. See {@link #SCRIM}.
      */
     private static final int BLUR_RADIUS_DP = 25;
 
@@ -398,9 +410,9 @@ final class ModalSheet {
      * off, or the platform is asked for minimal post-processing. The AOSP javadoc for
      * {@link Window#setBackgroundBlurRadius} is explicit that in those cases no blur
      * is computed or drawn and the window background is simply left transparent. So
-     * this is a real capability question and not a version check dressed up as one —
-     * which is exactly why the scrim is decided from the same answer, so a device that
-     * says no gets the darker backdrop instead of a transparent gap.
+     * this is a real capability question and not a version check dressed up as one. A
+     * device that says no gets no blur and the scrim's own alpha is the whole backdrop,
+     * which is why {@link #SCRIM} is dark enough to stand on its own.
      *
      * <p><b>Where this must not be used:</b> the studio sheet. It is a view over the
      * {@code GLSurfaceView} in the <i>same</i> window, and a window cannot be blurred
@@ -424,8 +436,7 @@ final class ModalSheet {
 
     /**
      * A modal on the standard scrim: {@code .scrim} at {@code rgba(0,0,0,.62)}, which
-     * is what the mockup draws behind three of its four modals — or its much darker
-     * counterpart on a device that cannot blur; see {@link #darker}.
+     * is what the mockup draws behind three of its four modals.
      */
     ModalSheet(Activity activity, float maxHeightFraction) {
         this(activity, maxHeightFraction, SCRIM, true);
@@ -434,12 +445,10 @@ final class ModalSheet {
     /**
      * A modal on a chosen scrim.
      *
-     * @param scrim the colour behind the card, <b>as it looks with a blur behind
-     *     it</b>. One screen in the design is drawn on a lighter one — the depth panel
-     *     is a form, and .62 over a photograph is enough to make it hard to read — so
-     *     this is a parameter rather than a constant, but only because the mockup says
-     *     so. The no-blur counterpart is derived from it, not passed, so a caller
-     *     cannot supply a value that is correct on one path and wrong on the other.
+     * @param scrim the colour behind the card. One screen in the design is drawn on a
+     *     lighter one — the depth panel is a form, and .62 over a photograph is enough
+     *     to make it hard to read — so this is a parameter rather than a constant, but
+     *     only because the mockup says so.
      */
     ModalSheet(Activity activity, float maxHeightFraction, int scrim) {
         this(activity, maxHeightFraction, scrim, true);
@@ -648,54 +657,33 @@ final class ModalSheet {
         if (root.getParent() instanceof ViewGroup) {
             ((ViewGroup) root.getParent()).removeView(root);
         }
-        dialog = new Dialog(activity,
-                android.R.style.Theme_DeviceDefault_NoActionBar);
-        // A window blur is composited only for a TRANSLUCENT, FLOATING window, and
-        // "Fullscreen" in that theme name is a request for the one thing that
-        // disqualifies it. So the theme is the plain one, the flag is cleared
-        // explicitly rather than assumed absent, and the size is requested: a
-        // Dialog takes its layout params from the theme at attach time, so
-        // dropping "Fullscreen" without setLayout would shrink-wrap the card to
-        // its content and leave the scrim covering only the card.
-        //
-        // The user's point is the better one and it is why the theme goes at all:
-        // at targetSdk 36 on Android 15+ an app is edge-to-edge already and
-        // FLAG_FULLSCREEN is deprecated and ignored, so this could only ever
-        // subtract a capability.
-        //
-        // NOTE: this was not why the blur was invisible -- the scrim was. See
-        // SCRIM for the measurement that decided the design.
+        // R.style.ModalWindow, NOT android.R.style.Theme_DeviceDefault_NoActionBar,
+        // and that single word is the whole blur fix. A backdrop blur is composited
+        // only for a THEME-TRANSLUCENT window, and the theme attribute is the gate
+        // (see themes.xml for the framework lines). The opaque activity theme we used
+        // to pass made PhoneWindow.isTranslucent() answer false, and
+        // DecorView.updateBackgroundBlurRadius() then forced our radius to 0 before it
+        // reached SurfaceFlinger -- a call that landed, logged `blur=true`, and was
+        // never asked of the compositor. "The dialog is ty=BASE_APPLICATION" was the
+        // wrong diagnosis and cost several sessions; a dialog is a first-class host
+        // for this effect.
+        dialog = new Dialog(activity, R.style.ModalWindow);
+        // FLAG_FULLSCREEN is cleared explicitly rather than assumed absent: at
+        // targetSdk 36 an app is edge-to-edge already and the flag is deprecated and
+        // ignored, so leaving it could only subtract a capability.
         dialog.getWindow().clearFlags(
                 android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        // The SURFACE format, which is not the same question as the theme's
+        // translucency and does not answer it. Kept because a translucent surface is
+        // what lets the blurred region and the app behind the scrim composite.
         dialog.getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
-        // A BACKDROP BLUR IS COMPOSITED ONLY FOR A TRANSLUCENT, **FLOATING** WINDOW, and
-        // "floating" is a geometric test, not a flag: the window has to be SMALLER than
-        // the display. This was MATCH_PARENT x MATCH_PARENT, which fills the screen and is
-        // therefore not floating, so setBackgroundBlurRadius was accepted and never drawn
-        // -- the exact symptom the user reported from a Pixel that reports
-        // mBlurEnabled=true. A one-pixel inset in both axes is enough to satisfy it
-        // without moving the scrim, which is drawn by our own root anyway.
-        // The window fills the display, and that is now a MEASURED decision rather than
-        // an oversight. It was briefly made 4px smaller, on the theory that "floating" is
-        // a geometric test (a window smaller than the display); that did nothing, because
-        // setContentView's MATCH_PARENT params override setLayout and the window still
-        // requested 1440x3120. It is removed rather than repaired, because it could not
-        // have worked anyway and would have cost six modals a 4px shift:
-        //
-        //   MEASURED, with a modal open on a Pixel 7 Pro: dumpsys SurfaceFlinger prints
-        //   ZERO blurRadius entries device-wide, while `disableBackgroundBlur=false` and
-        //   `RenderEngine chosen blur algorithm: KawaseDualFilterV2` are both set. The
-        //   window asks for a 25dp blur -- blurSupported() is true and the call is made
-        //   below -- and the compositor declines to produce a region for it.
-        //
-        // AOSP's rule is that the region is composited only for a translucent, FLOATING
-        // window, and a Dialog is ty=BASE_APPLICATION. That is not a radius, a fill or a
-        // size, which is why three earlier passes of lowering the pill's opacity changed
-        // nothing. A backdrop blur on this app's modals would need a
-        // TYPE_APPLICATION_OVERLAY window and therefore SYSTEM_ALERT_WINDOW -- a
-        // permission a wallpaper studio should not hold for a sheet background. The blur
-        // call is kept because it is free and may land on an OEM that composites it; the
-        // design does not depend on it.
+        // The window fills the display, and that is a decision rather than an
+        // oversight. It was briefly made 4px smaller, on the theory that "floating" is
+        // a geometric test (a window smaller than the display); that did nothing --
+        // setContentView's MATCH_PARENT params override setLayout, and the real gate
+        // was never geometric at all (see themes.xml). MATCH_PARENT is also what the
+        // scrim needs: it covers the whole window, so a fullscreen blur region is
+        // exactly the backdrop the design asks for.
         dialog.getWindow().setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT);
@@ -741,10 +729,16 @@ final class ModalSheet {
         // Blur what is behind this window, where the platform can. It is a property of
         // the WINDOW, which is why this works at all: the studio behind the card is a
         // GLSurfaceView in another window, and the compositor is what reaches across
-        // and softens it. Set before show() because the radius is read when the
-        // surface is created; setting it afterwards leaves the window unblurred until
-        // something else triggers a relayout, which is the kind of silence that looks
-        // like the API not working.
+        // and softens it. Set before show() because DecorView resolves the radius
+        // against the attached ViewRootImpl; setting it afterwards leaves the window
+        // unblurred until something else triggers a relayout, which is the kind of
+        // silence that looks like the API not working.
+        //
+        // The gate is the THEME, not this call and not the window type: the radius set
+        // here is stored as mOriginalBackgroundBlurRadius and then multiplied by
+        // `mCrossWindowBlurEnabled && mWindow.isTranslucent()` in
+        // DecorView.updateBackgroundBlurRadius(). R.style.ModalWindow is what makes the
+        // second term true; this call is what supplies the first.
         //
         // Without the guard this is a no-op on two kinds of device and a bug on one:
         // below API 31 the method does not exist, and on 31+ WMS draws no blur and
@@ -754,8 +748,9 @@ final class ModalSheet {
         boolean blur = blurSupported(activity);
         // Which branch actually ran, because "no blur is visible" is a symptom with
         // at least three causes and they need different fixes: the call never made
-        // (capability), the call made and dropped (window shape), or the call made,
-        // honoured and buried under our own scrim. Logged rather than guessed.
+        // (capability), the call made and dropped (theme translucency — the bug this
+        // log line kept reporting as a success), or the call made, honoured and buried
+        // under our own scrim. Logged rather than guessed.
         android.util.Log.i("Basrelief", "ModalSheet blur=" + blur + " sdk="
                 + android.os.Build.VERSION.SDK_INT + " radius="
                 + (blur ? dp(activity, BLUR_RADIUS_DP) : 0) + " scrim=" + Integer.toHexString(scrim));

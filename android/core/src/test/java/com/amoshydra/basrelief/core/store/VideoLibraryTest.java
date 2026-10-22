@@ -164,14 +164,24 @@ public class VideoLibraryTest {
                         VideoTracks.of("item-a.mp4", "item-a-depth.mp4",
                                 "item-a-normal.mp4"), 2643f)
                 .withDepthAndNormal("item-a-depth.png", "item-a-normal.png")
+                .withSplat("item-a.splat", 0.77f)
                 .withIntensity(Surface.HOME, 66)
                 .withZoom(Surface.HOME, 133)
                 .withMotion(Surface.HOME, 44)
                 .withAdjust(Surface.HOME, 12, -9)
                 .withLight(Surface.HOME, 200f, 40f)
+                // The four splat-look values, non-default so the walk below is not
+                // passing because everything was reset to the default.
+                .withSplatDepth(Surface.HOME, 1.5f)
+                .withSplatSize(Surface.HOME, 0.7f)
+                .withSplatBlur(Surface.HOME, 2.5f)
+                .withSplatScale(Surface.HOME, 0.6f)
                 .editSettings(Surface.LOCK, s -> s.with(30, 120, 20,
                         0.1f, -0.1f, 5f, -5f, 4, -4, 210f, 40f,
-                        SurfaceSettings.DEFAULT_SPEED));
+                        SurfaceSettings.DEFAULT_SPEED,
+                        SurfaceSettings.DEFAULT_SPLAT_DEPTH, SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR, SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                        SurfaceSettings.DEFAULT_PAN_Z));
 
         String color = base.video.color;
         String depth = base.video.depth;
@@ -183,6 +193,12 @@ public class VideoLibraryTest {
         assertCarries("withLight", base.withLight(Surface.HOME, 10f, 10f));
         assertCarries("withPan", base.withPan(Surface.HOME, 1f, 1f));
         assertCarries("withOrigin", base.withOrigin(Surface.HOME, 0.1f, 0.1f));
+        // The four splat-look mutators: added after the writers existed, which is
+        // exactly the shape that shipped the withDepth bug, so each is walked here.
+        assertCarries("withSplatDepth", base.withSplatDepth(Surface.HOME, 2f));
+        assertCarries("withSplatSize", base.withSplatSize(Surface.HOME, 0.55f));
+        assertCarries("withSplatBlur", base.withSplatBlur(Surface.HOME, 1f));
+        assertCarries("withSplatScale", base.withSplatScale(Surface.HOME, 0.8f));
         assertCarries("withLabel", base.withLabel("Beach"));
         assertCarries("withLastUsedAt", base.withLastUsedAt(99L));
         assertCarries("withArchived", base.withArchived(true));
@@ -209,6 +225,14 @@ public class VideoLibraryTest {
         assertEquals(what + " must keep the normal clip",
                 LibraryItem.videoNormalFileName("a"), item.video.normal);
         assertEquals(what + " must keep the camera", 2643f, item.focal, 0f);
+        assertEquals(what + " must keep the cloud's lens", 0.77f, item.splatLens, 0f);
+        assertEquals(what + " must keep the splat", "item-a.splat", item.splatName);
+        // The four splat-look values are asserted by the dedicated walk below rather
+        // than here: the four splat mutators legitimately move one of them, so a
+        // single expectation cannot serve both the "changes one" and the "keeps the
+        // rest" halves. everyMutatorCarriesTheClip still walks the four mutators to
+        // prove they keep the CLIP; the look's own sibling-preservation is
+        // aSplatRowEditDoesNotResetTheOthers.
     }
 
     /**

@@ -297,13 +297,12 @@ public class DepthWallpaperService extends WallpaperService {
                         // without watching it the wallpaper would hold the poster for
                         // the whole server round while the studio played. The engine
                         // is the surface that cannot be nudged any other way.
-                        // And the 3D mode, which is not a blob and has no resolve of
-                        // its own: the renderer holds it, so a flip goes straight to
-                        // the one reload path both surfaces converge on. Without
-                        // this, the home screen kept the relief until the engine
-                        // happened to be rebuilt -- and "the control did nothing" is
-                        // the failure the app's switches exist to prevent.
-                        if (ReliefRenderer.KEY_RENDER_3D.equals(key)) {
+                        // And the Stage-0 card grid's dev pref, which is not a blob and
+                        // has no resolve of its own: the renderer holds it, so a flip
+                        // goes straight to the one reload path both surfaces converge
+                        // on. (The product's render mode is per item now and rides the
+                        // library blob, so a toggle arrives through the resolve above.)
+                        if (ReliefRenderer.KEY_SPLAT_GRID.equals(key)) {
                             if (glView != null && renderer != null) {
                                 glView.queueEvent(new Runnable() {
                                     @Override
@@ -809,6 +808,12 @@ public class DepthWallpaperService extends WallpaperService {
                     // playing sends the next reader to the still path.
                     + " preview=" + (preview == null ? "-" : preview.getName())
                     + " onScreen=" + renderer.showingSamePair(img, dep, nrm, focal)
+                    + " zoom=" + framing.zoom
+                    + " oX=" + framing.orbitX + " oY=" + framing.orbitY
+                    + " pX=" + framing.panX + " pY=" + framing.panY
+                    + " pZ=" + framing.panZ
+                    + " sD=" + framing.splatDepth + " sE=" + framing.splatEps2d
+                    + " sS=" + framing.splatScale
                     + " at=" + (System.currentTimeMillis() % 1000000L);
             // Publish what the LOCK engine is showing, so a HOME engine starting on the
             // unlock can make its first frame this rather than its own. See lockFramingShowing.
@@ -933,6 +938,14 @@ public class DepthWallpaperService extends WallpaperService {
                     renderer.setSpeed(framing.speed);
                     renderer.requestClip(active == null ? null : active.video,
                             preview, getFilesDir());
+                    // The splat cloud, resolved on every resolve for the same
+                    // reason the medium is: a gallery selection changes no pref, so
+                    // it never reaches reloadFromPrefs, and a cloud that is only
+                    // resolved at engine creation would follow the row a frame late
+                    // -- or never. GL thread, like every other renderer call here.
+                    renderer.setSplatForItem(active == null ? null : active.splatName,
+                            active != null && active.isSplatMode(),
+                            active == null ? 0f : active.splatLens);
 
                     // Only reload when what is ON SCREEN differs from what should
                     // be. The renderer knows that; this class used to keep its own

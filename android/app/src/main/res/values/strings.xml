@@ -15,7 +15,7 @@
       logcat grep, and they name facts, not English.
     - The demo map's filename, which is debug output and appears in Diagnostics.
 
-  Naming: <name> is the string's job, not its wording. `no_depth` survives a
+  Naming: <name> is the string's job, not its wording. `no_3d` survives a
   rewording; `no_depth_map_error_message` does not.
 -->
 <resources>
@@ -31,7 +31,9 @@
     <!-- Sheet section headings -->
     <string name="group_relief">Standing out of the plane</string>
     <string name="group_motion">How it moves</string>
-    <string name="group_depth">This photo’s map</string>
+    <!-- group_depth ("This photo's map") was deleted with its section: the one
+         shared asset row under the Renderer segment, and the 3D-build dialog's
+         Relief tab, now own the map's state and its actions. -->
     <string name="group_picture">Picture</string>
     <!--
       Light is the one group the mockup predates. Its own caption rather than a
@@ -57,7 +59,7 @@
     <!-- Sliders. The value is appended by the view, not folded into the name. -->
     <string name="slider_depth">Depth</string>
     <string name="slider_motion">Motion</string>
-    <string name="slider_zoom">Zoom</string>
+    <string name="slider_zoom">FOV</string>
     <string name="slider_brightness">Brightness</string>
     <string name="slider_shadow">Shadow</string>
     <!--
@@ -96,9 +98,15 @@
       to do, so the line only has to name the condition. A sentence explaining the
       consequence ("...so it will not stand out of the plane") was tried and read
       as a paragraph — the conditions are glanced at, not read.
+
+      The condition is "no 3D at all", not "no depth map": a row with a splat cloud
+      and no map draws in three dimensions, so naming depth alone put "No depth"
+      over a cloud the user could see. The line is absent entirely while a relief OR
+      a splat is present, and this wording appears only when neither is — see
+      Scene3D.
     -->
-    <string name="fix_no_depth">No depth</string>
-    <string name="fix_no_depth_actions">Generate a map</string>
+    <string name="fix_no_3d">No 3D</string>
+    <string name="fix_no_3d_actions">Generate a map</string>
     <!--
       The middle state: the photo HAS depth and therefore relief, but no normal
       map, so it is lit as a flat plane. This is not an error and the wording must
@@ -114,9 +122,13 @@
     <string name="fix_no_answer">No answer · map unchanged</string>
     <string name="fix_try_again">Try again</string>
 
-    <!-- The collapsed pill. Three states; see PillState. -->
+    <!--
+      The collapsed pill. Three states; see MainActivity.StripState. The attention
+      wording is "No 3D", the same condition the fix line names: a row with a relief
+      or a splat has no attention state at all.
+    -->
     <string name="pill_controls">Controls</string>
-    <string name="pill_no_depth">No depth</string>
+    <string name="pill_no_3d">No 3D</string>
     <string name="pill_generating">Generating · %1$d%%</string>
 
     <!-- The demo's map stays reachable from the sheet, not only a row menu -->
@@ -561,15 +573,29 @@
     <string name="settings_calibrate_wake_sub">re-read neutral every time it wakes</string>
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
+    <!-- The studio's on-glass performance readout. It is a debug instrument, so the
+         label says what it is for rather than what it does; it defaults off. -->
+    <string name="settings_perf_readout">Performance readout</string>
+    <string name="settings_perf_readout_sub">fps and frame cost in the top corner</string>
     <!--
-      The 3D mode. It sits in About rather than in a group of its own: Settings is
-      four groups by design (SettingsSheet says why), and this is a device-wide
-      rendering mode with no group of its own to belong to.
+      The 3D mode used to sit here. It is per item now — the sheet's
+      "Renderer — Relief | Splat" row — so this screen names no 3D key.
     -->
-    <string name="settings_render_3d">3D mode</string>
-    <string name="settings_render_3d_sub">photo as a point cloud; tilt for true parallax</string>
     <!-- The level slider's name column, resolved by BasreliefSlider.labelFor. -->
     <string name="slider_splat_detail">3D detail</string>
+    <!--
+      The splat look rows' sliders: Depth, Size, Blur and Resolution. Short names,
+      because BasreliefSlider's name column is a fixed 66dp: "Splat size" would be
+      ellipsised, and the Renderer row above them already says what is being tuned.
+      The relief's own Depth row uses the same word, and the two are never on
+      screen together: the relief's is hidden in Splat mode, these only appear in it.
+    -->
+    <string name="slider_splat_size">Size</string>
+    <string name="slider_splat_blur">Blur</string>
+    <string name="slider_splat_budget">Budget</string>
+    <string name="slider_splat_resolution">Resolution</string>
+    <string name="slider_splat_depth">Depth</string>
+    <string name="slider_splat_zpan">Pan Z</string>
     <string name="settings_licence">MIT</string>
     <!-- The sheet's grip. It has no label on screen, so a screen reader is told
          what it is; "Done" would be a lie, because the bar closes the sheet
@@ -603,7 +629,7 @@
          Change — and the signed-off mockup draws a plain field with the stored
          address in it. The mockup wins, so there is no row to label and nothing
          says "not tested" beside a field the user can read. See the class javadoc
-         of DepthGenDialog before putting any of them back. -->
+         of BuildDialog before putting any of them back. -->
     <string name="depth_server_change">Change</string>
     <string name="depth_server_untested">Not tested</string>
     <string name="depth_models_found">%1$d models on this server</string>
@@ -675,7 +701,7 @@
 
       NOTE: this needs android.permission.POST_NOTIFICATIONS to be visible on
       Android 13+. It is NOT in the manifest, so on 33+ the notification is
-      suppressed. See DepthGenDialog.notifyOutcome.
+      suppressed. See BuildDialog.notifyOutcome.
     -->
     <string name="depth_notify_channel">Depth generation</string>
     <string name="depth_notify_channel_desc">Tells you when a generated depth map is ready.</string>
@@ -767,4 +793,51 @@
     <string name="gallery_importing">Importing — the server is generating depth and normals</string>
     <string name="gallery_import_failed">Import stopped</string>
     <string name="gallery_import_warning_glyph">⚠︎</string>
+
+    <!-- Make 3D: the one build dialog, its two tabs, and the sheet's Renderer row. -->
+    <string name="build_title">Make it 3D</string>
+    <string name="build_subtitle_relief">Build a depth map from this photo on your own ComfyUI server.</string>
+    <string name="build_subtitle_splat">Reconstruct this photo as a Gaussian splat cloud on your own ComfyUI server.</string>
+    <string name="build_grip">Close the 3D build sheet</string>
+    <!-- The Relief tab's own state sentence. "Has a depth map" is true for a file,
+         an embedded chunk and a clip's track; the last two offer no build, so the
+         tab says which it is rather than leaving the user to wonder why the button
+         is absent. -->
+    <string name="build_relief_none">No depth map yet</string>
+    <string name="build_relief_built">Has a depth map</string>
+    <string name="build_relief_embedded">Depth is inside this photo — nothing to build here</string>
+    <string name="build_relief_track">Depth is in the clip — nothing to build here</string>
+
+    <!-- Make 3D: the sheet's Renderer row, the cloud's asset row, and the offer. -->
+    <string name="renderer_caption">Renderer</string>
+    <string name="renderer_relief">Relief</string>
+    <string name="renderer_splat">Splat</string>
+    <string name="splat_row_none">no cloud yet — make one?</string>
+    <string name="splat_row_building">reconstructs this photo · about 10 s</string>
+    <string name="splat_row_built">%1$s splats · %2$s</string>
+    <string name="splat_row_failed">failed — %1$s</string>
+    <!--
+      The asset row's Relief sentence for a clip: the depth is a track, and the row
+      offers its Regenerate. Deliberately not build_relief_track, which says "nothing
+      to build here" — true of the dialog's Relief tab, which refuses a track, and
+      false of this row, which is where the track's regeneration lives.
+    -->
+    <string name="asset_row_depth_track">Depth is in the clip</string>
+    <string name="splat_generator">SHARP</string>
+    <string name="splat_estimate">~10 s · ~4.8 MB</string>
+    <string name="splat_action_make">Make one</string>
+    <string name="action_rebuild">Rebuild</string>
+    <string name="splat_action_delete">Delete</string>
+    <string name="splat_confirm_grip">Close the 3D question</string>
+    <string name="splat_confirm_title">Make this photo 3D?</string>
+    <string name="splat_confirm_rebuild_title">Rebuild the 3D cloud?</string>
+    <string name="splat_confirm_body">%1$s on the configured server · %2$s splats · %3$s</string>
+    <string name="splat_confirm_not_now">Not now</string>
+    <string name="splat_phase_uploading">Uploading</string>
+    <string name="splat_phase_generating">Reconstructing…</string>
+    <string name="splat_phase_fetching">Fetching</string>
+    <string name="splat_failed">That 3D cloud could not be made</string>
+    <string name="splat_no_node">The server has no SharpStill node</string>
+    <string name="gallery_splat_glyph">3D</string>
+    <string name="gallery_has_splat">Has a 3D cloud</string>
 </resources>

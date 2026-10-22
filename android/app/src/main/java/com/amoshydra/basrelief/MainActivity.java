@@ -5,6 +5,10 @@ import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
+import com.amoshydra.basrelief.core.render.Splat;
+import com.amoshydra.basrelief.core.store.AssetActions;
+import com.amoshydra.basrelief.core.store.AssetRow;
+import com.amoshydra.basrelief.core.store.BuildTab;
 import com.amoshydra.basrelief.core.store.Config;
 import com.amoshydra.basrelief.core.store.DepthSource;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
@@ -16,6 +20,8 @@ import com.amoshydra.basrelief.core.store.Playlist;
 import com.amoshydra.basrelief.core.store.PlaylistStatus;
 import com.amoshydra.basrelief.core.store.Playlists;
 import com.amoshydra.basrelief.core.store.PrefFiles;
+import com.amoshydra.basrelief.core.store.Scene3D;
+import com.amoshydra.basrelief.core.store.SplatSource;
 import com.amoshydra.basrelief.core.store.Surface;
 import com.amoshydra.basrelief.core.store.SurfaceResolver;
 import com.amoshydra.basrelief.core.store.SurfaceSettings;
@@ -305,6 +311,13 @@ public class MainActivity extends Activity {
      */
     private int stripDrawnPillness = -1;
 
+    /**
+     * The outline colour the last state chose, held so {@link #applyStripPillness}
+     * can re-apply it when the pill arrives without knowing which state picked it.
+     * Starts at the idle hairline, the colour the strip is constructed with.
+     */
+    private int stripStrokeColour = 0x33FFFFFF;
+
     private LinearLayout sheetStrip;
     /**
      * The pill's own row inside the strip: the status dot and the label, and nothing
@@ -370,13 +383,12 @@ public class MainActivity extends Activity {
      * The navigation bar's height, cached from the one place insets are read.
      *
      * <p>The pill floats {@link #PILL_BOTTOM_INSET_DP} off the bottom edge, and on
-     * 35+ the bar is <i>shown</i> whenever the sheet is collapsed — so at exactly
-     * the moment the pill exists, the bar is the thing it has to clear. Asking for
-     * this inside {@link #applySheetPosition} would mean a {@code WindowInsets}
-     * read per frame, which is not something a drag can do; {@link
-     * #sheetFootInset} already resolves the value correctly for both API paths, so
-     * the listener that receives the insets stores it and the morph reads the
-     * field.
+     * 35+ the navigation bar is persistent — so at every moment the pill exists,
+     * the bar is the thing it has to clear. Asking for this inside
+     * {@link #applySheetPosition} would mean a {@code WindowInsets} read per
+     * frame, which is not something a drag can do; {@link #sheetFootInset} already
+     * resolves the value correctly for both API paths, so the listener that
+     * receives the insets stores it and the morph reads the field.
      */
     private int navBarInsetPx;
 
@@ -517,17 +529,51 @@ public class MainActivity extends Activity {
      */
     private TextView motionCaption;
     /**
-     * "This photo's map", as one unit with its body.
-     *
-     * <p>A {@link SheetSection} rather than a caption plus a loose row, because
-     * that shape is exactly how the section used to lie: the caption was added
-     * unconditionally, so a photo with no map showed it over nothing, and the
-     * Regenerate/Replace row was built once at construction, so a selection
-     * change left a row describing the previous photo. {@link #refreshMapSection}
-     * is the one place the whole section is put into the state of the item on
-     * screen.
+     * The "Renderer — Relief | Splat" row and its one shared asset row, in the
+     * geometry group. Built once and refreshed from the live index on every
+     * {@code refreshSliders}; see {@link RendererRows}.
      */
-    private SheetSection mapSection;
+    private RendererRows rendererRows;
+    /**
+     * The splat look's four rows: Depth, Size, Blur and Resolution, in the geometry
+     * group under the Renderer row.
+     *
+     * <p><b>Product controls now, not a dev group.</b> They were prefs while the look
+     * was still being chosen by eye; the values are per photo and per surface now, so
+     * the rows are the ordinary sliders the rest of the sheet uses — built and removed
+     * by {@link #syncSplatRows} exactly as the relief's Depth row is by
+     * {@link #syncDepthRow}, because a control that cannot change a pixel must not be
+     * on screen. They are shown only when the selected row draws a cloud
+     * ({@code isSplatMode()} and the file is here), the two conditions
+     * {@code ReliefRenderer.useSplat()} draws under.
+     */
+    private View splatDepthRow;
+    private View splatSizeRow;
+    private View splatBlurRow;
+    private View splatScaleRow;
+    /**
+     * The Light group, hidden in splat mode.
+     *
+     * <p><b>Not because the row is unimplemented — because the cloud has no
+     * usable normals to light.</b> The cheap option is a per-splat diffuse from
+     * the minor axis of the Gaussian's covariance ("a flattened Gaussian's minor
+     * axis is its surface normal"), and the premise is false for SHARP's
+     * single-image output. Measured on the bale PLY (1,179,648 Gaussians, the
+     * demo's source): the minor axis is dominated by the VIEW RAY, not the
+     * surface — its angle to the ray is 11° at the image centre and 28° at the
+     * edge (median 21°), where a real surface normal would fan out toward 90° at
+     * the silhouette. It is locally coherent (per-cell mean resultant ~0.99), so
+     * it is not noise; it is simply the viewing direction with a small surface
+     * component. A diffuse from it would shade the cloud by the camera angle, not
+     * by its shape. The Gaussians are only moderately flattened too (median
+     * minor/major axis 0.32, only 7.6% below 0.1). And a plain diffuse has no
+     * identity at the default direction: {@code max(0, dot(n, L0))} is not 1 for
+     * every {@code n}, so showing the row would change the default look. A real
+     * relight needs SH radiance, which is deliberately out of scope. So the row
+     * stays hidden and the cloud keeps its baked shading; Brightness and Shadow,
+     * which ARE grades and ARE identity at 0, stay and are applied.
+     */
+    private SheetSection lightSection;
     private TextView fixText;
     private LinearLayout fixActions;
     /**
@@ -551,7 +597,7 @@ public class MainActivity extends Activity {
      */
 ;
     private TextView hintView;
-    private DepthGenDialog depthGenDialog;
+    private BuildDialog buildDialog;
     /** The one horizontal slider control, keyed as the settings are. */
     private BasreliefSlider zoomSlider;
 
@@ -619,6 +665,34 @@ public class MainActivity extends Activity {
     private Gallery gallery;
 
     /**
+     * The studio's on-glass performance readout, or null before {@code onCreate}
+     * builds it. See {@link #syncPerfReadout}.
+     */
+    private PerfOverlay perfOverlay;
+
+    /** How often the readout's text is rebuilt. A few Hz, never per frame. */
+    private static final long PERF_UPDATE_MS = 250L;
+
+    /**
+     * The readout's clock.
+     *
+     * <p>A {@code TextView} invalidated on every frame would add UI-thread work and
+     * layout to the very path being measured, and would change the number it reports,
+     * so the text is rebuilt a few times a second while the NUMBERS change once per
+     * stats window. It reads the renderer's volatile snapshot — never a GL call, never
+     * a wait on the GL thread — and it is stopped whenever the switch is off or the
+     * studio pauses, so a disabled readout costs no wakeups.
+     */
+    private final Runnable perfTick = new Runnable() {
+        @Override
+        public void run() {
+            if (perfOverlay == null || renderer == null) return;
+            perfOverlay.setStats(renderer.perfStats());
+            glidePump.postDelayed(this, PERF_UPDATE_MS);
+        }
+    };
+
+    /**
      * The active item id the strip and grid were last brought in step with.
      *
      * <p>Set once on launch and then in {@link #refreshSliders}, which every
@@ -683,6 +757,7 @@ public class MainActivity extends Activity {
     private float lastMidX, lastMidY;
     private float startDist = -1f;
     private float pinchStartZoom = 1f;
+    private float pinchStartCamDist = 1f;
     private float downX, downY;
     private long downTime;
     private boolean tapCandidate = false;
@@ -759,6 +834,11 @@ public class MainActivity extends Activity {
         root.addView(glView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // The performance readout, over the render and under the sheet. Built here
+        // and toggled by syncPerfReadout, which onCreate's tail and onResume call.
+        perfOverlay = PerfOverlay.install(this, root);
+        syncPerfReadout();
 
         // gestures: tap = orbit center, single-finger drag = manual tilt
         // (no sensor), two-finger = pan + pinch zoom
@@ -1021,8 +1101,15 @@ public class MainActivity extends Activity {
                 ? addSlider("intensity",
                         s == null ? SurfaceSettings.DEFAULT_DEPTH : s.depth, 0, 100)
                 : null;
-        // Immediately after the caption it belongs under, derived here rather than
-        // saved: see depthInsertIndex for the bug a saved index caused.
+        // The renderer row FIRST, directly under the caption, and the Depth row
+        // after it -- one order for both modes. The cloud's own rows (Depth, Size,
+        // Blur, Resolution) sit under the same toggle, so the mode switch must not
+        // move the Depth control across it: it used to be above in Relief and below
+        // in Splat, which read as the control jumping when the toggle was tapped.
+        rendererRows = new RendererRows(this);
+        sheetContent.addView(rendererRows.view(), rendererInsertIndex());
+        // Immediately after the renderer row, derived here rather than saved: see
+        // depthInsertIndex for the bug a saved index caused.
         if (depthBarRow != null) sheetContent.addView(depthBarRow, depthInsertIndex());
         motionCaption = sectionLabel(
                 heading(R.string.group_motion, R.string.group_motion_surface));
@@ -1073,6 +1160,7 @@ public class MainActivity extends Activity {
         // clamp at, it is the same light as 0, which the other end already offers.
         SheetSection light = addSection(
                 heading(R.string.group_light, R.string.group_light_surface));
+        lightSection = light;
         light.body().addView(addSlider("light_azimuth",
                 azimuthForSlider(s == null
                         ? SurfaceSettings.DEFAULT_LIGHT_AZIMUTH : s.lightAzimuth),
@@ -1095,17 +1183,6 @@ public class MainActivity extends Activity {
         // the shared slider map, so building it per section would double every one
         // of those. Only the parent changes.
         addFramingSections();
-
-        // "This photo's map": the mockup's heading for the Regenerate/Replace row and
-        // the fix line. It replaces a row of three buttons that were not peers --
-        // Gallery became the filmstrip, Depth became the fix line, and Calibrate
-        // became a reported condition in Settings > Gyro rather than an action.
-        //
-        // The body is put into the selected photo's state here and re-derived from
-        // the live selection on every refresh; see refreshMapSection, which is the
-        // only place that decides what the section shows.
-        mapSection = addSection(getString(R.string.group_depth));
-        refreshMapSection(initial);
 
         // The foot. A hairline, the debug line, then Settings. The debug line is
         // small, monospaced and dim on purpose: it answers "what is wrong", and a
@@ -1437,10 +1514,13 @@ public class MainActivity extends Activity {
                 // re-decode every other thumbnail for it.
                 if (added != null) gallery.itemAppeared(added);
                 Toast.makeText(MainActivity.this,
-                        "Shared image loaded \u2014 set as wallpaper, or generate depth",
+                        "Shared image loaded \u2014 set as wallpaper, or build 3D",
                         Toast.LENGTH_LONG).show();
-                // open the Depth AI page for this image (it may lack depth)
-                openDepthGen();
+                // Open the 3D build dialog for this image, on the row's own mode.
+                // A share no longer assumes depth: the dialog opens with both tabs,
+                // Relief and Splat, so the user chooses rather than being pushed
+                // into a depth generation.
+                openBuildDialog();
             }
         });
     }
@@ -1472,7 +1552,7 @@ public class MainActivity extends Activity {
     /**
      * Repaint everything that can say a run is happening.
      *
-     * <p>Wired to {@link DepthGenDialog#setRunListener} because the run lives on a
+     * <p>Wired to {@link BuildDialog#setRunListener} because the run lives on a
      * worker thread in a class that knows nothing about the sheet. Registered here,
      * once, where the dialog is first opened -- and never cleared, because the
      * reference is weak and this Activity is the thing being collected.
@@ -1488,16 +1568,31 @@ public class MainActivity extends Activity {
         applyStripState();
     }
 
-    private void openDepthGen() {
-        DepthGenDialog.setRunListener(new DepthGenDialog.RunListener() {
+    /** Open the one 3D-build dialog on the tab the selected row's own mode names. */
+    void openBuildDialog() {
+        openBuildDialog(null);
+    }
+
+    /**
+     * Open the one 3D-build dialog on a named tab.
+     *
+     * <p>Every build route ends here: a share, the sheet's Depth AI / Regenerate,
+     * a fix-line "Generate a map", and the Renderer row's Splat and Rebuild. The
+     * tab is which build the caller means — Relief for anything that generates a
+     * depth map, Splat for the cloud, and <b>null</b> to let the row's stored mode
+     * decide (which is what a share does: it does not assume depth any more, it
+     * opens the dialog and shows both tabs).
+     */
+    void openBuildDialog(BuildTab.Kind tab) {
+        BuildDialog.setRunListener(new BuildDialog.RunListener() {
             @Override
             public void onRunStateChanged() {
                 onDepthRunStateChanged();
             }
         });
-        if (depthGenDialog == null) {
-            depthGenDialog = new DepthGenDialog(MainActivity.this,
-                    new DepthGenDialog.Callback() {
+        if (buildDialog == null) {
+            buildDialog = new BuildDialog(MainActivity.this,
+                    new BuildDialog.Callback() {
                         /**
                          * The map has been written and attached already.
                          *
@@ -1530,8 +1625,7 @@ public class MainActivity extends Activity {
                         }
                     });
         }
-        depthGenDialog.useCurrentImage();
-        depthGenDialog.show();
+        buildDialog.show(tab);
     }
 
     @Override
@@ -1551,7 +1645,7 @@ public class MainActivity extends Activity {
         // Collect a run that finished while the app was closed. Not optional: the
         // run is process-static and its prompt id is in prefs, so nothing else in the
         // app would ever go back and ask.
-        DepthGenDialog.resumePending(this);
+        BuildDialog.resumePending(this);
         // The index can change while the studio is backgrounded -- a playlist
         // rotation writes the same selection a tap does -- and the strip and grid
         // each read it once at build time. Re-reading is what re-rings the strip
@@ -1617,6 +1711,10 @@ public class MainActivity extends Activity {
         renderer.setEditSurface(editSurface);
         glView.requestRender();
         refreshStatus();
+        // Re-read the readout's switch: a Settings change while the studio was paused
+        // -- or a first launch -- is applied here, and the clock is started or stopped
+        // with it.
+        syncPerfReadout();
         sensorPolicy.setVisible(true);
     }
 
@@ -1632,6 +1730,8 @@ public class MainActivity extends Activity {
         // onDestroy removes it too; this is the foreground/background pair the
         // wallpaper's engine keeps with its visibility handler.
         glidePump.removeCallbacks(clipTick);
+        // And the readout's clock: a paused studio has no numbers to show.
+        glidePump.removeCallbacks(perfTick);
         glView.onPause();
         super.onPause();
     }
@@ -1648,6 +1748,7 @@ public class MainActivity extends Activity {
         // view tree after every studio visit.
         glidePump.removeCallbacks(clipTick);
         glidePump.removeCallbacks(glideTick);
+        glidePump.removeCallbacks(perfTick);
         // And the ring, which spins at 60 Hz while a depth run outlives the studio.
         if (stripRing != null) stripRing.stop();
         prefs.unregisterOnSharedPreferenceChangeListener(statusListener);
@@ -1745,33 +1846,26 @@ public class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
             }
-            // Keep the window edge-to-edge; the bar's own visibility is decided
-            // below. LAYOUT_HIDE_NAVIGATION is the layout half and is still the
-            // flag path.
+            // Edge-to-edge, with the navigation bar PERSISTENT. The layout flags
+            // are what let the content draw behind the bars; the bar itself is not
+            // ours to hide on 35+, and this is the deliberate change from the
+            // immersive model below -- an edge-to-edge app keeps the system's own
+            // navigation, and the sheet reserves its height through the inset
+            // {@link #sheetFootInset} already reads. It used to disappear whenever
+            // the sheet was collapsed ("full-bleed wallpaper") and come back when
+            // it was expanded, which moved the pill's floor and the sheet's foot
+            // with a state the user did not ask to change the system UI.
             window.getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-            // Show or hide the bar through the controller, which is the supported
-            // path on API 30+. The deprecated HIDE_NAVIGATION flag is not reliable
-            // under Android 15's enforced edge-to-edge, and hiding is exactly what
-            // the collapsed state asks for. Collapsed is the component's own
-            // committed state, the same one the pill and the drag settle follow, so
-            // "away" means one thing rather than three.
             android.view.WindowInsetsController controller =
                     window.getDecorView().getWindowInsetsController();
             if (controller != null) {
-                // A swipe may reveal the bar transiently; otherwise it stays gone,
-                // which is what "fully invisible" means.
-                controller.setSystemBarsBehavior(
-                        android.view.WindowInsetsController
-                                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                if (sheet != null && sheet.isCollapsed()) {
-                    controller.hide(WindowInsets.Type.navigationBars());
-                } else {
-                    controller.show(WindowInsets.Type.navigationBars());
-                }
+                controller.show(WindowInsets.Type.navigationBars());
             }
+            // Unconditional, because the bar is: the foot's reserved height is the
+            // one inset, not one that appears and goes with the sheet.
             requestSheetInsets();
             return;
         }
@@ -1786,12 +1880,13 @@ public class MainActivity extends Activity {
     /**
      * Re-read the bottom system-bar inset into the sheet's foot.
      *
-     * <p>The bar is shown or hidden as the sheet collapses, so the inset the
-     * reserved foot space is built from is not constant. Asking again is what
-     * keeps the foot clear on a three-button bar — the tallest case, and the one
-     * that was reported — where the bar covers the last ~48dp of the screen. It
-     * is safe on every API: on 26–34 the bar never appears and the inset stays
-     * zero.
+     * <p>Asked for once the window exists (a listener installed on a detached view
+     * is never called) and again from {@link #applySystemUi}, which is the path a
+     * focus change re-runs. On 35+ the bar is persistent, so this resolves the
+     * same height every time; on 26–34 the bar is hidden with the immersive flags
+     * and a swipe can reveal it, which is the case the re-read exists for. It is
+     * what keeps the foot clear on a three-button bar — the tallest case, and the
+     * one that was reported — where the bar covers the last ~48dp of the screen.
      */
     private void requestSheetInsets() {
         if (sheetScroll == null) return;
@@ -1808,10 +1903,10 @@ public class MainActivity extends Activity {
      * guaranteed -- which is exactly why the foot was still under a three-button
      * bar: the listener ran once with inset 0 and the inset was never re-read.
      * The bar's height REGARDLESS of visibility is the right number on
-     * 35+, because the bar is visible whenever the sheet is expanded and the sheet
-     * has no height whenever the bar is hidden, so reserving it can never be wasted
-     * space. Below 35 the app hides the bar outright with the immersive flags and
-     * the current visibility is the honest value.
+     * 35+, because the bar is persistent there (see {@link #applySystemUi}) and
+     * the ignored-visibility form is the one that cannot be caught mid-animation
+     * reporting 0. Below 35 the app hides the bar with the immersive flags until a
+     * swipe reveals it, and the current visibility is the honest value.
      */
     private int sheetFootInset(WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= 35) {
@@ -2253,9 +2348,13 @@ public class MainActivity extends Activity {
         if (step == stripDrawnPillness) return;
         stripDrawnPillness = step;
         float p = step / 8f;
+        // The pill's chrome -- the outline and the plate -- exists only where the pill
+        // does: above the band the state is re-applied so the pill gets its colour back
+        // immediately, and below it setStripStroke clears the outline outright. Both go
+        // through the one writer, so whichever of the two callers runs last, an open
+        // sheet has no strip outline.
         if (step == 0) {
-            stripBackground.setStroke(0, 0);
-            stripBackground.setColor(Color.TRANSPARENT);
+            setStripStroke(stripStrokeColour);
         } else {
             applyStripState(true);
         }
@@ -2304,7 +2403,25 @@ public class MainActivity extends Activity {
      */
     private void setStripStroke(int colour) {
         if (stripBackground == null) return;
-        // The outline exists only where the pill does; see applyStripPillness.
+        // The colour is remembered, because applyStripPillness has to be able to
+        // re-apply it when the pill arrives without knowing which state chose it.
+        stripStrokeColour = colour;
+        // THE OUTLINE IS THE PILL'S, so it is ABSENT -- not transparent -- while the
+        // sheet is open. A zero-alpha stroke is still a stroke a compositor may
+        // anti-alias into a faint hairline, and the open sheet already draws its own
+        // top hairline from the panel; see applyStripPillness.
+        //
+        // THE GATE IS WHAT FIXES THE FIRST LAYOUT. openInitial calls applyStripState()
+        // AFTER the morph has placed the panel and cleared the stroke, so that call
+        // re-applied the state's outline to an open sheet -- an amber border on the
+        // very first frame, which survived until a collapse re-ran applyStripPillness
+        // and only then cleared it. Gating here means the outline can never reach an
+        // open sheet whatever order the two writers run in.
+        if (stripDrawnPillness == 0) {
+            stripBackground.setStroke(0, 0);
+            stripBackground.setColor(Color.TRANSPARENT);
+            return;
+        }
         stripBackground.setStroke(dp(1), colour);
         // THE CURRENT BLEND, not the base. This wrote `stripFillBase` -- the SHEET's
         // glass at 0xEB -- and so repainted the pill opaque on every state change,
@@ -2326,17 +2443,24 @@ public class MainActivity extends Activity {
         // generation they started and then slid the sheet over. Read on every
         // refresh rather than pushed, because the run is started from a dialog that
         // is not this class and there is no callback to hang the end on.
-        StripState drawn = DepthGenDialog.isRunning() ? StripState.PROGRESS : stripState;
+        //
+        // A CLOUD BUILD IS A RUN TOO, and it drives the SAME state with the SAME
+        // wording: the user asked for one loading text for both kinds rather than a
+        // cloud build that shows nothing. SplatImport.anyRunning is the process-wide
+        // question, exactly as BuildDialog.isRunning is for a depth run.
+        boolean depthRunning = BuildDialog.isRunning();
+        StripState drawn = (depthRunning || SplatImport.anyRunning())
+                ? StripState.PROGRESS : stripState;
         // The same STATE is not always the same PICTURE: PROGRESS carries a number.
         // Guarding on the state alone would have frozen the percentage at whatever it
         // was when the run started -- a progress bar that does not progress. Read once
         // here so the guard and the text cannot disagree about it.
-        int percent = drawn == StripState.PROGRESS
-                ? DepthGenDialog.progressPercent() : -1;
-        // The pill's own palette, unconditionally: whether it is VISIBLE is
-        // applyStripPillness's job, decided by whether a pill exists at all. Blending
-        // the colour here as well was doing the same job in two places.
-        int shape = Math.round(SheetMorph.shapeProgress(lastSheetFraction) * 16f);
+        //
+        // The percentage belongs to the DEPTH run. A cloud build has none -- its three
+        // phases are the dialog's Splat tab and the tile's ring's business -- so the
+        // pill reuses the existing indeterminate "Generating…" rather than inventing a
+        // number, and rather than adding a fourth generating string.
+        int percent = depthRunning ? BuildDialog.progressPercent() : -1;
         if (!force && stripDrawnState == drawn && stripDrawnPercent == percent) return;
         stripDrawnState = drawn;
         stripDrawnPercent = percent;
@@ -2348,7 +2472,7 @@ public class MainActivity extends Activity {
                 setStripMark(false);
                 break;
             case ATTENTION:
-                stripLabel.setText(R.string.pill_no_depth);
+                stripLabel.setText(R.string.pill_no_3d);
                 stripLabel.setTextColor(WARN_COLOUR);
                 // The BORDER carries the warning too. Changing only the text colour
                 // left a pill that read as informational at a glance, which is the
@@ -2359,10 +2483,18 @@ public class MainActivity extends Activity {
                 setStripMark(false);
                 break;
             case PROGRESS:
-                // The percentage comes from the same read the guard used.
-                stripLabel.setText(getString(R.string.pill_generating, percent));
+                // The percentage comes from the same read the guard used. A cloud
+                // build has none, so the pill says the indeterminate form -- the same
+                // word the clip job line uses before its first phase arrives -- rather
+                // than showing a percentage it cannot know.
+                stripLabel.setText(percent >= 0
+                        ? getString(R.string.pill_generating, percent)
+                        : getString(R.string.video_job_running_indeterminate));
                 stripLabel.setTextColor(0xFFFFFFFF);
-                stripBackground.setStroke(dp(1), 0x33FFFFFF);
+                // Through the one writer, so the fill survives (setStroke clears it)
+                // and the pillness gate applies: a run in progress must not paint an
+                // outline onto an OPEN sheet either.
+                setStripStroke(0x33FFFFFF);
                 setStripMark(true);
                 break;
             default:
@@ -2594,10 +2726,21 @@ public class MainActivity extends Activity {
         // The ellipsis is on the LABEL, not on the strip. On the strip it competed
         // with the dot and the padding for room, so a long sentence compressed the
         // dot into a speck before the text shortened at all. Here the dot is fixed
-        // and the text takes what is left.
+        // and the text ellipsises against what is left of the panel.
         stripLabel.setEllipsize(TextUtils.TruncateAt.END);
-        row.addView(stripLabel, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // WRAP_CONTENT, NOT a weighted 0dp child. A 0-width child with weight 1 is
+        // measured as "whatever the parent has left over", which is nothing when the
+        // ROW is itself measured UNSPECIFIED -- so the row came back as its chrome
+        // alone, pillWidthPx fell to the 96dp floor, and the label was then laid out
+        // in ~42dp of a pill that had visibly more room. The user: the label read 'No de…' while the sheet was wide and the row was otherwise empty, in the
+        // collapsed state as well as the expanded one. WRAP_CONTENT measures the text
+        // in every pass, so the pill is as wide as its words and the ellipsis only
+        // appears when the cap genuinely bites. The dot stays fixed either way: the
+        // label's available width is the row minus the mark, so the mark is never
+        // squeezed.
+        row.addView(stripLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // WRAP_CONTENT, not MATCH_PARENT: the pill's width is what its content needs, and
         // a MATCH_PARENT child measures to whatever the parent offers -- so the cap came
@@ -2975,7 +3118,14 @@ public class MainActivity extends Activity {
      * the rounding mean something — which is the order these two fixes have to go in.
      */
     private void applySheetRadius(float top, float bottom) {
-        float[] corners = new float[]{top, top, bottom, bottom, bottom, bottom, top, top};
+        // The ORDER lives in SheetMorph.cornerRadii, where a test can read it back.
+        // Hand-written here it was {top, top, bottom, bottom, bottom, bottom, top,
+        // top} -- four correct pairs in the wrong order, which put the bottom radius
+        // on the TOP-RIGHT corner and the top radius on the BOTTOM-LEFT, so the
+        // sheet's top-right was square while its top-left was rounded. That is the
+        // reported the right side's rounding was wrong, and no screenshot at rest
+        // can tell a wrong radius from a wrong slot.
+        float[] corners = SheetMorph.cornerRadii(top, bottom);
         if (panelBackground != null) panelBackground.setCornerRadii(corners);
         if (stripBackground != null) stripBackground.setCornerRadii(corners);
     }
@@ -3306,6 +3456,7 @@ public class MainActivity extends Activity {
                 tapCandidate = false;
                 if (pointers.size() == 2) {
                     pinchStartZoom = renderer.getZoom();
+                    pinchStartCamDist = renderer.getCamDist();
                     startDist = pointerDistance();
                     lastMidX = pointerMidX();
                     lastMidY = pointerMidY();
@@ -3326,13 +3477,14 @@ public class MainActivity extends Activity {
                 if (pointers.size() >= 2) {
                     // pinch zoom (relative to two-finger start, no drift)
                     if (startDist > 0f) {
-                        float newZoom = pinchStartZoom * (pointerDistance() / startDist);
-                        float zoomBefore = renderer.getZoom();
-                        renderer.setZoom(newZoom);
-                        // Compared, not assumed: setZoom clamps to [0.25, 2], so a
-                        // pinch at either stop leaves the renderer exactly where it was
-                        // and this is not a change worth persisting.
-                        if (zoomBefore != renderer.getZoom()) framingMoved = true;
+                        // ONE branch, both modes: the pinch drives Pan Z, the camera
+                        // distance, and it is the same value on either surface -- so
+                        // a mode test here would be a branch whose arms are identical.
+                        float newCam = pinchStartCamDist * (startDist / pointerDistance());
+                        float camBefore = renderer.getCamDist();
+                        renderer.setCamDist(newCam);
+                        if (camBefore != renderer.getCamDist()) framingMoved = true;
+                        setBar("zpan", Math.round(renderer.getCamDist() * 100f), true);
                         // Zoom belongs to the photo, so a pinch frames this one
                         // and leaves every other photo at its own zoom -- and to the
                         // surface being edited, like every other adjustment. This was
@@ -3351,7 +3503,6 @@ public class MainActivity extends Activity {
                         // slider in this app follows; see BasreliefSlider's own note.
                         // The pinch's zoom is committed by endFramingGesture, in the
                         // same single write as its pan and origin.
-                        setZoomSlider(FramingRowValue.zoomPercent(renderer.getZoom()));
                     }
                     // pan by midpoint delta
                     float mx = pointerMidX();
@@ -3606,10 +3757,9 @@ public class MainActivity extends Activity {
          * Hide this section's caption while its body has nothing in it.
          *
          * <p>Re-checked whenever the body is built and whenever it is rebuilt, so
-         * the caption and its rows cannot drift apart across a selection change.
-         * {@code refreshMapSection} is the existing precedent for re-deriving a
-         * section's contents from the live selection; this is the same idea applied
-         * to the heading rather than the body.
+         * the caption and its rows cannot drift apart across a selection change —
+         * the same idea as re-deriving a section's contents from the live selection,
+         * applied to the heading rather than the body.
          *
          * <p><b>Visibility, not emptiness.</b> A child that is itself GONE does not
          * count: a caption over a hidden row is the same orphan as a caption over no
@@ -3689,12 +3839,9 @@ public class MainActivity extends Activity {
             // return to with 1.0 — which is the bug a single key would have.
             prefs.edit().putFloat(KEY_SHEET_OPEN, fraction).apply();
         }
-        // Expanded, back is discoverable and the bar composites over the render;
-        // collapsed, the wallpaper must be full-bleed. 26–34 keep their
-        // always-immersive flags.
-        if (Build.VERSION.SDK_INT >= 35 && panel != null && panel.isAttachedToWindow()) {
-            applySystemUi();
-        }
+        // No system-UI call here any more: on 35+ the navigation bar is
+        // persistent (see applySystemUi), and 26-34 are immersive whichever way the
+        // sheet sits, so the sheet's committed state no longer decides the bars.
         if (collapsed) dismissHintIfShown();
     }
 
@@ -3751,6 +3898,20 @@ public class MainActivity extends Activity {
      * know that its neighbours were added after it was written.
      */
     private int depthInsertIndex() {
+        // Under the renderer row when it is there: the Depth control and the mode
+        // it belongs to are one group, and the row must not move across the
+        // toggle when the mode changes. Falls back to the caption, which is the
+        // sibling that is always present.
+        if (rendererRows != null) {
+            int at = sheetContent.indexOfChild(rendererRows.view());
+            if (at >= 0) return at + 1;
+        }
+        int at = reliefCaption == null ? -1 : sheetContent.indexOfChild(reliefCaption);
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
+    }
+
+    /** Where the renderer row belongs: directly under the caption it labels. */
+    private int rendererInsertIndex() {
         int at = reliefCaption == null ? -1 : sheetContent.indexOfChild(reliefCaption);
         return at < 0 ? sheetContent.getChildCount() : at + 1;
     }
@@ -3813,7 +3974,11 @@ public class MainActivity extends Activity {
             renderer.setLight(
                     "light_azimuth".equals(key) ? value : shownAzimuth,
                     "light_elevation".equals(key) ? value : shownElevation);
-        } else renderer.setDepth(value / 100f);
+        } else if ("splat_depth_mul".equals(key)) renderer.setSplatDepthMul(value / 100f);
+        else if ("splat_eps2d".equals(key)) renderer.setSplatEps2d(value / 100f);
+        else if ("splat_blur_px".equals(key)) renderer.setSplatBlurPx(value / 10f);
+        else if ("splat_scale".equals(key)) renderer.setSplatRenderScale(value / 100f);
+        else renderer.setDepth(value / 100f);
     }
 
     /**
@@ -3855,13 +4020,24 @@ public class MainActivity extends Activity {
     }
 
     private String formatValue(String key, int value) {
-        if (key.equals("zoom")) return String.format(Locale.US, "%.1f×", value / 100f);
+        if (key.equals("zoom")) return String.format(Locale.US, "%.0f°", 45f / (value / 100f));
         // Two decimals, unlike Zoom's one: the slider's step is a percent, so 0.75
         // and 0.8 are both reachable and a rate that rounds to the same string for
         // two different values is a control that lies about what it stored.
         if (key.equals("speed")) return String.format(Locale.US, "%.2f×", value / 100f);
         if (key.equals("intensity")) return value + "%";
         if (key.equals("motion")) return value + "%";
+        // The splat look's four rows. Depth and Size are hundredths, so two decimals
+        // show the step a nudge takes; Blur is tenths and 0 reads as exactly that
+        // rather than "0.0"; Resolution is whole percent, like Zoom.
+        if (key.equals("splat_depth_mul") || key.equals("splat_eps2d")) {
+            return String.format(Locale.US, "%.2f", value / 100f);
+        }
+        if (key.equals("splat_blur_px")) {
+            if (value == 0) return "0";
+            return String.format(Locale.US, "%.1f", value / 10f);
+        }
+        if (key.equals("splat_scale")) return value + "%";
         // The light's two rows print their own unit, and only their own unit: the
         // convention (azimuth counter-clockwise from the right, elevation 0
         // grazing) lives in the caption above them, because neither number means
@@ -4155,6 +4331,22 @@ public class MainActivity extends Activity {
                             "light_azimuth".equals(key) ? value : other.lightAzimuth,
                             "light_elevation".equals(key) ? value : other.lightElevation);
                 }
+                // The splat look's four rows, each through its own one-value mutator
+                // so the other three and every other setting carry across -- the
+                // withDepth scar this file exists to prevent. Clamped through Splat
+                // so the stored value is canonical the moment it is written.
+                if ("splat_depth_mul".equals(key)) {
+                    return item.withSplatDepth(editSurface, Splat.clampDepthMul(value / 100f));
+                }
+                if ("splat_eps2d".equals(key)) {
+                    return item.withSplatSize(editSurface, Splat.clampEps2d(value / 100f));
+                }
+                if ("splat_blur_px".equals(key)) {
+                    return item.withSplatBlur(editSurface, Splat.clampBlurPx(value / 10f));
+                }
+                if ("splat_scale".equals(key)) {
+                    return item.withSplatScale(editSurface, Splat.clampRenderScale(value / 100f));
+                }
                 return item.withMotion(editSurface, value);
             }
         });
@@ -4179,6 +4371,12 @@ public class MainActivity extends Activity {
     void refreshSliders() {
         AppState state = AppState.load(this, prefs, getFilesDir());
         LibraryItem item = state.activeItem();
+        // The one 3D-build dialog follows the index too. It opens on a captured
+        // subject, so a state it could not know at open -- an embedded depth whose
+        // read has now landed, a cloud job that has started or failed -- has to
+        // arrive here or the tab would show a stale answer for the whole session.
+        // It re-derives rather than re-reads, so this is cheap and idempotent.
+        if (buildDialog != null) buildDialog.onIndexChanged();
         // What the strip and grid were last brought in step with. Recorded on
         // every refresh rather than only after a rebuild, because every in-app
         // selection reaches this method (a gallery tap, a delete of the active
@@ -4196,7 +4394,30 @@ public class MainActivity extends Activity {
         refreshPhotoLine(state);
         refreshSurfaceNote(state);
         syncDepthRow(state);
-        refreshMapSection(state);
+        // The renderer row and the controls that only apply in relief mode. A
+        // control nothing reads is a bug, not a greyed row: in splat mode the Depth
+        // slider has nothing to displace and the light has nothing to shade -- the
+        // cloud's shape is reconstructed, and SHARP's Gaussians carry no usable
+        // surface normal (measured: the minor axis is dominated by the view ray,
+        // 11 deg from it at the image centre and 28 deg at the edge, where a real
+        // normal would fan out toward 90), so a per-splat diffuse would shade by
+        // the camera angle rather than by the shape. See lightSection. The shared
+        // six (Zoom, Origin, Pan, Motion, Brightness, Shadow) carry their values
+        // across the toggle and stay -- and all six are read by the splat now.
+        boolean splatMode = item != null && item.isSplatMode();
+        if (depthBarRow != null) {
+            depthBarRow.setVisibility(splatMode ? View.GONE : View.VISIBLE);
+        }
+        if (lightSection != null) {
+            lightSection.setVisibility(splatMode ? View.GONE : View.VISIBLE);
+        }
+        if (rendererRows != null) rendererRows.refresh();
+        // The splat look's four rows follow the same one decision the relief's Depth
+        // row does: present only when they can change a pixel. syncSplatRows builds
+        // them when the selection draws a cloud and removes them when it does not, so
+        // a row in Relief mode -- or in Splat mode with no cloud -- shows none of
+        // them. A control that cannot act is the lie this project keeps refusing.
+        syncSplatRows(item);
         // Read once, here, and used by both the sliders and the sensor policy
         // below. Two reads would be two chances to disagree, which is how a slider
         // ends up showing 0 while the sensor is still told to run.
@@ -4227,6 +4448,13 @@ public class MainActivity extends Activity {
                     ? SurfaceSettings.DEFAULT_LIGHT_ELEVATION : s.lightElevation;
             setBar("light_azimuth", azimuthForSlider(shownAzimuth), true);
             setBar("light_elevation", elevationForSlider(shownElevation), true);
+            // The splat look's four rows, from the same one read. setBar is a no-op
+            // when the row is not built (a relief row, or a splat row with no cloud),
+            // so this cannot write to a control that is not on screen.
+            setBar("splat_depth_mul", splatDepthSliderValue(s), true);
+            setBar("splat_eps2d", splatSizeSliderValue(s), true);
+            setBar("splat_blur_px", splatBlurSliderValue(s), true);
+            setBar("splat_scale", splatScaleSliderValue(s), true);
         }
         // The four framing rows are sliders on this same sheet and must follow the
         // same one resolution. They live in FramingRows and register under different
@@ -4309,73 +4537,105 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Put "This photo's map" into the state of the photo actually selected.
+     * Add or remove the splat look's four rows so they match the photo on screen.
      *
-     * <p><b>Two states, and no third.</b>
+     * <p><b>The same rule as {@link #syncDepthRow}, one medium over.</b> The four are
+     * render values that only a drawn cloud reads, so they belong on the sheet only
+     * when the selected row draws one: {@code isSplatMode()} AND the cloud file is
+     * here -- exactly the two conditions {@code ReliefRenderer.useSplat()} draws
+     * under. A row in Splat mode with no cloud renders its relief, where all four are
+     * inert; a control that cannot change a pixel is the lie this project keeps
+     * refusing to ship.
      *
-     * <ul>
-     *   <li>A photo with a map gets the Regenerate/Replace row — <i>including</i>
-     *       the bundled demo, which is a file-backed row like any other since the
-     *       seed copied its pair into {@code filesDir}. It had a special body here
-     *       ("Ships with its own depth map") for as long as it had no image file to
-     *       regenerate from and nowhere to write a replacement; both reasons are
-     *       gone, so it now gets the row every other photo gets.</li>
-     *   <li>A photo with no map gets <b>no section at all</b>, not a bare caption.
-     *       The fix line already says "No depth" with the two actions that answer
-     *       it, directly under the grip where it cannot scroll away; a second copy
-     *       here would be two controls for one fact.</li>
-     * </ul>
-     *
-     * <p>Rebuilt from the live selection on every refresh, which is what makes
-     * the row always describe the photo on screen rather than the one selected
-     * when the sheet was built. The old shape -- caption added unconditionally,
-     * row built once from the launch item -- produced both defects this replaces:
-     * a caption over nothing for a launch photo with no map, and the previous
-     * photo's row left behind after a selection change.
-     *
-     * <p><b>This is the one section whose body is emptied on purpose</b>, which is
-     * why the caption is re-synced at the end rather than only at construction: a
-     * selection change clears the body and rebuilds it, so a caption decided once
-     * would be describing whatever the body held when the sheet was built. The
-     * whole section is still hidden as a unit here — which is stronger than the
-     * caption guard and the right thing for this one — and the sync keeps the
-     * invariant true for the case where a caller later stops hiding the section.
+     * <p>Built the first time they are wanted and removed (from the tree and from the
+     * {@code sliders} map, like the Depth row) when they are not, so a selection that
+     * stops drawing a cloud cannot leave four detached sliders that {@code setBar}
+     * would silently write to.
      */
-    private void refreshMapSection(AppState state) {
-        if (mapSection == null) return;
-        mapSection.body().removeAllViews();
-        LibraryItem item = state.activeItem();
-        // No selection means the renderer is drawing the packaged demo pair, which
-        // does have a map -- so the caption belongs, and the ordinary row does not:
-        // there is no id to write a regenerated map against.
-        if (item == null || item.depthName == null) {
-            mapSection.setVisibility(View.GONE);
-            mapSection.syncCaption();
+    private void syncSplatRows(LibraryItem item) {
+        boolean want = item != null && item.isSplatMode() && splatFilePresent(item);
+        if (!want) {
+            dropSplatRow("splat_depth_mul", splatDepthRow);
+            dropSplatRow("splat_eps2d", splatSizeRow);
+            dropSplatRow("splat_blur_px", splatBlurRow);
+            dropSplatRow("splat_scale", splatScaleRow);
+            splatDepthRow = null;
+            splatSizeRow = null;
+            splatBlurRow = null;
+            splatScaleRow = null;
             return;
         }
-        mapSection.body().addView(buildMapActions());
-        mapSection.setVisibility(View.VISIBLE);
-        mapSection.syncCaption();
+        if (splatDepthRow != null) return;   // already built for this state
+        SurfaceSettings s = item.settings(editSurface);
+        // Inserted directly under the Renderer row, in the order the look reads:
+        // Depth (shape), Size (coverage), Blur (softness), Resolution (cost). Derived
+        // at insert time from the renderer row's own position, like rendererInsertIndex,
+        // rather than a saved integer.
+        int at = splatInsertIndex();
+        splatDepthRow = addSlider("splat_depth_mul", splatDepthSliderValue(s),
+                Math.round(Splat.DEPTH_MUL_MIN * 100f), Math.round(Splat.DEPTH_MUL_MAX * 100f));
+        sheetContent.addView(splatDepthRow, at++);
+        splatSizeRow = addSlider("splat_eps2d", splatSizeSliderValue(s),
+                Math.round(Splat.EPS_2D_MIN * 100f), Math.round(Splat.EPS_2D_MAX * 100f));
+        sheetContent.addView(splatSizeRow, at++);
+        splatBlurRow = addSlider("splat_blur_px", splatBlurSliderValue(s),
+                0, Math.round(Splat.BLUR_MAX * 10f));
+        sheetContent.addView(splatBlurRow, at++);
+        splatScaleRow = addSlider("splat_scale", splatScaleSliderValue(s),
+                Math.round(Splat.RENDER_SCALE_MIN * 100f),
+                Math.round(Splat.RENDER_SCALE_MAX * 100f));
+        sheetContent.addView(splatScaleRow, at);
     }
 
-    /**
-     * Regenerate and Replace, on one row, for a file-backed photo with a map.
-     *
-     * <p>Two actions because an applied map has two things you might want to do
-     * to it, and neither is a third thing: deleting it belongs to the gallery
-     * row menu, where delete already asks first.
-     *
-     * <p>Gallery is NOT here. It was a button because browsing used to be a
-     * mode you entered; it is the filmstrip now, so a button that opens a
-     * gallery you are already standing in is a control with nothing to do.
-     * Calibrate is not here either: it is a reported condition in Settings >
-     * Gyro, not something the user does while looking at a photo.
-     *
-     * <p>Built fresh for each selection rather than captured once. Both actions
-     * resolve the active photo at click time -- the picker path reuses the
-     * active id, and the depth panel captures its subject when it opens -- so a
-     * stale row could only ever describe the wrong photo, never edit it.
-     */
+    /** Remove one splat row from the tree and the slider map. See {@link #syncSplatRows}. */
+    private void dropSplatRow(String key, View row) {
+        if (row != null) sheetContent.removeView(row);
+        sliders.remove(key);
+    }
+
+    /** Where the splat rows belong: directly under the Renderer row. */
+    private int splatInsertIndex() {
+        // After the relief Depth row when the row is present, so the four cloud
+        // rows follow it rather than pushing it down; the exact slot does not
+        // matter (the Depth row is hidden in Splat mode), only that the cloud's
+        // own Depth is the first look row.
+        if (depthBarRow != null) {
+            int at = sheetContent.indexOfChild(depthBarRow);
+            if (at >= 0) return at + 1;
+        }
+        int at = rendererRows == null ? -1 : sheetContent.indexOfChild(rendererRows.view());
+        return at < 0 ? sheetContent.getChildCount() : at + 1;
+    }
+
+    // The four splat values as the integers their rows carry. The encodings are the
+    // ones the old dev group used, so a value the migration seeded reads back at the
+    // same position on the track: Depth and Size in hundredths, Blur in tenths,
+    // Resolution in whole percent. Each is a pure function of the stored float, used
+    // by both the build (here) and the repaint (refreshSliders), so the row cannot be
+    // created at one value and refreshed to another.
+
+    private static int splatDepthSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_DEPTH : s.splatDepth;
+        return Math.round(Splat.clampDepthMul(v) * 100f);
+    }
+
+    private static int splatSizeSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_EPS2D : s.splatEps2d;
+        return Math.round(Splat.clampEps2d(v) * 100f);
+    }
+
+    private static int splatBlurSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_BLUR : s.splatBlur;
+        return Math.round(Splat.clampBlurPx(v) * 10f);
+    }
+
+
+
+    private static int splatScaleSliderValue(SurfaceSettings s) {
+        float v = s == null ? SurfaceSettings.DEFAULT_SPLAT_SCALE : s.splatScale;
+        return Math.round(Splat.clampRenderScale(v) * 100f);
+    }
+
     /**
      * Whether this row has a colour clip on disk without its depth.
      *
@@ -4391,69 +4651,6 @@ public class MainActivity extends Activity {
     private boolean hasStagedClip(LibraryItem item) {
         if (item == null || item.video != null) return false;
         return new java.io.File(getFilesDir(), LibraryItem.videoFileName(item.id)).exists();
-    }
-
-    private View buildMapActions() {
-        LinearLayout mapRow = new LinearLayout(this);
-        mapRow.setOrientation(LinearLayout.HORIZONTAL);
-        // Resolved at CLICK time, not build time, for the reason on the class: the
-        // row is rebuilt per selection but a click can land after another change.
-        // A CLIP ROW INCLUDES ONE WHOSE CLIPS ARE NOT ATTACHED YET: a fetch that
-        // wrote the colour clip and then failed before the depth landed leaves a
-        // photograph with a colour clip behind it. It must still offer Generate --
-        // through the VIDEO graph, which is the only thing that can produce a depth
-        // track -- and it must not offer Replace, which writes one still map over a
-        // clip's track set.
-        final LibraryItem activeNow = state().activeItem();
-        final boolean isClip = activeNow != null
-                && (activeNow.video != null || hasStagedClip(activeNow));
-        mapRow.addView(makeButton(getString(R.string.action_regenerate),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // A clip regenerates its TRACK SET through the video graph --
-                        // the image graph would write a one-frame depth over a playing
-                        // clip's depth track, which is what the button did and why it
-                        // had to be routed. DepthSource.canRegenerate says TRACK may
-                        // ask for this; the routing is the half the renderer cannot
-                        // know.
-                        LibraryItem item = state().activeItem();
-                        if (item == null) return;
-                        if (item.video != null || hasStagedClip(item)) {
-                            regenerateClip(item);
-                        } else {
-                            openDepthGen();
-                        }
-                    }
-                }), new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        if (!isClip) {
-            mapRow.addView(makeButton(getString(R.string.action_replace),
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            // Reuses the active item's id, so it overwrites this
-                            // photo's map rather than starting a new gallery row.
-                            pickFile(REQ_DEPTH);
-                        }
-                    }), new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        }
-        // The mockup's .btnrow gap. Two bordered plates sharing an edge read as
-        // one control with a doubled border; the gap is what makes them two, and
-        // it is set on the surviving child rather than passed to addView because
-        // each makeButton already carries the right plate and pressed state.
-        View regenButton = mapRow.getChildAt(0);
-        LinearLayout.LayoutParams regenLp =
-                (LinearLayout.LayoutParams) regenButton.getLayoutParams();
-        regenLp.rightMargin = dp(8);
-        regenButton.setLayoutParams(regenLp);
-        LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        mapLp.topMargin = dp(2);
-        mapRow.setLayoutParams(mapLp);
-        return mapRow;
     }
 
     /**
@@ -4487,6 +4684,131 @@ public class MainActivity extends Activity {
         // never flickers through "unknown" on a selection.
         if (answer.isUnknown()) requestEmbeddedDepth(item);
         return answer;
+    }
+
+    /**
+     * The depth answer for one row, by value rather than by selection.
+     *
+     * <p>The build dialog captures its subject when it opens and can be asked about
+     * it after the selection has moved, so it needs the same one answer the fix line
+     * uses without re-reading "what is selected now". It resolves from the same
+     * caches ({@link #embeddedDepthById}, {@link #clipPlayableById}) and starts the
+     * same reads, so the dialog and the fix line cannot disagree about whether a
+     * photo has a map. Package-private: {@code BuildDialog} is the caller.
+     */
+    DepthSource.Answer depthAnswerFor(LibraryItem item) {
+        if (item == null) return DepthSource.forItem(null, null, null);
+        VideoSource.Answer video = VideoSource.forItem(item, clipPlayableAnswerOf(item));
+        DepthSource.Answer answer =
+                DepthSource.forItem(item, embeddedAnswerOf(item), video);
+        if (answer.isUnknown()) requestEmbeddedDepth(item);
+        return answer;
+    }
+
+    /**
+     * <b>The one answer to "where does this row's splat cloud come from".</b>
+     *
+     * <p>Its sibling is {@link #depthSourceFor}, and it exists for the same reason:
+     * the fix line must not decide "is there a cloud" with its own file check while
+     * the sheet's shared asset row decides it with another. The index says a row <i>names</i>
+     * a cloud; whether the bytes are here is a stat, and {@link SplatSource} models
+     * the window between the two so a row naming a cloud whose file has not been read
+     * answers {@link SplatSource.Kind#UNREAD} rather than "no cloud".
+     *
+     * <p>The stat is synchronous, like the one the sheet already makes on the UI
+     * thread for the same file ({@code BuildDialog.hasCloud}) — and unlike the
+     * embedded and clip reads, which decode a
+     * PNG or open containers and therefore go to the {@code Io} worker. It is one
+     * {@code isFile()} on a path the index already resolved.
+     */
+    SplatSource.Answer splatAnswerFor(LibraryItem item) {
+        if (item == null) return SplatSource.forItem(null, null);
+        return SplatSource.forItem(item, Boolean.valueOf(splatFilePresent(item)));
+    }
+
+    /** Whether the row names a cloud file that is actually on disk. */
+    private boolean splatFilePresent(LibraryItem item) {
+        if (item == null || item.splatName == null) return false;
+        File f = PrefFiles.resolve(getFilesDir(), item.splatName);
+        return f != null && f.isFile();
+    }
+
+    /**
+     * <b>The sheet's asset row, resolved.</b> The selected mode's state, its primary
+     * action, and the secondary actions that belong to that mode.
+     *
+     * <p><b>Why one answer.</b> The cloud row and the bottom "This photo's map"
+     * section used to resolve the same two decisions separately — the cloud's own
+     * file check and job record here, the depth answer and the clip routing there.
+     * That is the class of bug this project keeps paying for (two answers to one
+     * question), and it is also what the user reported as two rows offering the same
+     * actions. So the facts are gathered once and handed to {@link AssetRow}, which
+     * reads {@link BuildTab}'s own answers and {@link AssetActions}' own gate rather
+     * than a second copy of either.
+     *
+     * <p>The run state is the row's own: a still depth run is the
+     * {@link BuildDialog} one, while a clip's depth is rebuilt by the video graph, so
+     * a clip import's record and live phase are what gate that row's Regenerate.
+     * Folding the two together would let a clip import show the dialog's still-run
+     * frame.
+     */
+    AssetRow.Answer assetRowFor(LibraryItem item) {
+        if (item == null) return AssetRow.NONE;
+        BuildTab.Answer cloud = buildTabAnswer(BuildTab.Kind.SPLAT, item);
+        // A clip's depth is a track, and a row whose colour clip landed without its
+        // depth is a clip waiting to become one -- both regenerate through the video
+        // graph, and neither is a depth file this row could Replace.
+        boolean regeneratesAsClip = item.video != null || hasStagedClip(item);
+        BuildTab.Answer relief;
+        if (regeneratesAsClip) {
+            // The clip's own run is the gate, not the still one: a clip import is a
+            // video pass, and its record and live phase are what own the row.
+            Jobs.Job clipJob = clipJob(item.id);
+            boolean clipFailed = clipJob != null && clipJob.isFailed();
+            boolean clipRunning = VideoImport.isRunning(item.id)
+                    || (clipJob != null && !clipJob.isFailed());
+            relief = BuildTab.forRelief(true, false, clipRunning, clipFailed);
+        } else {
+            relief = buildTabAnswer(BuildTab.Kind.RELIEF, item);
+        }
+        // A null mode is the relief, the same degradation RenderMode.parse makes.
+        return AssetRow.resolve(item.renderMode, relief, cloud, depthAnswerFor(item),
+                regeneratesAsClip);
+    }
+
+    /**
+     * One tab's resolved answer for a row, by value rather than by selection.
+     *
+     * <p><b>The one derivation both the dialog's tabs and the sheet's shared asset
+     * row read.</b> The dialog captures its subject when it opens; the sheet reads
+     * the live selection; both need the same {@link BuildTab} answer, and computing
+     * it twice is how the tab and the row would come to disagree about whether a run
+     * is in flight or a failure is standing. {@link BuildDialog}'s own resolvers
+     * delegate here for the same reason.
+     *
+     * <p>A null row claims nothing: no cloud and no depth, so both tabs are in their
+     * empty state and neither may offer an action.
+     */
+    BuildTab.Answer buildTabAnswer(BuildTab.Kind kind, LibraryItem item) {
+        if (kind == BuildTab.Kind.SPLAT) {
+            if (item == null) return BuildTab.forSplat(false, false, false);
+            Jobs.Job job = splatJob(item.id);
+            boolean failed = job != null && job.isFailed();
+            boolean building = SplatImport.isRunning(item.id)
+                    || (job != null && !job.isFailed());
+            return BuildTab.forSplat(splatFilePresent(item), building, failed);
+        }
+        if (item == null) return BuildTab.forRelief(false, true, false, false);
+        DepthSource.Answer depth = depthAnswerFor(item);
+        boolean building = BuildDialog.isRunningFor(item.id);
+        boolean failed = !building && BuildDialog.isFailedFor(item.id);
+        return BuildTab.forRelief(depth.hasDepth(), depth.canReplace(), building, failed);
+    }
+
+    /** This row's clip-import record, or null. A cloud job is not one. */
+    private Jobs.Job clipJob(String itemId) {
+        Jobs.Job job = activeJob(itemId);
+        return job != null && job.kind == Jobs.Kind.CLIP ? job : null;
     }
 
     /**
@@ -4721,9 +5043,9 @@ public class MainActivity extends Activity {
         // A run in progress, and a run that just failed, are conditions too. The
         // mockup puts both in the SHEET, not only on the collapsed pill: "the sheet
         // is open, so the fix line is already the signal".
-        if (DepthGenDialog.isRunning()) {
+        if (BuildDialog.isRunning()) {
             setFixLine(getString(R.string.fix_generating,
-                            Math.max(0, DepthGenDialog.progressPercent())),
+                            Math.max(0, BuildDialog.progressPercent())),
                     getString(R.string.fix_run_in_background), new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
@@ -4748,9 +5070,9 @@ public class MainActivity extends Activity {
         // depth answer and deliberately keyed on the item's own file rather than on
         // hasDepth(): the question is whether anything is left to lose, and an
         // embedded map cannot be the thing a regeneration just destroyed.
-        if (DepthGenDialog.lastResult() == DepthGenDialog.Result.FAILED
+        if (BuildDialog.lastResult() == BuildDialog.Result.FAILED
                 && ((item != null && item.depthName != null)
-                    || !DepthGenDialog.failureCause().isEmpty())) {
+                    || !BuildDialog.failureCause().isEmpty())) {
             // An error that does not say what survived leaves the user unable to tell
             // whether their depth is gone, which is the worst outcome this app has.
             setFixBorderColour(BAD_COLOUR);
@@ -4758,7 +5080,7 @@ public class MainActivity extends Activity {
                     getString(R.string.fix_try_again), new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
-                            openDepthGen();
+                            openBuildDialog(BuildTab.Kind.RELIEF);
                         }
                     },
                     getString(R.string.fix_choose_map), new View.OnClickListener() {
@@ -4769,61 +5091,79 @@ public class MainActivity extends Activity {
                     });
             return;
         }
-        if (depth.isUnknown()) {
-            // The window while an embedded depth map is still being read. The line
-            // says <b>nothing</b> rather than claiming an absence it has not
+        // "Is there any 3D at all" is a different question from "is there a depth
+        // map", and it is the one this line is really answering. A row with a splat
+        // cloud and no map read "No depth" while the renderer drew a Gaussian cloud
+        // in three dimensions — the reported bug — so the two sources are combined in
+        // :core, once, where both windows are modelled. See Scene3D.
+        Scene3D.Answer scene = Scene3D.resolve(depth, splatAnswerFor(item));
+        if (scene.isUnknown()) {
+            // The window while a map's chunk or a cloud's file is still being read.
+            // The line says <b>nothing</b> rather than claiming an absence it has not
             // established, and it deliberately also does not report flat lit: until
-            // the depth is known, whether this photo is shaded is not known either.
-            // The next refresh fills it in.
+            // the 3D is known, whether this photo is shaded is not known either. The
+            // next refresh fills it in.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;
         }
-        if (!depth.reportsNoDepth()) {
-            // The photograph HAS depth. Shading is the separate question: it is
-            // supplied by a normal map or it is not, and if it is not the relief is
-            // flat lit. This is the new middle state — displaced correctly, lit as a
-            // plane — and it is neither "No depth" nor a fault, so it says why there
-            // is no shading and offers the fix rather than reading as broken.
+        if (scene.has3d()) {
+            // The row has a relief or a splat, so the no-depth affordance must not
+            // appear AT ALL — not reworded, not greyed, not a smaller box. This is the
+            // user's rule: the no-depth affordance must be removed while a relief or a splat is present. It is what stops a row that has a cloud from being told it has no
+            // depth.
             //
-            // The one resolution of that question, so this line, the renderer and the
-            // status line cannot disagree. Nothing selected is the packaged trio,
-            // which ships a normal, so it is silent like every shaded photo.
+            // Shading is the separate question, and it is about a RELIEF drawn from a
+            // depth map: supplied by a normal map or not, and if not the relief is flat
+            // lit. A cloud is reconstructed rather than displaced, so it has no normal
+            // map to be missing and the sentence is asked only when there is a map.
+            //
+            // The one resolution of the shading question, so this line, the renderer
+            // and the status line cannot disagree. Nothing selected is the packaged
+            // trio, which ships a normal, so it is silent like every shaded photo.
             //
             // Given the medium rather than left to derive it: a clip's poster can be
             // shaded while the clip itself is flat lit, and both carry identical still
             // files — so a derivation reading only the still files answers the same
             // for both and is wrong about one. That is why NormalSource takes a
             // VideoSource.Answer here.
-            NormalSource.Answer normals = NormalSource.forItem(item, videoSourceFor(state));
-            if (normals.needsNormals()) {
-                setFixLine(getString(R.string.fix_flat_lit),
-                        getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                // The ordinary Depth AI panel, and not a special
-                                // path: it already prefers MoGe, which is the model
-                                // that emits the normal this state is missing. The
-                                // user can change checkpoint, resolution and host
-                                // there exactly as any other run.
-                                openDepthGen();
-                            }
-                        }, null, null, false);
-                return;
+            if (depth.hasDepth()) {
+                NormalSource.Answer normals =
+                        NormalSource.forItem(item, videoSourceFor(state));
+                if (normals.needsNormals()) {
+                    setFixLine(getString(R.string.fix_flat_lit),
+                            getString(R.string.fix_flat_lit_actions), new View.OnClickListener() {
+                                @Override
+                                public void onClick(View v) {
+                                    // The ordinary Depth AI panel, and not a special
+                                    // path: it already prefers MoGe, which is the model
+                                    // that emits the normal this state is missing. The
+                                    // user can change checkpoint, resolution and host
+                                    // there exactly as any other run.
+                                    openBuildDialog(BuildTab.Kind.RELIEF);
+                                }
+                            }, null, null, false);
+                    return;
+                }
             }
-            // Shaded, or the packaged trio: nothing to report. A line that can only
-            // inform is a status paragraph, and this is one sentence.
+            // 3D and nothing to fix: nothing to report. A line that can only inform is
+            // a status paragraph, and this is one sentence.
             setFixLine(null, null, null, null, null);
             setStripState(StripState.IDLE);
             return;
         }
+        // Neither a map nor a cloud: the only state that may say anything, and what it
+        // says is "no 3D" rather than "No depth". The row has no geometry at all, so
+        // naming depth alone would answer a narrower question than the one the user is
+        // looking at — the row could gain a cloud without gaining a map.
+        //
         // Two actions, and they are PEERS: the PRD settles that generating may be as
         // common as choosing, so neither is styled as the real one.
-        setFixLine(getString(R.string.fix_no_depth),
-                getString(R.string.fix_no_depth_actions), new View.OnClickListener() {
+        setFixLine(getString(R.string.fix_no_3d),
+                getString(R.string.fix_no_3d_actions), new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        openDepthGen();
+                        openBuildDialog(BuildTab.Kind.RELIEF);
                     }
                 },
                 getString(R.string.fix_choose_map), new View.OnClickListener() {
@@ -4849,6 +5189,14 @@ public class MainActivity extends Activity {
         if (isFinishing() || isDestroyed()) return;
         if (gallery != null) gallery.jobsChanged();
         refreshSliders();
+        // The renderer rows carry the "N splats" line, and N is read from the
+        // cloud FILE (BuildDialog.cloudCount) rather than from anything captured at
+        // import time -- so it is correct the moment it is asked, and the only
+        // reason a rebuild did not appear to change it is that nobody asked. The
+        // resume path already refreshed these rows on every phase and the live path
+        // did not, which is why a recovered build updated the label and a watched
+        // one did not.
+        refreshRendererRows();
     }
 
     /**
@@ -4916,6 +5264,9 @@ public class MainActivity extends Activity {
         final Jobs.Job job = activeJob(item.id);
         final VideoImport.Live live = VideoImport.live(item.id);
         if (job == null && live == null) return false;
+        // A cloud build is not a clip import: its progress lives on the Renderer row,
+        // and this line's "Frame k of N" and Regenerate are clip concepts.
+        if (job != null && job.kind != Jobs.Kind.CLIP) return false;
 
         if (job != null && job.isFailed()) {
             // The server's own words, kept until the user acts. Amber, like the
@@ -5676,9 +6027,12 @@ public class MainActivity extends Activity {
      * Regenerate depth and normal for the active CLIP row, through the video graph.
      *
      * <p>The same phases and the same worker as an import, because it IS an import
-     * whose colour source is the clip already in the gallery.
+     * whose colour source is the clip already in the gallery. Package-private
+     * because the sheet's one shared asset row is the caller for a clip's
+     * Regenerate: the dialog's Relief tab refuses a track by {@link BuildTab}'s own
+     * rule, so that action has no tab to live in.
      */
-    private void regenerateClip(final LibraryItem item) {
+    void regenerateClip(final LibraryItem item) {
         String host = prefs.getString("comfy_url", "");
         if (host == null || host.trim().isEmpty()) {
             Toast.makeText(MainActivity.this, R.string.video_import_no_server,
@@ -5759,6 +6113,172 @@ public class MainActivity extends Activity {
                 refreshSliders();
             }
         });
+    }
+
+    // ------------------------------------------------------------ the Make 3D flow
+
+    /** This row's cloud-build record, or null. Keyed by kind: a clip job is not one. */
+    Jobs.Job splatJob(String itemId) {
+        if (itemId == null) return null;
+        for (Jobs.Job j : JobsStore.load(prefs).pending()) {
+            if (itemId.equals(j.itemId) && j.kind == Jobs.Kind.SPLAT) return j;
+        }
+        return null;
+    }
+
+    /** Repaint the renderer row without touching storage. */
+    void refreshRendererRows() {
+        if (rendererRows != null) rendererRows.refresh();
+        // The four splat rows follow the same state: a finished build makes the cloud
+        // present, and that is the moment they must appear (or a delete makes it
+        // absent, and that is the moment they must go).
+        syncSplatRows(state().activeItem());
+        // A cloud build's every UI update goes through here -- each phase, the
+        // completion and the failure -- so this is where the collapsed pill learns a
+        // splat run has started or ended. It is the same shape as the depth run's
+        // onDepthRunStateChanged: the state is re-read, never pushed, and
+        // applyStripState is a no-op unless the state actually moved.
+        applyStripState();
+    }
+
+    /**
+     * Set one row's draw path. The item is the home of the value, so this is the one
+     * write; {@code applyFiles} then resolves the new mode and the renderer follows.
+     */
+    void setRenderMode(String id, final com.amoshydra.basrelief.core.store.RenderMode mode) {
+        if (id == null) return;
+        LibraryStore.editItem(prefs, id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem item) {
+                return item.withRenderMode(mode);
+            }
+        });
+        applyFiles();
+        refreshSliders();
+    }
+
+    /**
+     * Run the Make 3D build for one row, off the UI thread.
+     *
+     * <p>The same shape as {@link #regenerateClip}: a server round on the LONG worker
+     * so the filmstrip does not wait behind it, phases posted to the UI thread, and
+     * the finished row patched into the strip with {@code Gallery.itemUpdated} rather
+     * than a reindex (a rebuild re-decodes every thumbnail).
+     */
+    void startCloudBuild(final LibraryItem item) {
+        if (item == null) return;
+        // THE SPLAT TAB'S BUILD SETS THE SPLAT MODE, here, beside the run that
+        // produces the cloud — the same statement the Relief tab makes in
+        // BuildDialog.startRun. "The tab you built on is the mode you get", so a
+        // build cannot leave the row drawing as one thing while the dialog that
+        // made it said another. It is written before the host check below so a
+        // row offered a rebuild while it was in relief mode still flips.
+        setRenderMode(item.id, com.amoshydra.basrelief.core.store.RenderMode.SPLAT);
+        String host = prefs.getString("comfy_url", "");
+        if (host == null || host.trim().isEmpty()) {
+            Toast.makeText(MainActivity.this, R.string.video_import_no_server,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ComfyApi api = new ComfyApi(host.trim());
+        // Show the building state at once, before the worker starts: the row's ring
+        // and line are the user's answer to whether the tap had done anything.
+        refreshRendererRows();
+        Io.runLong(this, new Callable<LibraryItem>() {
+            @Override
+            public LibraryItem call() throws Exception {
+                final LibraryItem[] holder = new LibraryItem[1];
+                final String[] problem = new String[1];
+                SplatImport.run(MainActivity.this, prefs, item, api,
+                        new SplatImport.Listener() {
+                            @Override
+                            public void phase(final String message) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        refreshRendererRows();
+                                    }
+                                });
+                            }
+
+                            @Override
+                            public void done(LibraryItem updated) {
+                                holder[0] = updated;
+                            }
+
+                            @Override
+                            public void failed(final String message) {
+                                problem[0] = message;
+                            }
+                        });
+                if (problem[0] != null) throw new Exception(problem[0]);
+                return holder[0];
+            }
+        }, new Io.Callback<LibraryItem>() {
+            @Override
+            public void onDone(LibraryItem updated, Exception error) {
+                if (isFinishing() || isDestroyed()) return;
+                if (updated == null) {
+                    String why = (error == null || error.getMessage() == null)
+                            ? getString(R.string.splat_failed) : error.getMessage();
+                    refreshRendererRows();
+                    Toast.makeText(MainActivity.this, why, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                // One row repainted, and the pair identity changed (the cloud name),
+                // so the renderer loads it rather than answering "already showing".
+                gallery.itemUpdated(updated);
+                applyFiles();
+                refreshSliders();
+            }
+        });
+    }
+
+    /**
+     * Delete a row's cloud: the reference and the file, in that order.
+     *
+     * <p>The reference first, then the file, so a crash in between leaves an orphan
+     * file (invisible) rather than an index naming a cloud that is gone (a row that
+     * renders nothing). The row degrades to the relief on the spot, which is what
+     * makes a delete of the active row's cloud safe.
+     */
+    void deleteCloud(final LibraryItem item) {
+        if (item == null || item.splatName == null) return;
+        final String name = item.splatName;
+        LibraryStore.editItem(prefs, item.id, new LibraryStore.Editor() {
+            @Override
+            public LibraryItem edit(LibraryItem it) {
+                return it.withSplat(null);
+            }
+        });
+        final File dir = getFilesDir();
+        Io.run(new Callable<Void>() {
+            @Override
+            public Void call() {
+                File f = PrefFiles.resolve(dir, name);
+                if (f != null) f.delete();
+                return null;
+            }
+        });
+        LibraryItem now = state().activeItem();
+        if (now != null) gallery.itemUpdated(now);
+        applyFiles();
+        refreshSliders();
+    }
+
+    /**
+     * The asset row's depth picker: <b>Replace</b> a still map, or <b>Choose a map</b>
+     * where there is none.
+     *
+     * <p>Package-private for {@link RendererRows}, and deliberately nothing more than
+     * the existing picker: the file reuses the active item's id, so it overwrites
+     * this photo's map rather than starting a new gallery row. Offered only where
+     * {@link AssetActions} allows it — a still depth <b>file</b> (Replace) or no map
+     * at all (Choose); an embedded map and a clip's track are refused by the same
+     * gate.
+     */
+    void replaceDepthMap() {
+        pickFile(REQ_DEPTH);
     }
 
     private void importSharedVideo(final Uri uri, final String label) {
@@ -5957,7 +6477,7 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_DEPTHGEN_IMAGE) {
-            if (depthGenDialog != null) depthGenDialog.onPickedImage(data);
+            if (buildDialog != null) buildDialog.onPickedImage(data);
             return;
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
@@ -6163,10 +6683,25 @@ public class MainActivity extends Activity {
         final ReliefRenderer.Apply why = (renderer.showingSamePair(img, dep, nrm, focal) && sameMedia)
                 ? ReliefRenderer.Apply.RESOLVE
                 : ReliefRenderer.Apply.PAIR_CHANGE;
+        final String splatName = active == null ? null : active.splatName;
+        final boolean splatMode = active != null && active.isSplatMode();
+        // The cloud's own lens, beside its name: it describes the same asset, so a
+        // row that gains one draws the cloud through it without a reload -- the lens
+        // is read at draw, not baked into the file. 0 is "unknown" and is the demo
+        // lens, which is what every cloud generated before the field existed gets.
+        final float splatLens = active == null ? 0f : active.splatLens;
         glView.queueEvent(new Runnable() {
             @Override
             public void run() {
                 renderer.apply(framing, why);
+                // The splat cloud is resolved HERE as well as in reloadFromPrefs: a
+                // gallery selection is a pair change and does not go through the cold
+                // load, so without this the cloud would only follow the row after a
+                // resume. GL thread, like every other call that touches GL state.
+                // The MODE rides with it, so the relief/Splat toggle repaints on the
+                // next frame -- the item is the mode's home, and this is the one
+                // resolve a toggle goes through.
+                renderer.setSplatForItem(splatName, splatMode, splatLens);
             }
         });
         // GUARDED, and this was the bug that made a clip show one frozen frame.
@@ -6235,6 +6770,40 @@ public class MainActivity extends Activity {
                 @Override
                 public LibraryItem call() {
                     final LibraryItem[] out = new LibraryItem[1];
+                    if (job.kind == Jobs.Kind.SPLAT) {
+                        // A cloud build's resume fetches a .splat, not depth clips.
+                        SplatImport.resume(MainActivity.this, prefs, job,
+                                new SplatImport.Listener() {
+                                    @Override
+                                    public void phase(final String message) {
+                                        runOnUiThread(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                refreshRendererRows();
+                                            }
+                                        });
+                                    }
+
+                                    @Override
+                                    public void done(LibraryItem item) {
+                                        out[0] = item;
+                                    }
+
+                                    @Override
+                                    public void failed(final String message) {
+                                        runOnUiThread(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                if (isFinishing() || isDestroyed()) return;
+                                                refreshImportUi();
+                                                Toast.makeText(MainActivity.this, message,
+                                                        Toast.LENGTH_LONG).show();
+                                            }
+                                        });
+                                    }
+                                });
+                        return out[0];
+                    }
                     VideoImport.resume(MainActivity.this, prefs, job,
                             new VideoImport.Listener() {
                                 @Override
@@ -6312,6 +6881,23 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    /**
+     * Show or hide the performance readout, and start or stop its clock.
+     *
+     * <p>The single reader of {@link Settings#KEY_PERF_READOUT}: the Settings switch
+     * writes the key and calls this, and {@code onCreate} and {@code onResume} call it
+     * so the readout follows the stored value. Absent — not greyed — when the switch is
+     * off, the same "a control that cannot change anything is a lie" rule the surface
+     * segment follows.
+     */
+    void syncPerfReadout() {
+        if (perfOverlay == null) return;
+        boolean on = Settings.perfReadout(prefs);
+        perfOverlay.setVisible(on);
+        glidePump.removeCallbacks(perfTick);
+        if (on) glidePump.post(perfTick);
     }
 
     void refreshStatus() {

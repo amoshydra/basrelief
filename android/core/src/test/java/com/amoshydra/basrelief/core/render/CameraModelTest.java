@@ -336,35 +336,214 @@ public class CameraModelTest {
     }
 
     /**
-     * What the pivot at depth buys: under a tilt the camera aims at the surface
-     * point under the origin, so THAT point holds the screen centre while the
-     * plane behind it swings — the user's orbit around the subject rather than the background. With the pivot on the plane the old behaviour stands:
-     * the plane point is the fixed one.
+     * What the pivot's depth buys: under a tilt the camera rotates about the
+     * surface point under the origin, so THAT point keeps its screen position
+     * while the plane behind it swings — the user's orbit around the subject rather than the background. With the pivot on the plane the plane point is
+     * the fixed one. The pivot holds its OWN position (its own image position),
+     * not the screen centre: Origin no longer moves the picture, so the pivot is
+     * wherever its ray already was.
      */
     @Test
-    public void thePivotHoldsAndThePlaneMovesUnderTilt() {
+    public void thePivotHoldsItsOwnPositionAndThePlaneMovesUnderTilt() {
         for (float h : new float[]{0.45f, 0.2f, -0.45f}) {
             for (float[] tilt : new float[][]{{0.16f, 0f}, {0f, -0.16f}, {0.12f, 0.09f}}) {
                 CameraModel m = model();
                 m.setPivotHeight(h);
+                CameraModel.Frame rest = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
+                        0.2f, -0.1f, 0f, 0f);
+                float[] pRest = projectWorld(rest, rest.pivotX, rest.pivotY, rest.pivotZ);
                 CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
                         0.2f, -0.1f, tilt[0], tilt[1]);
                 float[] pivot = projectWorld(f, f.pivotX, f.pivotY, f.pivotZ);
-                assertEquals("the pivot must hold the centre (h=" + h + ")", 0f, pivot[0], 1e-4f);
-                assertEquals("the pivot must hold the centre (h=" + h + ")", 0f, pivot[1], 1e-4f);
+                assertEquals("the pivot must hold its position (h=" + h + ")",
+                        pRest[0], pivot[0], 1e-4f);
+                assertEquals("the pivot must hold its position (h=" + h + ")",
+                        pRest[1], pivot[1], 1e-4f);
                 // The plane point behind it is where the old pivot was: with the
-                // aim on the surface it must MOVE, and that motion is the reveal.
+                // orbit centre on the surface it must MOVE, and that motion is the
+                // reveal.
                 float[] plane = projectWorld(f, f.pivotX, f.pivotY, 0f);
                 assertTrue("the plane behind the pivot must swing (h=" + h + ")",
-                        Math.hypot(plane[0], plane[1]) > 1e-3f);
+                        Math.hypot(plane[0] - pivot[0], plane[1] - pivot[1]) > 1e-3f);
             }
         }
         CameraModel m = model();
+        CameraModel.Frame rest = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
+                0.2f, -0.1f, 0f, 0f);
+        float[] pRest = projectWorld(rest, rest.pivotX, rest.pivotY, rest.pivotZ);
         CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H, 0f, 0f,
                 0.2f, -0.1f, 0.16f, 0f);
         float[] plane = projectWorld(f, f.pivotX, f.pivotY, 0f);
-        assertEquals("pivot on the plane: the plane point is the fixed one", 0f, plane[0], 1e-4f);
-        assertEquals("pivot on the plane: the plane point is the fixed one", 0f, plane[1], 1e-4f);
+        assertEquals("pivot on the plane: the plane point is the fixed one",
+                pRest[0], plane[0], 1e-4f);
+        assertEquals("pivot on the plane: the plane point is the fixed one",
+                pRest[1], plane[1], 1e-4f);
+    }
+
+    /**
+     * THE NEW AT-REST INVARIANT: Origin does not move the picture. For every
+     * origin the same plane points project to the same NDC — the camera is a
+     * turntable about the pivot with a fixed rest eye, so the origin changes only
+     * the point the tilt turns about. Asserted through the real {@link
+     * CameraModel#frame} chain, the same rule the rest of this class follows.
+     *
+     * <p>The regression it prevents is the old behaviour: Origin translated the
+     * camera, so a photo's stored origin slid it half a picture and a tap that set
+     * the origin "readjusted the view".
+     */
+    @Test
+    public void originDoesNotMoveTheAtRestPicture() {
+        float[] origins = {-0.9f, -0.3f, 0f, 0.25f, 1.4f};
+        float[] heights = {0f, 0.5f, -0.45f};
+        for (float depth : new float[]{0f, 0.5f, 1f}) {
+            for (float zoom : new float[]{0.25f, 1f, 2f}) {
+                CameraModel base = model();
+                base.setDepth(depth);
+                base.setZoom(zoom);
+                base.setPivotHeight(0f);
+                CameraModel.Frame b = base.frame(SURFACE_W, SURFACE_H,
+                        40f, -90f, 0f, 0f, 0f, 0f);
+                for (float origin : origins) {
+                    for (float h : heights) {
+                        CameraModel m = model();
+                        m.setDepth(depth);
+                        m.setZoom(zoom);
+                        m.setPivotHeight(h);
+                        CameraModel.Frame f = m.frame(SURFACE_W, SURFACE_H,
+                                40f, -90f, origin, -origin, 0f, 0f);
+                        for (float px : new float[]{-0.5f, 0f, 0.5f}) {
+                            for (float py : new float[]{-0.5f, 0f, 0.5f}) {
+                                float wx = px * f.scale * IMAGE_ASPECT;
+                                float wy = py * f.scale;
+                                float[] want = projectWorld(b, wx, wy, 0f);
+                                float[] got = projectWorld(f, wx, wy, 0f);
+                                assertEquals("origin " + origin + " h " + h + " moved x at"
+                                                + " depth " + depth + " zoom " + zoom,
+                                        want[0], got[0], 1e-4f);
+                                assertEquals("origin " + origin + " h " + h + " moved y at"
+                                                + " depth " + depth + " zoom " + zoom,
+                                        want[1], got[1], 1e-4f);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ the tilt doze
+
+    /**
+     * The doze's own derivation, tested rather than asserted: {@link
+     * CameraModel#tiltPixels} is the number the threshold is derived from, so it
+     * has to behave like a displacement. Zero at zero, never negative, and — the
+     * property the whole thing rests on — LINEAR in the delta, so a threshold
+     * stated for a sub-pixel move is not quietly a large one for a slightly
+     * different delta.
+     */
+    @Test
+    public void tiltPixelsIsZeroAtZeroNonNegativeAndLinear() {
+        CameraModel m = model();
+        m.setZoom(2f);
+        m.setPivotHeight(0.5f);
+        assertEquals("no delta, no displacement", 0f,
+                m.tiltPixels(0f, SURFACE_W, SURFACE_H), 0f);
+        float unit = m.tiltPixels(1e-3f, SURFACE_W, SURFACE_H);
+        assertTrue("a real delta must move the picture", unit > 0f);
+        for (float d : new float[]{1e-4f, 1e-3f, 5e-3f, 1e-2f}) {
+            float v = m.tiltPixels(d, SURFACE_W, SURFACE_H);
+            assertTrue("displacement must never be negative at d=" + d, v >= 0f);
+            assertEquals("displacement must be linear in the delta (d=" + d + ")",
+                    v * 2f, m.tiltPixels(2f * d, SURFACE_W, SURFACE_H),
+                    Math.max(1e-3f, v * 2e-2f));
+        }
+    }
+
+    /**
+     * The displacement grows with Zoom, which is the reason {@link
+     * CameraModel#DOZE_EPS} has to be derived at the maximum Zoom: the threshold
+     * is a single constant, so it must be safe at the framing where a tilt moves
+     * the picture the most.
+     *
+     * <p>It is the lateral term (a rotation moves an off-axis point further than
+     * an on-axis one on a flat image plane) that grows, not the depth parallax —
+     * measured, the pure parallax is flat in Zoom. Above the point where the
+     * picture fills the viewport the growth flattens, so the assertion is
+     * non-decreasing after it, not strictly increasing.
+     */
+    @Test
+    public void tiltPixelsGrowsWithZoom() {
+        float[] zooms = {0.25f, 0.5f, 1f, 1.5f, 2f};
+        float previous = -1f;
+        float[] value = new float[zooms.length];
+        for (int i = 0; i < zooms.length; i++) {
+            CameraModel m = model();
+            m.setZoom(zooms[i]);
+            m.setPivotHeight(0.5f);
+            value[i] = m.tiltPixels(1f, SURFACE_W, SURFACE_H);
+            // Non-decreasing within sampling noise: the max is taken over a discrete
+            // grid of surface points, so above the point where the picture fills the
+            // viewport the answer plateaus and the sampled maximum can wobble by a
+            // fraction of a pixel. The real claim — the worst case is at a high zoom
+            // — is the endpoints below.
+            assertTrue("displacement must not collapse with zoom: " + zooms[i]
+                    + " -> " + value[i] + " after " + previous,
+                    value[i] >= previous * 0.999f);
+            previous = value[i];
+        }
+        assertTrue("and it must actually grow from the smallest zoom",
+                value[value.length - 1] > value[0]);
+    }
+
+    /** No surface, no pixels; the caller must not be handed a number it cannot use. */
+    @Test
+    public void tiltPixelsIsZeroWithoutASurface() {
+        CameraModel m = model();
+        assertEquals(0f, m.tiltPixels(1f, 0f, SURFACE_H), 0f);
+        assertEquals(0f, m.tiltPixels(1f, SURFACE_W, 0f), 0f);
+    }
+
+    /**
+     * THE GUARD THE THRESHOLD EXISTS FOR. {@link CameraModel#DOZE_EPS} is a single
+     * constant used by a class that cannot see the framing, so it must be small
+     * enough that its worst-case displacement stays under half a pixel at EVERY
+     * reachable zoom, depth and pivot — not just the one it was measured at. If a
+     * later edit to {@link CameraModel#TILT_RANGE}, {@link CameraModel#FOV_DEG} or
+     * {@link CameraModel#CROP_MARGIN} made the picture move more per degree of
+     * tilt, this goes red rather than letting the doze become visible.
+     *
+     * <p>The sweep is the reachable framing space, including the aspect ratios a
+     * photograph can have (a landscape photo's lateral term is the largest).
+     */
+    @Test
+    public void theDozeThresholdStaysUnderASubPixelAtEveryFraming() {
+        float[] aspects = {9f / 16f, IMAGE_ASPECT, 1f, 16f / 9f};
+        float[] zooms = {0.25f, 0.5f, 1f, 1.5f, 2f};
+        float[] depths = {0f, 0.5f, 1f};
+        float[] pivots = {-0.5f, 0.5f};
+        float worst = 0f;
+        for (float aspect : aspects) {
+            for (float zoom : zooms) {
+                for (float depth : depths) {
+                    for (float pivot : pivots) {
+                        CameraModel m = model();
+                        m.setAspect(aspect);
+                        m.setZoom(zoom);
+                        m.setDepth(depth);
+                        m.setPivotHeight(pivot);
+                        float disp = m.tiltPixels(CameraModel.DOZE_EPS, SURFACE_W, SURFACE_H);
+                        if (disp > worst) worst = disp;
+                        assertTrue("the doze would move the picture " + disp
+                                        + "px at aspect=" + aspect + " zoom=" + zoom
+                                        + " depth=" + depth + " pivot=" + pivot,
+                                disp < CameraModel.DOZE_SUBPIXEL_PX);
+                    }
+                }
+            }
+        }
+        // The threshold was measured against this worst case; keep them from drifting.
+        assertTrue("the derivation's worst case has grown: " + worst,
+                worst > 0.4f * CameraModel.DOZE_SUBPIXEL_PX);
     }
 
     /**

@@ -57,9 +57,47 @@ public final class Jobs {
      * owns the loop; the count moved to the node's sidecar, and the height had no
      * reader once the sheet stopped stating a per-chunk memory figure. A v1, v2 or
      * v3 blob migrates by keeping its first prompt — the handle the old run answers
-     * to — and its failure message, if any.
+     * to — and its failure message, if any. v5 adds the {@link Kind}: absent is a clip
+     * import, which is every record written before it.
      */
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
+
+    /**
+     * What a record's run produces: a clip import's three tracks, or a splat
+     * cloud.
+     *
+     * <p><b>Why the record has to say.</b> A resume pass at studio start asks the
+     * server about every pending prompt, and the two kinds fetch different files and
+     * write different rows: a clip run is addressed as
+     * {@code basrelief_<tag>_depth.mp4} and attaches {@link VideoTracks}, while a
+     * cloud run is {@code basrelief_<tag>.splat} and attaches a {@code splatName}.
+     * Deriving the kind from the row instead would be wrong for a row that has clips
+     * AND a cloud being rebuilt, and wrong for the window before a clip's colour is
+     * staged — so the record, which is the only thing that says the work is expected,
+     * says what the work is too.
+     *
+     * <p>Absent means {@link #CLIP}: every record written before this field existed
+     * is a clip import, and the migration is the default rather than a rewrite.
+     */
+    public enum Kind {
+        CLIP("clip"), SPLAT("splat");
+
+        private final String key;
+
+        Kind(String key) {
+            this.key = key;
+        }
+
+        public String key() {
+            return key;
+        }
+
+        /** Read a stored spelling; absent or unknown is {@link #CLIP}. */
+        public static Kind parse(String stored) {
+            if (SPLAT.key.equals(stored)) return SPLAT;
+            return CLIP;
+        }
+    }
 
     /** One submitted import: the photo it belongs to, and the server's handle. */
     public static final class Job {
@@ -68,6 +106,8 @@ public final class Jobs {
         public final String promptId;
         public final String host;
         public final long startedAtMs;
+        /** What the run produces. Never null. */
+        public final Kind kind;
         /**
          * The server's own failure message, or null while the job is still viable.
          *
@@ -80,22 +120,35 @@ public final class Jobs {
         public final String error;
 
         public Job(String itemId, String promptId, String host, long startedAtMs) {
-            this(itemId, promptId, host, startedAtMs, null);
+            this(itemId, promptId, host, startedAtMs, null, Kind.CLIP);
         }
 
         /** The full shape, for a run that has a failure to carry. */
         public Job(String itemId, String promptId, String host, long startedAtMs,
                    String error) {
+            this(itemId, promptId, host, startedAtMs, error, Kind.CLIP);
+        }
+
+        /** A run of a given kind, still running. See {@link Kind}. */
+        public Job(String itemId, String promptId, String host, long startedAtMs,
+                   Kind kind) {
+            this(itemId, promptId, host, startedAtMs, null, kind);
+        }
+
+        /** The full shape: every field, for a caller that has them all. */
+        public Job(String itemId, String promptId, String host, long startedAtMs,
+                   String error, Kind kind) {
             this.itemId = itemId == null ? "" : itemId;
             this.promptId = promptId == null ? "" : promptId;
             this.host = host == null ? "" : host;
             this.startedAtMs = startedAtMs;
             this.error = error == null || error.isEmpty() ? null : error;
+            this.kind = kind == null ? Kind.CLIP : kind;
         }
 
         /** The same job, failed, carrying the server's own words. */
         public Job withError(String message) {
-            return new Job(itemId, promptId, host, startedAtMs, message);
+            return new Job(itemId, promptId, host, startedAtMs, message, kind);
         }
 
         /** Whether the run this record names has stopped and needs the user. */
@@ -183,7 +236,10 @@ public final class Jobs {
      */
     public String previewColourName(LibraryItem item) {
         if (item == null || item.video != null) return null;
-        if (forItem(item.id) == null) return null;
+        Job job = forItem(item.id);
+        // A splat job is not a preview: it has no colour clip to play, and asking
+        // for one would offer a file the run never wrote.
+        if (job == null || job.kind != Kind.CLIP) return null;
         return LibraryItem.videoFileName(item.id);
     }
 
@@ -265,6 +321,10 @@ public final class Jobs {
                 // An absent error IS "still running", which is the honest default
                 // for a reader that does not know this version.
                 if (j.error != null) e.put("error", j.error);
+                // Written only when it is not a clip import, so every record this
+                // build wrote before the field existed is byte-identical -- the
+                // 0-or-absent rule the whole schema follows.
+                if (j.kind != Kind.CLIP) e.put("kind", j.kind.key());
                 arr.put(e);
             }
             o.put("jobs", arr);
@@ -306,6 +366,9 @@ public final class Jobs {
                 String host = e.optString("host", "");
                 long started = e.optLong("started", 0L);
                 String error = e.optString("error", null);
+                // Absent is a clip import: every record written before this key
+                // existed is one. See Kind.
+                Kind kind = Kind.parse(e.optString("kind", null));
                 // v4 is one prompt under its own key; v2/v3 recorded a chunk list,
                 // and the first usable prompt is the handle the old run answers to.
                 // The frame ranges and the two counts are deliberately ignored: the
@@ -319,7 +382,7 @@ public final class Jobs {
                 } else {
                     prompt = e.optString("prompt", "");
                 }
-                Job j = new Job(item, prompt, host, started, error);
+                Job j = new Job(item, prompt, host, started, error, kind);
                 // An unusable entry is dropped here rather than carried and skipped by
                 // every reader: a record nothing can act on is not a record.
                 if (j.isUsable()) out.add(j);

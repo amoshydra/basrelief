@@ -25,12 +25,18 @@ import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;
 import com.amoshydra.basrelief.core.render.Picture;
+import com.amoshydra.basrelief.core.render.RenderStats;
 import com.amoshydra.basrelief.core.store.FramingRowValue;
+import com.amoshydra.basrelief.core.store.Library;
 import com.amoshydra.basrelief.core.store.LibraryItem;
 import com.amoshydra.basrelief.core.store.Surface;
+import com.amoshydra.basrelief.core.store.SurfaceSettings;
 import com.amoshydra.basrelief.core.store.PrefFiles;
 import com.amoshydra.basrelief.core.render.ReliefMesh;
 import com.amoshydra.basrelief.core.render.Splat;
+import com.amoshydra.basrelief.core.render.SplatCamera;
+import com.amoshydra.basrelief.core.splat.SplatCloud;
+import com.amoshydra.basrelief.core.render.TiltFilter;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -90,30 +96,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     // FOV / camera distance / crop margin / tilt range live in CameraModel —
     // do NOT duplicate them here, or the two will drift apart.
-    // Smoothing time constant (seconds) — display-refresh independent, so the
-    // feel is the same at 60/90/120 Hz. This is the value used for SMALL errors,
-    // i.e. sensor jitter while the phone is held still; it is what stops the
-    // relief from shimmering when you are not moving.
-    private static final float SMOOTHING_TAU = 0.2f;
-
-    // Fast attack / slow release, on top of the above.
     //
-    // A single time constant cannot tell a deliberate movement from a sensor
-    // wobble, so it treats both identically: with tau=0.2 the filter closes only
-    // ~9.5% of the gap per frame at 50 Hz, and a 30 degree tilt takes ~460 ms to
-    // get 90% of the way there. That reads as "the gyro lags".
-    //
-    // So the fraction followed per frame is raised once the error is large:
-    // below ATTACK_ERROR the exponential applies unchanged (jitter stays
-    // smoothed), above it alpha saturates at 1 and the value snaps in a single
-    // frame. Same idea as a camera autofocus that snaps when swung somewhere
-    // new and glides when nearly there.
-    //
-    // This is a FEEL constant. Lower it if the motion reads as twitchy; raise it
-    // if mid-movement still feels like it lags. Tilt is normalised as
-    // roll/RANGE_DEG with RANGE_DEG = 25, so 0.125 here is about 3 degrees of
-    // phone rotation, not 7.
-    private static final float ATTACK_ERROR = 0.125f;
+    // The tilt smoother's constants and its step function live in TiltFilter, in
+    // :core, and NOT here — because TiltController's doze gate has to apply the
+    // SAME filter to the same signal (the gate decides "is the DRAWN picture
+    // moving", and the drawn value is this filter's output). Two copies of the
+    // tau, the fast attack and the blend would be two answers to one question;
+    // one class makes the mirror structural. See TiltFilter for why the gate
+    // cannot simply read smoothX/smoothY.
     /** Depth default: 90% of the maximum the camera allows at this zoom. */
     private static final int DEFAULT_DEPTH = 90;
     // Relief grid resolution: (GRID+1)^2 vertices, and the depth field's size.
@@ -136,14 +126,36 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private static final int GRID = 384;
 
     /**
-     * The pref that selects the point-splat mode. Off by default, and read in
-     * {@link #reloadFromPrefs}; see {@link #render3d}.
+     * The legacy {@code render_3d} pref, and the <b>migration source</b> for the
+     * per-item render mode.
      *
-     * <p>Package-private because the Settings screen's switch writes it: the key
-     * is declared once, next to the one reader, and no other class spells the
-     * string out -- the same rule the three switches in {@link Settings} follow.
+     * <p>It used to be the app's one 3D switch. A global render value is the wrong
+     * home — a gallery would draw every photograph the same way whichever the single
+     * switch last said — so {@code Library}'s v3 to v4 migration reads this once and
+     * copies it onto every item, exactly as Motion moved out of {@code Config} in v3
+     * and for the same reason. It is read <b>only</b> there now: the product's mode is
+     * per-item, and the Stage-0 card grid it also selected has its own dev key
+     * ({@link #KEY_SPLAT_GRID}) so that a user who had this on does not get the card
+     * mode over every photograph they have not made a cloud for — the doc's rule is
+     * that Splat without a cloud shows the relief.
+     *
+     * <p>Package-private because {@code AppState} reads it for the migration; no
+     * other class spells the string out -- the same rule the three switches in
+     * {@link Settings} follow.
      */
     static final String KEY_RENDER_3D = "render_3d";
+
+    /**
+     * The Stage-0 card grid, as a dev pref: one card per depth-field sample, GLES3
+     * only. Off by default and not in the UI. See {@link #splatGridMode}.
+     *
+     * <p>A key of its own rather than {@code render_3d}, and that is a decision: the
+     * latter is the migration source, and letting it also select the card mode would
+     * make every SPLAT row with no cloud draw the card grid instead of its relief —
+     * which is exactly the look the product's "Splat without a cloud shows the
+     * relief" rule forbids.
+     */
+    static final String KEY_SPLAT_GRID = "splat_grid";
 
     /**
      * The 3D mode's detail level: an index into {@link Splat#GRID_LEVELS}, written
@@ -151,6 +163,56 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * the mode shipped with, so an absent key draws exactly that.
      */
     static final String KEY_RENDER_3D_LEVEL = "render_3d_level";
+
+    /**
+     * The Gaussian splat's render scale, as it existed before it became per-item.
+     *
+     * <p><b>A migration source now, read only by {@code AppState} for Library's
+     * v4->v5 migration</b> — the {@link #KEY_RENDER_3D} precedent one version later.
+     * The value the renderer draws with is
+     * {@code SurfaceSettings.splatScale}, resolved through {@link Framing}. Nothing
+     * reads this pref at draw any more.
+     */
+    static final String KEY_SPLAT_SCALE = "splat_scale";
+
+    /**
+     * The splat look's other three pre-item values, migration sources read only by
+     * {@code AppState} for the v4->v5 migration.
+     *
+     * <p>{@link #KEY_SPLAT_EPS2D} is the 2D low-pass floor (gsplat's {@code eps2d}),
+     * stored as a fraction of the cell a splat stands for rather than in pixels --
+     * a pixel count means a different thing at every render resolution and every
+     * zoom, which is what made the knob's maximum too small on the phone. The draw
+     * resolves it to exactly that fraction of the on-screen cell; there is
+     * deliberately no separate sampling minimum above it. See {@link Splat#eps2dFor}.
+     * {@link #KEY_SPLAT_BLUR} is the post-blur radius in render-target pixels.
+     * {@link #KEY_SPLAT_DEPTH} multiplies the cloud's depth: 1 is the depth the
+     * node reconstructed, 0 collapses the cloud onto its reference plane (the flat
+     * photograph).
+     *
+     * <p>The product defaults are {@link Splat#EPS_2D_DEFAULT},
+     * {@link Splat#BLUR_DEFAULT} and {@link Splat#DEPTH_MUL_DEFAULT}; an untouched
+     * install's migration writes nothing, because a value equal to the default is
+     * omitted from the blob.
+     */
+    static final String KEY_SPLAT_EPS2D = "splat_eps2d";
+    static final String KEY_SPLAT_BLUR = "splat_blur_px";
+    static final String KEY_SPLAT_DEPTH = "splat_depth_mul";
+
+    /**
+     * The generation-side dev knob: the budget the next cloud build sends to
+     * {@code SharpStill}. Read by {@link SplatImport} at submission and by the
+     * confirm sheet, so the number the user compares by eye is the number that runs.
+     * Default {@link com.amoshydra.basrelief.core.depth.ComfyWorkflow#SHARP_BUDGET}.
+     */
+    static final String KEY_SPLAT_BUDGET = "splat_budget";
+
+    // The Stage-0 `splat_file` debug pref lived here: a bare filename used as the
+    // splat for the bundled row when that row named no cloud. Stage 1 retired it --
+    // the demo's cloud ships in res/raw, the ordinary seed copies it and names it on
+    // the row, and `setSplatForItem` resolves the item's own filename and nothing
+    // else. A key with no reader is dead, so it is gone rather than kept "for a
+    // migration": there is nothing to migrate, because the asset is the migration.
 
     /**
      * There is deliberately no frame-rate cap. An earlier version capped draws
@@ -314,10 +376,12 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             "uniform float uSplat;\n" +
             "uniform float uSplatSize;\n" +
             "uniform float uSplatGrid;\n" +
-            // The eye the cards are placed against: the camera at REST -- tilt
-            // dropped, origin and zoom kept. See the splat branch below; it is
-            // deliberately not the moving camera, which is passed to nothing at
-            // all here.
+            // The eye the cards are placed against: the camera at REST, the
+            // image centre at the fixed camera distance looking straight down.
+            // See the splat branch below; it is deliberately not the moving
+            // camera, which is passed to nothing at all here. Origin no longer
+            // moves it (the camera is a turntable about the pivot), so it is a
+            // constant and the picture is pinned to the photograph.
             "uniform vec3 uSplatEye;\n" +
             // The photograph's camera, as two numbers that are both already
             // resolved in :core (Splat, with its own test): the effective focal in
@@ -383,12 +447,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // That is "the card sits at camera distance minus its own depth"
             // generalised: the old line scaled the sample's position about the
             // MODEL CENTRE, which is the same construction with the eye assumed
-            // to sit on the model's z axis. It does not, once Origin moves the
-            // camera -- Origin aims the camera at a point on the plane and puts
-            // it there -- so the whole cloud used to be placed as if the origin
-            // were still the image's centre, whatever the user set. The
-            // reference eye is therefore the camera the picture is the
-            // photograph for: tilt dropped, origin and zoom kept.
+            // to sit on the model's z axis. The reference eye is the camera the
+            // picture is the photograph for, and that camera is fixed: Origin no
+            // longer moves it (the relief's camera is a turntable about the
+            // pivot), so the picture is the photograph at every origin.
             //
             // THE MOVING EYE IS NOT IT, and the difference is the whole mode. A
             // point on the eye's ray projects to that eye's pixel whatever its
@@ -591,20 +653,99 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     private int gridIndexCount = 0;
 
     /**
-     * The point-splat mode, off unless the {@code render_3d} pref says otherwise.
+     * The Stage-0 <b>card grid</b>: one card per depth-field sample, GLES3 only.
      *
-     * <p>Read in {@link #reloadFromPrefs}, which is the one cold-load path both
-     * surfaces converge on, so it can be A/B-tested on a device without a rebuild
-     * -- and it is OFF by default because it is a different look, not a bug fix:
-     * a screenshot of the relief is what every existing row was framed against.
-     * The setter exists for tests.
+     * <p><b>A dev mode now, not the product's 3D selector.</b> Stage 0 shipped this
+     * as the "3D mode" because there was no cloud to draw yet; the real Gaussian
+     * cloud ({@link #splatWantedPath}) superseded it, and the product's per-item
+     * {@code RenderMode} is the live selector. This flag is reachable only through
+     * the {@link #KEY_SPLAT_GRID} dev pref, which is not in the UI — it is kept
+     * because the card mode is a documented experiment worth A/B-ing on a device,
+     * exactly as {@link #KEY_RENDER_3D_LEVEL} is. (The splat look's own four values
+     * used to be dev prefs too; they are per-item render values now, see
+     * {@link com.amoshydra.basrelief.core.store.SurfaceSettings}.)
      *
-     * <p><b>GLES3 only.</b> The mode draws a static grid that only the GPU path
-     * builds; the legacy GLES2 path has no such buffer and ignores the flag
-     * rather than falling back to a CPU-built cloud, which would be a third
-     * renderer rather than a mode.
+     * <p><b>Its own key, not {@code render_3d}.</b> That pref is the migration source
+     * for the per-item mode, and letting it also select the card grid would make every
+     * SPLAT row with no cloud draw the card grid instead of its relief — which is the
+     * look the product's "Splat without a cloud shows the relief" rule forbids. So the
+     * card mode has a key of its own and is off unless someone asks for it by adb.
+     *
+     * <p>It draws only when there is no real cloud ({@code splatWantedPath == null}),
+     * so a row that has one always shows the cloud. The mode a normal install sees is
+     * per-item: SPLAT with a cloud draws the cloud, SPLAT without one draws the
+     * relief, and RELIEF always draws the relief.
      */
-    private volatile boolean render3d = false;
+    private volatile boolean splatGridMode = false;
+
+    /**
+     * The draw path the last applied {@link Framing} asked for, as
+     * {@code Framing.RENDER_RELIEF} or {@code RENDER_SPLAT}.
+     *
+     * <p><b>A field because {@link #snapshot()} has to be able to say it</b> — the
+     * {@code sourceKind} rule one axis over. It is written by {@link #apply(Framing,
+     * Apply)} from the resolved framing, so the renderer's snapshot of what it is
+     * drawing carries the mode the host asked for, and a relief↔cloud toggle makes
+     * {@code sameAs} report a different picture rather than a no-op. It is NOT the
+     * draw decision: whether the cloud actually draws is {@link #useSplat()}, which
+     * needs the bytes to be here. The two are deliberately separate, exactly as the
+     * clip's medium is a fact about the screen while the clip's playability is a
+     * file question.
+     */
+    private volatile float renderMode = Framing.RENDER_RELIEF;
+
+    /**
+     * The Gaussian splat cloud, when the active item names one.
+     *
+     * <p><b>The item's own nullable {@code splat} filename is the whole shape.</b>
+     * It resolves through {@link PrefFiles} like every other stored name, and the
+     * cloud is drawn when the item's mode is SPLAT and the file is here — see
+     * {@link #setSplatForItem} and {@link #useSplat}. The Stage-0 {@code splat_file}
+     * debug pref is gone: the demo's cloud ships in {@code res/raw} and the ordinary
+     * seed names it on the row, so there is no fallback to reach.
+     *
+     * <p>{@code splatWantedPath} is the resolve's answer (written on whatever
+     * thread {@link #reloadFromPrefs} ran on); {@code splatLoadedPath} is what the
+     * GL context actually holds. The two must agree before the cloud draws, which
+     * is the {@code hasInstalled} rule one medium over: a path that has been
+     * requested but not uploaded is not on screen.
+     */
+    private SplatRenderer splat;
+    private volatile String splatWantedPath;
+    private String splatLoadedPath;
+    private String splatLoadedId;
+    private String splatPendingPath;
+    private String splatPendingId;
+    private int splatSeq;
+    /**
+     * The wanted cloud's own lens, as {@code focal / height}, or 0 for unknown.
+     *
+     * <p>It rides beside {@code splatWantedPath} because it describes the same
+     * thing: the cloud the item names. Volatile and read on the GL thread at draw,
+     * exactly as the path is; a row that gains a lens is not a new cloud FILE, so it
+     * needs no reload — the next frame simply draws the loaded cloud through the
+     * new lens. A new cloud (a new filename) is the identity change, and that is
+     * {@code splatWantedPath}'s job.
+     */
+    private volatile float splatWantedLens;
+
+    /**
+     * The splat look and shape, written from the resolved {@link Framing} and read
+     * at draw.
+     *
+     * <p><b>Per photo and per surface now, not global prefs.</b> They are ordinary
+     * render values: {@link #apply(Framing)} sets them from the row the host
+     * resolved, {@link #stepGlide} eases them across a surface boundary, and
+     * {@link #snapshot()} reports them so the no-op-paint guard can see a change.
+     * The sheet's four splat rows move them live while a finger drags (the same
+     * volatile-only contract {@link #setDepth} follows); the store write is on
+     * release.
+     */
+    private volatile float splatRenderScale = 1f;
+    private volatile float splatEps2d = Splat.EPS_2D_DEFAULT;
+    private volatile float camDist = 1f;
+    private volatile float splatBlurPx = Splat.BLUR_DEFAULT;
+    private volatile float splatDepthMul = Splat.DEPTH_MUL_DEFAULT;
 
     /**
      * Live preview values, written by the UI thread and read on the GL thread.
@@ -1571,16 +1712,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * Select the point-splat mode without the pref. For a test, and for a host
-     * that ever wants a per-surface mode.
+     * Turn the Stage-0 card grid on or off without the pref. For a test, and for a
+     * host that ever wants to A/B it.
      *
      * <p>A volatile write and nothing else, per the threading rule: what it
      * changes is read once per draw on the GL thread, and the geometry that
      * difference needs (the splat grid) is built with every other GL name in
      * {@link #onSurfaceCreated}.
      */
-    public void setRender3d(boolean on) {
-        this.render3d = on;
+    public void setSplatGridMode(boolean on) {
+        this.splatGridMode = on;
     }
 
     private FloatBuffer ringBuffer;
@@ -1640,6 +1781,60 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      */
     private long lastFrameNanos = 0L;
 
+    /**
+     * The relief's own stats window, and the snapshot the studio's readout reads.
+     *
+     * <p>The relief has no GPU timer and no sort — the two numbers the splat reports
+     * and this backend cannot — so its snapshot carries only the frame interval, plus
+     * the worse clip track's skew while a clip plays. The window is
+     * {@link RenderStats#WINDOW_NANOS}, the same one the splat's log uses, so the two
+     * backends cannot report different frame rates for one surface.
+     *
+     * <p>The counters are GL-thread-only, so they need no synchronisation; the
+     * snapshot is a fresh immutable object once a second and the UI thread reads the
+     * volatile reference and allocates nothing. Null until the first window has been
+     * measured, which the readout blanks rather than showing as a zero.
+     */
+    private long perfWindowStartNanos;
+    private long perfFrames;
+    private volatile RenderStats perfStats;
+
+    /**
+     * Account one drawn relief frame, and publish the readout's snapshot once a
+     * window.
+     *
+     * <p>Called from {@link #onDrawFrame}'s relief paths only: the splat branch
+     * publishes the splat's own numbers, and a frame the surface could not draw is not
+     * a frame the readout should count.
+     */
+    private void accountReliefFrame(long now) {
+        if (perfWindowStartNanos == 0L) {
+            perfWindowStartNanos = now;
+            return;
+        }
+        perfFrames++;
+        long windowNanos = now - perfWindowStartNanos;
+        if (windowNanos < RenderStats.WINDOW_NANOS) return;
+        float fps = RenderStats.fps((int) perfFrames, windowNanos);
+        // The clip's skew is the one cost number the relief has that the splat does
+        // not, and it is absent for a photograph. The worse of the two tracks is the
+        // one that says the picture is drifting; the once-a-second log still prints
+        // both, from the same numeric helpers.
+        float skew = RenderStats.NONE;
+        if (clip != null && clip.isRunning()) {
+            skew = RenderStats.worstOf(clip.depthSkewMs(), clip.normalSkewMs());
+        }
+        perfStats = new RenderStats(fps, RenderStats.frameMs(fps), RenderStats.NONE,
+                RenderStats.NONE, skew, RenderStats.NO_COUNT, 0, 0);
+        perfFrames = 0;
+        perfWindowStartNanos = now;
+    }
+
+    /** The readout's snapshot, or null before the first window; safe from the UI thread. */
+    RenderStats perfStats() {
+        return perfStats;
+    }
+
     private volatile float panX = 0f, panY = 0f;
     private volatile float zoom = 1f;
     private float surfaceW, surfaceH;
@@ -1677,6 +1872,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * in {@link #glide} for why a lerp here is the instant-paint snap.
      */
     private volatile float glideSourceKind;
+    /**
+     * The draw path {@link #glideTo} names, held for the same reason
+     * {@link #glideSourceKind} is: the mode is discrete, so a glide switches it when
+     * it lands rather than easing it frame by frame — an eased mode would make every
+     * frame differ from the one before and defeat the no-op-paint guard.
+     */
+    private volatile float glideRenderMode;
     private volatile long glideStartNanos;
     private volatile float glideSpanMs;
 
@@ -1847,12 +2049,14 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
-     * How many surface pixels one whole unit of Origin moves the picture, at
-     * the zoom, image aspect and surface size of the last drawn frame.
+     * The on-screen size of one whole Origin unit, in surface pixels, at the
+     * zoom, image aspect and surface size of the last drawn frame.
      *
      * <p>For the framing rows, which turn it into finger travel per thousandth
-     * of Origin. Safe from the UI thread: a volatile read of a value the GL
-     * thread just wrote, exactly like {@link #getZoom}.
+     * of Origin. Origin no longer moves the picture (it names the orbit centre),
+     * so this is the unit's own on-screen size rather than a tracking rule. Safe
+     * from the UI thread: a volatile read of a value the GL thread just wrote,
+     * exactly like {@link #getZoom}.
      *
      * @param horizontal true for the X axis, false for Y
      * @return pixels per whole origin unit, or 0 before the first surface
@@ -1863,6 +2067,61 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void setMotion(float v) {
         motion = Math.max(0f, Math.min(3f, v));
+    }
+
+    /**
+     * Live write for the splat Size row: the 2D low-pass floor, gsplat's
+     * {@code eps2d}.
+     *
+     * <p>Writes only a volatile field and does not touch GL, so it is safe from the
+     * UI thread — the same rule {@link #setDepth} and {@link #setMotion} follow. The
+     * draw reads it next frame and hands it to {@link SplatRenderer}; no recompile,
+     * no restart, and nothing is persisted here (the slider's release writes the
+     * item), exactly as the other live previews behave.
+     */
+    public void setSplatEps2d(float v) {
+        splatEps2d = Splat.clampEps2d(v);
+    }
+    public void setCamDist(float v) {
+        if (!Float.isFinite(v)) v = 1f;
+        if (v < 0.5f) v = 0.5f;
+        if (v > 5f) v = 5f;
+        camDist = v;
+        camera.setCamDistScale(v);
+    }
+    public float getCamDist() { return camDist; }
+
+
+    /**
+     * Live write for the splat Blur row: the post-blur radius in render-target
+     * pixels. Same contract as {@link #setSplatEps2d}; 0 is the identity and skips
+     * both blur passes.
+     */
+    public void setSplatBlurPx(float v) {
+        splatBlurPx = Splat.clampBlurPx(v);
+    }
+
+    /**
+     * Live write for the splat Resolution row: the fraction of the surface the cloud
+     * is rasterised at. Same contract as {@link #setSplatEps2d}. This is the one
+     * lever that is linear in the thing the frame actually costs -- fill is pixels,
+     * so 0.7 is half the fragment work -- at the price of a softer picture, which
+     * for a wallpaper is the right trade to be able to make. Clamped through
+     * {@link Splat#clampRenderScale}, so the row and the stored value cannot
+     * disagree.
+     */
+    public void setSplatRenderScale(float v) {
+        splatRenderScale = Splat.clampRenderScale(v);
+    }
+
+    /**
+     * Live write for the splat Depth row: a multiplier on the cloud's depth, clamped
+     * through {@link Splat#clampDepthMul}. Same contract as {@link #setSplatEps2d}:
+     * a volatile field only, read at draw. 1 is the node's own depth and 0 is the
+     * flat photograph, so a drag is visible immediately with no re-upload.
+     */
+    public void setSplatDepthMul(float v) {
+        splatDepthMul = Splat.clampDepthMul(v);
     }
 
     /**
@@ -1967,6 +2226,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     public void saveFramingToPrefs() {
         final float ox = orbitX, oy = orbitY, px = panX, py = panY;
         final int pct = FramingRowValue.zoomPercent(zoom);
+        final float pz = camDist;
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
         AppState st = AppState.load(context, p, context.getFilesDir());
         final String id = st.activeId();
@@ -1991,7 +2251,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 Surface on = editSurface;
                 return item.withOrigin(on, ox, oy)
                         .withPan(on, px, py)
-                        .withZoom(on, pct);
+                        .withZoom(on, pct)
+                        .withPanZ(on, pz);
             }
         });
     }
@@ -2002,6 +2263,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         panX = 0f;
         panY = 0f;
         zoom = 1f;
+        setCamDist(1f);
     }
 
     /**
@@ -2474,24 +2736,6 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         return applyPending(decodePair(imagePath, depthPath, normalPath, focal));
     }
 
-    /**
-     * One axis of the tilt smoother: exponential for small errors, instant for
-     * large ones.
-     *
-     * @param alpha the exponential step for this frame, from SMOOTHING_TAU
-     */
-    private static float approach(float smooth, float target, float alpha) {
-        float err = target - smooth;
-        float a = alpha;
-        float mag = Math.abs(err);
-        if (mag > ATTACK_ERROR) {
-            a = 1f;                 // deliberate movement: snap
-        } else if (mag * 8f > a) {
-            a = mag * 8f;           // blend smoothly into the fast regime
-        }
-        return smooth + err * a;
-    }
-
     private void writeStatus(String status) {
         context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE)
                 .edit().putString("status", status).apply();
@@ -2559,15 +2803,48 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     /** Returns true if the tap landed on the quad and the orbit was set. */
     public boolean screenToOrbit(float sx, float sy, int w, int h) {
-        if (w == 0 || h == 0 || displayed == null || !displayed.isDrawable()) return false;
+        if (w == 0 || h == 0) return false;
         float ndcX = (sx / w) * 2f - 1f;
         float ndcY = -(sy / h) * 2f + 1f;
+        // In SPLAT mode the tap RAY-CASTS into the cloud: the origin is the image
+        // position of the frontmost splat under the ray through the tapped pixel --
+        // the same pick SplatCamera.pivot makes for the orbit, so the tap, the pivot,
+        // the aim and the crosshair are one answer. It used to set the origin to the
+        // tapped SCREEN fraction, which is the source image position only while
+        // nothing has shifted the picture, so after the first tap (or with any Pan)
+        // it landed away from the point that was touched. The cast is the SOURCE
+        // camera's ray, so neither the Depth knob nor the pivot's depth can move the
+        // ray -- they reach the pick and the answer, which is the drawn surface's
+        // image position. See SplatRenderer.tapOrigin and SplatCamera.originForRay.
+        //
+        // The relief path below is unchanged: its surface is a field with one
+        // unambiguous depth, so there is nothing to cast -- unprojecting through the
+        // pivot height IS its pick.
+        if (useSplat()) {
+            if (!splat.tapOrigin(ndcX, ndcY, tapOrbit)) {
+                // The cloud is on screen (useSplat) but its drawn frame is not
+                // recorded yet: the tapped pixel's own fraction is the honest answer
+                // rather than a dropped tap.
+                tapOrbit[0] = ndcX * 0.5f;
+                tapOrbit[1] = ndcY * 0.5f;
+            }
+            // Clamped to the Origin row's own bound, not the picture: a tap beside
+            // the cloud names an orbit centre beside it, which the row can now ask
+            // for. See SurfaceSettings.ORIGIN_LIMIT.
+            orbitX = Math.max(-SurfaceSettings.ORIGIN_LIMIT,
+                    Math.min(SurfaceSettings.ORIGIN_LIMIT, tapOrbit[0]));
+            orbitY = Math.max(-SurfaceSettings.ORIGIN_LIMIT,
+                    Math.min(SurfaceSettings.ORIGIN_LIMIT, tapOrbit[1]));
+            return true;
+        }
+        if (displayed == null || !displayed.isDrawable()) return false;
         recomputeScale();
-        // The camera on screen aims at the surface under the CURRENT origin, so
-        // the unprojection must use the same pivot depth the draw did -- resolved
-        // from the displayed render's field and the live orbit, which is what
-        // the steady state is drawing. A tap resolved through the plane's camera
-        // would land where the picture is not.
+        // The camera on screen is a turntable about the surface under the CURRENT
+        // origin, tilted by the live tilt, so the unprojection must use the same
+        // pivot depth and tilt the draw did -- resolved from the displayed
+        // render's field and the live orbit, which is what the steady state is
+        // drawing. A tap resolved through the plane's camera would land where
+        // the picture is not.
         camera.setPivotHeight(ReliefMesh.heightAt(displayed.field, GRID, orbitX, orbitY));
         if (!camera.screenToOrbit(ndcX, ndcY, w, h, panX, panY,
                 orbitX, orbitY, smoothX, smoothY, tapOrbit)) return false;
@@ -2681,6 +2958,20 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // context routinely, because the system tears the engine down and rebuilds it.
         stopClip();
 
+        // The splat's GL names belong to the old context too. Clearing the loaded
+        // path is what makes the next reloadFromPrefs re-upload: without it the
+        // renderer would believe the cloud it wants is already on the GPU, in a
+        // context that holds no texture -- the hasInstalled rule, one medium over.
+        if (splat != null) splat.onContextLost();
+        splatLoadedPath = null;
+        splatLoadedId = null;
+        splatPendingPath = null;
+        splatPendingId = null;
+        // A load in flight when the context died must be dropped: its upload would
+        // run against a GL context that is gone (the empty-log "compile failed"
+        // this now avoids), and the reload below re-requests it anyway.
+        splatSeq++;
+
         reloadFromPrefs();
     }
 
@@ -2769,6 +3060,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // so that if a glide IS armed across a medium boundary it degrades to a
         // switch at the end rather than to a frame-by-frame lie.
         glideSourceKind = to.sourceKind;
+        // The draw path, held whole for the same reason. A glide across a mode
+        // boundary is unusual -- a toggle arrives as a resolve -- but if one is armed
+        // it must land as a switch rather than spend its duration naming a picture
+        // that is neither.
+        glideRenderMode = to.renderMode;
         // apply(from) above may have ended an earlier glide; this assignment comes
         // after it so a cancelled glide cannot leave this one pointing at a pair that
         // is no longer on screen. Same reason the values are applied before the glide
@@ -2832,6 +3128,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             // is armed it must land as a switch rather than spend its duration
             // naming a picture that is neither.
             sourceKind = glideSourceKind;
+            renderMode = glideRenderMode;
             glideFrom = null;
             glideTo = null;
             apply(end);
@@ -2858,6 +3155,17 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the glide never needs the inverse and never carries a stale component.
         setLight(LightDirection.lerpAzimuth(glideFrom.lightAzimuth, glideTo.lightAzimuth, e),
                 lerp(glideFrom.lightElevation, glideTo.lightElevation, e));
+        // The splat look and shape, eased like the rest: they are continuous render
+        // values on the surface being crossed, so a home<->lock glide must move them
+        // rather than snap at the end. (The medium and the draw path are the two that
+        // are held whole instead -- see glideSourceKind.)
+        splatDepthMul = lerp(glideFrom.splatDepth, glideTo.splatDepth, e);
+        splatEps2d = lerp(glideFrom.splatEps2d, glideTo.splatEps2d, e);
+        splatBlurPx = lerp(glideFrom.splatBlur, glideTo.splatBlur, e);
+        splatRenderScale = lerp(glideFrom.splatScale, glideTo.splatScale, e);
+        // Pan Z eases with the rest: a home<->lock glide crosses two camera
+        // distances and must move between them, not snap at the end.
+        setCamDist(lerp(glideFrom.panZ, glideTo.panZ, e));
     }
 
     private static float lerp(float a, float b, float t) {
@@ -2877,22 +3185,25 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // The light goes back as angles so the glide interpolates the way the
         // stored value does; setLight's vector is derived, not the source.
         //
-        // THIRTEEN arguments now, and the thirteenth is the SPEED -- added for the
-        // same reason the twelfth was: a snapshot that cannot reproduce a field
-        // compares unequal to the frame on screen, and the no-op-paint guard then
-        // repaints on every resolve. A speed change is a different picture, so it
-        // must be in here or changing the Speed slider snaps. This was the last caller
-        // of the eleven-argument form, which cannot name it — so a snapshot of a
-        // playing clip came back saying "still", compared unequal to the frame on
-        // screen, and apply(RESOLVE)'s no-op guard repainted on every resolve. That
-        // is the instant-paint snap, and it would have shipped the moment a clip
-        // existed rather than as a visible bug. AGENTS.md: a field ofValues cannot
-        // reproduce is a field the no-op-paint guard cannot see.
+        // FOURTEEN arguments now, and the fourteenth is the RENDER MODE -- added for
+        // the same reason the twelfth and thirteenth were: a snapshot that cannot
+        // reproduce a field compares unequal to the frame on screen, and the
+        // no-op-paint guard then repaints on every resolve. A relief and a cloud are
+        // different pictures, so the mode must be in here or toggling Splat snaps.
+        // (The thirteenth was the SPEED; the twelve-argument form was the last caller
+        // of the eleven-argument one, which cannot name the medium either.) AGENTS.md:
+        // a field ofValues cannot reproduce is a field the no-op-paint guard cannot see.
+        //
+        // EIGHTEEN now, the last four being the splat look and shape. They are per
+        // photo and per surface, so a snapshot that dropped them would compare equal
+        // to a frame drawn with a different Depth, Size, Blur or Resolution -- the
+        // same dropped-frame failure, one medium over.
         return com.amoshydra.basrelief.core.render.Framing.ofValues(
                 depth, zoom, motion, orbitX, orbitY, panX, panY,
                 pendingBrightnessGain, pendingShadowLift,
                 lightAzimuth, lightElevation,
-                sourceKind, speed);
+                sourceKind, renderMode, speed,
+                splatDepthMul, splatEps2d, splatBlurPx, splatRenderScale, camDist);
     }
 
     /**
@@ -2991,6 +3302,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // Set here as well as in the setters, so a resolve always wins. The light
         // is one call because its angles and vector must never be updated apart.
         setLight(f.lightAzimuth, f.lightElevation);
+        // The draw path, carried from the framing so the snapshot can name it. A
+        // toggle to Splat therefore makes sameAs report a different picture and the
+        // apply is not a no-op; the cloud's own bytes are still a separate question
+        // (useSplat), so the relief draws for the frame or two before it loads.
+        renderMode = f.renderMode;
+        // The splat look and shape, per photo and per surface. Set here with the rest
+        // of the render values so a resolve always wins, and so the renderer's own
+        // snapshot reports them and the no-op-paint guard can see a change. The store
+        // clamps them; SplatRenderer.draw clamps again at the uniform.
+        splatDepthMul = f.splatDepth;
+        splatEps2d = f.splatEps2d;
+        splatBlurPx = f.splatBlur;
+        splatRenderScale = f.splatScale;
+        // Pan Z, the camera distance, per photo and per surface like Pan X/Y. Set
+        // with the rest so a resolve always wins and the snapshot reports it.
+        setCamDist(f.panZ);
         // An explicit apply ends any glide in flight: it is the caller saying where
         // the view IS, and a tween arguing with that is a smear, not an ease.
         glideFrom = null;
@@ -3028,13 +3355,13 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
 
     public void reloadFromPrefs() {
         SharedPreferences p = context.getSharedPreferences(AppState.PREFS, Context.MODE_PRIVATE);
-        // The 3D mode. Read HERE, with the other cold-load state, because this is
-        // the one path both surfaces converge on -- the studio's cold start and
-        // the wallpaper's engine rebuild -- so the pref can be flipped and the app
-        // restarted to A/B the two looks without a rebuild. OFF by default: the
-        // relief is what every existing row was framed against, and this mode is a
-        // different reconstruction, not a fix.
-        render3d = p.getBoolean(KEY_RENDER_3D, false);
+        // The Stage-0 card grid, dev-only now (see the field): read HERE, with the
+        // other cold-load state, because this is the one path both surfaces converge
+        // on, so it can be flipped by adb and A/B-ed without a rebuild. OFF by
+        // default, and it draws only when the row has no real cloud. Its key is NOT
+        // `render_3d`: that is the migration source for the per-item mode, and
+        // reading it here would draw the card grid over every SPLAT row with no cloud.
+        splatGridMode = p.getBoolean(KEY_SPLAT_GRID, false);
         // The level, read here with it: an index into Splat.GRID_LEVELS, and any
         // stored value that is not one draws the default (the field's own
         // sampling). Reset per context in onSurfaceCreated, because the log line
@@ -3042,6 +3369,8 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // context rather than once per process.
         splatGrid = Splat.gridForLevel(p.getInt(KEY_RENDER_3D_LEVEL, 0));
         splatLevelLogged = false;
+
+
         // The index owns the selection, so one dereference gives the files and the
         // settings together and cannot come back naming a photo that was deleted.
         // Loaded once: this runs on the GL thread at cold start, and each load
@@ -3118,10 +3447,151 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
                 active == null ? null : active.depthName);
         java.io.File nrm = PrefFiles.resolve(context.getFilesDir(),
                 active == null ? null : active.normalName);
+        // The splat look and shape are read from the resolved Framing above, not
+        // from prefs: they are per photo and per surface now, and `apply(mine)` (or
+        // the glide) has already set the four volatile fields from the row. Reading
+        // the old global prefs here would be a second source that disagrees with the
+        // row the renderer just resolved.
+        setSplatForItem(active == null ? null : active.splatName,
+                active != null && active.isSplatMode(),
+                active == null ? 0f : active.splatLens);
         load(img == null ? null : img.getAbsolutePath(),
                 dep == null ? null : dep.getAbsolutePath(),
                 nrm == null ? null : nrm.getAbsolutePath(),
                 focal);
+    }
+
+    /**
+     * Resolve and (re)load the splat for one item. GL thread.
+     *
+     * <p><b>The rule: a splat renders only when the ITEM names one.</b> The item's
+     * own nullable filename is the whole shape, and it resolves through
+     * {@link PrefFiles}, so it is a bare filename and a restore onto another device
+     * still finds it. There is no fallback: the Stage-0 {@code splat_file} pref is
+     * gone, because the demo's cloud ships in {@code res/raw} and the ordinary seed
+     * names it on the bundled row like any other photo's cloud.
+     *
+     * <p>Both paths resolve through {@link PrefFiles}, so both are bare filenames
+     * and a restore onto another device still finds them.
+     *
+     * <p><b>The mode is the ITEM's, not a global.</b> {@code splatMode} is
+     * {@code LibraryItem.isSplatMode()} — a render value on the row, migrated once
+     * from the legacy {@code render_3d} pref. A row with a cloud and the mode set to
+     * Relief renders its relief, exactly as a row with no cloud does; a row asking
+     * for Splat but with no cloud yet also renders its relief, which is what makes
+     * "press Splat and the offer follows" honest.
+     */
+    void setSplatForItem(String itemSplatName, boolean splatMode, float cloudLens) {
+        // The lens rides with the path, before the mode gate: it is a fact about
+        // the row, and a row that asks for the relief has one too. 0 is "unknown"
+        // and draws at the demo lens.
+        splatWantedLens = cloudLens;
+        // The mode is the ITEM's, and a row that asks for the relief wants no cloud
+        // even if it has one -- a switch back to Relief must stop the cloud drawing
+        // on the next frame, which clearing the wanted path is what does.
+        if (!splatMode) {
+            splatWantedPath = null;
+            return;
+        }
+        // The item's own filename, and nothing else. The bundled demo used to be the
+        // one exception, delivered by a `splat_file` debug pref because Stage 0 had no
+        // import UI; Stage 1 ships the demo's cloud in res/raw and the ordinary seed
+        // names it on the row, so the pref and its fallback are gone -- the demo is an
+        // ordinary 3D row now.
+        java.io.File spf = PrefFiles.resolve(context.getFilesDir(), itemSplatName);
+        splatWantedPath = spf == null ? null : spf.getAbsolutePath();
+        requestSplat(splatWantedPath);
+    }
+
+    /** The bytes behind a cloud path, or 0 when it cannot be read. See Splat.cloudIdentity. */
+    private static long splatBytes(String path) {
+        java.io.File f = new java.io.File(path);
+        return f.isFile() ? f.length() : 0L;
+    }
+
+    /**
+     * Load a splat cloud off the GL thread and upload it on it.
+     *
+     * <p>The same shape as {@link #loadPairAsync}: the file read and the position
+     * mirror are the expensive part and must not sit between two frames of a live
+     * wallpaper, so they run on the {@code Io} executor and only the texture upload
+     * is queued to the GL thread. A result whose sequence is stale is dropped, the
+     * same rule the still pair follows, because two loads can finish out of order.
+     *
+     * <p>{@code splatLoadedPath} is written only after a successful upload, so a
+     * request that fails or is still in flight leaves the previous cloud — or the
+     * relief — on screen rather than claiming a cloud that is not there.
+     */
+    private void requestSplat(final String path) {
+        if (path == null) return;
+        // The identity is the path AND the bytes behind it; see Splat.cloudIdentity.
+        // A rebuild writes the SAME filename, so a path-only identity answers
+        // "already showing it", the request is dropped, and the new cloud never
+        // reaches the screen -- which is what a rebuild appearing to do nothing was.
+        final String id = Splat.cloudIdentity(path, splatBytes(path));
+        if (id.equals(splatLoadedId) || id.equals(splatPendingId)) return;
+        splatPendingPath = path;
+        splatPendingId = id;
+        final int seq = ++splatSeq;
+        final java.util.concurrent.Executor glThread = glDispatch;
+        Io.run(new java.util.concurrent.Callable<SplatCloud>() {
+            @Override
+            public SplatCloud call() throws Exception {
+                SplatCloud c = SplatCloud.read(new java.io.File(path));
+                // Warm the median depth HERE, on the IO thread, where the file was
+                // already read: the upload reads it for the pivot fallback, and a
+                // sort on the GL thread is the kind of stall this whole path exists
+                // to avoid.
+                c.medianDepth();
+                // And the near-plane pull-back's reach, for the same reason: it is
+                // O(count) over every record and the upload only reads it to log it.
+                c.maxSizeOverDepth();
+                return c;
+            }
+        }, new Io.Callback<SplatCloud>() {
+            @Override
+            public void onDone(SplatCloud cloud, Exception error) {
+                final SplatCloud c = error != null ? null : cloud;
+                if (glThread == null) {
+                    applySplat(path, c, seq);
+                    return;
+                }
+                glThread.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        applySplat(path, c, seq);
+                    }
+                });
+            }
+        }, glThread);
+    }
+
+    /** Upload a loaded cloud on the GL thread, unless a newer request superseded it. */
+    private void applySplat(String path, SplatCloud cloud, int seq) {
+        if (seq != splatSeq) return;
+        // This request is resolved either way, so it must stop blocking a retry:
+        // requestSplat skips a path that is already pending, and a failed upload
+        // that stayed "pending" would never be re-asked.
+        splatPendingPath = null;
+        splatPendingId = null;
+        if (splat == null) splat = new SplatRenderer();
+        if (cloud == null || !splat.upload(cloud)) {
+            android.util.Log.w("Basrelief", "splat: could not load " + path
+                    + (cloud == null ? " (read failed)" : " (upload failed)"));
+            splatLoadedPath = null;
+            splatLoadedId = null;
+            return;
+        }
+        splatLoadedPath = path;
+        splatLoadedId = Splat.cloudIdentity(path, splatBytes(path));
+        android.util.Log.i("Basrelief", "splat: loaded " + path + " count=" + splat.count());
+        // PAINT IT. The upload runs on a GL event that the host queued, and the
+        // host's own requestRender() may already have been consumed before the file
+        // read finished — so without this a cloud at Motion 0 (sensor parked, no
+        // clip pump) would load and never appear until the next tilt. The loaded
+        // path is the on-screen identity, and this is the frame that makes it true.
+        Runnable r = renderRequester;
+        if (r != null) r.run();
     }
 
     /**
@@ -3173,6 +3643,22 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         setPan(panX, panY);
         surfaceAspect = (float) width / height;
         recomputeScale();
+    }
+
+    /**
+     * Whether the Gaussian cloud, rather than the relief, is what should draw.
+     *
+     * <p>Three facts, and all three must hold: the item's mode resolved a cloud for
+     * this row ({@code splatWantedPath}), the GL context holds exactly that cloud
+     * ({@code splatLoadedPath}), and the upload reported success
+     * ({@code splat.isReady}). The middle one is the {@code hasInstalled} rule: a
+     * request that is still in flight, or that failed, must not be treated as on
+     * screen — the failure the wallpaper paid for twice, once as a black surface
+     * and once as a cloud that never retried.
+     */
+    private boolean useSplat() {
+        String want = splatWantedPath;
+        return want != null && splat != null && splat.isReady() && want.equals(splatLoadedPath);
     }
 
     @Override
@@ -3270,15 +3756,60 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         }
 
         recomputeScale();
-        float dt = Math.min((now - lastFrameNanos) / 1e9f, 0.1f);
+        // The step for this frame, from the shared filter: the same function and
+        // the same constants TiltController's doze gate steps per sensor sample,
+        // which is what lets the gate answer "has the value this draw will show
+        // moved?" — see TiltFilter. The gap cap lives in alphaFor too, so both
+        // callers clamp a stall the same way.
+        float alpha = TiltFilter.alphaFor((now - lastFrameNanos) / 1e9f);
         lastFrameNanos = now;
-        float alpha = 1f - (float) Math.exp(-dt / SMOOTHING_TAU);
-        // Fast attack: a big error means the user is moving, so follow it at once
-        // instead of easing in over ~460 ms. See ATTACK_ERROR.
-        smoothX = approach(smoothX, targetX, alpha);
-        smoothY = approach(smoothY, targetY, alpha);
+        // Fast attack, inside approach: a big error means the user is moving, so
+        // follow it at once instead of easing in over ~460 ms. See TiltFilter.
+        smoothX = TiltFilter.approach(smoothX, targetX, alpha);
+        smoothY = TiltFilter.approach(smoothY, targetY, alpha);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+
+        // The Gaussian cloud draws INSTEAD of the relief when the 3D switch is on
+        // and this row names a cloud that is actually uploaded. The relief's pair
+        // is still loaded underneath, so the switch is instant to flip back and a
+        // cloud that fails to load falls back to the picture with no error path.
+        if (useSplat()) {
+            // The cloud is the picture, so the relief's medium must not keep
+            // decoding behind it: a clip would otherwise run its three decoders
+            // for a frame nobody sees, and its pump would drive the surface at the
+            // clip's rate instead of the gyro's -- which is not the wallpaper's
+            // model. Stopped once, when it is running; the next resolve re-arms it
+            // if the switch goes back off.
+            if (clip != null && clip.isRunning()) stopClip();
+            SplatCamera.Frame sf = splat.draw(surfaceW, surfaceH, smoothX, smoothY, motion, zoom,
+                    orbitX, orbitY, panX, panY,
+                    pendingBrightnessGain, pendingShadowLift, splatRenderScale,
+                    splatWantedLens, splatEps2d, splatBlurPx, splatDepthMul, camDist);
+            // The readout reads the splat's own window here, not the relief's: the
+            // numbers on the glass are the ones the splat's log just printed. The
+            // relief's own window is abandoned while the cloud draws, so the next
+            // relief frame starts a fresh one rather than reporting a rate over the
+            // whole span the splat was on screen.
+            perfStats = splat.perfStats();
+            perfWindowStartNanos = 0L;
+            perfFrames = 0L;
+            // The orbit crosshair belongs to the cloud too, and this branch used to
+            // return before it was ever drawn -- so a row in Splat mode had no origin
+            // indicator at all, which is the one place the pivot is otherwise
+            // invisible. The frame the cloud was DRAWN with is the frame the marker
+            // is drawn with, so the crosshair, the aim and the reference eye cannot
+            // name different pivots.
+            if (showOrbitMarker && sf != null) {
+                // The cloud's draw may leave the viewport at its offscreen render
+                // size; the marker is a surface overlay.
+                GLES20.glViewport(0, 0, Math.round(surfaceW), Math.round(surfaceH));
+                drawOrbitMarker(sf);
+            }
+            captureLockFrameIfWanted();
+            return;
+        }
+
         if (displayed == null || !displayed.isDrawable()) {
             // Nothing to draw yet. The readback is still offered so a lock-frame
             // request is not silently dropped on an empty surface; it will
@@ -3331,6 +3862,11 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             }
         }
 
+        // Account the frame for the readout, and publish a window once a second. Here
+        // rather than at the top because only a frame that actually drew is a frame
+        // the readout should count; the splat branch above publishes its own.
+        accountReliefFrame(now);
+
         // Last thing in the frame, and deliberately so: the readback needs the pixels
         // that were just drawn, and it stops being possible once the buffer swaps.
         captureLockFrameIfWanted();
@@ -3363,6 +3899,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // for the same reason the framing is: during a fade two photographs are
         // on screen and each aims at its own subject.
         camera.setPivotHeight(ReliefMesh.heightAt(r.field, GRID, fr.orbitX, fr.orbitY));
+        camera.setCamDistScale(camDist);
         // One shared reusable Frame, so this allocates nothing; its values must
         // be consumed before the next call, which the uniform uploads do.
         CameraModel.Frame f = camera.frame(surfaceW, surfaceH, fr.panX, fr.panY,
@@ -3417,7 +3954,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clipDepthField(r));
             GLES20.glUniform1i(uDepth, 1);
-            if (render3d) {
+            if (splatGridMode && splatWantedPath == null) {
                 drawSplatGrid(r, f);
             } else {
                 GLES20.glUniform1f(uSplat, 0f);
@@ -3469,15 +4006,16 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uSplatGrid, splatGrid);
         GLES20.glUniform1f(uSplatSize, Splat.cardSize(splatGrid));
         // THE REFERENCE EYE IS THE CAMERA AT REST, NOT THE MOVING ONE, and it is
-        // the same two terms CameraModel.frame builds the eye from with the tilt
-        // left out: the pivot's world x and y -- taken from the frame, so the
-        // eye, the aim point and the marker cannot name different pivots -- and
-        // the fixed camera distance. The splat branch places every card on a ray
-        // from this eye, so it must be the camera the photograph is pinned to.
+        // the same eye CameraModel.frame builds at rest: the image centre at the
+        // fixed camera distance, looking straight down. The origin no longer moves
+        // the rest eye (the camera is a turntable about the pivot), so the eye the
+        // cards are placed against is (0, 0, CAM_DIST) whatever the origin is. The
+        // splat branch places every card on a ray from this eye, so it must be the
+        // camera the photograph is pinned to.
         // Feeding it the moving eye instead lands every card on its own pixel's
         // ray and the depth stops being visible at all: no parallax, no gaps, at
         // any Depth or tilt.
-        GLES20.glUniform3f(uSplatEye, f.pivotX, f.pivotY, CameraModel.CAM_DIST);
+        GLES20.glUniform3f(uSplatEye, 0f, 0f, CameraModel.CAM_DIST);
         // The row's focal, or the documented default when it has none, and the
         // default itself as the reference the shader divides by. Both resolved in
         // :core, where the fallback is a tested function of the image height
@@ -3510,6 +4048,40 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * glass, and the frame's pivot is that render's own aim point.
      */
     private void drawOrbitMarker(CameraModel.Frame f) {
+        // The relief's radius is a fraction of the MODEL SCALE, which is the world
+        // size of the plane the marker sits on.
+        drawOrbitMarker(f.viewProjection, f.pivotX, f.pivotY, f.pivotZ, 0.035f * f.scale);
+    }
+
+    /**
+     * The orbit crosshair for the splat cloud, from the frame the cloud was drawn
+     * with.
+     *
+     * <p>The pivot is in the cloud's own world units and the eye keeps its distance
+     * to it, so the ring's radius is a constant <b>angle</b>: a fraction of the
+     * eye-to-pivot distance. That is the same "constant size on the glass" the
+     * relief's marker gets from {@code 0.035 * f.scale}, one medium over, and it is
+     * why the radius cannot be a fixed world number — a cloud twice as far away
+     * would draw a ring half the size.
+     */
+    private void drawOrbitMarker(SplatCamera.Frame f) {
+        float dx = f.eyeX - f.pivotX;
+        float dy = f.eyeY - f.pivotY;
+        float dz = f.eyeZ - f.pivotZ;
+        float radius = 0.035f * (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        drawOrbitMarker(f.viewProjection, f.pivotX, f.pivotY, f.pivotZ, radius);
+    }
+
+    /**
+     * The crosshair itself, from the numbers both cameras can supply.
+     *
+     * <p>One body for both modes, so the relief and the cloud cannot draw two
+     * different crosshairs: the caller passes the frame it drew with — its
+     * {@code projPanned * view}, its pivot and the radius that reads as a constant
+     * size in its own units.
+     */
+    private void drawOrbitMarker(float[] viewProjection, float px, float py, float pz,
+                                 float r) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(markerProgram);
 
@@ -3518,11 +4090,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // the aim and the cards cannot name different pivots. It is the surface
         // under the origin, not the plane point behind it -- which is what makes
         // the crosshair the point the picture will hold under a tilt.
-        float r = 0.035f * f.scale;
         Matrix.setIdentityM(markerMat, 0);
-        Matrix.translateM(markerMat, 0, f.pivotX, f.pivotY, f.pivotZ);
+        Matrix.translateM(markerMat, 0, px, py, pz);
         Matrix.scaleM(markerMat, 0, r, r, 1f);
-        Matrix.multiplyMM(markerMvp, 0, f.viewProjection, 0, markerMat, 0);
+        Matrix.multiplyMM(markerMvp, 0, viewProjection, 0, markerMat, 0);
         GLES20.glUniformMatrix4fv(markerUMVP, 1, false, markerMvp, 0);
 
         ringBuffer.position(0);
@@ -3789,8 +4360,19 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
         // own values so the UI thread cannot derive a second, drifting answer.
         // Both axes in one place, so the pair cannot be half-updated; see the
         // fields' note. Cheap enough for the per-frame call: two multiplies.
-        orbitPixelsPerUnitX = camera.screenPixelsPerOrbit(true, surfaceH);
-        orbitPixelsPerUnitY = camera.screenPixelsPerOrbit(false, surfaceH);
+        //
+        // In SPLAT mode the Origin row's fraction IS a viewport fraction: one
+        // whole Origin unit is the whole surface. The relief's answer is the
+        // picture's own on-screen size, which is the wrong unit here; the mode is
+        // the switch. Neither shifts the picture any more -- this is the row's
+        // drag sensitivity, not a tracking rule.
+        if (renderMode == Framing.RENDER_SPLAT) {
+            orbitPixelsPerUnitX = surfaceW;
+            orbitPixelsPerUnitY = surfaceH;
+        } else {
+            orbitPixelsPerUnitX = camera.screenPixelsPerOrbit(true, surfaceH);
+            orbitPixelsPerUnitY = camera.screenPixelsPerOrbit(false, surfaceH);
+        }
     }
 
     private Bitmap decodeRaw(int resId) {

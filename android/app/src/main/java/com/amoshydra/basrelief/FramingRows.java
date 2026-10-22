@@ -33,35 +33,49 @@ final class FramingRows {
     }
 
     /**
-     * Origin is a fraction of the plane, and its range is the model's own bound,
-     * not a range of this class's choosing: {@link SurfaceSettings#ORIGIN_LIMIT}
-     * is where the camera's pivot reaches the plane's edge. It is carried in
-     * thousandths to keep a slider integral: −0.500..0.500.
+     * Origin is a fraction of the picture, and its range is the model's own
+     * bound, not a range of this class's choosing:
+     * {@link SurfaceSettings#ORIGIN_LIMIT} is ±2 picture-widths. It is carried in
+     * thousandths to keep a slider integral: −2.000..2.000.
+     *
+     * <p><b>It used to be 0.5, and that was a consequence of the shift, not a
+     * property of the model.</b> Origin named the plane point the camera AIMED
+     * at, so it also moved the picture: the photo's edge at +0.5 landed
+     * mid-screen and at +1.0 the photo was entirely off screen, which is why the
+     * far stop was half a plane. Origin no longer translates the picture — it
+     * names the ORBIT CENTRE, and the camera is a turntable about it with a fixed
+     * rest eye (see {@code CameraModel.frame} and {@code SplatCamera.frame}) — so
+     * an origin outside the photo simply means the orbit centre is outside it,
+     * and the bound can be what the control needs.
      *
      * <p><b>These used to be a literal ±1000 — twice the far stop — and the
      * difference was not cosmetic.</b> The extra half of the track previewed an
-     * origin the model cannot mean: at +1.000 the camera sits a whole plane-width
-     * beyond the photo's edge, so the preview was the void and nothing else. On
-     * release {@code SurfaceSettings} clamped the write to 0.5 while the control
-     * kept displaying what it had previewed, leaving the slider, the stored value
-     * and the render on three different numbers — the render at the far stop with
-     * its bar three-quarters full, which is exactly how a photo that has left half
-     * the screen was reached. Deriving the bound from the model's constant is what
-     * makes that unable to come back.
+     * origin the model cannot mean, and on release {@code SurfaceSettings} clamped
+     * the write to the model's bound while the control kept displaying what it had
+     * previewed, leaving the slider, the stored value and the render on three
+     * different numbers — the render at the far stop with its bar three-quarters
+     * full, which is exactly how a photo that has left half the screen was
+     * reached. Deriving the bound from the model's constant is what makes that
+     * unable to come back.
      */
     private static final int ORIGIN_MIN = Math.round(-SurfaceSettings.ORIGIN_LIMIT * 1000f);
     private static final int ORIGIN_MAX = Math.round(SurfaceSettings.ORIGIN_LIMIT * 1000f);
 
     /**
-     * How much further than the picture the finger must travel on Origin.
+     * How much further than one whole Origin unit the finger must travel.
      *
-     * <p>1.0 would be exact tracking — the picture moves with the finger — and
-     * the user's request was "origin tracking sliding, slightly less sensitive",
-     * i.e. tracking with a deliberate margin. 1.3 asks a drag to be 30% longer
-     * than the picture's travel, and it keeps one feel at every zoom because the
-     * sensitivity is derived from the live camera rather than a fixed range.
-     * This is a FEEL constant: lower it toward 1.0 to make Origin bite sooner,
-     * raise it to make it calmer.
+     * <p>The row's unit is turned into finger travel by {@link #originTravel},
+     * which is the on-screen size of one Origin unit — a whole picture-width on
+     * the X axis. 1.0 would be exact, and the user's request was "origin tracking
+     * sliding, slightly less sensitive"; 1.3 asks a drag to be 30% longer than
+     * the unit, and it keeps one feel at every zoom because the sensitivity is
+     * derived from the live camera rather than a fixed range. This is a FEEL
+     * constant: lower it toward 1.0 to make Origin bite sooner, raise it to make
+     * it calmer.
+     *
+     * <p>Origin no longer moves the picture, so this is a sensitivity and no
+     * longer a "the picture follows the finger" rule; it is kept because a whole
+     * picture-width per unit is a sensible fine-grained step at every zoom.
      */
     private static final float ORIGIN_DRAG_FACTOR = 1.3f;
 
@@ -104,11 +118,12 @@ final class FramingRows {
      * Finger travel, in surface pixels, that one thousandth of Origin asks for.
      *
      * <p>Read at the start of every gesture, so a zoom changed since the sheet
-     * was built cannot leave the row stale. The renderer answers surface pixels
-     * per whole Origin unit at the zoom and image aspect of the last frame
-     * ({@code CameraModel.screenPixelsPerOrbit}); the slider counts in
-     * thousandths; and {@link #ORIGIN_DRAG_FACTOR} is the deliberate margin over
-     * exact tracking.
+     * was built cannot leave the row stale. The renderer answers the on-screen
+     * size of one whole Origin unit at the zoom and image aspect of the last
+     * frame ({@code CameraModel.screenPixelsPerOrbit}); the slider counts in
+     * thousandths; and {@link #ORIGIN_DRAG_FACTOR} is the margin over that unit.
+     * Origin no longer moves the picture, so this is a sensitivity rather than a
+     * tracking rule.
      *
      * <p>Zero before the surface exists, which the slider treats as "use the
      * range rule"; see BasreliefSlider.unitTravel.
@@ -116,6 +131,67 @@ final class FramingRows {
     private static float originTravel(MainActivity activity, boolean isX) {
         return activity.renderer.getOrbitPixelsPerUnit(isX)
                 * ORIGIN_DRAG_FACTOR / 1000f;
+    }
+
+    /**
+     * Pan Z (camera distance) as a pan-family row: one value per photo and per
+     * surface, written to the same index every other framing gesture writes to.
+     */
+    private static View zpan(final MainActivity activity) {
+        int initial = read(activity, "zpan", false);
+        BasreliefSlider.ValueFormatter fmt = new BasreliefSlider.ValueFormatter() {
+            @Override
+            public String format(int value) {
+                return String.format(java.util.Locale.US, "%.2f", value / 100f);
+            }
+        };
+        BasreliefSlider.OnChanged changed = new BasreliefSlider.OnChanged() {
+            @Override
+            public void onChanged(int v) {
+                float _v = v / 100f;
+                if (!Float.isFinite(_v)) _v = SurfaceSettings.DEFAULT_PAN_Z;
+                if (_v < SurfaceSettings.PAN_Z_MIN) _v = SurfaceSettings.PAN_Z_MIN;
+                if (_v > SurfaceSettings.PAN_Z_MAX) _v = SurfaceSettings.PAN_Z_MAX;
+                final float val = _v;
+                final String id = activity.state().activeId();
+                if (id == null) return;
+                LibraryStore.editItem(activity.prefs, id, new LibraryStore.Editor() {
+                    @Override
+                    public LibraryItem edit(LibraryItem item) {
+                        return item.withPanZ(activity.editSurface, val);
+                    }
+                });
+                activity.glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.renderer.reloadFromPrefs();
+                    }
+                });
+                activity.glView.requestRender();
+            }
+        };
+        BasreliefSlider slider = BasreliefSlider.create(activity, "zpan", initial,
+                50, 500, fmt, changed);
+        slider.setOnPreview(new BasreliefSlider.OnPreview() {
+            @Override
+            public void onPreview(int v) {
+                float _v = v / 100f;
+                if (!Float.isFinite(_v)) _v = SurfaceSettings.DEFAULT_PAN_Z;
+                if (_v < SurfaceSettings.PAN_Z_MIN) _v = SurfaceSettings.PAN_Z_MIN;
+                if (_v > SurfaceSettings.PAN_Z_MAX) _v = SurfaceSettings.PAN_Z_MAX;
+                final float val = _v;
+                activity.glView.queueEvent(new Runnable() {
+                    @Override
+                    public void run() {
+                        activity.renderer.setCamDist(val);
+                    }
+                });
+                activity.glView.requestRender();
+            }
+        });
+        activity.dimWhileInteracting(slider);
+        activity.sliders.put("zpan", slider);
+        return slider.view();
     }
 
     /** Build the whole section: Origin caption, X, Y, Pan caption, X, Y. */
@@ -130,6 +206,7 @@ final class FramingRows {
         box.addView(caption(activity, R.string.framing_pan_caption));
         box.addView(axis(activity, "panX", false));
         box.addView(axis(activity, "panY", false));
+        box.addView(zpan(activity));
 
         // The row is built before the first layout pass, when glView has no size;
         // panLimit() falls back to the display metrics there. This listener
@@ -214,11 +291,12 @@ final class FramingRows {
         };
         // Pan's unit is a screen pixel, so its row drags 1:1 and its range is
         // the renderer's own bound; see panLimit. Origin is a fraction of the
-        // camera's own travel, so its screen meaning scales with zoom and with
-        // the image's aspect; its travel therefore comes live from the renderer
-        // through the provider below, which is what makes the picture track the
-        // finger at any zoom instead of the range-scaled sweep's fixed,
-        // zoom-blind speed. Pan deliberately does NOT get the provider: its
+        // picture, so its on-screen size scales with zoom and with the image's
+        // aspect; its travel therefore comes live from the renderer through the
+        // provider below, so one whole Origin unit is a whole picture-width of
+        // drag at any zoom instead of the range-scaled sweep's fixed,
+        // zoom-blind speed. That is a SENSITIVITY, not tracking: Origin no longer
+        // moves the picture. Pan deliberately does NOT get the provider: its
         // unit already is a pixel, and that is the whole distinction.
         final int limit = panLimit(activity);
         BasreliefSlider slider = fraction
@@ -281,6 +359,15 @@ final class FramingRows {
         LibraryItem item = activity.state().activeItem();
         if (item == null) return 0;
         SurfaceSettings f = item.settings(activity.editSurface);
+        if ("zpan".equals(key)) {
+            // Pan Z is a value on the row, per photo and per surface, read exactly
+            // as panX/panY are -- so it answers "nothing selected" like they do.
+            float v = f.panZ;
+            if (!Float.isFinite(v)) v = SurfaceSettings.DEFAULT_PAN_Z;
+            if (v < SurfaceSettings.PAN_Z_MIN) v = SurfaceSettings.PAN_Z_MIN;
+            if (v > SurfaceSettings.PAN_Z_MAX) v = SurfaceSettings.PAN_Z_MAX;
+            return Math.round(v * 100f);
+        }
         boolean isX = key.endsWith("X");
         if (fraction) return FramingRowValue.originThousandths(isX ? f.originX : f.originY);
         // Shown clamped to the same bound the renderer uses, not as stored: a pan
@@ -301,6 +388,9 @@ final class FramingRows {
      */
     private static int fromRenderer(MainActivity activity, String key, boolean fraction) {
         boolean isX = key.endsWith("X");
+        if ("zpan".equals(key)) {
+            return Math.round(activity.renderer.getCamDist() * 100f);
+        }
         if (fraction) {
             return FramingRowValue.originThousandths(
                     isX ? activity.renderer.getOrbitX() : activity.renderer.getOrbitY());
@@ -415,6 +505,7 @@ final class FramingRows {
         setSlider(activity, "originY", true);
         setSlider(activity, "panX", false);
         setSlider(activity, "panY", false);
+        setSlider(activity, "zpan", false);
     }
 
     /**

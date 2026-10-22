@@ -37,10 +37,16 @@ cd android
 ./podman-build.sh build-image    # once: builds the SDK image (Ubuntu 22.04 + JDK 17 + SDK 36)
 ./podman-build.sh test           # JVM unit tests in :core — no device needed
 ./podman-build.sh build-apk      # also runs :core:test first; cannot skip it
-./podman-build.sh install        # build + adb install on the connected device
+./podman-build.sh install        # build-release + adb install + AOT compile: the usable build
+./podman-build.sh install-debug  # debug APK: behaviour testing only, never performance
 ./podman-build.sh build-release  # signed only if keystore.properties exists
 ./podman-build.sh clean | shell | help
 ```
+
+`install` needs exactly one device; with several attached it names them and
+asks for `-s <serial>`, `ANDROID_SERIAL`, or the serial as an argument
+(`./podman-build.sh install 192.0.2.10:5555`) rather than passing adb's
+raw "more than one device" error through.
 
 The Gradle cache is bind-mounted out of the container (`GRADLE_USER_HOME`), so
 dependencies and the Gradle distribution are downloaded once instead of on
@@ -55,8 +61,9 @@ worked, because the build still succeeds. Override the location with
 
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
 every push, plus a `vite` build for the web and a `guards` job: AGENTS.md's paths
-and the port parity, and `scripts/check-shaders.mjs`, which compiles every GLSL
-shader the app keeps in Java. It invokes the script from the repo
+and the port parity, `scripts/check-shaders.mjs`, which compiles every GLSL
+shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
+float handed to `JSONObject.put`. It invokes the scripts from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
 
 Web (reference port, not maintained): `npm install && npm run build`.
@@ -71,12 +78,16 @@ android/app  ──depends on──▶  android/core
 `:core` exists so the maths that is easy to get quietly wrong is testable
 without a device. It holds depth→geometry (`ReliefMesh`), the camera
 (`CameraModel`), the picture adjustments (`Picture`), the splat mode's numbers
-(`Splat`), a vendored `Mat4`, the prefs path scheme (`PrefFiles`), the whole
+(`Splat`), the tilt smoother both the draw and the doze gate step
+(`TiltFilter`), a vendored `Mat4`, the prefs path scheme (`PrefFiles`), the whole
 persisted schema (`Config`, `Library`, `LibraryItem`, `Surface`,
 `SurfaceSettings`, `Playlists`, `Playlist`, `Trigger`, `VideoTracks`), the three
 "where did this come from" vocabularies (`DepthSource`, `NormalSource`,
 `VideoSource`), and the one resolution of state into numbers
-(`Framing`, `SurfaceResolver`).
+(`Framing`, `SurfaceResolver`). It also holds the perf readout's numbers and their
+formatting (`RenderStats`), because the readout and the `splat:` log must print one
+computation and "what a missing number prints" is exactly the mapping a screenshot
+cannot check.
 
 Anything that would otherwise be untestable GL or platform code belongs here as a
 pure function of plain values — that is the whole test. `Picture` is the pattern:
@@ -288,6 +299,50 @@ already cost real time.
   **not** negated) sampled per fragment; it is part of the loaded pair identity,
   so a photo that gains one is re-installed rather than reported as already
   showing.
+- **Origin moves the orbit centre and NOT the picture, in both backends, and the
+  reversal is deliberate.** Origin used to translate the picture so the origin point
+  landed at the CENTRE of the screen: the relief moved the camera to the pivot and
+  aimed at it (`CameraModel.frame`), and the splat subtracted `(-2*originX,
+  -2*originY)` from its clip-space shift (`SplatCamera.frame`). A tap therefore slid
+  the picture until the point touched was centred — *"readjusting the view"* — and
+  the user asked for that to stop. Both backends now mean the same thing: **at rest
+  the picture is exactly the photograph, translated by Pan alone**, at every origin
+  and every pivot depth, and Origin names only the ORBIT CENTRE.
+  - **The relief is a TURNTABLE about the pivot with a FIXED rest eye.** The eye is
+    `(0, 0, CAM_DIST)` — the image centre, looking straight down — rotated about the
+    pivot `(originX*aspect*scale, originY*scale, h*scale*zScale)`, and the
+    orientation rotates with it; at rest the rotation is the identity, so the view is
+    the photograph whatever the origin is. The pivot keeps its OWN screen position
+    under tilt (a rotation about a point leaves that point's view direction
+    unchanged), so the subject under the origin still HOLDS while the background
+    swings — the aim-at-the-pivot's job, done by the rotation axis. The angle is the
+    splat's (`TILT_RANGE / CAM_DIST * motion`), so the swing is the same at every
+    pivot depth; the old lateral slide's angle was `range / (CAM_DIST - pz)` and
+    therefore grew with the pivot's height. The card mode's reference eye
+    (`uSplatEye`) is that same fixed eye, not `(pivotX, pivotY, CAM_DIST)`.
+  - **The splat's shift is Pan's alone.** Origin still picks the ray the pivot is
+    found on and is the turntable's axis; it is not in `sx`/`sy`.
+  - **The crosshair now sits at the origin's OWN image position, not the screen
+    centre** — the visible difference, and correct: it marks the orbit centre.
+  - **The tap must stay consistent.** `SplatRenderer.tapOrigin` undoes the drawn
+    shift to reach the source camera's ray; with the shift pan-only it subtracts only
+    the pan, or the tap lands wrong. The relief's tap is unchanged: unprojecting
+    through the turntable resolves the plane point under the finger, and the pivot's
+    depth is still the ray's own surface.
+  - **An origin outside the cloud is now reachable and must not break anything.**
+    `SurfaceSettings.ORIGIN_LIMIT` is **2.0** (±2 picture-widths); the splat tap's
+    own clamp in `ReliefRenderer.screenToOrbit` derives from it. The pivot pick
+    already falls back (the nearest splat, then the reference-plane point on the
+    ray), and `SplatCameraTest` pins that a ray outside the cloud still answers a
+    finite aim — no NaN. The `FramingRows` Origin **range** still derives from
+    `ORIGIN_LIMIT` rather than a literal, and its old rationale — "where the camera's
+    pivot reaches the plane's edge", true only because the shift dragged the origin to
+    the centre — is rewritten; the warning it also carried, that the row, the stored
+    value and the render must be ONE number, stands.
+  - **THE COST, stated rather than discovered:** every existing photo with a stored
+    origin looks different — its picture loses the shift. That is a deliberate,
+    user-requested reversal, not a bug fix, and the acceptance test is the user's own
+    eye on the device.
 - **The 3D mode is one card per grid sample, DERIVED FROM `gl_VertexID`, and the
   focal is the only camera a photograph carries.** `render_3d` (a pref, read in
   `ReliefRenderer.reloadFromPrefs`, **off by default**) swaps the continuous relief
@@ -356,23 +411,17 @@ already cost real time.
     switched". No `:core` test can hold a GLSL expression, which is why this is
     written down here rather than asserted — and it survived a full green gate with
     the picture visibly wrong, so a splat change has to be looked at on a device.
-  - **The card is placed on a ray from the camera AT REST, not from the moving one,
-    and that is what makes Origin mean the same thing in both modes.** `uSplatEye` is
-    the tilt-free eye — the frame's pivot x/y at the fixed `CAM_DIST`, i.e. the same
-    pivot `CameraModel.frame` aims the camera at and the marker is drawn on — and
-    each card sits on the ray from it through its own reference-plane point, closer
-    by its own depth. Scaling the sample's position about
+  - **The card is placed on a ray from the camera AT REST, not from the moving one.**
+    `uSplatEye` is the tilt-free eye, and with the relief's camera now a turntable
+    about the pivot that eye is the FIXED rest eye `(0, 0, CAM_DIST)` — the image
+    centre looking straight down, the same camera the photograph is pinned to at every
+    origin — and each card sits on the ray from it through its own reference-plane
+    point, closer by its own depth. Scaling the sample's position about
     the MODEL CENTRE (`q * (zEye / uCamDist)`, what the branch did) is that same
-    construction with the eye assumed to sit on the model's z axis, and the assumption
-    stopped being true the moment Origin moved the camera: with Origin at a corner the
-    whole cloud was placed as if the origin were still the image's centre, whatever the
-    user set. Measured, at rest, Origin at the bottom-left, Depth 0.9 on a portrait
-    surface: a near layer is offset **bodily** by 0.54 NDC — over a quarter of the
-    screen's width, and the same offset at every sample — while the offset is zero only
-    when the origin is the image's centre, which is what the user reported as relief orbited around the bottom-left while 3D stayed centred. With the reference
-    eye the at-rest picture is exactly the photograph at every origin (the card lands
-    on its own reference pixel to float noise), and the reveal is untouched: the tilt
-    still moves the depth, as parallax and as disocclusion. **Feeding it the MOVING eye
+    construction with the eye assumed to sit on the model's z axis; that assumption
+    does not hold once the camera moves at all, and the whole cloud was then placed as
+    if the eye were the model's centre, which the user reported as relief orbiting around the bottom-left while 3D stayed centred. **Feeding it the
+    MOVING eye
     is not the fix and would destroy the mode**: a point on the eye's ray projects to
     that eye's pixel whatever its depth, so every card would land exactly on its own
     pixel and the render would be identical at every Depth and every tilt — no
@@ -382,36 +431,47 @@ already cost real time.
     (`closer = max(dist - zOff, 0.15)`), and the `h == 0` position is still exactly the
     relief's.
   - **The pivot is the SURFACE point under the origin, not the plane point behind
-    it, and the aim is what carries it.** `CameraModel.setPivotHeight` takes the
-    blurred field's height under the origin's image position (`ReliefMesh.heightAt`,
-    in model units), and `frame` aims at `(px, py, h * scale * zScale)` — the plane
-    point lifted through the same model-to-world factor `uMVP` applies. The plane
-    point was the old pivot: it held the centre while everything nearer swung,
-    which the user reported as an orbit defined only on the 2D plane, and the pivot belongs on the subject's nose rather than the
-    background. **The eye does not move
-    with the pivot's depth**: it keeps the fixed `CAM_DIST` and the pivot's own
-    x/y, so at rest it sits directly above the pivot, `lookAt`'s direction is
-    still straight down, and the view matrix is exactly the plane point's own.
-    Measured off-device over 4 aspects x 3 surfaces x 3 zooms x 4 depths x 4
-    origins x 3 tilts: the at-rest projection of the plane differs from the
-    pivot-at-zero camera by 0 (double precision), the splat card still lands on
-    its own reference pixel (7e-15), the pivot holds the centre under tilt
-    (2e-15) while the plane point under the origin swings up to 0.21 NDC, and
-    every visible card corner still moves under tilt (min 8e-6, max 1.13 NDC).
-    That is what keeps "at rest the picture is exactly the photograph" true for
-    every origin and every pivot height with NO model-scale compensation. The
-    naive `eye = pivot + CAM_DIST` would move the eye off the plane's distance
-    and shrink the picture (0.5 * 0.9 * `CAM_DIST` of pivot is a 31% zoom-out),
-    and scaling the model to compensate would zoom the whole photo as the origin
-    moved from a near subject to a far background. The pivot is the RELIEF's
+    it, and the TURNTABLE's axis is what carries it.** `CameraModel.setPivotHeight`
+    takes the blurred field's height under the origin's image position
+    (`ReliefMesh.heightAt`, in model units), and `frame` places the rotation axis at
+    `(px, py, h * scale * zScale)` — the plane point lifted through the same
+    model-to-world factor `uMVP` applies. The plane point was the old axis: the plane
+    held while everything nearer swung, which the user reported as an orbit defined only on the 2D plane, and the pivot belongs on the subject's nose rather than the
+    background. **The rest eye is FIXED** at `(0, 0, CAM_DIST)` — it does not move
+    with the pivot's depth OR with the origin — so at rest the view is the photograph
+    and the pivot keeps its own image position; the axis's depth moves the orbit and
+    the marker and nothing about the picture. Measured off-device over 4 aspects x 3
+    surfaces x 3 zooms x 4 depths x 4 origins x 3 tilts: the at-rest projection of the
+    plane is identical for every origin and every pivot height (double precision), the
+    splat card still lands on its own reference pixel (7e-15), the pivot keeps its own
+    screen position under tilt while the plane point under the origin swings up to 0.21
+    NDC, and every visible card corner still moves under tilt (min 8e-6, max 1.13 NDC).
+    No model-scale compensation is needed and none should be added — the naive
+    `eye = pivot + CAM_DIST` would move the eye off the plane's distance and shrink the
+    picture (0.5 * 0.9 * `CAM_DIST` of pivot is a 31% zoom-out), and scaling the model
+    to compensate would zoom the whole photo as the origin moved from a near subject to
+    a far background. The pivot is the RELIEF's
     surface; the splat's focal depth gain is deliberately not folded in, so the
     aim is one camera for both modes and the mode toggle does not jump. A clip's
     pivot comes from the still POSTER's field — the live depth is a GPU texture
     with no CPU copy — so it is one number per pair, like every other framing
-    value. The marker and `uSplatEye` both read the frame's pivot — the marker at
-    the pivot itself, the eye at the fixed camera distance above it — so they
+    value. The marker reads the frame's pivot and `uSplatEye` is the frame's fixed rest
+    eye — the crosshair sits on the orbit centre and the cards are placed from the
+    camera the photograph is pinned to — so they
     cannot name different pivots, and `screenToOrbit` resolves the tap through
-    the same pivot depth the draw used.
+    the same pivot depth the draw used. **And the marker is drawn in the SPLAT
+    branch too, not only after the relief's `drawRender`.** The branch that draws
+    the Gaussian cloud returns before the relief's marker call, so a row in Splat
+    mode had no origin indicator at all — the one place the pivot is otherwise
+    invisible — and it stayed that way until it was reported. `SplatRenderer.draw`
+    therefore returns the frame it drew with, and the host draws the crosshair from
+    that frame, so the marker and the cloud cannot name different pivots. The
+    marker's radius is a constant ANGLE in both modes: a fraction of the model
+    scale for the relief, a fraction of the eye-to-pivot distance for the cloud,
+    because a cloud twice as far away would otherwise draw a ring half the size.
+    The cloud may also have drawn through an offscreen target, so the host restores
+    the surface viewport before the marker — an overlay drawn into a half-size
+    target would land in the wrong place.
   - **The focal does NOT go into the ray, and that is a decision with a measurement
     behind it.** `X = (u-0.5)/(f/W)*Z` is the unprojection through the PHOTO's
     camera; drawing it through this renderer's camera — fixed 45°, because it is the
@@ -445,6 +505,230 @@ already cost real time.
     `normal`/`video` rule) and every mutator carries it; `VideoLibraryTest`'s
     `everyMutatorCarriesTheClip` walk asserts it beside the clip, because it is the
     same shape of value: added after the writers existed.
+  - **A cloud carries its OWN lens, and it is a different number in a different
+    unit from the row's `focal`.** A Gaussian's screen size is proportional to the
+    focal it was reconstructed through, and every `.splat` was built at its own —
+    the node reports it in the sidecar (`focal`, `height`, both in pixels of the
+    frame it was handed) and `SplatRenderer` draws the cloud through the source
+    camera that focal implies. The row's `focal` beside it is a MoGe measurement in
+    pixels of the COLOUR image and drives the relief's depth scale; a cloud is built
+    from the poster still, so the two can be different ratios and folding them into
+    one field would let the clip path and the cloud path overwrite each other's
+    units. The cloud's lens is therefore stored as the dimensionless
+    `LibraryItem.splatLens` = `focal / height` (`Splat.focalOverHeight`), because a
+    focal in pixels is only meaningful against the frame it was measured on and the
+    phone may decode the still at a different height and draw it on a different
+    surface; the ratio is the lens itself. `Splat.fovyForFocalOverHeight` converts
+    it to the camera's field of view.
+    - **The fallback is the demo cloud's constant, and that is deliberate.**
+      `SplatRenderer.SOURCE_FOVY`/`SOURCE_TARGET_Z` are the bale's 30 mm lens and
+      front surface, and a row with no stored lens (every cloud generated before
+      this field existed) draws at exactly those — so those clouds keep the look they
+      have and change only on a regeneration, which reads the sidecar. `0` is
+      unknown and omitted from the blob, the `normal`/`video`/`focal` rule, so no
+      schema bump; `SplatImport.fetch` is the one finish line that writes the lens
+      with the cloud it describes, through `withSplat(String, float)`, and the
+      one-argument form carries the lens rather than clearing it (the `withFiles`
+      rule for `focal`).
+    - **The pivot's fallback is the cloud's own centre, not the bale's 2.4.**
+      `SplatCloud.medianDepth` is the loaded cloud's median `z`, warmed on the IO
+      thread at load and read on the GL thread at upload; the frontmost splat under
+      the origin's ray remains the real pivot, and the demo target answers only when
+      there is no cloud at all.
+    - **The lens is not part of the pair identity.** It is read at draw time from
+      the wanted row, so a row that gains a lens repaints through the loaded cloud
+      with no re-decode; a new cloud FILE (a new filename) is the identity change,
+      exactly as it was before.
+  - **The splat look is four per-photo, per-surface values, and two of them are
+    different things that both look like "softness".** The problem they tune: a 150k
+    cloud is drawn at roughly one splat per 12 px with ~1 px splats, so a bright flat
+    field reads as a screen-door — invisible on mid-tones, black-and-white noise on a
+    bright sky. **They were global dev prefs while the look was still being chosen by
+    eye; the tuning is over, so they are in the counted chain now** — on
+    `SurfaceSettings`, carried by its positional `with`, resolved by `Framing` and
+    compared by `sameAs`, exactly as Depth and Motion are. The schema went to **v5**
+    and `Library`'s v4→v5 migration seeds every item's home surface from the old keys
+    (`ReliefRenderer.KEY_SPLAT_EPS2D` / `KEY_SPLAT_BLUR` / `KEY_SPLAT_DEPTH` /
+    `KEY_SPLAT_SCALE`), read once by `AppState` and never at draw; a value equal to its
+    default is written nowhere, so an untouched library's items are byte-identical.
+    The product defaults are unchanged: `Splat.EPS_2D_DEFAULT` = 0.5 of the cell,
+    `Splat.BLUR_DEFAULT` = 0, `Splat.DEPTH_MUL_DEFAULT` = 1,
+    `Splat.RENDER_SCALE_DEFAULT` = 1. **BUDGET is the one that stays a pref**: it is
+    generation-side, read at submission, and the number the user compares by eye is
+    the number that runs — see below.
+    - **SIZE is a coverage lift, not a blur, and that distinction is the whole
+      point.** The `eps2d` floor lifts only the splats whose screen covariance is
+      too small to sample and leaves the well-sampled ones alone, so it removes the
+      screen-door without smearing detail. The knob stores a FRACTION OF THE CELL
+      (`Splat.EPS_2D_DEFAULT` = 0.5, the row spans **0..0.80** — the bottom is no
+      floor), and the draw
+      resolves it to exactly `fraction × cell`, with the cell the ON-SCREEN one
+      (`viewportArea / count × zoom²`). **There is no second, target-area minimum**,
+      and deleting it is what made the knob live at every count.
+      - **The minimum was the SIZE knob frozen at one cloud's count.** Its
+        `SAMPLING_MIN_AREA_FRACTION` was `6 / (912 × 1984)` of the render target's
+        area — the clean 6 px² measured on the 149,504-splat beach — and
+        `EPS_2D_DEFAULT / that fraction` is **150,784 splats, 0.9% from the beach's
+        own count**. So at the default the two terms were one statement: `0.5 × cell`
+        for the beach reproduces the recorded minimum within 1% at all four render
+        targets (0.939 / 3.756 / 6.051 / 15.03 against 0.931 / 3.72 / 6.00 /
+        14.90). It could only ever place a floor *above* `fraction × cell`, and past
+        the count where it exceeded the raw cell — `1 / that fraction = 301,568`
+        splats, ratio 0.50 at the beach, 1.34 at 403,456, 3.47 at 1,046,528 — that
+        excess was over-blur. That is why it first needed the cap
+        `min(minimum, cell)` and why the cap is now gone with it.
+      - **Above the old crossover the floor drops from the cell to `fraction ×
+        cell`, so a dense cloud is sharper AND cheaper.** Measured on the 6T's
+        403,456 bundled row (scale 1.00, Motion 100, zoom 0.62, so the on-screen cell
+        is 2.408 and the default floor goes 2.408 → 1.204): median `gpuMs`
+        **37.45 → 33.16, −11.5%**, by continuous sensor draws after a visibility
+        change — the hot method, and the same method both sides. (The *original*
+        uncapped minimum would have been 8.380 here.) The smooth region is still the
+        clean reference render's **0.70× the photograph's own high-frequency
+        energy**.
+      - **Provenance, marked rather than trusted.** The *cap's* own figure —
+        median `gpuMs` **56.1 → 37.7**, read as "~33% of frame time", floor
+        8.380 → 2.408 — was recorded in the commit that added the cap, **before
+        the release-install rule in Build constraints existed**, so its build's
+        provenance is unrecorded and it is very likely an un-AOT'd build. On such
+        a build the frame is CPU-dominated (`sortMs` in the hundreds of ms), and a
+        fill change's ratio does not transfer to a `status=speed` build; it must
+        not be quoted as a frame-time figure. The **`−11.5%` deletion figure above
+        WAS measured on the release APK and is the sound one.**
+      - **The bottom of the range is the identity, and it is a real setting.** The
+        floor once stopped at 0.45 "so that every setting the control offers is one
+        that works"; that premise is what fell. SIZE is per photo, and the gap it
+        closes is the cell, so one shared minimum made every cloud obey the sparsest
+        cloud's requirement — a dense cloud, which needs no lift, was smeared to
+        provide one. At `0` the floor vanishes and the splat is drawn at its own
+        covariance, so the picture is purely the cloud's density — which is what the
+        count measurements say determines sharpness. Below about 0.4 of the cell on a
+        SPARSE cloud the screen-door returns: the 149,504 beach at 0.5 of the cell
+        resolves to the ≈6 px its sky needed, and at 0 it gets no lift at all. That is
+        a real look reachable on purpose rather than a broken region the control
+        refuses to enter, and the default 0.5 sits in the middle of the useful band.
+        **No schema bump**: `0` was previously clamped *up* on write, so no stored
+        blob contains it and every existing photo keeps its value.
+      - **The SIZE row is live at every count now** — it was inert above 301,568
+        splats, where the floor was the cell and `fraction × cell ≤ 0.8 × cell` could
+        only ask for more. That is the whole point of the change.
+    - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
+      One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
+      from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
+      nothing. `Splat.BLUR_MAX` = 6 render-target pixels. **MSAA was assessed and is
+      NOT the tool**: it antialiases the EDGES of the triangles that are drawn, and
+      the artifact is the BLACK GAPS between splats that are not drawn — a coverage
+      problem, not an aliasing one, which is why the 4x MSAA already on the surface
+      (`ReliefRenderer.enableMSAA`) leaves the screen-door exactly as it was. **Only
+      density (BUDGET, a regeneration) gets the detail back**; the blur is honest
+      about being a trade, not a fix.
+    - **BUDGET is generation-side and is read at submission, not at draw.** It is
+      the `budget` the app sends to `SharpStill`, read in `SplatImport.generate`
+      from the same pref the build dialog's Splat tab states (`BuildDialog.cloudBudget`), so
+      the number the user compares by eye is the number that runs. The ladder's own
+      verdict is 150k soft, 741k right, 1.05M indistinguishable from full — and on
+      the measured phone 741k ≈ 18 fps, 1.05M ≈ 13. A dev changes it and presses
+      Regenerate on one row to compare. The tab's `~10 s · ~4.8 MB` estimate is
+      deliberately NOT scaled by the budget: it is the node's own reference run, and
+      a scaled guess would be a second, unmeasured number.
+    - **The four rows are shown only when they can change a pixel** — the selected row
+      is in Splat mode AND names a cloud file that is here, the two conditions
+      `ReliefRenderer.useSplat()` draws under. A row in Splat mode with no cloud
+      renders its relief, where all four are inert; a control that cannot change
+      anything is the lie this file keeps refusing to ship. They are built and removed
+      by `MainActivity.syncSplatRows` exactly as the relief's Depth row is by
+      `syncDepthRow`, and they dim the sheet while held (`dimWhileInteracting`) so the
+      render shows through the finger. Budget stays in the build dialog's Splat tab
+      because it changes nothing on screen to reveal.
+    - **The floor's and the blur's per-setting cost is the one thing still
+      unmeasured, because the phone is unreachable** (`No route to host`). The
+      `splat:` STATS line now prints `eps2d=` and `blurPx=` beside `count`/`fps`/
+      `gpuMs`, so the first device session can read the cost straight off a log —
+      that is what those two fields are for.
+    - **A splat's quad is clipped to the radius its own alpha survives, so the fill it
+      removes was already being paid for and thrown away.** The fragment shader
+      discards a fragment whose alpha falls below `Splat.ALPHA_DISCARD` (1/255), and
+      that boundary is a RADIUS: with `power = -0.5 r²` the fragment survives when
+      `alpha * exp(-0.5 r²) >= thr`, i.e. `r <= sqrt(2 ln(alpha/thr))`. The vertex
+      shader emits the quad at the 3σ extent `r = 3` and scales it by
+      `Splat.extentScaleForAlpha` — `keep = min(1, sqrt(2 ln(a/thr)) / 3)` — so the
+      quad covers EXACTLY the region the fragment stage keeps and **no pixel that was
+      drawn before changes**. `theQuadShrinksToExactlyWhereTheFragmentShaderDiscards`
+      inverts the mapping and pins that the scaled edge lands on the discard boundary,
+      just inside it survives and just outside it is discarded.
+      - **One threshold, and it is a uniform, not two literals.** `Splat.ALPHA_DISCARD`
+        is the source of truth; the renderer uploads it as `uAlphaDiscard` and BOTH
+        stages read it. A literal copied into VERT and FRAG is the drift this avoids:
+        the quad would end somewhere other than where the discard begins, and the
+        difference is a soft ring of clipped splats no test could name. (`check-shaders`
+        joins only string literals, so a Java constant inside a shader string would be
+        silently dropped from the compiled source — another reason it is a uniform.)
+      - **An opaque splat is the identity and a splat at the threshold draws nothing.**
+        `sqrt(2 ln 255) = 3.33 > 3`, so the full quad is kept for every `a >= 1`; the
+        quad only shrinks below `a = thr * exp(4.5) = 0.353`. At `a <= thr` every
+        fragment would be discarded, so the vertex shader drops the splat outright.
+        **Measured on the shipped demo cloud: 8.3% of splats are below 0.353 and the
+        mean extent is 0.988** — a ~2% fill cut on a high-opacity cloud, so this is a
+        small win there and a larger one on a cloud with many faint splats. The stats
+        line reports `alphaDrop=`/`alphaShrank=`/`alphaExtent=` precisely so a device
+        log says which it was, rather than a claim.
+      - **`gpuMsPerMpx` is the fill measurement the next step reads.** `gpuMs`
+        normalized by the render target's megapixels (`render=WxH` is already on the
+        line): the renderer is fill-bound, so this ratio stays flat as the render scale
+        changes and rises with the average splat coverage. It is a diagnostic, not a
+        control — there is deliberately no user-facing knob for it.
+    - **The near-plane pull-back is a MINIMUM VIEW DISTANCE per splat, and the moment
+      it becomes a camera move it breaks the at-rest invariant.** The vertex shader's
+      radius clip drops a splat whose 3σ extent exceeds half the frame — gsplat's
+      `radius_clip`, because a splat that close to the eye costs a screenful of
+      fragments to lay down a wash; measured at 669k splats, **922 ms a frame with
+      those drawn against 76 ms without them**, which is the whole of the stutter.
+      Dropping leaves the hole the wash was covering, so a splat nearer than
+      `SplatCamera.minViewDistance` is moved back **along its own view ray** to that
+      distance instead (`mv.xyz *= zmin / depth`). That scaling keeps the splat's
+      screen position EXACTLY — both `clip.xy` and `clip.w` scale by it, so the NDC is
+      unchanged — and divides its projected covariance by the square of it, because
+      every perspective Jacobian entry goes as one over the depth. The SIZE is
+      deliberately NOT scaled with the position: that is what "no fov compensation"
+      has to mean here, and it is why the splat is drawn smaller rather than drawn
+      whole.
+      - **Pulling the EYE back instead is the one thing that must not be done.** A
+        point at depth `z` then projects to `f x / (z + d)`, which is the photograph
+        only at the reference plane, whatever focal is chosen — so `SplatCameraTest`'s
+        at-rest assertions go red for every splat off it. Moving the splat leaves the
+        frame untouched, which is exactly what those tests guard.
+      - **The minimum cannot be a single depth.** A cloud's `size / depth` is
+        heavy-tailed (the largest 3D axis over its depth, over the median, measured
+        **7–245×** across the clouds in the tree), so a threshold derived from the
+        worst splat would pull back and visibly shrink the whole near field. Tying it
+        to each splat's OWN size touches exactly the splats whose extent is the
+        problem.
+      - **And per-splat means the `O(count)` pass the design expected is not needed at
+        all.** The design looked for the nearest drawn splat's depth; but the splat's
+        size is already in the vertex data and its minimum is proportional to it, so
+        the only per-framing input is the projection's own `proj5` — one uniform,
+        `SplatCamera.minViewDistancePerSize` — and a cloud with nothing near the
+        camera is untouched by construction (no splat satisfies the clamp). Measured
+        on five real clouds (149k–1.18M splats), the largest `size / depth` is
+        **0.0133**, against a threshold of 0.0795 at fovy 100 and 0.0276 at fovy 45,
+        so none of them is touched at any normal framing (at the extreme 20° zoom a
+        mild clamp can just reach the 0.0133 cloud — which is correct: zooming in
+        magnifies extents).
+      - **`SplatCamera.MAX_EXTENT_FRACTION = 0.1` is the number, and it is not
+        arbitrary.** The bound it states is the ON-AXIS extent, and the Jacobian's
+        off-axis term magnifies it by up to `sqrt(1 + tan²)`; at the frame corner that
+        is enough to cross the clip's own 0.5 threshold, which would put the splat
+        straight back into the drop. `thePullBackKeepsTheSplatUnderTheRadiusClip`
+        walks the corners and the framings and **fails at 0.5 (mutation-checked)** —
+        so the clamp guarantees a splat is DRAWN, which is the whole point of it.
+        `thePullBackKeepsASplatOnItsPixelAndShrinksIt` pins the exact-position and
+        scaled-extent property through the real projection chain.
+      - **The device tell is `pullbackAspect=` on the `splat upload:` line** — the
+        loaded cloud's own largest `size / depth`, printed once per upload, because
+        the vertex shader cannot count what it clamped. The clamp can engage only
+        above `1 / minViewDistancePerSize(proj5, …)`, so a number below that says the
+        cloud is untouched and a number above it says which splats are being pulled
+        back.
 - **The depth blur must stay in `float`.** 8-bit depth has ~1-level terraces;
   grazing light amplifies them into visible contour lines. The fix is a
   separable box blur in float precision before tessellation — **re-quantising the
@@ -558,6 +842,17 @@ already cost real time.
   `onSurfaceCreated` one level deeper, and the pattern is the lesson: **any state
   that records "this is on screen" must only be written when the GL calls that
   put it there actually succeeded.**
+- **The probe for "is there a current context" must be EGL, never a GL call.**
+  `SplatRenderer.upload` refuses a queued upload that ran before the GL thread had
+  a context, and it asked `glGetString(GL_VERSION) == null` — which is what
+  AGENTS.md said it answers. On Mali it does not: it dereferences the absent
+  dispatch table and takes the process down. Measured on the Pixel 7 Pro: the
+  studio's first splat load produced `SIGSEGV in glGetString+44` from
+  `SplatRenderer.upload`, `applySplat` on `GLThread`, every launch — the studio
+  was unusable, and the empty-log "compile failed" it was written to prevent was
+  never reached. `EGL14.eglGetCurrentContext() == EGL14.EGL_NO_CONTEXT` answers
+  the same question and touches no GL state. **A guard whose own probe can crash
+  is worse than no guard**, and this one had been a landmine since it was written.
 - **Decodes run off the GL thread and finish out of order, so the newest request
   must win by sequence, not by arrival.** A runnable queued while the engine was
   hidden replays the *previous* selection, and a large PNG decode can complete
@@ -635,6 +930,101 @@ already cost real time.
   present, so `eglSwapBuffers` re-presents the previous buffer mid-scanout and
   **tears the screen**. The draw rate is already bounded by the sensor. Pace at
   the request site if you ever need to.
+- **A doze stops the frames while the phone is still, and it is the draw-path
+  battery win — the gyro stays registered so waking is instant.** A frame is ~40 ms
+  of GPU at 150k splats and the rotation vector asks for ~50/s, so while the
+  wallpaper is visible with Motion > 0 the GPU ran at 100 % continuously. The cost
+  is `gpuMs × frames drawn`, and the only safe place to cut it is the request site
+  (the frame-pacing rule above: returning early from `onDrawFrame` tears the
+  screen). So `TiltController` gates its `listener.onTiltChanged()` — the one call
+  both hosts render from — and stops publishing while the tilt has not moved. The
+  rotation vector is deliberately NOT unregistered (that is the separate 10 s idle
+  sleep, which takes over for the long-still case and recalibrates on wake); the
+  gyro is a few hundred µA and the GPU is order 1 W, so keeping the sensor and
+  parking the frames is the whole win, and a wake needs no recalibration and no
+  glide.
+  - **The threshold is DERIVED, not picked**, and lives in `:core` where it can be
+    tested without a device. `CameraModel.tiltPixels` answers the largest visible
+    screen displacement a tilt delta produces at a framing (through the real
+    `frame`/`mvp` chain, over the surface's depth range, counting only points on
+    screen), and `CameraModel.DOZE_EPS` is the delta whose worst case is
+    `DOZE_SUBPIXEL_PX` (0.5 px) — 6.0e-4 tilt, measured at 766 px/tilt on a
+    1440x3120 surface at Zoom 200 %, Depth 100 %, the pivot at its extreme. The test
+    `theDozeThresholdStaysUnderASubPixelAtEveryFraming` is the guard: an edit to
+    `TILT_RANGE`, `FOV_DEG` or `CROP_MARGIN` that made the picture move more per
+    degree of tilt goes red rather than letting the doze become visible.
+  - **The gate watches the FILTERED tilt, not the raw reading, and that is the
+    difference between a doze that engages and one that chatters.** The quantity is
+    the smoothed tilt's movement **since the last movement publish** — not the raw
+    reading's deviation from its ~2 s baseline. The raw signal carries the phone's
+    own sensor and desk noise, which the renderer's `SMOOTHING_TAU` filter removes
+    before anything is drawn, so the gate's raw movement straddles its own threshold
+    while the drawn picture does not move: measured on the 6T, `move` ran
+    **6e-5 … 1.6e-3** around `dozeThresh = 6.0e-4` and the wallpaper published at
+    **~50/s with `asleep=false`** — the full ~0.86 A, 3.5-4.0 W of a continuously
+    drawn wallpaper, for a picture that was not moving. The same desk, same protocol,
+    after this change: **~2 publishes/s, `dozing=true`, with `move` still running up
+    to 1.9e-3** — the raw quantity above the threshold while the filtered one
+    (`fMove`, **1e-5 … 5.7e-4**) is below it. Referencing the last publish rather than
+    the sample before it is also what bounds the frozen frame: the drift accumulated
+    while dozing is exactly the quantity the wake fires on, so the first frame after a
+    wake steps by less than `DOZE_EPS` (plus the renderer's own intentional `tau`
+    lag, which is there whatever the doze does) and the renderer eases the rest. The
+    two quantities are printed side by side on the `tilt:` line (`move` raw, `fMove`
+    filtered) precisely because a log that prints only the outcome cannot say which
+    one drove a decision.
+  - **Inside the dwell with less than the bound travelled, NOTHING is drawn, and
+    that is the point of the reference.** The gate's third branch used to publish
+    every sample — "keep drawing while the movement settles" — which made sense while
+    its quantity was the raw deviation from the baseline and could bound nothing. Once
+    the quantity is "movement since the last frame", a publish inside the dwell is by
+    definition a frame the gate has proven cannot be visibly different from the one on
+    screen. It was also the bulk of the frames that remained: a crossing costs ONE
+    frame, and the dwell's settling published twelve more per crossing. Measured, same
+    desk and protocol: dropping it took the same window from **~14 publishes/s to
+    ~2/s**, with `dozing=true` and no publishes at all for four to six consecutive
+    seconds in most windows. The honest cost is stated rather than hidden: while the
+    phone
+    moves only a little (below `bound × 50`, i.e. a very slow deliberate tilt) the
+    picture is sampled at the crossing rate rather than the sensor's, with every step
+    under the bound — `DOZE_SUBPIXEL_PX` is what makes that acceptable, and the user's
+    eye on a slow tilt is the acceptance test.
+  - **The gate's filter is the renderer's, and it is one function, not a mirror
+    kept in step by hand.** `TiltFilter` (in `:core`) holds the tau, the fast attack
+    and the step; `ReliefRenderer` steps it once per drawn frame and `TiltController`
+    once per sensor sample, fed the same presented tilt — so the gate measures the
+    value that is about to be drawn. The gate needs its own state (the renderer's
+    `smoothX`/`smoothY` advance only while it draws, so a gate reading them would
+    freeze the moment it dozed and never wake), and the two are consistent because
+    `tau` is a TIME CONSTANT: the same elapsed time is the same step at either
+    cadence, which `TiltFilterTest` asserts rather than assumes. The fast attack is
+    deliberately part of the mirror: a gate with only the exponential would lag the
+    target exactly while a deliberate movement is under way — the one moment the
+    bound matters — and so would allow a wake bigger than the bound. And the mirror
+    is enforced, not merely documented: `scripts/check-parity.mjs` fails if either
+    caller derives a step of its own (`Math.exp`) or declares a copy of the
+    constants, because a second copy would keep working around the wrong threshold
+    with nothing to say so.
+  - **The doze is not `IDLE_EPS`.** That answers a different question (ten seconds
+    of stillness) and is ~1°, a few pixels; it is the raw reading's deviation from
+    its baseline that feeds it, deliberately, because that stage answers "has the
+    phone been moved" and the filtered signal would hide a slow deliberate movement
+    from it. Folding the two together would either make the idle sleep unreachable or
+    make the doze visible.
+  - **A running re-centre glide publishes every sample**, because it is a
+    deliberate visible movement and dozing it would freeze the glide part-way. The
+    wake threshold is at least the doze threshold (equal here, so the step the wake
+    takes is the smallest justifiable one) and a dwell (`DOZE_DWELL_MS`) before
+    dozing is the hysteresis — a filtered movement sitting on the threshold cannot
+    chatter, and a brief pause between movements does not doze. Since the reference
+    is what bounds the frames, the dwell now only delays the `dozing` flag; it no
+    longer costs a single frame of its own.
+  - **A doze that works produces no `splat:` STATS line**, because that line only
+    prints while a splat draws — the instrument disappears exactly when the change
+    takes effect. `TiltController` therefore logs one `tilt:` line a second from the
+    sensor callback: `samples/s`, `publish/s` (the frames the hosts are asked for),
+    the current `move` and `fMove` against `dozeThresh`, and whether the doze or the
+    idle sleep is engaged.
 - **`GLUtils.texImage2D` puts bitmap row 0 at `v=0` (bottom).** The colour
   bitmap is flipped vertically so image-top = `v=1`, matching top-first depth
   sampling. Same for the depth.
@@ -650,10 +1040,12 @@ already cost real time.
   handles both forms; see its test for the restore case.
 - **Gyro:** `TYPE_ROTATION_VECTOR`; re-calibrate on every visibility change
   (average ~8 samples, never a cached reading); time-based exponential smoothing
-  (`tau = 0.2s`) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
+  (`tau = 0.2s`, `TiltFilter.SMOOTHING_TAU`, so the doze gate and the draw step one
+  filter) so the feel is identical at 60/90/120 Hz. After 10 s of stillness
   it unregisters the rotation-vector sensor and falls back to a low-power
-  accelerometer until a shake — **that idle-sleep is the app's real battery win**,
-  not anything in the draw path.
+  accelerometer until a shake — that idle-sleep is the **sensor-side** win; the
+  draw-path win is the doze above, which parks the frames without giving up the
+  sensor.
 - **Sensor power, and what is deliberately *not* done to it.** Three rules, each
   of which cost something to learn:
   - **The idle accelerometer is the only thing still polling once the phone is put
@@ -747,36 +1139,46 @@ already cost real time.
   rebuild, the cheap write has become a `reloadFromPrefs` (which is also an
   `AppState.load`, and also 113 ms) and that is the bug to look for.
 
-- **A `Dialog` cannot have a backdrop blur. Stop trying, and stop tuning the fill instead.**
-  Measured on a Pixel 7 Pro with a modal open: `dumpsys SurfaceFlinger` prints **zero**
-  `blurRadius` entries device-wide, while `disableBackgroundBlur=false` and
-  `RenderEngine chosen blur algorithm: KawaseDualFilterV2` are both set. The window asks
-  for a 25dp blur — `blurSupported()` is true and `setBackgroundBlurRadius` is called — and
-  the compositor produces no region for it. AOSP composites that region only for a
-  translucent, **floating** window, and a `Dialog` is `ty=BASE_APPLICATION`; a floating
-  window means `TYPE_APPLICATION_OVERLAY` and therefore `SYSTEM_ALERT_WINDOW`, a permission
-  a wallpaper studio should not hold for a sheet background. **It is not the radius, not the
-  fill, and not the size**, which is what makes this worth writing down: three separate
-  passes lowered the pill's opacity and then made the window 4px smaller (which `setContentView`'s
-  `MATCH_PARENT` params silently undid), each on the theory that the blur was *nearly*
-  working. What a view in one window can have is **painted** glass — transparency, a
-  gradient, a lit rim — and that is a mimic, not the effect: it cannot sample what is
-  behind it. **And a spike has now closed the last door**, because three passes were spent
-  reasoning about this instead of testing it: the studio sheet was moved into its own
-  `Dialog` window, made translucent, and made **floating** by sizing its content to the
-  display minus 8 pixels — every condition the AOSP rule names, held at once. The sheet
-  rendered perfectly in that window (all controls present in the accessibility tree), the
-  request went through (`isCrossWindowBlurEnabled()` true, `setBackgroundBlurRadius(25dp)`
-  called), and `dumpsys SurfaceFlinger` still reported **zero `blurRadius` regions
-  device-wide**. So the gate is the window TYPE — `BASE_APPLICATION` cannot be made to
-  blur by any sizing, fill or radius — and `TYPE_APPLICATION_OVERLAY` with
-  `SYSTEM_ALERT_WINDOW` is the only remaining route. The spike was reverted; it proved the
-  point and would have cost the sheet its place in `root`, which the morph, the strip and
-  the panel's layout all assume. **Two traps in the sizing, for anyone who repeats it:**
-  `setContentView(..., MATCH_PARENT, MATCH_PARENT)` overrides `setLayout` on the window, so
-  the window still requested the full display and was never floating; and a spike that
-  renders is not a spike that is *correct* — this one left the sheet outside `root` where
-  every layout calculation expects it, which looks fine and is not.
+- **A `Dialog` CAN have a backdrop blur. The gate is the THEME, not the window type —
+  and this file recorded the opposite, measured, which is how a capability came to look
+  like a platform limitation.** The wrong finding: with a modal open,
+  `dumpsys SurfaceFlinger` printed zero `blurRadius` entries device-wide while
+  `blurSupported()` was true and `setBackgroundBlurRadius(25dp)` was called, so the
+  conclusion was that AOSP composites a background blur only for a translucent,
+  *floating* window, that a `Dialog` is `ty=BASE_APPLICATION`, and that the only route was
+  `TYPE_APPLICATION_OVERLAY` with `SYSTEM_ALERT_WINDOW`. **Every measurement was real and
+  the inference was wrong.** The framework line is `DecorView.updateBackgroundBlurRadius`:
+
+      mBackgroundBlurRadius = mCrossWindowBlurEnabled && mWindow.isTranslucent()
+              ? mOriginalBackgroundBlurRadius : 0;
+
+  and `PhoneWindow.isTranslucent()` is nothing but the cached `android:windowIsTranslucent`
+  THEME attribute (`generateLayout`: `mIsTranslucent = a.getBoolean(
+  R.styleable.Window_windowIsTranslucent, false)`). `ModalSheet` built its dialog from
+  `Theme_DeviceDefault_NoActionBar`, an opaque *activity* theme, so `isTranslucent()`
+  answered false and the radius we set was forced to 0 before it reached SurfaceFlinger —
+  a call that landed and logged `blur=true`, which is exactly why it read as a capability
+  failure. `setFormat(PixelFormat.TRANSLUCENT)` sets the SURFACE format and does not answer
+  that question; that was the trap. The window is now built from `R.style.ModalWindow`
+  (`android/app/src/main/res/values/themes.xml`), which sets `windowIsTranslucent` and a
+  transparent `windowBackground` — DecorView layers the blur *under* the window background
+  (`LayerDrawable([blur, mOriginalBackgroundDrawable])`), so an opaque one paints over the
+  blur it just asked for. AOSP's own "Window blurs" page implements the effect on an
+  **activity** with a translucent theme and names dialogs and bottom sheets as intended
+  hosts, so the host was never the question. Verified on the Pixel 7 Pro: with the modal
+  open the filmstrip behind it composites as soft blobs, not sharp tiles. **And the
+  `dumpsys SurfaceFlinger` check cannot confirm this** — sdk 37 prints no per-layer blur
+  field at all, so "zero regions" was evidence of nothing; the confirmation is the screen.
+  **`windowIsFloating` is deliberately not set**: it only decides whether a blur is clipped
+  to the window's bounds or drawn fullscreen, and this window is fullscreen (MATCH_PARENT,
+  and the scrim fills it), so fullscreen is what we want.
+  **What survives from the wrong hunt:** `setContentView(..., MATCH_PARENT, MATCH_PARENT)`
+  overrides `setLayout` on the window, so a "make it float" spike that sized the content did
+  not size the window; a spike that renders is not a spike that is *correct* (one left the
+  sheet outside `root`, where the morph, the strip and the panel's layout all assume it, and
+  looked fine); and a view in one window can only have **painted** glass, which is a mimic,
+  not the effect. The studio sheet still cannot blur — it is a sibling view beside the
+  `GLSurfaceView` in the same window — so that part was never in question.
 - **`setStroke` on a `GradientDrawable` clears the fill.** AOSP writes
   `setColor(TRANSPARENT)` and installs a new stroke paint, so a stroke change after a fill
   silently leaves no fill at all — which reads as a *design choice* rather than as a bug,
@@ -798,7 +1200,31 @@ already cost real time.
 - The container bakes its own debug keystore. Without it AGP mints a fresh key
   in ephemeral storage every build, every APK gets a different signature, and
   `adb install -r` always fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —
-  whose only recovery is an uninstall, which wipes the user's settings.
+  whose only recovery is an uninstall, which wipes the user's settings. (The
+  repo's `keystore.properties` points release signing at that same throwaway
+  `android/debug.keystore`, which is why a release build installs over a debug
+  one with `-r`.)
+- **An APK that is *installed* is always `build-release`, and the install is
+  followed by the AOT compile — never the debug APK, and never an install on its
+  own.** This ROM has `dalvik.vm.usejit=false` and ART refuses to AOT a
+  **debuggable** app, so a debug install reports `arm64: [status=verify]` and runs
+  interpreter-only. Measured on a Pixel 7 Pro, same 299,008-splat cloud and
+  settings, debug/`verify` against release/`speed`: **fps 1.25 vs 50.1, `frameMs`
+  802 vs 19.95, `sortMs` 326 vs 5.55 ms** — with the GPU identical in both
+  (`gpuMs` 28–85). Every Java `O(N)` loop is 30–100× slower interpreted, and the
+  dominant CPU cost here — the depth sort — is memory-bound, which is why it is
+  catastrophic rather than merely slow, not the 1.5–2× a release-without-AOT
+  comparison shows. And the AOT step is run explicitly rather than assumed: an
+  `adb install -r` **does** invalidate whatever odex was there (measured here, a
+  non-debuggable APK lands at `arm64: [status=speed] [reason=install]`, i.e. this
+  ROM's install-time filter does a full compile) — but the install-time filter is
+  a ROM policy, not a guarantee, it can be a lighter filter or a deferred
+  background dexopt, and a debuggable app gets none at all. So `podman-build.sh install`
+  runs `cmd package compile -m speed -f` for `com.amoshydra.basrelief`
+  anyway and reports the resulting dexopt status; the debug APK is the explicit
+  `install-debug`, for behaviour only. Finally, an install does not swap code
+  under a running process — reopen the studio or re-select the wallpaper, and use
+  `am kill`, never `am force-stop`, which reverts the live wallpaper.
 
 ### Termux notes (host-side, not a build path)
 
@@ -814,7 +1240,7 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 563 tests across thirty-one classes:
+it**. 747 tests across forty-one classes:
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -838,6 +1264,20 @@ restore. One shader checker would have caught it before the install; the file's 
 rule is that anything that can invalidate a device test has to be checkable without
 one.
 
+The same hole exists one language over, for **`JSONObject.put(String, float)`**.
+`:core` compiles against Maven's org.json (`compileOnly 'org.json:json:20231013'`),
+which HAS that overload; Android's platform org.json does NOT. A bare float
+therefore links, passes `:core:test` — which runs on the JVM, against the very
+org.json that has the method — and passes `build-apk`, which compiles, and then
+throws `NoSuchMethodError` at runtime. It shipped: `LibraryItem.toJson` wrote
+`focal` and `splat_lens` as floats, the throw was on the `index-writer` thread, and
+every library write took the app down, so any gallery tap crashed it.
+`scripts/check-json-puts.mjs` closes it, and the rule it enforces is one cast:
+**every float a `toJson` stores goes through `(double)`**, which resolves to
+`put(String, double)` on both platforms. The APK's own DEX is the proof — `dexdump
+-d` over the built dex lists `put(String, Object/int/double/boolean/long)` and no
+`(String, float)` at all, so the check is of the artifact and not of the source.
+
 - `ReliefMeshGoldenTest` — exact vertex positions and normals for a fixed depth
   map. Mutation-checked: re-quantising the blur, halving its radius, flipping
   the v convention and dropping a face normal each fail it. It also pins
@@ -859,7 +1299,178 @@ one.
   **level ladder**: every level must be a real index, the grids must not go
   backwards, and anything that is not a level — a negative, an index past the end,
   a value a newer build wrote — answers the default, because that default is the
-  look the mode shipped with and an upgrade must not move it.
+  look the mode shipped with and an upgrade must not move it. Its fifth is the
+  **floor's unit**, which is now the whole of it: `eps2d` is a fraction of the
+  cell a splat stands for (`viewportArea / count`, magnified by the zoom), not
+  a number of pixels, because the gap it closes is the cell and a pixel is a unit
+  the cell does not use: the same setting is a different effect at every resolution
+  and every zoom, and the knob's maximum was below what the phone needed. Measured
+  on one cloud's smooth sky (high-frequency energy against the photograph's own):
+  6 px reached 0.67x at the cloud's 912x1984 frame while the 1440x3120 the phone
+  draws it into needed 15 px — and 8, the old ceiling, still left 2.1x. Both are
+  0.5 of the cell, which is what makes one default correct for both. So the test
+  asserts the *invariance* and not either pixel value: the floor over the cell is
+  the same number at both resolutions, the phone's is the cloud's scaled by the
+  square of the resolution ratio, and the zoom enters squared because it magnifies
+  both axes. **The bottom of the range is the identity, and a test walks it**:
+  `theBottomOfTheRangeIsNoFloor` pins `EPS_2D_MIN == 0`, that `eps2dFor(0, …)` is 0
+  at a sparse AND a dense count and both ends of the zoom clamp — so the picture is
+  purely the cloud's density there — and that the default 0.5 still lifts, so the two
+  ends of the range are two looks rather than a value and its guard. There is no
+  second, target-area term, and **the test that pins the
+  property the deleted minimum made false** is
+  `theSizeKnobMovesTheFloorAboveTheOldCrossover`: above the count where that
+  constant's ratio exceeded 1 (301,568 splats) the floor used to be the cell, with
+  `0.8 × cell < cell`, so the knob could not move it at all — and the test walks
+  403,456 and 1,046,528 asserting the floor is exactly `fraction × cell`, below the
+  cell, and moves with the knob. The rest keep what still means something: the floor
+  is **monotone in count and in zoom** with no step anywhere in the count (the old
+  crossover included), and a cell that cannot be claimed (no splats, no viewport, a
+  NaN fraction) answers 0, which is the identity for a floor — the "a window claims
+  nothing" rule applied to a number, where a guess would be a floor derived from a
+  count of nothing. Its
+  sixth is a cloud's **identity**, which is the path AND the bytes behind it and not
+  the path alone: a rebuild writes the *same* filename, so a path-only identity
+  answers "already showing it", the request is dropped, and the new cloud never
+  reaches the screen — reported as a rebuild that sometimes appears to do nothing
+  while the file on disk had gone from 4.8 MB to 23 MB. The byte count is a
+  sufficient stamp because the node is deterministic (its own tests pin
+  byte-identical output for the same budget and inputs), and a count that cannot be
+  read is 0, so an absent file cannot collide with a loaded one. Its seventh is the
+  **shape knob** the sheet's splat group gained after the look knobs. The DEPTH
+  multiplier is pinned as the identity at 1 for every depth and as the flat
+  photograph at 0 (every splat on the reference plane, the moved depth equal to the
+  reference for every z). **It is a Z-ONLY displacement and the at-rest picture
+  therefore DOES move with the knob** -- `depthScale` returns the moved depth over
+  the original, the shader applies it to `spPos.z` alone (x and y stay in their
+  image position), and the pivot resolves on the same moved depth so the crosshair
+  and the tap name the surface the shader draws. That is the deliberate change from
+  the ray-preserving form (which scaled the whole vector about the reference and
+  left the picture put at every value): it makes Splat's Depth read like Relief's,
+  whose intensity also changes the at-rest surface. The cost is that Pan Z is what
+  gives the picture room when the near splats are pushed toward the eye. A NaN is
+  the default, not a bound, and a depth or plane that claims nothing is the identity.
+- `SplatProjectionTest` / `SplatCloudTest` — the real Gaussian splat's reader and
+  projector, the two things a shader cannot be checked for off-device. The
+  container test pins the 32-byte record field for field, including that the
+  colour and quaternion bytes ARE the little-endian words at offsets 24 and 28
+  (the record IS the two `RGBA32UI` texels the renderer uploads — **integer
+  texels, and that is load-bearing**: four uint8 packed into a float32 is a NaN
+  for every bright colour, alpha and blue both at or above 128, and a NaN's
+  payload does not survive `floatBitsToUint` on Mali — it answers a canonical
+  NaN, so those splats drew as flat white. Measured: the sky went grey and
+  speckled, sat 0.14 against the faithful render's 3.72, while the tan sand
+  beside it — blue below 128, not a NaN — stayed pixel-perfect. The container
+  test pins that condition too, so the reason the texture cannot be a float one
+  is asserted rather than remembered), and that a partial trailing record is
+  dropped rather than read past. It also carries the near-plane pull-back's reach,
+  `maxSizeOverDepth` — the cloud's largest 3D axis over the depth of the splat that
+  carries it — because the vertex shader's clamp is
+  `depth < minViewDistancePerSize(proj5, …) * size` and everything in it but the
+  projection is a property of the cloud, so the device log's `pullbackAspect=` can
+  say whether the clamp engages without a pass over the GPU's data. A splat at or
+  behind the camera cannot claim an aspect, so an empty or wholly-behind cloud
+  reports no pull-back rather than a division's answer.
+  The projection test pins the chain the plan states — `Sigma3D = R S S^T R^T`,
+  `SigmaV = V Sigma3D V^T`, the perspective Jacobian, `Sigma2D = J SigmaV J^T`,
+  the conic, the eigen extents — and above all the relation that makes the quad's
+  edge the Gaussian's edge: at the 3-sigma extent the exponent is exactly `-4.5`
+  on BOTH principal axes, whatever the covariance, and `exp` of it is
+  `exp(-4.5)`. A chain that put the extent at two sigma, or dropped the half,
+  would still draw a plausible ellipse; this is what a screenshot cannot tell.
+  Its second trap is the degenerate covariance: zero, rank-one and zero-area 2x2s
+  are refused (both `conic` and `extents` return false and zero their output)
+  rather than inverted to infinities that poison every vertex reading the conic.
+  The spherical-splat invariance is the transpose check — an isotropic
+  covariance cannot change under a view rotation, so a transposed `V` passes on
+  an elongated splat and fails here.
+- `SplatCameraTest` — the splat cloud's camera, which used to exist only inside
+  `SplatRenderer` and so could only be judged by eye on a device. It pins the
+  same at-rest invariant `CameraModelTest` pins for the relief, one medium over:
+  **at rest, at the default Depth, the picture is exactly the photograph, translated
+  by Pan alone — Origin names the orbit centre and does not move the picture — at
+  every origin and every pivot depth** — asserted as a projection through the
+  real `Mat4` chain, never a restatement of the maths. The splat's version of
+  "the eye does not move with the pivot" is that two clouds resolving very
+  different pivots project every probe point identically; the eye is the source
+  eye in both. Its second theme is the turntable: the tilt is a ROTATION about
+  the cloud's own surface under the origin, so the pivot keeps its OWN screen
+  position (its own image position, not the centre) while a point off it swings, the
+  eye keeps its distance to the pivot, and the
+  signs are the relief's (positive tiltX moves the eye right, positive tiltY
+  down in the cloud's y-down frame — a flipped axis is the parallax running the
+  wrong way, which no screenshot at rest shows). Its third is the pivot pick:
+  the FRONTMOST splat under the ray, not the nearest in image space (a background
+  splat can project to the same pixel as the subject), a real splat used when the
+  ray's radius holds none, and the reference-plane point on the ray only when the
+  cloud has nothing in front of the camera — the `DepthSource` "a window claims
+  nothing" rule applied to an orbit centre. Its fourth is the **Depth knob's reach
+  into the pivot**: the pick is made on the surface the SHADER draws — the Z-only
+  displacement `Splat.depthScale` applies to each splat's `z` alone, so the drawn
+  image position is `x / movedZ` — so the pivot and the crosshair follow the knob
+  instead of marking a point the cloud has left, and a splat the knob pushes
+  through the eye (a moved depth of 0) is skipped exactly as the vertex shader's
+  near cull drops it. The companion assertion is only that the pivot MOVES: the
+  at-rest picture changes with the multiplier deliberately (see `SplatTest`'s
+  depth knob), so the projection-identity check went with the ray-preserving scale
+  that made it true. Zoom is a crop of the same camera and
+  Pan is a screen-pixel shift at every depth, both pinned. Its fifth is the **tap**:
+  a tap resolves the origin by RAY-CASTING into the cloud — the image position of
+  the frontmost splat under the ray through the tapped pixel — through the same
+  `SplatCamera.originForRay`/`pivot` pick the orbit uses, so the tap, the pivot, the
+  aim and the crosshair name one point. It pins that the pick is the frontmost splat
+  on the ray and not the nearest in image space, that a ray holding no splat falls
+  back the way the pivot does (the nearest splat, then the reference-plane point on
+  the ray), that a splat the Depth knob pushes through the eye is skipped, that the
+  tap's answer follows the Depth knob as the shader's displacement does (the drawn
+  image position is `x / movedZ`), and above all that **tapping and then resolving
+  is a fixed point**: the origin a tap produces is the image position of the splat
+  the pivot picks for that origin. That is the property the old tap — the tapped SCREEN
+  fraction, which drifted by the drawn Pan shift — broke. Its sixth is the
+  **sort gate**: `SplatCamera.pxPerTilt` is a max over EVERY splat, and the gate is
+  the larger of `SHIPPED_SORT_EPS` and half a pixel over `pxPerTilt` — the derived
+  bound may only ever
+  LOOSEN the gate, never tighten it. That floor is the whole design, not a safety
+  belt: at the device's own Motion the sub-pixel gate is *tighter* than the `1e-3`
+  it would replace, and tightening would sort more with no defect to fix, so the
+  constant is the floor and the derived term is the lever. The tests are the
+  no-regression guarantee (the gate is ≥ `1e-3` at every reachable framing,
+  *including* the Motion sweep — the unfloored first attempt produced 8.9e-4 at
+  Motion 3), that the lever is demonstrably live at the default Motion, that the
+  DERIVED bound is sub-pixel at every framing asserted against `tiltPixels` through
+  the real `frame` chain (the "assert the projection" rule), that the gate is live
+  (it shrinks as the field of view narrows), and that a framing which cannot claim a
+  bound falls back to the CONSTANT rather than to zero. **And its framing key
+  includes Pan, which was checked and is a real trigger, not a conservative
+  inclusion:** `pxPerTilt` counts only the splats VISIBLE under the Pan
+  shift, so panning moves that window and moves the max — measured on
+  `SplatCameraTest`'s cloud at the device's framing, the bound moves ~25% between pan
+  (0, 0) and (400, -400) with the pivot IDENTICAL — so it stays in `SplatRenderer`'s key and
+  `SplatCameraTest`'s `panIsPartOfTheBoundsFramingKey` keeps a "pan is a no-op"
+  simplification from quietly serving a stale bound. (The shift is pan's alone now that
+  Origin no longer moves the picture; the old figure was larger because the origin was
+  in the shift too.) **Motion is the boundary the
+  measurement forgot:** `SurfaceSettings.motionScale` is `motion` divided by 100 and
+  multiplied by 3, so Motion
+  33 (the default) is scale 1.0 and Motion 100 is 3.0, and
+  `docs/SORT-MEASUREMENTS.md`'s `183 px/tilt` is at scale 1 — which is why the
+  device's live bound read as three times wrong. The derived gate beats the constant
+  only below a Motion that depends on the framing (2.66 → Motion ~89 % at the
+  device's, ~1.03 → Motion ~34 % at the worst reachable). Its seventh is the
+  **near-plane pull-back**, and it is the class's second geometry claim rather than a
+  number: `thePullBackKeepsASplatOnItsPixelAndShrinksIt` projects a splat through the
+  real chain before and after the pull-back and holds the screen position to `1e-5`
+  while both 3σ extents fall by exactly the scale — the property that makes the clamp
+  a splat move and not a camera move. `thePullBackKeepsTheSplatUnderTheRadiusClip`
+  sweeps every framing and screen corner (including the frame corner, where the
+  off-axis Jacobian term is largest) and asserts the clamped splat stays under the
+  radius clip's half-frame threshold — **it fails at `MAX_EXTENT_FRACTION = 0.5`
+  (mutation-checked)**, which is what makes 0.1 the number rather than a taste.
+  `aCloudWithNothingNearTheCameraIsUntouched` pins the measured 0.0133 real-cloud
+  aspect against the threshold at three framings, and
+  `theMinimumViewDistanceIsThePinholeRelationAndClaimsNothingElse` pins the mapping
+  (linear in size, inverse in the fraction, scale-invariant, and 0 for anything that
+  cannot claim one).
 - `FramingTest`'s `theBundledDemoIsNotADifferentPictureFromItsOwnNumbers` — the two audit
   findings that made the instant-paint guard absent where it was needed most.
   **`sameAs` compared `bundled` while `ofValues` — which builds every snapshot — hard-codes
@@ -879,18 +1490,26 @@ one.
   with the same values, and without a value comparison the renderer cannot tell "a different
   picture" from "the picture I am gliding towards" — so the second resolve painted the
   destination instantly, 1.2s into a glide, which the user saw as a snap. Every one of the
-  **twelve** fields is compared, and the field count is asserted, because a thirteenth added
+  **eighteen** fields is compared, and the field count is asserted, because a field added
   without teaching `sameAs` about it would make a real frame silently a no-op. The reflection
   that drives it **excludes static fields**, which it had to start doing when the twelfth
   arrived: `SOURCE_STILL`/`SOURCE_VIDEO` are `public static final float`, so counting every
-  float found fourteen and the count could then be "updated" to match whatever the code
-  happened to declare — which is a guard that can no longer fail. That twelfth field is
+  float found more than the instance fields and the count could then be "updated" to match
+  whatever the code happened to declare — which is a guard that can no longer fail. That
+  twelfth field is
   `sourceKind`, and it is **compared where `bundled` is not**, which is the whole reason to
   read the two together: `bundled` says which *row* produced a framing, so two framings of
   the same numbers are the same picture, while the medium says what the *pixels* are, so a
   still and a clip at identical depth, zoom and light are two pictures. It is a float rather
-  than a flag for the same reason `SurfaceSettings.with` takes eleven arguments — a field
-  `ofValues` cannot reproduce is a field the no-op-paint guard cannot see.
+  than a flag for the same reason `SurfaceSettings.with` names every value — a field
+  `ofValues` cannot reproduce is a field the no-op-paint guard cannot see. The fourteenth is
+  `renderMode` (relief or splat cloud), compared for the same reason the medium is: a relief
+  and a cloud at identical numbers are two pictures, so a toggle must paint rather than
+  answer "already showing". It is read from the item, so the two surfaces and the renderer's
+  own snapshot cannot disagree about it. The last four are the splat look — Depth, Size,
+  Blur and Resolution — compared because a cloud at a different look is a different picture;
+  they were global prefs and are per photo and per surface now, so a snapshot must be able
+  to reproduce them or every resolve of a tuned cloud repaints.
   - **`aPreviewRowNamesTheMediumOfItsPixels` — the preview's medium is video, and the
     ROW cannot say so.** An import's preview row is deliberately a photograph (nothing
     half a clip is ever stored), while the pixels on screen are the colour clip's — so
@@ -939,7 +1558,20 @@ one.
     their FIRST prompt, because any of them is a legitimate in-flight run and
     dropping it would strand a finished result -- the exact loss this class exists to
     end. **The node's sidecar (`basrelief_<tag>.progress.json`, fetchable through
-    /view) is the run's own state, and the resume pass asks it first:** photo gone or
+    /view) is a **FIXED filename that any run leaves behind**, so it may not answer for a run
+    it does not belong to -- and it did: the poll asked it FIRST and returned on its
+    first iteration because the PREVIOUS run's sidecar was still there saying `done`,
+    so every build completed instantly with the cloud from the build before it
+    (measured: a 703k build producing an 806k cloud, and a rebuild that looked
+    instantaneous because nothing ever waited; its `failed` was the worse half, since
+    a previous run's failure would have aborted a healthy build with the last one's
+    words). **The run is identified by the PROMPT the app created, and that prompt's
+    own history entry is the only thing that says the run is over** -- it is keyed by
+    exactly the job the app submitted, so it is the one question another run cannot
+    answer, and an absent entry is NOT a verdict, because the server registers the
+    prompt when it starts it and a run queued behind another has none yet. What
+    follows is what the sidecar is still read FOR, as content, once the history has
+    spoken, and the resume reads it only for those -- never to decide, because the history has already decided:** photo gone or
     no colour clip → clear; server unreachable → KEEP (a sleeping laptop is not a
     lost import); sidecar `running` → KEEP and seed the line's count from its
     `done`/`total` (the node is doing the work, and re-submitting here would run it
@@ -1090,15 +1722,20 @@ one.
     decoder that cannot keep up.
     Both decoders of a clip get the same rate for the same reason they get the same
     lead: two rates are two frame indices by construction.
-  - **`Framing` has THIRTEEN float fields and the count is asserted, so a new one
-    cannot be added silently.** `SurfaceSettings.with` takes twelve arguments and
-    `Framing.ofValues` thirteen; every writer and every test call site fails to
+  - **`Framing` has NINETEEN float fields and the count is asserted, so a new one
+    cannot be added silently.** `SurfaceSettings.with` takes seventeen arguments and
+    `Framing.ofValues` nineteen; every writer and every test call site fails to
     compile when a field is added, which is the only mechanical guard there is. The
     writers carry the new field through rather than resetting it -- the `withDepth`
     scar one field over -- and `FramingTest` drives one varied vector per field so a
-    fourteenth cannot be forgotten. `speed` IS compared by `sameAs`, unlike
+    twentieth cannot be forgotten. The nineteenth is `panZ`: Pan Z (camera distance)
+    became per photo and per surface like Pan X/Y, and it is compared for the same
+    reason the splat look is -- a different camera distance is a different picture. `speed` IS compared by `sameAs`, unlike
     `bundled`: a frame at 0.5x is a different picture from the same frame at 1x, and
-    the no-op-paint guard has to see the difference or a speed change snaps.
+    the no-op-paint guard has to see the difference or a speed change snaps. The
+    last four are the splat look (`splatDepth`/`splatEps2d`/`splatBlur`/`splatScale`),
+    compared for the same reason: a cloud at a different Depth, Size, Blur or
+    Resolution is a different picture, so a change to one must paint.
   - **Two shader families, two unit systems, and the uniform that goes to
     location -1 is dropped in silence.** The clip's depth shader works in **0..255**
     (it scales the blurred mean by 255 in-shader) and its range offset is
@@ -1189,13 +1826,45 @@ one.
   from for every thousandth in the reachable range — because "the control displays
   exactly what the gesture will write" holds only while both sides call the same
   function, and two derivations of one value agree until the day one is edited.
+- `RenderStatsTest` — the two lines the studio's on-glass performance readout prints,
+  and above all **what a missing number prints**. The readout is an instrument for
+  tuning splat cost, and the bug it exists to prevent is a zero that looks measured:
+  the relief has no GPU timer and no sort, and a splat window in which the camera did
+  not move runs no sort, so a `sort 0.0ms` the backend never measured is worse than a
+  blank field — it claims the sort is free. The rule is the codebase's own, **a window
+  claims nothing**: a field with no value is OMITTED, and the sentinels are a NaN and a
+  negative count, because `0` is a real count (an empty cloud, asserted) and a real
+  time. Its second theme is the **single derivation** the readout shares with the
+  `splat:` log line: `RenderStats.fps` turns a frame count and an elapsed window into
+  fps in one place, so the log and the readout cannot report two frame rates for one
+  window, and `WINDOW_NANOS` is one constant so they cannot average two spans either.
+  The formatting is pinned because a screenshot cannot check it: the headline is one
+  decimal and blanks to an em dash, the count compacts to `741k`/`1.1M` so the render
+  size stays on the line, and a relief prints `frame 16.7ms` and nothing else.
+- `TiltFilterTest` — the tilt smoother, which two callers step at two different
+  sample rates: `ReliefRenderer` once per drawn frame, `TiltController`'s doze gate
+  once per sensor sample. It pins the rule (the exponential below `ATTACK_ERROR`,
+  the blend into it, a snap at and above it, no overshoot, monotone and symmetric
+  in the error) and, above all, **the property that lets one function serve both
+  rates**: the gap is a TIME CONSTANT, so two half-steps land where one whole step
+  does — a fraction hard-coded per frame would pass on the renderer and make the
+  gate drift with the sensor rate. It also pins the clamp: a gap past `MAX_DT`
+  (which is *below* tau) takes one capped step rather than becoming a snap, and a
+  gap that cannot claim a number (NaN, negative, infinite) takes no step at all —
+  the "a window claims nothing" rule applied to a step. The *mirror* itself is not
+  a unit test's to hold, because both call sites are in `:app` and no `:core` test
+  can see them: `scripts/check-parity.mjs` fails if either caller derives a
+  smoothing step of its own or declares a copy of the constants.
 - `CameraModelTest` — tap → unproject → project round-trip, plus "every Depth
   step is live at every zoom" and "Depth 0% is flat at every zoom". Its third
-  theme is the pivot at depth: the at-rest picture is unchanged for every origin
-  and every pivot height (the eye sits directly above the pivot, so the view
-  matrix is the plane's own), the pivot holds the centre under tilt while the
+  theme is the pivot at depth: **the at-rest picture is unchanged for every origin
+  and every pivot height** — the turntable's rest eye is fixed, so the view is the
+  photograph whatever the origin and whatever the
+  pivot (`originDoesNotMoveTheAtRestPicture` walks 5 origins x 3 heights x 3 depths x
+  3 zooms through the real `frame` chain) — the pivot keeps its OWN position under
+  tilt while the
   plane behind it swings, the pivot's world z is `h * scale * zScale`, and the
-  Origin tracking identity survives a pivot height because it is measured at
+  Origin travel identity survives a pivot height because it is measured at
   rest.
 - `PrefFilesTest` — the restore case, which silently costs users their image.
 - `PrefFilesContentTest` — that two files are the same image, which is what stops
@@ -1276,10 +1945,13 @@ one.
   exists for: a record that does not survive the round trip is the loss this
   class was written to end, a blob that throws on read is worse than a lost
   record because it is read on the path to drawing, and a record naming a photo
-  that is gone must not be resurrected. **v4 is one prompt again**, and the
-  tests pin the record's key set as exactly item/host/started/prompt/error — a
-  `done` or `frames` field written back would be a second, staler answer to the
-  question the node's sidecar answers. The migrations are the older half: a v1
+  that is gone must not be resurrected. **v4 is one prompt again, and v5 adds the
+  `Kind`** (clip or splat), so the
+  tests pin the record's key set as exactly item/host/started/prompt/error for a
+  clip job — a `done` or `frames` field written back would be a second, staler answer to the
+  question the node's sidecar answers — and pin that a SPLAT job writes its kind
+  while a clip job stays byte-identical to one written before the field existed
+  (absent is a clip import). The migrations are the older half: a v1
   prompt and a v2/v3 chunk list both MIGRATE rather than being dropped (the
   first prompt is the handle the old run answers to, and dropping the record
   would strand a finished server result), and a v3 failure message survives, so
@@ -1321,12 +1993,20 @@ one.
   pan is in **pixels** and must not be clamped to origin's fraction range (delta
   exactly 0, so a partial clamp cannot hide), and the bundled item is the one entry
   with no file on disk, so a cleanup pass or a parse must not drop it — it cannot
-  be recreated from filesDir. Two more it earns: the v2 → v3 migration must copy
+  be recreated from filesDir. More it earns: the v2 → v3 migration must copy
   the old **global** Motion onto every item, because the library blob has no copy of
-  it and dropping it silently resets everyone's wallpaper speed on upgrade; and a
-  single-field edit must not reset the values it does not name, which shipped broken
-  once — `withDepth` reset Motion, brightness and shadow, because the values it did
-  not pass had been added after it was written.
+  it and dropping it silently resets everyone's wallpaper speed on upgrade; the v4 →
+  v5 migration must copy the four **global** splat-look prefs onto every item's home
+  surface for the same reason, and it is asserted **idempotent by the data** with the
+  version forced back to 4 so the second parse actually exercises the step rather
+  than skipping it — the weak version re-parses `toJson()`, which is already v5 and
+  proves nothing; a default value must write **no key**, so an untouched library's
+  items stay byte-identical; the four look values round-trip and clamp to their
+  useful band, **including a SIZE of 0, which must not be clamped up to the old
+  0.45 floor**; and a single-field edit must not reset the values it does not name,
+  which shipped broken once — `withDepth` reset Motion, brightness and shadow,
+  because the values it did not pass had been added after it was written, and the
+  four splat rows are exactly that shape of value one version later.
 - `SurfaceResolverTest` — which surface an engine is drawing, and the **three**
   questions it takes to answer that: the engine's own surface, whether the lock
   screen composites it, and what the lock screen can be at all. They are three
@@ -1508,7 +2188,14 @@ one.
   `blendColour` (the sheet's own glass to the original pill's plate, both
   recovered from `227a53f^`) are here too, and the capsule is the *same* radius
   function asked with `0` as its open radius rather than a second rule that could
-  drift from the first. Their shared trap is **no step in the last 1% of travel**,
+  drift from the first. And the eight-value array that writes them is a function
+  too, `SheetMorph.cornerRadii`, because the order — **TL, TR, BR, BL** — is a
+  separate defect from the radius's value and was reported as one: *the right side's rounding was wrong*, with the outline's top-right corner square while its
+  top-left was rounded. Hand-written at the call site the array was
+  `{top, top, bottom, bottom, bottom, bottom, top, top}`, which reads as four
+  correct pairs in the wrong order and puts the bottom radius on the top-right
+  corner. A screenshot at rest cannot tell a wrong radius from a wrong slot; reading
+  the array back corner by corner can. Their shared trap is **no step in the last 1% of travel**,
   swept at a hundredth of a percent because a snap there is invisible in any
   screenshot taken at rest and obvious in the hand. Two of the assertions here are
   written as *signed* checks per channel for a reason worth keeping: the alpha
@@ -1569,6 +2256,78 @@ one.
   there. The kind enumeration iterates `Kind.values()` rather than a hand-written
   answer list, because a hand-written list is exactly the guard that goes stale: a
   fifth kind could arrive and the old test would keep passing.
+- `SplatSourceTest` — the fourth "where did this come from" vocabulary: a row's
+  Gaussian splat cloud, beside `DepthSource`/`NormalSource`/`VideoSource`. The trap
+  is the one its three siblings carry, and it is why the class has three kinds
+  rather than two: **a window claims nothing.** The index says a row *names* a
+  cloud; whether the bytes are here is a file read, so answering `NONE` during that
+  window would put "no cloud yet — make one?" over a row that already has one — the
+  confident wrong answer `DepthSource` was written to remove, with a different noun.
+  It pins that a row with no cloud is answered from the index alone (so no still
+  flickers through the window on selection), that `FILE` requires the file to be
+  here, that only `NONE` may say "no cloud", and that every kind is reachable
+  through `Kind.values()` rather than a hand-written list that would go stale.
+- `Scene3DTest` — "is there any 3D here", combined from the two sources that can
+  supply it. It exists because the fix line asked `DepthSource` alone, so a row with
+  a splat cloud and no depth map read **"No depth"** while the renderer drew a cloud
+  in three dimensions — the reported bug, and the same lie `DepthSource` was written
+  to remove one medium over. The rule the user stated is the whole class: **as long
+  as a relief or a splat is present the no-depth affordance must not appear at all**,
+  and only a row with neither may say anything, in the words "no 3D". It is a
+  combining function rather than a fifth vocabulary: it asks neither source's
+  question again and invents no facts, so there is one place that decides what "has
+  3D" means. The trap is the one both inputs carry — **a window claims nothing** —
+  and it is why there are three kinds rather than two: an unread PNG chunk and an
+  unread cloud file are both "not known yet", so a row in either window is never told
+  it has no 3D. The second rule is the one a naive OR would get wrong: a **known
+  positive beats the other source's window**, because a row that already has a map
+  has 3D whether or not its cloud has been stat'd, and answering `UNKNOWN` there
+  would blank a line about a picture already on screen. Every kind is reachable
+  through `Kind.values()`, and only `NONE` may say "no 3D".
+- `BuildTabTest` — the one 3D-build dialog's two tabs, and the two rules a screen
+  cannot be trusted to keep: **the tab a build runs on is the mode it writes**
+  (`defaultFor`/`modeFor` are inverses, so opening a row and pressing the visible
+  button cannot silently flip how it draws — the "two answers to one question"
+  failure one level down), and **a tab offers an action it can actually perform**.
+  The traps are the state rankings: a run in flight offers `NONE` whatever the row
+  otherwise holds (a second build over the first), a failure outranks the asset it
+  left behind (the cloud from yesterday is not the thing to act on), and a depth
+  this dialog cannot replace — an embedded chunk, a clip's track — is `BUILT` with
+  no action, which is where `DepthSource.canReplace()` is read rather than
+  re-decided. Both resolvers rank the run the same way, asserted, so the two tabs
+  cannot grow two meanings of `FAILED`.
+- `AssetActionsTest` — the **secondary** gate on the sheet's asset row: the actions
+  that are not the mode's build. The user's report is the whole reason the two
+  duplicated rows became one: *the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
+    regenerate/replace, and the two were expected to be combined* This class reads `BuildTab`'s own two
+  answers rather than a second copy of its ranking, so "a run in flight offers
+  nothing" and "a failure outranks the asset it left behind" hold here exactly as in
+  the tabs. The traps are the gates: **Delete** belongs to a cloud that is here and
+  to no run that owns the row; **Replace** belongs to a still depth **file** and
+  **Choose a map** to a row that has none, gated on `reportsNoDepth()` so the UNREAD
+  window — also `State.NONE`, and whose `canReplace()` is false — claims nothing
+  rather than offering a map for a photo that may already have one; an embedded map
+  offers neither. The third case is the one no tab can cover: a **clip's track** is
+  `BUILT` with no action in the dialog's Relief tab (`canReplace()` is false), so its
+  regeneration — which runs the whole video graph — has no tab to live in and is
+  offered here instead, gated on the clip's own job rather than the still run the
+  relief answer ranks. Dropping it would strand a whole feature.
+- `AssetRowTest` — the row itself: the **selected mode's** state and its **primary**
+  action, beside `AssetActions`' secondaries. It is what the earlier consolidation got
+  wrong, and the user found it: *the splat regeneration action and the splat count had gone missing* — the state and the primary had been moved into the dialog's
+  tabs, which did not deduplicate them, it **hid** them. The traps: **only the
+  selected mode's row exists**, so the same facts resolve to a depth row under Relief
+  and a cloud row under Splat and a cloud's Delete cannot appear on a relief row; the
+  **primary is `BuildTab`'s own action**, walked over every tab state, so a run in
+  flight offers no button in either mode; the **order** is the design's — Relief leads
+  with the asset action (Replace / Choose a map) and trails with the build, Splat
+  leads with the build and trails with Delete; and the one **asymmetry** is a
+  decision: a Splat row carries its run (the phase, the server's words) because a
+  cloud build has no fix line, while a Relief row states its asset whatever the run is
+  doing, because the fix line is the depth run's signal and a second copy would be
+  staler. `isNone()` hides a row with no state and no button — the unread window —
+  but a state sentence with no button keeps it, which is how an embedded map says why
+  there is nothing to build.
 - `VideoTracksTest` — the clip's three files, and the invariant that makes them one
   thing. §2 says *"never store one without the other"* — colour without depth renders
   **flat, with no relief and no error** — and three loose `String`s could each be null
@@ -1617,7 +2376,9 @@ one.
 
 The counts above are enforced by `scripts/check-parity.mjs`, so adding a test
 class without updating this list fails the build instead of quietly making the
-file wrong.
+file wrong. That script also holds the two claims no JVM test can see: the paths
+this file names exist, and the tilt smoother has one home (no `:app` caller may
+derive its own smoothing step or declare its own copy of the constants).
 
 If `meshMatchesGoldenOutput` goes red, **read the diff and decide whether the
 geometry change was intended** before regenerating. `RegenerateGoldens` is a

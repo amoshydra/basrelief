@@ -2,9 +2,9 @@ package com.amoshydra.basrelief.core.render;
 
 /**
  * The camera model: how the relief plane is scaled to the viewport, where the
- * camera sits as a function of tilt/orbit, how the pivot's surface depth aims
- * the camera at the subject under the origin, and how a screen tap unprojects
- * back to a new orbit centre.
+ * camera sits as a function of tilt/orbit, how the pivot's surface depth is the
+ * centre the tilt turns about, and how a screen tap unprojects back to a new
+ * orbit centre.
  *
  * <p>Extracted from {@code ReliefRenderer} (which used android.opengl.Matrix and
  * could only be exercised on a device) so it is plain JVM code with no Android
@@ -25,6 +25,42 @@ public final class CameraModel {
     public static final float NEAR = 0.1f;
     public static final float FAR = 10f;
 
+    /**
+     * The largest screen displacement, in pixels, the tilt doze may allow.
+     *
+     * <p>Half a pixel: a movement smaller than this cannot carry a feature's edge
+     * from one pixel to the next, so freezing the picture at the last published
+     * tilt and resuming later is invisible. It is a bound rather than a taste, and
+     * {@link #tiltPixels} is what makes it checkable.
+     */
+    public static final float DOZE_SUBPIXEL_PX = 0.5f;
+
+    /**
+     * The tilt magnitude the doze treats as "still": below it, {@code
+     * TiltController} stops publishing tilt, so the hosts stop calling
+     * {@code requestRender()} and the GPU idles while the gyro keeps running.
+     *
+     * <p><b>Derived, not picked.</b> It is {@link #DOZE_SUBPIXEL_PX} divided by the
+     * largest per-unit-tilt displacement {@link #tiltPixels} reports over the
+     * reachable framings: measured with that method at <b>766.1 px</b> (Zoom 200%,
+     * Depth 100%, the pivot at its extreme, on a 1440x3120 surface), so {@code 0.5 /
+     * 766.1 = 6.53e-4}, rounded down to <b>6.0e-4</b> for margin. The test
+     * {@code theDozeThresholdStaysUnderASubPixelAtEveryFraming} holds it under the
+     * bound at every reachable zoom, depth and pivot, which is the guard that a
+     * later edit to {@link #TILT_RANGE} or {@link #FOV_DEG} cannot silently make the
+     * doze visible.
+     *
+     * <p><b>What it is deliberately not.</b> It is not {@code TiltController}'s
+     * {@code IDLE_EPS}, which answers a different question — ten seconds of
+     * stillness — and is about a degree, a few pixels. Folding the two together
+     * would either make the idle sleep unreachable or make the doze visible.
+     *
+     * <p>The Motion setting scales the camera's travel, and therefore this
+     * displacement, linearly; the bound is stated at Motion 1, the tilt range's own
+     * unit.
+     */
+    public static final float DOZE_EPS = 6.0e-4f;
+
     /** Everything the renderer needs for one draw, computed in a single pass. */
     public static final class Frame {
         /** {@code projPanned * view * S(scale, scale, scale * zScale)} */
@@ -34,10 +70,12 @@ public final class CameraModel {
         public float eyeX, eyeY, eyeZ;
         /**
          * The pivot's world position: the surface point under the origin, which
-         * is what the camera aims at. The eye sits directly above it in z at the
-         * fixed camera distance (at rest), so {@code pivotX}/{@code pivotY} are
-         * also the reference eye's x/y and the splat cards are placed from
-         * {@code (pivotX, pivotY, CAM_DIST)}.
+         * is the point the tilt turns the camera about — the orbit centre. The
+         * camera no longer aims at it: at rest the eye is the fixed rest eye (the
+         * image centre), so the pivot projects to its own image position on
+         * screen and the crosshair is drawn there. A rotation about the pivot
+         * leaves the pivot's screen position unchanged, so the subject under the
+         * origin holds while the background swings.
          */
         public float pivotX, pivotY, pivotZ;
         public float zScale;
@@ -55,6 +93,7 @@ public final class CameraModel {
      * same quantity the vertex shader displaces by. 0 is the plane.
      */
     private float pivotHeight;
+    private float camDistScale = 1f;
 
     private final Frame frame = new Frame();
     private final float[] proj = new float[16];
@@ -92,32 +131,39 @@ public final class CameraModel {
      * The surface height under the origin, in model units (the depth field's
      * {@code v/255 - 0.5}, so in {@code [-0.5, 0.5]}).
      *
-     * <p><b>Why the camera wants it.</b> {@link #frame} aims at the pivot: with
-     * the height at 0 that aim point is on the reference plane, so a tilt holds
-     * the PLANE fixed and everything nearer swings -- the user's it orbited around the background. With the field's height under the origin, the aim
-     * point is the SURFACE under the origin, so the subject holds and the
-     * background swings.
+     * <p><b>Why the camera wants it.</b> {@link #frame} places the pivot — the
+     * orbit centre — at this height, so a tilt turns the camera about the SURFACE
+     * under the origin rather than about the plane behind it: the user's it orbited around the background becomes "it orbits around the subject". With
+     * the height at 0 the pivot is on the reference plane and the plane point
+     * under the origin holds instead.
      *
-     * <p><b>What it must not change.</b> The at-rest picture. The eye keeps the
-     * fixed camera distance and the pivot's own x/y, so it sits directly above
-     * the pivot at any height; {@code lookAt}'s direction is then still straight
-     * down and the view matrix is exactly the plane point's own. That is the
-     * whole reason this construction needs no model-scale compensation, and it
-     * is what keeps "at rest the picture is exactly the photograph" true for
-     * every origin and every pivot height.
+     * <p><b>What it must not change.</b> The at-rest picture. The eye is the
+     * fixed rest eye at every pivot height and the origin does not move it, so
+     * the at-rest view is the photograph whatever the pivot is. That is the whole
+     * reason this construction needs no model-scale compensation, and it is what
+     * keeps "at rest the picture is exactly the photograph, translated by Pan
+     * only" true for every origin and every pivot height.
      *
      * <p>The value is clamped to the model's own depth axis ({@code [-0.5, 0.5]},
      * which {@code ReliefMesh} defines), and a non-finite value is the plane,
      * because a window claims nothing. The clamp is also what guarantees the
-     * pivot stays in front of the camera: the model's own depth limit
+     * pivot stays in front of the rest eye: the model's own depth limit
      * ({@link #maxZScale}) is {@code 0.9 * CAM_DIST / scale}, so a pivot at the
-     * extreme is {@code 0.45 * CAM_DIST} at most and the eye can never end up
-     * behind its own aim point.
+     * extreme is {@code 0.45 * CAM_DIST} at most and the rest eye can never end
+     * up behind its own orbit centre.
      */
     public void setPivotHeight(float pivotHeight) {
         if (!Float.isFinite(pivotHeight)) pivotHeight = 0f;
         this.pivotHeight = Math.max(-0.5f, Math.min(0.5f, pivotHeight));
     }
+    /** Camera-distance (dolly) scale; >1 pulls the eye back. */
+    public void setCamDistScale(float v) {
+        if (!Float.isFinite(v)) v = 1f;
+        if (v < 0.5f) v = 0.5f;
+        if (v > 5f) v = 5f;
+        camDistScale = v;
+    }
+
 
     public float getAspect() {
         return aspect;
@@ -132,38 +178,31 @@ public final class CameraModel {
     }
 
     /**
-     * Surface pixels the picture moves for one whole unit of orbit (Origin) on
-     * one axis, at the current zoom and geometry.
+     * The on-screen size of one whole Origin unit, in surface pixels, at the
+     * current zoom and geometry.
      *
-     * <p><b>The maths.</b> {@link #frame} puts the camera pivot at
-     * {@code px = orbitX * aspect * scale} ({@code py = orbitY * scale}) and
-     * aims the camera at it, so a change in the orbit moves the camera and the
-     * whole plane together. The visible world height at the pivot plane is
-     * {@code visH = 2 * CAM_DIST * tan(FOV / 2)}, so one world unit there is
-     * {@code surfaceH / visH} pixels, and the answer is
+     * <p><b>The maths.</b> An Origin unit is a fraction of the plane: its world
+     * x is {@code aspect * scale} and its world y {@code scale}, and the visible
+     * world height at the picture is {@code visH = 2 * CAM_DIST * tan(FOV / 2)},
+     * so one world unit is {@code surfaceH / visH} pixels. The answer is
      * {@code (horizontal ? aspect : 1) * scale * surfaceH / visH}.
      *
-     * <p><b>This is the exact inverse of the last step of
-     * {@link #screenToOrbit}</b> ({@code ox = wx / (aspect * scale)}), which is
-     * why multiplying a drag by it makes the picture track the finger 1:1 at
-     * any zoom. The X axis carries the {@code aspect} factor because the
-     * pivot's world x is scaled by the image's width/height ratio while y is
-     * not; a single "pixels per unit" shared by both axes would therefore
-     * mistrack one of them by the image's aspect, which is the kind of quiet
-     * wrongness {@code CameraModelTest} exists to catch.
+     * <p><b>What it is now, and what it was.</b> Origin no longer moves the
+     * picture, so this is no longer "how far a drag moves the picture"; it is the
+     * ON-SCREEN SIZE of one Origin unit — a whole picture-width on the X axis —
+     * which is what the Origin slider uses as its fine-grained drag sensitivity.
+     * It is still the exact inverse of the last step of {@link #screenToOrbit}
+     * ({@code ox = wx / (aspect * scale)}), so a tap and the value the slider
+     * would set for the same travel stay one mapping. The X axis carries the
+     * {@code aspect} factor because the pivot's world x is scaled by the image's
+     * width/height ratio while y is not; a single "pixels per unit" shared by
+     * both axes would therefore mistrack one of them by the image's aspect, which
+     * is the kind of quiet wrongness {@code CameraModelTest} exists to catch.
      *
-     * <p><b>What deliberately does not enter.</b> The pivot's own depth. The
-     * value is the PLANE's rate at the rest camera, and that is exact wherever
-     * it matters: at rest the camera aims at the surface point under the origin
-     * but the eye sits directly above the pivot, so the view matrix is the plane
-     * point's own and the unprojection this is the inverse of is unchanged by
-     * the pivot's height. Tilt does move the answer, and it is left out on
-     * purpose: the value is read once per gesture, and a value that moved with
-     * the gyro -- or with the surface under the origin as the slider moves --
-     * would make the same drag change speed while the phone is in the hand.
-     * Measured on the local rate (two taps 10 px apart) over the reachable
-     * sweep: 3.9% at the extremes with the pivot at depth, against 2.6% with it
-     * on the plane. The caller applies its own margin over tracking anyway.
+     * <p>The pivot's own depth deliberately does not enter — the value is the
+     * PLANE's size, read once per gesture, so a value that moved with the gyro or
+     * with the surface under the origin as the slider moves would make the same
+     * drag change speed while the phone is in the hand.
      *
      * @param horizontal true for the X axis, false for Y
      * @param surfaceH   the drawing surface's height in pixels, as handed to
@@ -173,8 +212,118 @@ public final class CameraModel {
     public float screenPixelsPerOrbit(boolean horizontal, float surfaceH) {
         float scale = computeScale();
         if (scale <= 0f || surfaceH <= 0f) return 0f;
-        float visH = 2f * CAM_DIST * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
+        float visH = 2f * CAM_DIST * camDistScale * (float) Math.tan(Math.toRadians(FOV_DEG / 2f));
         return (horizontal ? aspect : 1f) * scale * surfaceH / visH;
+    }
+
+    /**
+     * The largest screen displacement, in pixels, that a tilt delta of {@code
+     * delta} produces at the current framing: the worst case over the surface's
+     * depth range and the current zoom.
+     *
+     * <p><b>Why it exists.</b> The tilt doze stops publishing tilt while the phone
+     * is still, so the wallpaper stops asking for frames. Whether that is visible is
+     * exactly this number, so {@link #DOZE_EPS} is DERIVED from here rather than
+     * picked. It is not used in the draw path.
+     *
+     * <p><b>The maths, and why it is the whole surface.</b> {@link #frame}
+     * rotates the eye about the pivot by {@code (TILT_RANGE / CAM_DIST) * motion}
+     * per unit of tilt (the orientation rotates with it), so the pivot does not
+     * move and every other point moves by the parallax between its own depth and
+     * the pivot's. The rotation also swings off-axis points by their lateral
+     * offset, which is why the
+     * answer grows with Zoom while the pure parallax does not: the picture's
+     * half-width is {@code 0.5 * aspect * scale}, and {@code scale} carries
+     * {@code zoom * CROP_MARGIN}. The worst case is a corner.
+     *
+     * <p><b>Only VISIBLE points count.</b> Above Zoom 100% the picture is larger
+     * than the viewport, and its off-screen corners have arbitrarily large
+     * displacements that nobody can see. The answer is the largest displacement
+     * among points that project inside the viewport at rest — what "screen
+     * displacement" means. This is asserted through the real {@link #frame} /
+     * {@code mvp} chain rather than restated as a formula, so it cannot drift from
+     * the camera it describes.
+     *
+     * <p><b>Linear in the delta.</b> Over the sub-pixel deltas this exists for, the
+     * answer is linear to better than a thousandth; {@code CameraModelTest} pins
+     * that rather than assuming it.
+     *
+     * @param delta    tilt delta in the normalised units the gyro reports (0..1 over
+     *                 {@link #TILT_RANGE})
+     * @param surfaceW drawing surface width in pixels
+     * @param surfaceH drawing surface height in pixels
+     * @return the largest visible displacement in pixels, or 0 with no surface
+     */
+    public float tiltPixels(float delta, float surfaceW, float surfaceH) {
+        if (delta == 0f || surfaceW <= 0f || surfaceH <= 0f || aspect <= 0f) return 0f;
+        if (computeScale() <= 0f) return 0f;
+
+        // A grid over the picture's unit-plane coordinates: x is already aspect
+        // scaled, so the picture's half-width is 0.5 * aspect and its half-height
+        // is 0.5. The depth is sampled too because the worst case is a corner.
+        final int N = 48, M = 4;
+        final int count = (N + 1) * (N + 1) * (M + 1);
+        float[] px = new float[count], py = new float[count], pz = new float[count];
+        float[] restX = new float[count], restY = new float[count];
+        float[] out = new float[2];
+
+        Frame rest = frame(surfaceW, surfaceH, 0f, 0f, 0f, 0f, 0f, 0f);
+        int k = 0;
+        for (int i = 0; i <= N; i++) {
+            float ux = (-0.5f + (float) i / N) * aspect;
+            for (int j = 0; j <= N; j++) {
+                float uy = -0.5f + (float) j / N;
+                for (int m = 0; m <= M; m++) {
+                    float uz = -0.5f + (float) m / M;
+                    px[k] = ux;
+                    py[k] = uy;
+                    pz[k] = uz;
+                    if (projectField(rest, ux, uy, uz, out)) {
+                        restX[k] = out[0];
+                        restY[k] = out[1];
+                    } else {
+                        restX[k] = Float.NaN; // unprojectable: skip
+                    }
+                    k++;
+                }
+            }
+        }
+
+        // The worst DIRECTION matters as well as the worst point: a tilt delta of
+        // this size could point anywhere, so eight evenly spaced directions are
+        // tried and the largest answer is kept.
+        float best = 0f;
+        for (int d = 0; d < 8; d++) {
+            double angle = d * Math.PI / 4.0;
+            float tiltX = (float) Math.cos(angle) * delta;
+            float tiltY = (float) Math.sin(angle) * delta;
+            Frame tilted = frame(surfaceW, surfaceH, 0f, 0f, 0f, 0f, tiltX, tiltY);
+            for (int p = 0; p < count; p++) {
+                if (Float.isNaN(restX[p])) continue;
+                // Off screen at rest: it cannot be a "screen displacement".
+                if (Math.abs(restX[p]) > 1f || Math.abs(restY[p]) > 1f) continue;
+                if (!projectField(tilted, px[p], py[p], pz[p], out)) continue;
+                float dx = (out[0] - restX[p]) * surfaceW * 0.5f;
+                float dy = (out[1] - restY[p]) * surfaceH * 0.5f;
+                float disp = (float) Math.hypot(dx, dy);
+                if (disp > best) best = disp;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Project a unit-plane field point through a frame's model-view-projection,
+     * into normalised device coords. Exists so {@link #tiltPixels} can project a
+     * point at any depth, which {@link #project} (plane only) cannot.
+     */
+    private boolean projectField(Frame f, float fx, float fy, float fz, float[] out) {
+        ray[0] = fx; ray[1] = fy; ray[2] = fz; ray[3] = 1f;
+        Mat4.multiplyMV(ray, 0, f.mvp, 0, ray, 0);
+        if (ray[3] == 0f) return false;
+        out[0] = ray[0] / ray[3];
+        out[1] = ray[1] / ray[3];
+        return true;
     }
 
     /**
@@ -184,7 +333,7 @@ public final class CameraModel {
      */
     public float maxZScale() {
         float s = computeScale();
-        return s <= 0f ? 0f : (0.9f * CAM_DIST) / s;
+        return s <= 0f ? 0f : (0.9f * CAM_DIST * camDistScale) / s;
     }
 
     /**
@@ -219,15 +368,12 @@ public final class CameraModel {
      * {@code CameraModelTest} asserts the round-trip rather than trusting a
      * comment here.
      *
-     * <p><b>The aim point is the pivot, and the pivot has a depth.</b> The
-     * camera translates laterally with the tilt and aims at the surface point
-     * under the origin -- {@code (px, py, pivotHeight * scale * zScale)}, the
-     * plane point lifted through the same model-to-world factor {@code uMVP}
-     * applies -- so the subject under the origin holds while the background
-     * swings around it. The eye does NOT move with the pivot's depth: it stays
-     * at the fixed camera distance with the pivot's own x/y, directly above the
-     * pivot, which is what makes the at-rest view matrix exactly the plane's
-     * own at every height. See {@link #setPivotHeight}.
+     * <p><b>The orbit centre is the pivot, and the pivot has a depth.</b> The
+     * pivot is the surface point under the origin --
+     * {@code (px, py, pivotHeight * scale * zScale)}, the plane point lifted
+     * through the same model-to-world factor {@code uMVP} applies -- and the tilt
+     * is a turntable about it, so the subject under the origin holds while the
+     * background swings around it. See {@link #setPivotHeight}.
      */
     public Frame frame(float surfaceW, float surfaceH,
                        float panX, float panY,
@@ -238,7 +384,6 @@ public final class CameraModel {
         float px = orbitX * aspect * scale;
         float py = orbitY * scale;
         float pz = pivotHeight * scale * zScale;
-        float range = TILT_RANGE * motion;
 
         Mat4.perspective(proj, 0, FOV_DEG, surfaceAspect, NEAR, FAR);
         Mat4.identity(panMat, 0);
@@ -247,10 +392,49 @@ public final class CameraModel {
         }
         Mat4.multiplyMM(projPanned, 0, panMat, 0, proj, 0);
 
-        frame.eyeX = px + tiltX * range;
-        frame.eyeY = py - tiltY * range;
-        frame.eyeZ = CAM_DIST;
-        Mat4.lookAt(view, 0, frame.eyeX, frame.eyeY, frame.eyeZ, px, py, pz, 0f, 1f, 0f);
+        // THE CAMERA IS A TURNTABLE ABOUT THE PIVOT WITH A FIXED REST EYE, and
+        // the origin does not translate the picture. The eye is the REST eye --
+        // the image centre at the fixed camera distance, looking straight down --
+        // rotated about the pivot, and the orientation rotates with it. At rest
+        // (tilt 0) the rotation is the identity, so the view is the photograph
+        // whatever the origin is; the origin only names the point the tilt turns
+        // about. That is what "Origin moves the orbit centre without moving the
+        // picture" means, and it is the relief's half of the splat's own
+        // convention (SplatCamera.frame): the two backends now mean the same
+        // thing.
+        //
+        // It REPLACES a camera that translated BOTH the eye and the aim by the
+        // pivot (px, py), which pinned the pivot to the screen centre -- so the
+        // picture was the photograph shifted by the origin, and a tap that set
+        // the origin "readjusted the view". The aim is no longer the pivot; the
+        // rotation axis is. The pivot keeps its own screen position under the
+        // tilt (a rotation about a point leaves that point's view direction
+        // unchanged), so the subject under the origin still HOLDS while the
+        // background swings, which is what the aim-at-the-pivot was for.
+        //
+        // The angle is the splat's -- TILT_RANGE / CAM_DIST per unit tilt, times
+        // motion -- so the swing is the same at every pivot depth, unlike the old
+        // lateral slide whose angle was range / (CAM_DIST - pz).
+        float a = tiltX * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
+        float b = tiltY * (TILT_RANGE / (CAM_DIST * camDistScale)) * motion;
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float cb = (float) Math.cos(b), sb = (float) Math.sin(b);
+
+        // d = restEye - pivot, rotated by R = Rx(b) * Ry(a). At rest R = I and
+        // the eye is the rest eye (0, 0, CAM_DIST).
+        float dx = -px, dy = -py, dz = CAM_DIST * camDistScale - pz;
+        float ex = ca * dx + sa * dz;
+        float ey = sb * sa * dx + cb * dy - sb * ca * dz;
+        float ez = -cb * sa * dx + sb * dy + cb * ca * dz;
+        frame.eyeX = px + ex;
+        frame.eyeY = py + ey;
+        frame.eyeZ = pz + ez;
+        // forward = R * (0, 0, -1), up = R * (0, 1, 0).
+        float fwx = -sa, fwy = sb * ca, fwz = -cb * ca;
+        float upx = 0f, upy = cb, upz = sb;
+        Mat4.lookAt(view, 0, frame.eyeX, frame.eyeY, frame.eyeZ,
+                frame.eyeX + fwx, frame.eyeY + fwy, frame.eyeZ + fwz,
+                upx, upy, upz);
 
         Mat4.multiplyMM(frame.viewProjection, 0, projPanned, 0, view, 0);
         frame.pivotX = px;

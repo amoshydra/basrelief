@@ -137,6 +137,85 @@ public final class LibraryItem {
      */
     public final float focal;
 
+    /**
+     * The Gaussian splat cloud's filename, or null when this row has none.
+     *
+     * <p><b>A second medium on the row, and deliberately not a second row.</b>
+     * The index owns the selection and only the index, so a splat is one more
+     * nullable filename on the photograph — exactly the shape {@link #normalName}
+     * and {@link #video} already have — rather than a separate container that
+     * could disagree with the pointer. A row with a splat is still a photograph
+     * for every other rule in this class: the same six per-surface settings, the
+     * same {@code settings(Surface)} read, and {@code hasDepth()} still asks about
+     * the still files, because the still is the poster and the fallback.
+     *
+     * <p><b>A bare filename, never a path</b>, for the reason every name here is:
+     * with {@code allowBackup="true"} a stored absolute path survives a restore
+     * and names the previous device's {@code filesDir}, so the splat would not
+     * degrade to the relief — it would be a row that renders nothing.
+     *
+     * <p><b>0-or-absent in the blob.</b> Written only when present, so a library
+     * of ordinary photographs is byte-identical to one this build never touched —
+     * the {@code normal}/{@code video}/{@code focal} argument, and why this needed
+     * no schema bump either. Every mutator carries it, because a splat is exactly
+     * the shape of value that was added after the writers existed: the
+     * {@code withDepth} scar one field over.
+     */
+    public final String splatName;
+
+    /**
+     * The splat cloud's own lens, as the dimensionless ratio {@code focal / height},
+     * or 0 for unknown.
+     *
+     * <p><b>Why the cloud needs a lens of its own, and why this is not
+     * {@link #focal}.</b> A Gaussian's screen size is proportional to the focal it
+     * was reconstructed through, and each {@code .splat} was built at its own: the
+     * node reports it in the sidecar ({@code focal}, {@code height}) and the
+     * renderer draws the cloud through the source camera that focal implies. The
+     * {@link #focal} beside it is a <b>different</b> number in a <b>different</b>
+     * unit — pixels of the colour image, measured by a MoGe run — and it belongs to
+     * the relief's depth scale and, for a clip, to the uploaded video frame. A
+     * cloud is built from the poster still, so its lens can be a different ratio
+     * from the clip's; folding the two into one number would let the clip path and
+     * the cloud path overwrite each other's units. {@link Splat#focalOverHeight}
+     * owns the derivation and {@link Splat#fovyForFocalOverHeight} the conversion
+     * to the camera's field of view.
+     *
+     * <p><b>0 is "unknown" and is omitted from the blob</b>, the rule
+     * {@code normal}, {@code video}, {@code focal}, {@code splat} and
+     * {@code render} all follow, so a library this build never touched stays
+     * byte-identical and this needed no schema bump. Every cloud generated before
+     * this field existed has 0, and the renderer falls back to the demo cloud's
+     * hard-coded lens rather than refusing to draw — so those clouds keep exactly
+     * the look they have, and only a regeneration (which reads the sidecar) gives
+     * a row its own.
+     */
+    public final float splatLens;
+
+    /**
+     * How this row is drawn: the relief, or the splat cloud.
+     *
+     * <p><b>A render value like Depth and Motion, and the item is its home.</b> It
+     * used to be one global {@code render_3d} pref, so a gallery drew every
+     * photograph the same way whichever the single switch last said — a global
+     * render value is the wrong home, which is why the pref is now only the
+     * migration source (see {@link Library}'s v3 to v4 migration, the
+     * Motion-in-{@code Config} precedent one version later).
+     *
+     * <p><b>SPLAT is a request, not a fact about what is on screen.</b> A row can
+     * ask for the cloud and have none yet — that is the "press Splat, the offer
+     * follows" flow — and it renders its relief until one exists. Whether the cloud
+     * is actually drawn is {@link SplatSource}'s answer plus the renderer's own
+     * on-screen identity, the same split its siblings make.
+     *
+     * <p>Stored as {@link RenderMode#key()} and written only when it is not
+     * {@link RenderMode#RELIEF}, so a library of ordinary photographs is
+     * byte-identical to one this build never touched — the {@code normal}/{@code video}/
+     * {@code focal} argument, and why this needed no schema bump of its own (the
+     * v4 bump is for the migration, not the field).
+     */
+    public final RenderMode renderMode;
+
     /** User-visible name, or null to fall back to {@link #imageName}. */
     public final String label;
 
@@ -233,7 +312,12 @@ public final class LibraryItem {
                         SurfaceSettings.DEFAULT_ADJUST, SurfaceSettings.DEFAULT_ADJUST,
                         SurfaceSettings.DEFAULT_LIGHT_AZIMUTH,
                         SurfaceSettings.DEFAULT_LIGHT_ELEVATION,
-                        SurfaceSettings.DEFAULT_SPEED),
+                        SurfaceSettings.DEFAULT_SPEED,
+                        SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                        SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                        SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                        SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                        SurfaceSettings.DEFAULT_PAN_Z),
                 null);
     }
 
@@ -257,13 +341,14 @@ public final class LibraryItem {
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, false, null);
+                home, lockSettings, false, null, null, 0f, 0f, null, RenderMode.RELIEF);
     }
 
     private LibraryItem(String id, String imageName, String depthName,
                         String normalName, String label, long addedAt, long lastUsedAt) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                SurfaceSettings.defaults(), null, false, normalName, null, 0f);
+                SurfaceSettings.defaults(), null, false, normalName, null, 0f, 0f, null,
+                RenderMode.RELIEF);
     }
 
     private LibraryItem(String id, String imageName, String depthName, String label,
@@ -271,27 +356,30 @@ public final class LibraryItem {
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName) {
         this(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lockSettings, archived, normalName, null, 0f);
+                home, lockSettings, archived, normalName, null, 0f, 0f, null,
+                RenderMode.RELIEF);
     }
 
     /**
      * The one constructor every write path funnels into.
      *
-     * <p>It takes all twelve stored fields, so a caller that has to change one of
-     * them has to name the other eleven -- and that is the {@link #copy} discipline
+     * <p>It takes all thirteen stored fields, so a caller that has to change one of
+     * them has to name the other twelve -- and that is the {@link #copy} discipline
      * made mechanical. The {@link VideoTracks} reference rides here for the same
      * reason it is not a loose field: every mutator below names it, so a writer
      * written before clips existed cannot silently drop a user's video the way
      * {@code withDepth} silently reset Motion, brightness and shadow. The
      * {@link #focal} was added the same way, one field later, and is the reason a
      * setter is not offered for it: a writer either names it or compiles against
-     * the constructor that cannot.
+     * the constructor that cannot. {@link #splatLens} is the same shape once more,
+     * which is why it rides here rather than behind a setter a cloud write could
+     * forget.
      */
     private LibraryItem(String id, String imageName, String depthName, String label,
                         long addedAt, long lastUsedAt,
                         SurfaceSettings home, SurfaceSettings lockSettings,
                         boolean archived, String normalName, VideoTracks video,
-                        float focal) {
+                        float focal, float splatLens, String splatName, RenderMode renderMode) {
         String img = normaliseName(imageName);
         if (!isValidId(id)) throw new IllegalArgumentException("bad item id: " + id);
         // Every item must name a file, and the demo is no exception: the seed
@@ -334,9 +422,9 @@ public final class LibraryItem {
         // consumed as panX / surfaceW, so its valid range is the surface size -
         // which this class cannot know, and which differs per device and per
         // orientation. The renderer's setPan() clamps on the way in. Clamping to
-        // the origin-style +/-0.5 looked harmless and silently flattened every pan
-        // offset to almost nothing: a stored -135px became -0.5px. Do not add a
-        // range check without knowing the units.
+        // the origin-style fraction range looked harmless and silently flattened
+        // every pan offset to almost nothing: a stored -135px became -0.5px. Do not
+        // add a range check without knowing the units.
         this.home = home;
         this.lock = lockSettings;
         this.archived = archived;
@@ -346,6 +434,21 @@ public final class LibraryItem {
         // unprojection it drives, and a NaN one poisons every vertex it touches.
         // Clamped here, in the one constructor, so no writer can store one.
         this.focal = (Float.isFinite(focal) && focal > 0f) ? focal : 0f;
+        // The cloud's lens is the same shape of number: a dimensionless ratio, so
+        // 0 is "unknown" and is the only non-positive value that means anything. A
+        // corrupt blob's NaN or -3 is clamped here, in the one constructor, so no
+        // writer can store one -- the rule the focal above already follows, and for
+        // the same reason: a negative ratio inverts the field of view it implies.
+        this.splatLens = (Float.isFinite(splatLens) && splatLens > 0f) ? splatLens : 0f;
+        // The splat is reduced to a basename like every other name, and for the
+        // same restore reason. Not gated on anything: a splat with no still files
+        // is inert, and dropping it here would lose a value a later repair could
+        // still pair with a photograph.
+        this.splatName = normaliseName(splatName);
+        // Null from a hand-written blob, or a value this build does not know, is the
+        // relief: a render value read on the path to drawing must degrade to
+        // something that renders. See RenderMode.parse.
+        this.renderMode = renderMode == null ? RenderMode.RELIEF : renderMode;
     }
 
     /** Convenience for the common case: an image just added, no label. */
@@ -392,8 +495,22 @@ public final class LibraryItem {
      *                   inventing a normal nothing on disk backs.
      */
     public static LibraryItem bundled(String imageName, String depthName, String normalName) {
-        return new LibraryItem(Library.BUNDLED_ID, imageName, depthName, normalName,
+        return bundled(imageName, depthName, normalName, null);
+    }
+
+    /**
+     * The bundled demo, with the shipped normal and splat cloud.
+     *
+     * @param splatName the copied cloud's bare filename, or null when the asset was
+     *                  not copied. Null is a deliberate state: the demo then renders
+     *                  its relief (or the Stage-0 card grid) rather than claiming a
+     *                  cloud that is not on disk.
+     */
+    public static LibraryItem bundled(String imageName, String depthName, String normalName,
+                                      String splatName) {
+        LibraryItem demo = new LibraryItem(Library.BUNDLED_ID, imageName, depthName, normalName,
                 "Marble bust", 0L, 0L);
+        return splatName == null ? demo : demo.withSplat(splatName);
     }
 
     // ------------------------------------------------------------- identity
@@ -562,6 +679,19 @@ public final class LibraryItem {
     }
 
     /**
+     * The splat cloud's filename for a new item. See {@link #imageFileName} for
+     * why it derives from the id.
+     *
+     * <p>{@code .splat} beside the stills, not instead of them: the poster frame
+     * stays {@link #imageName}, so a row whose cloud is missing or whose 3D switch
+     * is off degrades to the relief rather than to nothing — the same relationship
+     * {@link #videoFileName} has to the still.
+     */
+    public static String splatFileName(String id) {
+        return requireValidId(id, "item-" + id + ".splat");
+    }
+
+    /**
      * The node's re-encoded colour clip's filename. See {@link #videoFileName}.
      *
      * <p><b>A name of its own, because the remux must stay the upload.</b> When a
@@ -609,6 +739,21 @@ public final class LibraryItem {
      */
     public boolean hasSuppliedNormals() {
         return normalName != null && depthName != null;
+    }
+
+    /**
+     * Whether this row names a Gaussian splat cloud. One question, one answer,
+     * on the row itself — the same rule {@link #isVideo} follows, and for the
+     * same reason: the index owns the selection, so a reader holding the row must
+     * be able to ask without a second container.
+     *
+     * <p>What this does <b>not</b> say: whether the cloud is here, or whether the
+     * renderer will use it. The file read is {@code PrefFiles.resolve}'s answer
+     * and the 3D switch is the renderer's, exactly as a clip's playability is
+     * {@code VideoSource}'s.
+     */
+    public boolean hasSplat() {
+        return splatName != null;
     }
 
     /**
@@ -672,7 +817,7 @@ public final class LibraryItem {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
                 lockSurface ? home : next,
                 lockSurface ? next : lock,
-                archived, normalName, video, focal);
+                archived, normalName, video, focal, splatLens, splatName, renderMode);
     }
 
     /**
@@ -689,14 +834,16 @@ public final class LibraryItem {
     public LibraryItem withIntensity(Surface surface, int v) {
         return editSettings(surface, s -> s.with(v, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** The Zoom slider, 25..200, on one surface. */
     public LibraryItem withZoom(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, v, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -706,7 +853,8 @@ public final class LibraryItem {
     public LibraryItem withMotion(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, v, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -718,28 +866,43 @@ public final class LibraryItem {
     public LibraryItem withSpeed(Surface surface, int v) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
                 s.originY, s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, v));
+                s.lightAzimuth, s.lightElevation, v,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** Origin, a fraction of the plane, on one surface. */
     public LibraryItem withOrigin(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, x, y,
                 s.panX, s.panY, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /** Pan, in PIXELS, on one surface. Unclamped; see the constructor's note. */
     public LibraryItem withPan(Surface surface, float x, float y) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, x, y, s.brightness, s.shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
+    }
+
+    /**
+     * Pan Z: the camera distance, 1.0 is the source camera. Per photo and per
+     * surface exactly as Pan X/Y are, because it is the same kind of choice.
+     */
+    public LibraryItem withPanZ(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
+                s.originX, s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, v));
     }
 
     /** Brightness and shadow, -100..100, on one surface. Render-time only. */
     public LibraryItem withAdjust(Surface surface, int brightness, int shadow) {
         return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion,
                 s.originX, s.originY, s.panX, s.panY, brightness, shadow,
-                s.lightAzimuth, s.lightElevation, s.speed));
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
     }
 
     /**
@@ -749,6 +912,46 @@ public final class LibraryItem {
      */
     public LibraryItem withLight(Surface surface, float azimuthDegrees, float elevationDegrees) {
         return editSettings(surface, s -> s.withLight(azimuthDegrees, elevationDegrees));
+    }
+
+    // --------------------------------------------------- the splat look rows
+    //
+    // Four render values, each per photo and per surface like Depth and Motion.
+    // They were global prefs; the migration in {@link Library} seeds them once from
+    // the old keys, and these are the writes the sheet's four rows use. Each
+    // carries the other three, so nudging Size cannot reset Depth -- the
+    // {@code withDepth} scar this file exists to prevent.
+
+    /** The splat cloud's Depth, a multiplier on the reconstructed depth. */
+    public LibraryItem withSplatDepth(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                v, s.splatEps2d, s.splatBlur, s.splatScale, s.panZ));
+    }
+
+    /** The splat cloud's Size: the 2D floor as a fraction of a splat's cell. */
+    public LibraryItem withSplatSize(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, v, s.splatBlur, s.splatScale, s.panZ));
+    }
+
+    /** The splat cloud's Blur: a post-blur radius in render-target pixels. */
+    public LibraryItem withSplatBlur(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, v, s.splatScale, s.panZ));
+    }
+
+    /** The splat cloud's Resolution: the fraction of the surface it is drawn at. */
+    public LibraryItem withSplatScale(Surface surface, float v) {
+        return editSettings(surface, s -> s.with(s.depth, s.zoom, s.motion, s.originX,
+                s.originY, s.panX, s.panY, s.brightness, s.shadow,
+                s.lightAzimuth, s.lightElevation, s.speed,
+                s.splatDepth, s.splatEps2d, s.splatBlur, v, s.panZ));
     }
 
     /**
@@ -794,7 +997,8 @@ public final class LibraryItem {
         // replaces the depth and its normal -- the two things a run derives from
         // that colour. A still's regenerated depth is the same photograph; a clip's
         // regenerate goes through withFilesAndVideo, which does name the focal.
-        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video, focal);
+        return copy(id, imageName, depth, normal, label, addedAt, lastUsedAt, video, focal,
+                splatLens, splatName);
     }
 
     /**
@@ -867,7 +1071,8 @@ public final class LibraryItem {
      */
     public LibraryItem withFilesAndVideo(String image, String depth, String normal,
                                          VideoTracks clips, float focal) {
-        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips, focal);
+        return copy(id, image, depth, normal, label, addedAt, lastUsedAt, clips, focal,
+                splatLens, splatName);
     }
 
     /**
@@ -898,17 +1103,82 @@ public final class LibraryItem {
         if (isBundled()) {
             throw new IllegalArgumentException("the bundled demo is a still trio");
         }
-        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips, focal);
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, clips, focal,
+                splatLens, splatName);
+    }
+
+    /**
+     * Attach a splat cloud to this row, or clear it with null.
+     *
+     * <p><b>Null is accepted here, unlike {@link #withVideo}.</b> A splat is an
+     * optional reconstruction, not a medium the row is: a clip's removal is a
+     * delete of three frame-locked files, while a splat's reference can simply be
+     * dropped and the row degrades to the relief on the spot. The file cleanup is
+     * the app shell's, the same split {@link #withVideo} documents.
+     *
+     * <p><b>A caller that replaces the COLOUR image must clear this</b>, because
+     * the cloud is a reconstruction of that image: a splat of one photograph
+     * rendered under another is the {@code withDepth} scar in three dimensions.
+     * The file writers carry it rather than clearing it themselves because
+     * {@link #withFiles} is also the bundled repair, which rewrites the demo's own
+     * files and must not drop the demo's cloud.
+     *
+     * <p><b>The lens is carried, not cleared</b> — the same choice
+     * {@link #withFiles} makes for {@link #focal} — because this form says nothing
+     * about the cloud's camera and a caller attaching a cloud whose lens it does not
+     * know must not erase one already measured. {@link #withSplat(String, float)} is
+     * the form that sets both, and it is the one an import uses.
+     */
+    public LibraryItem withSplat(String splat) {
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, video,
+                focal, splatLens, splat);
+    }
+
+    /**
+     * Attach a splat cloud <b>and its measured lens</b> in one write.
+     *
+     * <p><b>The import's one finish line, and the reason the lens is a parameter
+     * here rather than a setter.</b> The cloud and the number that describes how it
+     * was reconstructed arrive together from the same sidecar, so a writer that set
+     * the filename without the lens would be the {@code withDepth} scar one field
+     * over: a cloud drawn through the previous cloud's camera. Passing 0 stores
+     * "unknown" and is how a run whose sidecar carried no focal leaves the row to
+     * the demo lens — the same degradation a cloud written before this field existed
+     * gets, and the one that keeps those clouds' look unchanged.
+     */
+    public LibraryItem withSplat(String splat, float lens) {
+        return copy(id, imageName, depthName, normalName, label, addedAt, lastUsedAt, video,
+                focal, lens, splat);
+    }
+
+    /**
+     * Set how this row is drawn. <b>The only writer of {@link #renderMode}.</b>
+     *
+     * <p>A null mode is refused rather than read as the relief: the value is a
+     * choice the sheet makes, and a caller that has no mode has nothing to say
+     * about it — the {@code withVideo} refusal, one field over. The relief is
+     * spelled {@link RenderMode#RELIEF}.
+     */
+    public LibraryItem withRenderMode(RenderMode mode) {
+        if (mode == null) throw new IllegalArgumentException("a render mode is required");
+        return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
+                home, lock, archived, normalName, video, focal, splatLens, splatName, mode);
+    }
+
+    /** Whether this row asks for the cloud. See {@link #renderMode}. */
+    public boolean isSplatMode() {
+        return renderMode.isSplat();
     }
 
     public LibraryItem withLabel(String newLabel) {
         return copy(id, imageName, depthName, normalName, newLabel, addedAt, lastUsedAt,
-                video, focal);
+                video, focal, splatLens, splatName);
     }
 
     /** Record that this item is now the wallpaper. */
     public LibraryItem withLastUsedAt(long when) {
-        return copy(id, imageName, depthName, normalName, label, addedAt, when, video, focal);
+        return copy(id, imageName, depthName, normalName, label, addedAt, when, video, focal,
+                splatLens, splatName);
     }
 
     /**
@@ -923,7 +1193,7 @@ public final class LibraryItem {
     public LibraryItem withArchived(boolean on) {
         if (this.archived == on) return this;
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, on, normalName, video, focal);
+                home, lock, on, normalName, video, focal, splatLens, splatName, renderMode);
     }
 
     /** Whether this photo is hidden from the live gallery. See {@link #archived}. */
@@ -943,13 +1213,15 @@ public final class LibraryItem {
      * <p><b>The focal is a parameter and not a field read here</b> for the same
      * reason the three names are: {@link #withFilesAndVideo} has to be able to
      * write the focal along with the files it belongs to, and a defaulted field
-     * would make that the one writer with no way to say it.
+     * would make that the one writer with no way to say it. {@link #splatLens} is
+     * the same again: {@link #withSplat(String, float)} writes it with the cloud it
+     * describes, and a field read here would leave that writer with no way to say it.
      */
     private LibraryItem copy(String id, String imageName, String depthName, String normalName,
                              String label, long addedAt, long lastUsedAt,
-                             VideoTracks video, float focal) {
+                             VideoTracks video, float focal, float splatLens, String splatName) {
         return new LibraryItem(id, imageName, depthName, label, addedAt, lastUsedAt,
-                home, lock, archived, normalName, video, focal);
+                home, lock, archived, normalName, video, focal, splatLens, splatName, renderMode);
     }
 
     // ---------------------------------------------------------- serialise
@@ -987,7 +1259,28 @@ public final class LibraryItem {
             // again, and why this needed no version bump either. 0 means UNKNOWN and
             // is never stored, because a stored 0 and an absent key would be two
             // spellings of one state.
-            if (focal > 0f) o.put("focal", focal);
+            // The cast is load-bearing: :core compiles against Maven's org.json,
+            // which has put(String, float), while Android's platform org.json does
+            // NOT. A bare float argument therefore links here and throws
+            // NoSuchMethodError on the device -- on the index-writer thread, so it
+            // takes the app down on any write. Every float this class stores goes
+            // through (double), and scripts/check-json-puts.mjs enforces it.
+            if (focal > 0f) o.put("focal", (double) focal);
+            // The cloud's lens, only when known: a row whose cloud predates this
+            // field (or whose run reported none) writes nothing and draws at the
+            // demo lens, which is what keeps those clouds' look unchanged. The same
+            // 0-is-absent argument the focal above makes, one unit over: a stored 0
+            // and an absent key would be two spellings of one state.
+            if (splatLens > 0f) o.put("splat_lens", (double) splatLens);
+            // The splat, only when there is one: a library of ordinary
+            // photographs stays byte-identical to one this build never touched,
+            // which is why this needed no schema bump. The same argument the
+            // normal, video, archived flag and focal already make.
+            if (splatName != null) o.put("splat", splatName);
+            // Only when it is not the relief, so a library of ordinary photographs
+            // stays byte-identical to one this build never touched -- the same
+            // argument the normal, video, archived flag, focal and splat make.
+            if (renderMode != RenderMode.RELIEF) o.put("render", renderMode.key());
             if (label != null) o.put("label", label);
             // Written only when true, so a library with nothing archived stays
             // byte-identical to one an older build wrote. Absent means live --
@@ -1054,7 +1347,15 @@ public final class LibraryItem {
                     // A flat blob predates the field, so absent is 1x -- and this
                     // legacy shape is read once and rewritten into the settings form,
                     // so the default lands on disk rather than being re-derived.
-                    o.optInt("speed", SurfaceSettings.DEFAULT_SPEED));
+                    o.optInt("speed", SurfaceSettings.DEFAULT_SPEED),
+                    // The four splat-look values postdate the flat shape entirely, so
+                    // they are always the defaults here; the migration in Library is
+                    // what seeds them from the old global prefs.
+                    SurfaceSettings.DEFAULT_SPLAT_DEPTH,
+                    SurfaceSettings.DEFAULT_SPLAT_EPS2D,
+                    SurfaceSettings.DEFAULT_SPLAT_BLUR,
+                    SurfaceSettings.DEFAULT_SPLAT_SCALE,
+                    SurfaceSettings.DEFAULT_PAN_Z);
         }
         return SurfaceSettings.defaults();
     }
@@ -1122,7 +1423,19 @@ public final class LibraryItem {
                     // 0 = unknown, and the constructor is what refuses a negative
                     // or NaN value: one place, so a hand-edited "focal": "NaN"
                     // cannot reach the vertex shader and poison a whole cloud.
-                    (float) o.optDouble("focal", 0d));
+                    (float) o.optDouble("focal", 0d),
+                    // The cloud's lens, the same shape of read: 0 = unknown, and the
+                    // constructor is what refuses a negative or NaN value so a
+                    // hand-edited "splat_lens": "NaN" cannot reach the projection.
+                    (float) o.optDouble("splat_lens", 0d),
+                    // The splat cloud, read through str() like every other name,
+                    // so JSON null and the literal "null" both become null. Absent
+                    // is null, which is the correct degradation: the relief.
+                    str(o, "splat"),
+                    // Absent is the relief, which is what every row written before the
+                    // mode existed is. RenderMode.parse also absorbs a value from a
+                    // newer build rather than throwing on the path to drawing.
+                    RenderMode.parse(str(o, "render")));
         } catch (IllegalArgumentException e) {
             return null; // a bad id; see the constructor
         }
@@ -1132,6 +1445,9 @@ public final class LibraryItem {
     public String toString() {
         return "LibraryItem{" + id + " " + imageName + (depthName != null ? " +depth" : "")
                 + (normalName != null ? " +normal" : "")
+                + (splatName != null ? " +splat" : "")
+                + (splatLens > 0f ? " lens=" + splatLens : "")
+                + (renderMode != RenderMode.RELIEF ? " " + renderMode : "")
                 + (video != null ? " " + video : "")
                 + (focal > 0f ? " focal=" + focal : "")
                 + " label=" + displayName() + " added=" + addedAt + " used=" + lastUsedAt

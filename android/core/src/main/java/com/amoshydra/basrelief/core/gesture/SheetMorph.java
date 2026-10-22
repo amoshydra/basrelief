@@ -293,6 +293,35 @@ public final class SheetMorph {
     }
 
     /**
+     * The four-corner array for a shape whose top pair is {@code topPx} and whose
+     * bottom pair is {@code bottomPx}.
+     *
+     * <p><b>The order is the whole reason this is a function.</b> A
+     * {@code GradientDrawable}'s corner array is EIGHT values — four corners, two
+     * (x and y) each — in the order <b>top-left, top-right, bottom-right,
+     * bottom-left</b>. Written by hand at the call site it was
+     * {@code {top, top, bottom, bottom, bottom, bottom, top, top}}, which puts the
+     * bottom radius on the TOP-RIGHT corner and the top radius on the BOTTOM-LEFT:
+     * the sheet's top-right corner was square while its top-left was rounded, at
+     * every fraction and on the first frame as much as the last. The user:
+     * <i>the right side's rounding was wrong</i> One function, one order, and a
+     * test that reads the array back corner by corner, so a hand-written array
+     * cannot put a corner in the wrong slot again.
+     *
+     * @param topPx    the radius of both top corners, in px
+     * @param bottomPx the radius of both bottom corners, in px
+     * @return 8 floats: TL, TR, BR, BL, each an x/y pair
+     */
+    public static float[] cornerRadii(float topPx, float bottomPx) {
+        return new float[] {
+                topPx, topPx,        // top-left
+                topPx, topPx,        // top-right
+                bottomPx, bottomPx,  // bottom-right
+                bottomPx, bottomPx   // bottom-left
+        };
+    }
+
+    /**
      * How far the collapsed shape sits inside the window's edges, as the sheet
      * becomes the pill.
      *

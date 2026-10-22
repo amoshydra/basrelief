@@ -7,8 +7,6 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.amoshydra.basrelief.core.render.Splat;
-
 /**
  * The settings screen. Four groups, and nothing else.
  *
@@ -89,8 +87,12 @@ final class SettingsSheet {
     private static final String KEY_BATTERY_SAVER = Settings.KEY_BATTERY_SAVER_FOLLOW;
     private static final String KEY_CALIBRATE_ON_WAKE = Settings.KEY_CALIBRATE_ON_WAKE;
     private static final String KEY_SLEEP_WHEN_STILL = Settings.KEY_SLEEP_WHEN_STILL;
-    private static final String KEY_RENDER_3D = ReliefRenderer.KEY_RENDER_3D;
-    private static final String KEY_RENDER_3D_LEVEL = ReliefRenderer.KEY_RENDER_3D_LEVEL;
+    // The readout's key, read by Settings.perfReadout; the switch writes it and asks
+    // MainActivity to re-read. Off by default, unlike the three above.
+    private static final String KEY_PERF_READOUT = Settings.KEY_PERF_READOUT;
+    // The 3D mode's key used to live here too. It moved onto the item (the sheet's
+    // Renderer row), and the legacy pref is read once by AppState's migration, so
+    // this screen no longer names it at all.
 
     /**
      * What a key nobody has written yet reads as. On, for all three.
@@ -290,33 +292,27 @@ final class SettingsSheet {
                 activity.getString(R.string.app_name) + " " + versionName(),
                 activity.getString(R.string.settings_licence)));
 
-        // ---- The 3D mode. A switch in About rather than a group of its own:
-        // Settings is four groups by design (this file's header says why), and a
-        // device-wide rendering mode is a fact about what the app is doing rather
-        // than a question of its own. It is the one control here whose effect is
-        // read immediately rather than at its next use -- the renderer holds the
-        // mode -- so the switch hands the change to the same reloadFromPrefs path
-        // a cold start takes; waiting for the next onResume would wait forever,
-        // because a Dialog over the studio never causes one.
-        //
-        // The level is built with it and SHOWN only while the mode is on, inside
-        // the toggle's own callback so that stays true the moment the switch moves
-        // rather than on the next visit: a resolution control for a renderer that
-        // is not running is the "control that displays a value the app ignores"
-        // this screen exists to refuse.
-        final View levelRow = gridLevelControl();
-        levelRow.setVisibility(isTrue(KEY_RENDER_3D, false) ? View.VISIBLE : View.GONE);
-        box.addView(toggle(R.string.settings_render_3d,
-                R.string.settings_render_3d_sub, KEY_RENDER_3D, false,
+        // The performance readout: a debug instrument, so it sits with the other
+        // diagnostics rather than among the device behaviours above. It is the one
+        // switch here that starts OFF (see Settings.KEY_PERF_READOUT), and its
+        // afterWrite is what makes it appear the moment it is flipped: the readout is
+        // in the studio window behind this dialog, and the renderer holds the numbers,
+        // so a switch that only wrote the pref would show nothing until a restart.
+        box.addView(toggle(R.string.settings_perf_readout,
+                R.string.settings_perf_readout_sub, KEY_PERF_READOUT, false,
                 new Runnable() {
                     @Override
                     public void run() {
-                        levelRow.setVisibility(isTrue(KEY_RENDER_3D, false)
-                                ? View.VISIBLE : View.GONE);
-                        reloadRenderer();
+                        activity.syncPerfReadout();
                     }
                 }));
-        box.addView(levelRow);
+
+        // ---- The 3D mode is per item now, and lives on the sheet's geometry group
+        // as "Renderer — Relief | Splat". It used to be a device-wide switch here in
+        // About; a global render value is the wrong home (a gallery would draw every
+        // photograph the same way whichever the single switch last said), so it moved
+        // onto the row and the legacy pref is only the migration source. The Stage-0
+        // card-grid dev toggle it also carried is no longer in the UI.
 
         // ---- Reset. The one destructive action here, so it asks first (see
         // confirmReset) and it carries the consequence on the plate itself. The
@@ -391,62 +387,6 @@ final class SettingsSheet {
                         if (afterWrite != null) afterWrite.run();
                     }
                 });
-    }
-
-    /**
-     * The 3D mode's detail level, as the shared slider: one stop per entry in
-     * {@link Splat#GRID_LEVELS}, drawn as the grid it selects and the cards that
-     * is.
-     *
-     * <p>The value is the LEVEL, not the grid, so the slider's one-unit nudge is
-     * one level and its range is the ladder's length. Written on release, the
-     * slider's own rule, and applied through the same reload the mode switch uses,
-     * because the renderer holds the grid as a field read per draw.
-     */
-    private View gridLevelControl() {
-        int level = 0;
-        try {
-            level = prefs().getInt(KEY_RENDER_3D_LEVEL, 0);
-        } catch (Exception e) {
-            // A pref restored from a backup can hold a String under a key that is
-            // an int here, and getInt throws rather than falling back. The slider
-            // then shows the default instead of taking the screen down.
-        }
-        return BasreliefSlider.create(activity, KEY_RENDER_3D_LEVEL, level,
-                0, Splat.GRID_LEVELS.length - 1,
-                new BasreliefSlider.ValueFormatter() {
-                    @Override
-                    public String format(int value) {
-                        int grid = Splat.gridForLevel(value);
-                        return grid + "\u00b2 \u00b7 " + (grid * grid / 1000) + "k cards";
-                    }
-                },
-                new BasreliefSlider.OnChanged() {
-                    @Override
-                    public void onChanged(int value) {
-                        prefs().edit().putInt(KEY_RENDER_3D_LEVEL, value).apply();
-                        reloadRenderer();
-                    }
-                }).view();
-    }
-
-    /**
-     * Hand a renderer setting to the one reload path a cold start takes.
-     *
-     * <p>The renderer holds both settings as fields read per draw, and a Dialog
-     * over the studio never causes the onResume that would otherwise re-read them
-     * -- so a control that only wrote the pref would show the old look until the
-     * app was restarted, which is precisely the failure this screen exists to
-     * refuse.
-     */
-    private void reloadRenderer() {
-        activity.glView.queueEvent(new Runnable() {
-            @Override
-            public void run() {
-                activity.renderer.reloadFromPrefs();
-            }
-        });
-        activity.glView.requestRender();
     }
 
     // -------------------------------------------------------------- persistence

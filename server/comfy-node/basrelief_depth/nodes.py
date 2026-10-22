@@ -341,9 +341,7 @@ class MoGeVideoStream:
         while int(total_out * ratio + 0.5) < total:
             total_out += 1
 
-        safe = "".join(c for c in (tag or "") if c.isalnum() or c in "-_")[:48]
-        if not safe:
-            safe = "%d_%d" % (int(time.time()), os.getpid())
+        safe = _safe_tag(tag)
         out_dir = folder_paths.get_output_directory()
         depth_name = "basrelief_%s_depth.mp4" % safe
         normal_name = "basrelief_%s_normal.mp4" % safe
@@ -564,6 +562,451 @@ class MoGeVideoStream:
         return {"ui": ui,
                 "result": (color_name if col_enc is not None else "", depth_name,
                            normal_name, written)}
+
+
+# ------------------------------------------------------------------ SHARP still
+
+# SHARP's encoder accepts only internal sizes of the form 384 + 288k (Splatline's
+# still backend ran at 1536, and the approved bale still was built at the same
+# setting). A size outside that family is snapped to the nearest entry rather than
+# failing a run over a hint.
+SHARP_INTERNAL_BASE = 384
+SHARP_INTERNAL_STEP = 288
+
+# The checkpoint the approved still pipeline used. Its basename is also what the
+# torch hub cache stores, so a box that has run `sharp predict` once already has it.
+SHARP_DEFAULT_CKPT = "sharp_2572gikvuh.pt"
+SHARP_CKPT_URL = ("https://ml-site.cdn-apple.com/models/sharp/"
+                  "sharp_2572gikvuh.pt")
+
+# Where the checkpoint is looked for when the node is not told. The container
+# deployment puts it on a bind mount (which outlives the container); the torch hub
+# cache is the last resort, and downloads once.
+SHARP_CKPT_CANDIDATES = (
+    "/comfy/mnt/models/sharp/" + SHARP_DEFAULT_CKPT,
+    "/basedir/tools/sharp/" + SHARP_DEFAULT_CKPT,
+)
+
+# 32 B/splat: 3 float32 position, 3 float32 scale, 4 uint8 colour, 4 uint8 rotation.
+# The record IS the two RGBA32F texels the phone's renderer uploads.
+SPLAT_ITEMSIZE = 32
+# A .splat whose splat count is not a multiple of 2048 makes a WebGL texture upload
+# refuse the whole cloud -- a black screen with a correct count in the HUD. Every
+# file is therefore padded with zero records to that block. The approved uncapped
+# still happened to be an exact multiple (1,179,648 = 576 x 2048); a budgeted one is
+# not, and an unpadded budgeted file is the silent failure this constant prevents.
+SPLAT_PAD_TO = 2048
+# Points fainter than this are not worth a cell in the budgeted re-sample. This is
+# the reference implementation's own floor.
+SPLAT_ALPHA_MIN = 0.004
+SH_C0 = 0.28209479177387814
+
+# The predictor is cached across runs in this process, keyed by checkpoint+device,
+# and released at the end of a run unless the caller asks otherwise -- SHARP is
+# ~2.8 GB resident and the card is shared with ComfyUI's own models.
+_SHARP_PREDICTOR = None
+_SHARP_PREDICTOR_KEY = None
+
+
+def _safe_tag(tag, fallback=None):
+    """The app's own tag rule: alnum plus '-'/'_', truncated to 48.
+
+    The node derives every output filename from this, and the app derives the same
+    filenames from the item id without ever having seen a response -- so both sides
+    must run the SAME rule. Item ids are UUIDs and survive it unchanged; the rule
+    exists for a hand-edited index whose id carries a space or punctuation. An id
+    that sanitises to nothing falls back to a timestamp+pid, which only a human can
+    follow (the app refuses such a tag before submitting).
+    """
+    safe = "".join(c for c in (tag or "") if c.isalnum() or c in "-_")[:48]
+    if not safe:
+        safe = fallback or ("%d_%d" % (int(time.time()), os.getpid()))
+    return safe
+
+
+def _sharp_internal_size(n):
+    """Snap to the nearest size SHARP's encoder accepts (384 + 288k)."""
+    n = int(n)
+    if n <= SHARP_INTERNAL_BASE:
+        return SHARP_INTERNAL_BASE
+    k = int(round((n - SHARP_INTERNAL_BASE) / float(SHARP_INTERNAL_STEP)))
+    return SHARP_INTERNAL_BASE + k * SHARP_INTERNAL_STEP
+
+
+def _sharp_focal_px(w, h):
+    """SHARP's 30 mm-equivalent fallback focal, in pixels of a w x h frame.
+
+    `sharp.utils.io.load_rgb` reads `FocalLengthIn35mmFilm` from EXIF and falls back
+    to 30 mm when it is absent. ComfyUI's `LoadImage` hands the node a tensor with
+    the EXIF already gone, so the node reproduces the fallback -- which is also
+    exactly the lens the approved uncapped still used (1216x1632 -> 1411.2 px, and
+    the phone's own renderer bakes the same number for its demo cloud).
+    """
+    return 30.0 * math.hypot(float(w), float(h)) / math.hypot(36.0, 24.0)
+
+
+def _release_sharp():
+    """Drop the cached predictor and hand its VRAM back."""
+    global _SHARP_PREDICTOR, _SHARP_PREDICTOR_KEY
+    if _SHARP_PREDICTOR is not None:
+        _SHARP_PREDICTOR = None
+        _SHARP_PREDICTOR_KEY = None
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def _load_sharp_predictor(checkpoint, device_str):
+    """Load and cache SHARP's predictor for the given checkpoint and device."""
+    global _SHARP_PREDICTOR, _SHARP_PREDICTOR_KEY
+    key = (checkpoint or SHARP_DEFAULT_CKPT, device_str)
+    if _SHARP_PREDICTOR is not None and _SHARP_PREDICTOR_KEY == key:
+        return _SHARP_PREDICTOR
+    _release_sharp()
+    try:
+        from sharp.models import PredictorParams, create_predictor
+    except ImportError as e:
+        raise RuntimeError(
+            "SharpStill needs Apple's SHARP package in ComfyUI's Python "
+            "environment. Install it (and plyfile) with: pip install "
+            "plyfile 'git+https://github.com/apple-aiml-research/ml-sharp.git"
+            "@aed6527499ef91cba3b54c18d49a870f25947190' --no-deps, and put "
+            "sharp_2572gikvuh.pt where the node can see it. See the package "
+            "README. (%s)" % e)
+    path = checkpoint or ""
+    if not path:
+        for cand in SHARP_CKPT_CANDIDATES:
+            if os.path.isfile(cand):
+                path = cand
+                break
+    if path and os.path.isfile(path):
+        state = torch.load(path, map_location="cpu")
+    else:
+        # No local copy: torch hub fetches to its own cache and reuses it after.
+        state = torch.hub.load_state_dict_from_url(SHARP_CKPT_URL, progress=True)
+    predictor = create_predictor(PredictorParams())
+    predictor.load_state_dict(state)
+    predictor.eval().to(device_str)
+    _SHARP_PREDICTOR = predictor
+    _SHARP_PREDICTOR_KEY = key
+    return predictor
+
+
+def _predict_sharp(predictor, image, f_px, device, internal_size):
+    """The Splatline still backend's `predict_sharp_image`, reproduced verbatim.
+
+    Copied rather than imported: it lives in Splatline's own `utils/splat_models.py`,
+    not in the `sharp` package, and the node must not depend on that repo being
+    present. `image` is an 8-bit HxWx3 RGB numpy frame, exactly what
+    `sharp.utils.io.load_rgb` returns and what the reference driver fed the model.
+    """
+    import torch
+    import torch.nn.functional as F
+    from sharp.utils.gaussians import unproject_gaussians
+
+    internal_shape = (internal_size, internal_size)
+    img_pt = torch.from_numpy(image.copy()).float().to(device).permute(2, 0, 1) / 255.0
+    _, height, width = img_pt.shape
+    disp_factor = torch.tensor([f_px / width]).float().to(device)
+    img_resized = F.interpolate(
+        img_pt[None], size=internal_shape, mode="bilinear", align_corners=True)
+    gaussians_ndc = predictor(img_resized, disp_factor)
+
+    intrinsics = torch.tensor([
+        [f_px, 0, width / 2, 0],
+        [0, f_px, height / 2, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ]).float().to(device)
+    intrinsics_resized = intrinsics.clone()
+    intrinsics_resized[0] *= internal_shape[0] / width
+    intrinsics_resized[1] *= internal_shape[1] / height
+    return unproject_gaussians(
+        gaussians_ndc, torch.eye(4).to(device), intrinsics_resized, internal_shape)
+
+
+def _cell_keys(u, v, cell):
+    """A compact integer key per (u,v) cell, so grouping is one `np.unique`."""
+    i = np.floor(u / cell).astype(np.int64)
+    j = np.floor(v / cell).astype(np.int64)
+    width = int(j.max() - j.min()) + 1
+    return (i - i.min()) * width + (j - j.min())
+
+
+def _choose_cell_px(u, v, target):
+    """The smallest (u,v) cell whose occupied-cell count is at most `target`.
+
+    The budget is a UNIFORM image-space re-sample, never a 1-D stride over the PLY
+    order: a `[::step]` cap on this build kept every 8th gaussian of the raster,
+    which measured 6.3 px apart in u against 0.7 px in v at SHARP's own lens -- a
+    columnar cloud that rendered as vertical streaks through the whole picture
+    (46% of 2x2-px cells occupied). Binning in (u,v) and keeping the highest-opacity
+    point per cell took the same cap to 95% occupancy and removed the streaks.
+    Occupied cells fall monotonically as the cell grows, so a bisection finds the
+    finest grid that still fits the budget.
+    """
+    hi = float(max(u.max() - u.min(), v.max() - v.min())) + 1.0
+    lo = 1e-3
+    for _ in range(30):
+        mid = 0.5 * (lo + hi)
+        if np.unique(_cell_keys(u, v, mid)).size <= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _resample_indices(u, v, opa, vis, cell):
+    """One index per occupied (u,v) cell: the highest-opacity visible point in it.
+
+    The reference's own selection: `np.lexsort((-opa, key))` then the first row of
+    each cell. `opa` is the sigmoid opacity, so "highest opacity" is the point the
+    renderer would show through most strongly -- a plain stride has no such rule and
+    that is why it can keep a near-transparent point and drop an opaque one beside
+    it.
+    """
+    key = _cell_keys(u, v, cell)
+    cand = np.flatnonzero(vis)
+    order = np.lexsort((-opa[cand], key[cand]))
+    cand = cand[order]
+    kk = key[cand]
+    first = np.concatenate([[True], kk[1:] != kk[:-1]])
+    return cand[first]
+
+
+def _splat_records(pos, scale_logit, quat, f_dc, opa_logit):
+    """The 32 B/splat record, from the PLY's stored values, as `ply2splat.py` builds it.
+
+    The inputs are exactly what `save_ply` writes: `scale_logit = log(singular_value)`,
+    `f_dc` the sRGB colour as SH degree 0, `opa_logit` the opacity logit, and the
+    float32 quaternion. This side of the split is the CONVERTER's arithmetic, so an
+    uncapped run is byte-identical to `save_ply` -> strip -> `ply2splat.py` under one
+    torch version rather than merely close (verified: 0 differing bytes). The
+    logit-producing half lives in `_build_splat`, in torch, where `save_ply` computes
+    it -- numpy's `log` differs from torch's by one ULP, and exp() carries that into
+    the scale on ~5% of records.
+    """
+    n = int(pos.shape[0])
+    rec = np.empty(n, dtype=[("pos", "<f4", 3), ("scl", "<f4", 3),
+                             ("col", "u1", 4), ("rot", "u1", 4)])
+    rec["pos"] = pos.astype(np.float32)
+    rec["scl"] = np.exp(scale_logit.astype(np.float32)).astype(np.float32)
+    rgb = np.clip(0.5 + SH_C0 * f_dc.astype(np.float32), 0.0, 1.0)
+    rgba = np.empty((n, 4), np.uint8)
+    rgba[:, :3] = np.rint(rgb * 255.0).astype(np.uint8)
+    opa = 1.0 / (1.0 + np.exp(-opa_logit.astype(np.float32)))
+    rgba[:, 3] = np.rint(np.clip(opa, 0.0, 1.0) * 255.0).astype(np.uint8)
+    rec["col"] = rgba
+    q = quat.astype(np.float32)
+    q = q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+    rec["rot"] = np.rint(np.clip(q * 128.0 + 128.0, 0.0, 255.0)).astype(np.uint8)
+    return rec
+
+
+def _build_splat(g, f_px, w, h, budget):
+    """SHARP's Gaussians3D -> the padded `.splat` records and the run's numbers.
+
+    Returns `(records, splats, pad, cell)`: the record array (unpadded), the count
+    written, the zero-record padding, and the (u,v) cell used (0 when uncapped).
+
+    `budget` is a ceiling on the FILE, not on the selection: the padding records are
+    real records the phone uploads and sorts, so the target is rounded down to a
+    whole block and the padded total can never exceed it. `budget = 0` is uncapped
+    and verbatim -- every gaussian SHARP predicted, exactly as the approved still was
+    written (no alpha or z filter, matching teststill.splat).
+    """
+    from sharp.utils import color_space as cs_utils
+
+    pos = g.mean_vectors.flatten(0, 1).detach().float().cpu().numpy()
+    quat = g.quaternions.flatten(0, 1).detach().float().cpu().numpy()
+    # `save_ply`'s own stored fields, computed in torch float32 so the records match
+    # the PLY round trip exactly: the scale logit, the opacity logit (its
+    # `_inverse_sigmoid`), and the sRGB colour as SH degree 0 (its
+    # `convert_rgb_to_spherical_harmonics`).
+    scale_logit = torch.log(g.singular_values.flatten(0, 1).detach().float())
+    opa_t = g.opacities.flatten(0, 1).detach().float()
+    opa_logit = torch.log(opa_t / (1.0 - opa_t))
+    # SHARP predicts linearRGB and `save_ply` converts it to sRGB on the way out for
+    # public renderers; the `.splat` record carries that sRGB.
+    f_dc = ((cs_utils.linearRGB2sRGB(g.colors.flatten(0, 1).detach().float())
+             - 0.5) / SH_C0)
+    scale_logit = scale_logit.cpu().numpy()
+    opa_logit = opa_logit.cpu().numpy().reshape(-1)
+    f_dc = f_dc.cpu().numpy()
+    # The re-sample's "highest opacity" rule reads the sigmoid, exactly as the PLY
+    # converter reconstructs it.
+    opa = (1.0 / (1.0 + np.exp(-opa_logit))).astype(np.float32)
+    n = int(pos.shape[0])
+
+    target = 0
+    if budget and int(budget) > 0:
+        target = (int(budget) // SPLAT_PAD_TO) * SPLAT_PAD_TO
+        if target < SPLAT_PAD_TO:
+            target = SPLAT_PAD_TO
+
+    cell = 0.0
+    if target <= 0:
+        sel = np.arange(n)
+    else:
+        z = pos[:, 2]
+        safe_z = np.maximum(z, 1e-6)
+        u = f_px * pos[:, 0] / safe_z + w / 2.0
+        v = f_px * pos[:, 1] / safe_z + h / 2.0
+        vis = ((opa > SPLAT_ALPHA_MIN) & (z > 0.05)
+               & np.isfinite(u) & np.isfinite(v))
+        nvis = int(vis.sum())
+        if nvis <= target:
+            sel = np.flatnonzero(vis)
+        else:
+            cell = _choose_cell_px(u[vis], v[vis], target)
+            sel = _resample_indices(u, v, opa, vis, cell)
+            print("[basrelief] budget %d: cell %.3f px -> %d of %d visible"
+                  % (target, cell, len(sel), nvis), flush=True)
+
+    rec = _splat_records(pos[sel], scale_logit[sel], quat[sel], f_dc[sel],
+                         opa_logit[sel])
+    splats = int(rec.shape[0])
+    pad = (-splats) % SPLAT_PAD_TO
+    return rec, splats, pad, cell
+
+
+class SharpStill:
+    """SHARP on one still image, written as a budgeted `.splat` for the phone.
+
+    The still half of Stage 2: the graph is `LoadImage -> SharpStill`, the node runs
+    Apple's SHARP at `internal_size` (the setting every approved build used), then
+    emits the 32 B/splat format the phone's renderer reads. There is no PLY on disk:
+    the record is built directly from the model's tensors through the same round trip
+    `save_ply` + the `ply2splat.py` converter perform, so an uncapped run is
+    byte-identical to the approved converter's output when both run under one torch
+    version (measured: 0 differing bytes of 37,748,736). The checked-in
+    `teststill.splat` was built under a different torch (2.14 against this box's 2.11),
+    and against it the positions drift ~7e-5 relative -- a runtime difference, not a
+    logic one; the count (1,179,648) and the peak VRAM (7.41 GB) are exact.
+
+    `budget` caps the file. It is enforced as a uniform (u,v) cell re-sample, never a
+    1-D stride over the raster order -- see `_choose_cell_px` for the measured
+    streaks that rule removes -- and the cap is a ceiling on the FILE, so the
+    padding records count: the target is rounded down to a whole 2048-splat block.
+    `budget = 0` is uncapped and verbatim.
+
+    The outputs are deterministic filenames in the ComfyUI output directory, derived
+    from `tag` exactly as the app derives them: `basrelief_<tag>.splat` (the cloud)
+    and `basrelief_<tag>.splat.json` (a sidecar with the count, the focal and the
+    run's settings). Fetch both through `/view?filename=...&type=output`, or read the
+    `ui` payload of `/history`.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "image": ("IMAGE",),
+            # SHARP accepts only 384 + 288k; an invalid value is snapped and logged.
+            "internal_size": ("INT", {"default": 1536, "min": 384, "max": 3072,
+                                      "step": SHARP_INTERNAL_STEP}),
+            # Target splat count; 0 = uncapped. The file is rounded down to a whole
+            # padding block, so the written count never exceeds the budget.
+            "budget": ("INT", {"default": 150000, "min": 0, "max": 10 ** 9}),
+            # Stable names for the app: `basrelief_<tag>.splat` and
+            # `basrelief_<tag>.splat.json`, so a client can address them without
+            # having seen a response. Empty falls back to a timestamp+pid.
+            "tag": ("STRING", {"default": ""}),
+            # Pixels of the uploaded frame; 0 = SHARP's 30 mm fallback. Only the
+            # budgeted re-sample reads it (it is the lens the (u,v) grid is uniform
+            # in); the cloud itself is unaffected.
+            "focal_px": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100000.0,
+                                   "step": 1.0}),
+            # Explicit checkpoint path; empty = the node's own candidates, then the
+            # torch hub cache (which downloads once).
+            "checkpoint": ("STRING", {"default": ""}),
+            # Keep the predictor resident between runs (fast repeats) or hand the
+            # ~2.8 GB back at the end (the default, on a shared card).
+            "keep_loaded": ("BOOLEAN", {"default": False}),
+        }}
+
+    RETURN_TYPES = ("STRING", "INT", "INT", "FLOAT")
+    RETURN_NAMES = ("splat_path", "splats", "padding", "focal")
+    FUNCTION = "run"
+    CATEGORY = "basrelief"
+    # This node produces a FILE, not a tensor anything downstream consumes.
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # The image and the weights can change under the same prompt; never cache.
+        return float("NaN")
+
+    def run(self, image, internal_size, budget, tag, focal_px, checkpoint, keep_loaded):
+        import comfy.model_management
+
+        started = time.time()
+        device = comfy.model_management.get_torch_device()
+        size = _sharp_internal_size(internal_size)
+        if size != int(internal_size):
+            print("[basrelief] internal_size %d is not 384+288k; using %d"
+                  % (internal_size, size), flush=True)
+
+        if image is None or getattr(image, "dim", lambda: 0)() < 4:
+            raise ValueError("SharpStill needs an IMAGE tensor (B,H,W,C)")
+        h, w = int(image.shape[1]), int(image.shape[2])
+        # SHARP's loader takes an 8-bit RGB frame; ComfyUI's tensor is that frame as
+        # float/255, so this round trip is lossless and reproduces the reference
+        # input exactly (LoadImage's own conversion is the inverse).
+        img_u8 = (image[0].detach().cpu().float().clamp(0.0, 1.0).numpy() * 255.0
+                  ).round().astype(np.uint8)
+        f_px = float(focal_px) if focal_px and float(focal_px) > 0 else _sharp_focal_px(w, h)
+
+        pbar = comfy.utils.ProgressBar(3)
+        predictor = _load_sharp_predictor(checkpoint, str(device))
+        pbar.update_absolute(1)
+        with torch.no_grad():
+            g = _predict_sharp(predictor, img_u8, f_px, device, size)
+        if comfy.model_management.processing_interrupted():
+            raise comfy.model_management.InterruptProcessingException()
+        pbar.update_absolute(2)
+
+        rec, splats, pad, _cell = _build_splat(g, f_px, w, h, budget)
+        n = int(g.mean_vectors.flatten(0, 1).shape[0])
+        pbar.update_absolute(3)
+
+        safe = _safe_tag(tag)
+        out_dir = folder_paths.get_output_directory()
+        splat_name = "basrelief_%s.splat" % safe
+        side_name = "basrelief_%s.splat.json" % safe
+        splat_path = os.path.join(out_dir, splat_name)
+        side_path = os.path.join(out_dir, side_name)
+        tmp = splat_path + ".tmp"
+        try:
+            with open(tmp, "wb") as fh:
+                rec.tofile(fh)
+                if pad:
+                    fh.write(b"\x00" * (pad * SPLAT_ITEMSIZE))
+            os.replace(tmp, splat_path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        focal_i = int(round(f_px))
+        try:
+            with open(side_path, "w") as fh:
+                json.dump({"state": "done", "splat": splat_name, "splats": splats + pad,
+                           "selected": splats, "padding": pad, "focal": focal_i,
+                           "internal_size": size, "budget": int(budget),
+                           "width": w, "height": h, "tag": safe}, fh)
+        except OSError:
+            pass
+
+        if not keep_loaded:
+            _release_sharp()
+        print("[basrelief] %s: %d splats (+%d pad) from %d, focal %d px, %.1fs"
+              % (splat_name, splats + pad, pad, n, focal_i, time.time() - started),
+              flush=True)
+        return {"ui": {"splat": [splat_name], "sidecar": [side_name],
+                       "splats": [splats + pad], "padding": [pad], "focal": [focal_i]},
+                "result": (splat_name, splats + pad, pad, f_px)}
 
 
 # ------------------------------------------------------------------ prototype tool
