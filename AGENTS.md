@@ -8,15 +8,18 @@ with a built-in studio screen.
 `reference/webgl-port/` — a Vite + three.js app kept as a reference for the
 original camera model and the embedded-depth reader, and for nothing else. It is
 NOT being kept in sync, so do not treat the two as expected to match — see *Known
-drift* — and do not start the planned web gallery by editing it. Its demo assets
+drift* — and do not edit it to grow the web gallery: that app lives in `web/` and
+shares no code with the port. Its demo assets
 in `reference/webgl-port/public/assets/` are the **old** demo and are regenerated
 only by `pnpm run gen:assets` from that directory; replacing
 `android/app/src/main/res/raw/` does not touch them, so the two demos now differ.
 All three files there are referenced by `reference/webgl-port/src/main.js`
 (`image.png`, `depth.png`, and `photo-with-depth.png`, which carries its depth in
-a `dePH` chunk) — replace all three or the web port breaks. The only JS project
-is that one: it uses **pnpm** (`reference/webgl-port/pnpm-lock.yaml`), and the
-repository root has no `package.json`.
+a `dePH` chunk) — replace all three or the web port breaks. There are two JS
+projects, each using **pnpm**: the reference port
+(`reference/webgl-port/pnpm-lock.yaml`) and the gallery (`web/pnpm-lock.yaml`).
+The repository root has no `package.json`, and adding one is how "one JS project
+outside `web/`" starts.
 
 ## Design prototypes
 
@@ -32,6 +35,71 @@ The code was right; the prototype was wrong. **Read the code (and fix the
 prototype in the same change) before trusting the prototype for anything
 structural.** Every prototype page now carries a drift banner saying so.
 
+## The web gallery (`web/`)
+
+`web/` is the second JS project and the only one that is a product: a Vite +
+TypeScript app where a file dropped on the page is shown, and a packed PNG is
+shown as a relief. It is `TODO.md`'s ideation item 3, and **it is not an edit of
+`reference/webgl-port/`**. The product shape is "someone sends you a PNG and you
+drop it on a page": no account, no server, no cloud library, and no persistence —
+a refresh empties the gallery because the `File` objects in the tab are the
+gallery.
+
+- **The gallery is media-typed, because a file's kind is a property of the
+  file.** A file is a **relief** (a `dePH`/`dEPt` chunk was read), a **photo** (a
+  decodable image with no chunk), a **cloud** (a `.splat` of whole 32-byte
+  records, counted from its length alone: `bytes / 32`, printed as
+  `479,232 splats`), or **unreadable**. `web/src/media.ts` is the one classifier
+  (`classifyMedia`); the card badge, the count line and the viewer dispatch all
+  read its answer, so no surface can disagree with another. The Android row's
+  `RenderMode.RELIEF`/`SPLAT` is the same split one platform over.
+- **The three-state rule is `DepthSource`'s, generalised.** `reading` is the
+  window in which nothing may be claimed — the same state as `DepthSource.UNKNOWN`
+  and `SplatSource.UNREAD` — and it is deliberately NOT "no depth": a file whose
+  bytes are not here yet, or whose image has not decoded, has not answered.
+  `bad-payload` (a wrong-size or empty chunk, or raw grey before `IHDR`) is
+  `unreadable`, because the file claims depth and the claim does not add up. A
+  depth map whose dimensions differ from the photo's is refused, not stretched:
+  the reader accepts the whole-PNG payload the contract requires, and the app
+  layer makes the pairing decision. `whole-png.png` in the fixtures is exactly
+  that case (a 3×2 depth under an 8×6 photo) and `web/src/media.test.ts` pins it.
+- **The viewer has ONE dispatch point.** `openViewer` in `web/src/viewer.ts`
+  switches on the media kind; the relief renderer is a named module
+  (`web/src/relief.ts`), a photograph is a plain `<img>` because with no depth
+  there is nothing to displace, and a cloud names its count and says its renderer
+  is next. Do not grow a renderer interface: a second medium is a second `case`.
+- **The relief renderer is a port of `reference/webgl-port/src/scene.js`, and the
+  camera model is taken from it deliberately** — a plane displaced by
+  `depth/255 - 0.5` scaled by intensity × plane height, per-vertex normals shaded
+  by ambient + directional light, a fixed 45° camera at `CAM_DIST` with
+  `CROP_MARGIN`, the eye swinging by `motion × MOTION_GAIN × CAM_RANGE_FRACTION ×
+  planeHeight`, and the separable FLOAT box blur at `DEPTH_BLUR_FRACTION = 1/78`
+  that keeps 8-bit terraces from becoming contour lines. That fraction is now
+  checked in all three copies by `scripts/check-parity.mjs`. The port's
+  **structure** is not taken: one scene per open item, created and destroyed with
+  the viewer; no tap-to-set-orbit, pan or zoom; and the smoothing is time-based
+  (`tau = 0.2 s`, as the app's `TiltFilter` does) rather than the port's
+  frame-rate-dependent `lerp 0.08`. The picture fills the viewport (cover + the
+  8% crop), as the wallpaper does — there is no zoom/pan yet, so a landscape
+  photo on a portrait phone is cropped.
+- **A packed PNG is read as two independent things.** The chunk needs the bytes
+  (an `ArrayBuffer`), and the colour needs a decode (an object URL / `<img>` /
+  `TextureLoader`); a decoded `ImageBitmap` cannot give the chunks back. The
+  reader returns the payload the way Java's `DepthPng.Result` does — raw grey plus
+  the outer dimensions, or the whole PNG plus its own dimensions — not the
+  reference port's "re-encode raw to a PNG and throw the dimensions away".
+- **A `file:` URL cannot work.** ES modules and fetch both refuse it, so
+  `pnpm dev` or `pnpm preview` is the only way in; the README says so and
+  `index.html` is not designed for double-clicking.
+- **The `dePH` reader is the contract's third implementation**, tested against
+  `contract/deph/` by `web/src/deph.test.ts`. CI's `web-app` job runs `pnpm test`,
+  `pnpm typecheck` and `pnpm build`; the fixture test is plain Node type
+  stripping, so it needs no browser.
+- **What it does not do yet:** export/packing (the Android app packs), the
+  `.splat` renderer (files are listed and counted), accounts, a server, and
+  persistence. It does not talk to the phone, and it does not share code with the
+  reference port.
+
 ## Shared contracts (`contract/`)
 
 Three languages, and several rules are implemented more than once because the
@@ -44,7 +112,7 @@ ASCII one, and the app's sidecar reader is the one `:core` tests).
 | contract | implementations | fixture |
 |---|---|---|
 | the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` | `contract/tag/cases.json` |
-| the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` | `contract/deph/` |
+| the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` | `contract/deph/` |
 | the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` | `contract/sidecar/` |
 
 - **The tag rule is ASCII, and that is the fix rather than a preference:** keep
@@ -64,6 +132,13 @@ ASCII one, and the app's sidecar reader is the one `:core` tests).
   dimensions come from) is `bad-payload`; a non-PNG is not a PNG with no depth.
   The fixtures' depth bytes are deliberately unlike the image's pixels, so
   returning the colour image where the depth belongs fails the digest.
+  **The web reader (`web/src/deph.ts`) is the third copy and follows the contract
+  exactly; the size MISMATCH is refused one layer up.** A whole-PNG payload names
+  its own dimensions, so a 3×2 depth under an 8×6 photo is accepted by the reader
+  (as the contract requires) and refused by `web/src/media.ts` as `unreadable` —
+  never stretched over the photo. That is why the TypeScript result carries both
+  the payload's dimensions and the outer IHDR's, as Java's `DepthPng.Result`
+  does; the reference port re-encodes raw to a PNG and discards that difference.
 - **A missing sidecar number is "no claim", never zero to divide by.** `focal`,
   `width` and `height` absent, `focal` 0 (the node's own "fit failed"), or an
   unreadable body all mean no lens, and the cloud draws at the default look.
@@ -80,7 +155,10 @@ ASCII one, and the app's sidecar reader is the one `:core` tests).
   a bare container and be the first CI job the node has ever had:
   `podman run --rm -v "$PWD:/w:ro" -w /w python:3.12-slim python3 server/comfy-node/tests/test_contract.py`.
   The JS half is `node contract/deph/png-depth.test.mjs` — `png-depth.js` touches
-  no browser API, so it loads in Node unmodified.
+  no browser API, so it loads in Node unmodified. The gallery's third copy is
+  `web/src/deph.test.ts`, run as
+  `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
+  test framework).
 
 ## Build and test
 
@@ -115,7 +193,9 @@ worked, because the build still succeeds. Override the location with
 `GRADLE_CACHE_DIR`, or opt out entirely with `GRADLE_NO_CACHE=1`.
 
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
-every push, plus a pnpm/vite build of the reference port and a `guards` job: AGENTS.md's paths
+every push, plus a pnpm/vite build of the reference port, a `web-app` job
+(`pnpm test`, `pnpm typecheck`, `pnpm build` for the gallery — the `dePH` fixture
+test is its gate) and a `guards` job: AGENTS.md's paths
 and the port parity, `scripts/check-shaders.mjs`, which compiles every GLSL
 shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
 float handed to `JSONObject.put`. It invokes the scripts from the repo
@@ -124,6 +204,11 @@ root, so **`podman-build.sh` must stay runnable from any working directory**.
 Web (reference port, not maintained): in `reference/webgl-port/`, `pnpm install`
 then `pnpm run build` (or `pnpm dev` to serve it over HTTPS for the gyro). See
 `reference/webgl-port/README.md`.
+
+Web gallery (a product): in `web/`, `pnpm install`, then `pnpm dev` (HTTPS on
+:5173, so a phone on the LAN can use the gyro) or `pnpm build` + `pnpm preview`.
+`pnpm test` runs the `contract/deph/` fixture test and the media-state test;
+`pnpm typecheck` is `tsc --noEmit`. See `web/README.md`.
 
 ## Architecture
 
@@ -1091,7 +1176,7 @@ already cost real time.
 - **Embedded depth** lives in a custom PNG ancillary chunk, keys `dEPt`/`dePH`,
   case-insensitive. The payload is either a whole PNG or raw `w*h` 8-bit grey,
   with dimensions from IHDR. `DepthPng.java` /
-  `reference/webgl-port/src/png-depth.js`.
+  `reference/webgl-port/src/png-depth.js` / `web/src/deph.ts`.
 - **Store image/depth as filenames, not absolute paths.** With
   `allowBackup="true"` an absolute path survives a restore but points at the old
   device's `filesDir`, and the user silently loses their image. `PrefFiles`
@@ -1302,8 +1387,9 @@ it**. 763 tests across forty-four classes:
 
 - `TagContractTest` / `DepthPngContractTest` / `SidecarContractTest` — the Java half
   of `contract/`, and the reason that directory exists. Each reads the SAME golden
-  bytes as the node's Python test (`server/comfy-node/tests/test_contract.py`) or the
-  reference port's Node test (`contract/deph/png-depth.test.mjs`), from a directory
+  bytes as the node's Python test (`server/comfy-node/tests/test_contract.py`), the
+  reference port's Node test (`contract/deph/png-depth.test.mjs`) or the gallery's
+  TypeScript test (`web/src/deph.test.ts`), from a directory
   passed in as the `basrelief.contract` system property by
   `android/core/build.gradle` — never a `../../` chain, because the test working
   directory is `android/core` and the build container mounts only `android/`.

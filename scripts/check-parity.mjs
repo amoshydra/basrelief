@@ -11,8 +11,10 @@
  *
  *   2. Web/Android parity for the constants that MUST match. DEPTH_BLUR_FRACTION
  *      is the load-bearing one: the 8-bit depth banding fix is that exact
- *      fraction, and if the two ports disagree the artifact comes back on one
- *      platform only. Nothing in the build enforced this.
+ *      fraction, and if the copies disagree the artifact comes back on one
+ *      platform only. There are now THREE copies — the Android renderer, the
+ *      reference port and the gallery in `web/` — and nothing in any build
+ *      enforced this before.
  *
  * Exits non-zero on failure so CI goes red. No dependencies — plain Node, so it
  * runs in the web job with no install step.
@@ -199,29 +201,36 @@ function checkParity() {
     {
       name: 'DEPTH_BLUR_FRACTION',
       why: 'the 8-bit depth banding fix is this exact fraction',
-      web: 'reference/webgl-port/src/scene.js',
-      android: 'android/core/src/main/java/com/amoshydra/basrelief/core/render/ReliefMesh.java',
+      // Every copy of the effect. The reference port and the gallery are
+      // separate apps on purpose; this constant is not allowed to drift.
+      web: ['reference/webgl-port/src/scene.js', 'web/src/relief.ts'],
+      android:
+        'android/core/src/main/java/com/amoshydra/basrelief/core/render/ReliefMesh.java',
     },
   ];
 
   for (const p of pairs) {
-    const w = readFraction(p.web, p.name);
     const a = readFraction(p.android, p.name);
-    if (w === null) {
-      failures.push(`could not read ${p.name} from ${p.web} — update this script`);
-      continue;
-    }
     if (a === null) {
       failures.push(`could not read ${p.name} from ${p.android} — update this script`);
       continue;
     }
-    if (Math.abs(w - a) > 1e-12) {
-      failures.push(
-        `${p.name} differs: web 1/${Math.round(1 / w)} vs android 1/${Math.round(1 / a)} ` +
-          `(${p.why})`
-      );
-    } else {
-      console.log(`parity: ${p.name} = 1/${Math.round(1 / w)} in both ports`);
+    for (const file of p.web) {
+      const w = readFraction(file, p.name);
+      if (w === null) {
+        failures.push(`could not read ${p.name} from ${file} — update this script`);
+        continue;
+      }
+      if (Math.abs(w - a) > 1e-12) {
+        failures.push(
+          `${p.name} differs: ${file} has 1/${Math.round(1 / w)} vs android ` +
+            `1/${Math.round(1 / a)} (${p.why})`,
+        );
+      } else {
+        console.log(
+          `parity: ${p.name} = 1/${Math.round(1 / w)} in ${file} and the Android renderer`,
+        );
+      }
     }
   }
 }
@@ -375,6 +384,11 @@ function checkSharedRules() {
     'contract/sidecar/cases.json',
     'server/comfy-node/tests/test_contract.py',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/TagContractTest.java',
+    'web/src/deph.ts',
+    'web/src/deph.test.ts',
+    'web/README.md',
+    'web/package.json',
+    'web/pnpm-lock.yaml',
   ]) {
     if (!existsSync(join(root, f))) {
       failures.push(`${f} is missing — the shared contract fixtures need every half`);

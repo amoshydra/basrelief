@@ -1,11 +1,14 @@
 # Basrelief
 
 Turn a photo + its depth map into a real 3D **relief** that tilts with your phone.
-Two apps share one effect and one camera model:
+Three surfaces share one effect and one camera model:
 
 - **Android live wallpaper** (`android/`, plain Java + OpenGL ES 2) — a gyro-driven
   live wallpaper plus a full editing "studio" screen. No AndroidX, no Maven
   dependencies. **This is the product.**
+- **Web gallery** (`web/`, Vite + TypeScript) — a static page where you drop a
+  packed PNG and see its relief. The distribution half: no app can rebind its own
+  wallpaper, so a file you can send someone is how it travels.
 - **Reference WebGL port** (`reference/webgl-port/`, Vite + three.js) — an older
   browser implementation kept for the original camera model and the
   embedded-depth reader. Not maintained in sync with the app; see its README.
@@ -22,6 +25,24 @@ silhouette, and real shading. This is genuine geometry, not a parallax shader.
 Because the depth map is 8-bit, its quantisation terraces are smoothed by a
 **separable float box blur** (radius `width/78`) applied before tessellation —
 without it, grazing light turns those terraces into visible contour lines.
+
+## Web gallery
+
+A static gallery and viewer, and the only way one of these photos travels: drop a
+packed PNG and it opens as a relief that moves with a drag or the device's tilt.
+Drop a `.splat` cloud and it is listed and counted (its renderer is the next
+change). Files never leave the tab, and there is no server or persistence.
+
+```
+cd web
+pnpm install
+pnpm dev        # HTTPS on :5173 — needed for the gyro on a phone
+pnpm build      # typecheck + static bundle in web/dist
+pnpm test       # contract/deph fixtures + media-state checks
+```
+
+`file://` will not work (ES modules and fetch both refuse it). See
+`web/README.md` for the media states, the format, and what it does not do yet.
 
 ## Reference WebGL port
 
@@ -103,7 +124,7 @@ again — wakes it, re-calibrating to the current pose.
 
 A color PNG may carry its depth map in a custom **ancillary chunk** — invisible to
 normal viewers, so the file stays a plain viewable image. The parser (`png-depth.js`
-web, `DepthPng.java` Android) accepts both chunk names:
+web, `web/src/deph.ts` gallery, `DepthPng.java` Android) accepts both chunk names:
 
 | Name   | Meaning |
 |--------|---------|
@@ -123,6 +144,14 @@ payload as `dePH`.
 ## Project layout
 
 ```
+web/                    static gallery + relief viewer (Vite + TypeScript)
+  src/
+    deph.ts             dePH/dEPt reader (the contract's third copy)
+    media.ts            one classifier for what a dropped file is
+    gallery.ts          cards, counts, per-file inspection
+    viewer.ts           one dispatch point per media kind
+    relief.ts           relief renderer (camera model from the port)
+    tilt.ts             deviceorientation → tilt target
 reference/webgl-port/   reference web app (Vite + three.js), not maintained
   src/
     scene.js            camera model, relief geometry, pan/zoom/orbit
@@ -168,6 +197,10 @@ quantisation) from silently regressing. `CameraModelTest` checks that tapping to
 re-centre the relief round-trips through the projection.
 
 JUnit is a test-only dependency and is not packaged into the APK.
+
+The web gallery's tests run under plain Node, with no browser and no test
+framework: `cd web && pnpm test` walks the shared `contract/deph/` fixtures with
+its TypeScript reader and checks the gallery's media states.
 
 ## License
 

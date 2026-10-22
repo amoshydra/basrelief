@@ -19,7 +19,7 @@ rewrites its own expectation can never fail.
 | contract | implementations | fixture | tested by |
 |---|---|---|---|
 | the tag rule | node `basrelief_depth/contract.py` (creates the filenames) + app `ComfyWorkflow.streamTag` (derives them) | `tag/cases.json` | `TagContractTest` (Java) · `test_contract.py` (Python) |
-| the `dePH`/`dEPt` PNG chunk | app `:core/depth/DepthPng.java` + reference port `src/png-depth.js` | `deph/*.png` + `deph/cases.json` | `DepthPngContractTest` (Java) · `png-depth.test.mjs` (Node) |
+| the `dePH`/`dEPt` PNG chunk | app `:core/depth/DepthPng.java` + reference port `src/png-depth.js` + gallery `web/src/deph.ts` | `deph/*.png` + `deph/cases.json` | `DepthPngContractTest` (Java) · `png-depth.test.mjs` (Node) · `web/src/deph.test.ts` (TypeScript) |
 | the splat sidecar | node writes it (`contract.py::splat_sidecar`) + app reads it (`:core/render/SplatSidecar.java`) | `sidecar/*.json` | `SidecarContractTest` (Java) · `test_contract.py` (Python) |
 
 **Deliberately not fixtured: the `.splat` 32-byte record.** There is no duplicated
@@ -96,9 +96,17 @@ disagree only about whether it carries depth. The refused fixtures are half the
 contract for the same reason — "wrong-size payload" must be *refused*, because
 accepting it means rendering a depth map whose dimensions were guessed.
 
-The two APIs are deliberately not identical: JS returns an error code and Java
+The APIs are deliberately not identical: JS returns an error code and Java
 returns `null` for every refusal, because the app only ever asks "is there depth
 here". The JS test pins the exact code; the Java test pins the refusal.
+
+The TypeScript copy (`web/src/deph.ts`) is the third and chooses per consumer:
+it returns the error code like the JS port, and the payload the way Java does —
+either raw grey plus the outer IHDR's dimensions, or the whole PNG plus its own
+dimensions. The gallery needs both dimension pairs to refuse a depth map that is
+not the photo's size (`whole-png.png` is 3×2 under an 8×6 photo, and the app
+layer refuses to stretch it). It never re-encodes the payload: raw grey stays
+raw grey, and a whole-PNG payload is passed through byte-for-byte.
 
 ## The splat sidecar
 
@@ -143,9 +151,17 @@ podman run --rm -v "$PWD:/w:ro" -w /w python:3.12-slim \
 node contract/deph/png-depth.test.mjs
 ```
 
-CI runs all three: the JS check in `guards`, the Java check inside the `android`
-job's `test` step, and the Python one in its own `python-contract` job (there was
-no Python job at all before this directory existed).
+**TypeScript** (the gallery's copy; plain Node type stripping — no browser, no
+test framework, no install beyond the app's own dependencies):
+
+```
+cd web && pnpm test
+```
+
+CI runs all four: the JS check and the TypeScript check (in the `web-app` job),
+the Java check inside the `android` job's `test` step, and the Python one in its
+own `python-contract` job (there was no Python job at all before this directory
+existed).
 
 ## Adding a fixture
 

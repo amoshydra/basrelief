@@ -17,13 +17,15 @@ local.properties
 *.aab
 
 # --- node / web ---
-# The only JS project is the reference WebGL port. These patterns are global, so
-# they cover reference/webgl-port/node_modules/ and reference/webgl-port/dist/
-# as well; the explicit lines below keep the intent readable.
+# There are two JS projects: the reference WebGL port and the gallery in web/.
+# These patterns are global, so they already cover both node_modules/ and dist/;
+# the explicit lines below keep the intent readable.
 node_modules/
 dist/
 reference/webgl-port/node_modules/
 reference/webgl-port/dist/
+web/node_modules/
+web/dist/
 *.log
 npm-debug.log*
 

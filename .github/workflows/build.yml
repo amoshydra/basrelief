@@ -13,8 +13,13 @@ name: build
 #   - the shared `contract/` fixtures: the rules implemented more than once (the
 #     tag rule, the dePH chunk, the splat sidecar) are tested against ONE set of
 #     golden bytes by each language. The JS half runs in `guards`, the Java half in
-#     the android job, and the node's Python half in its own container job -- the
+#     the android job, the TypeScript half (the `web/` gallery's reader) in the
+#     web-app job, and the node's Python half in its own container job -- the
 #     node had no CI at all before this.
+#
+#   - the `web/` gallery is a product, not the reference port: its dePH fixture
+#     test is a gate exactly as the port's is, and the typecheck/build catch what
+#     `pnpm test` cannot see.
 #
 # Uses the same containerised Gradle path as `android/podman-build.sh` — the
 # host needs nothing but podman, which ubuntu-latest already has.
@@ -127,3 +132,30 @@ jobs:
           cache-dependency-path: reference/webgl-port/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+
+  web-app:
+    # The gallery is a product. Its dePH reader is the contract's third
+    # implementation, so its fixture test is a real gate; the typecheck and the
+    # production build catch a broken import or a DOM type that the fixture test
+    # cannot see. (No browser is needed: the reader and the media classifier are
+    # plain values.)
+    name: web gallery (fixtures + typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm build
