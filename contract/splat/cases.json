@@ -1,0 +1,184 @@
+{
+  "recordBytes": 32,
+  "source": "android/app/src/main/res/raw/demo.splat",
+  "sourceRecords": 149504,
+  "recordsBytes": 128,
+  "records": 4,
+  "sourceColourWordsAsNaN": 16964,
+  "fixtureSha256": "8363cbd57d52a1da62540aa7baef29fb48997a15640564f445566f1f202e5f26",
+  "layout": [
+    "offset 0..11  position x,y,z    float32 x3, little-endian",
+    "offset 12..23 scale    sx,sy,sz float32 x3, already exp()-decoded",
+    "offset 24..27 colour   r,g,b,a  uint8 x4",
+    "offset 28..31 quat     w,x,y,z  uint8 x4, q*128+128",
+    "The 32 bytes ARE the two RGBA32UI texels the renderer uploads: texels[0] = (x,y,z,sx),",
+    "texels[1] = (sy,sz,colourWord,quatWord), each word the little-endian uint32 at its offset."
+  ],
+  "recordsList": [
+    {
+      "name": "first",
+      "index": 0,
+      "why": "the file’s first record: an ordinary splat whose baked opacity (alpha 43) makes the quad SHRINK — Splat.extentScaleForAlpha gives sqrt(2 ln(43)) / 3 = 0.914 — and whose quaternion is far from identity, so the q*128+128 decode and the R S S^T R^T rotation are both exercised",
+      "position": [
+        -0.3137326240539551,
+        0.22570955753326416,
+        0.59326171875
+      ],
+      "scale": [
+        0.004542921204119921,
+        0.0030178322922438383,
+        0.0004396470030769706
+      ],
+      "color": [
+        8,
+        8,
+        8,
+        43
+      ],
+      "quaternion": [
+        216,
+        128,
+        129,
+        221
+      ],
+      "texels": [
+        [
+          3198198160,
+          1046945896,
+          1058529280,
+          999611593
+        ],
+        [
+          994428627,
+          971407468,
+          721946632,
+          3716251864
+        ]
+      ]
+    },
+    {
+      "name": "bright",
+      "index": 21916,
+      "why": "THE record this contract exists for: an opaque bright splat whose colour word reads as a float32 NaN. Uploaded as RGBA32F (the prototype’s path) the colour comes back through floatBitsToUint as a canonical NaN on Mali and this splat draws flat white; uploaded as RGBA32UI the bytes ARE the texel. The exact condition is the exponent: ((alpha & 0x7F) << 1) | (blue >> 7) == 0xFF, i.e. alpha 127 or 255 and blue >= 128",
+      "position": [
+        -0.18040548264980316,
+        0.09131558984518051,
+        0.5417976975440979
+      ],
+      "scale": [
+        0.0005528143956325948,
+        0.00030881844577379525,
+        0.00021033917437307537
+      ],
+      "color": [
+        179,
+        154,
+        131,
+        255
+      ],
+      "quaternion": [
+        38,
+        130,
+        129,
+        219
+      ],
+      "texels": [
+        [
+          3191389239,
+          1035666347,
+          1057665857,
+          974187199
+        ],
+        [
+          966912233,
+          962367102,
+          4286814899,
+          3682697766
+        ]
+      ],
+      "colourWordIsNaNAsFloat": true
+    },
+    {
+      "name": "opaque",
+      "index": 74765,
+      "why": "a fully opaque, mid-file record: the alpha-extent clip is the IDENTITY here (sqrt(2 ln 255) = 3.33 > 3, so the whole 3-sigma quad is kept), which is the other end of the range from `first`",
+      "position": [
+        -0.004390207584947348,
+        -0.6447477340698242,
+        1.0205092430114746
+      ],
+      "scale": [
+        0.007851740345358849,
+        0.0051803127862513065,
+        0.0008323229267261922
+      ],
+      "color": [
+        5,
+        2,
+        2,
+        255
+      ],
+      "quaternion": [
+        214,
+        128,
+        128,
+        223
+      ],
+      "texels": [
+        [
+          3146767291,
+          3206876720,
+          1065525260,
+          1006675094
+        ],
+        [
+          1000980381,
+          978989119,
+          4278321669,
+          3749740758
+        ]
+      ]
+    },
+    {
+      "name": "padding",
+      "index": 149502,
+      "why": "the node pads a budget out with zero records, and a real cloud therefore ENDS in them: 32 zero bytes must decode without throwing and must be culled (`z > 0` is the shader’s test), not divided by",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0,
+        0,
+        0
+      ],
+      "color": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "texels": [
+        [
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ]
+}

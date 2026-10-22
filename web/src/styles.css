@@ -474,6 +474,18 @@ summary:focus-visible {
   height: 100%;
 }
 
+.cloud-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The gaps a tilt opens are the clear colour: there is deliberately no
+     backdrop, so the stage behind the canvas must never show through. */
+  background: #0b0b0c;
+  touch-action: none;
+}
+
 .viewer-photo {
   width: 100%;
   height: 100%;
@@ -586,6 +598,18 @@ summary:focus-visible {
   color: var(--muted);
 }
 
+/* The lens line, and the cost note for a dense cloud: facts, not controls. */
+.viewer-note {
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.viewer-note--warn {
+  color: #c9b78f;
+}
+
 .viewer-hint--floating {
   position: absolute;
   left: 50%;
@@ -606,8 +630,7 @@ summary:focus-visible {
   font-size: 13px;
 }
 
-.viewer-message,
-.cloud-card {
+.viewer-message {
   width: min(430px, calc(100% - 40px));
   margin: 0 auto;
   padding: 26px 24px;
@@ -622,17 +645,10 @@ summary:focus-visible {
   font-weight: 650;
 }
 
-.viewer-message p,
-.cloud-card p {
+.viewer-message p {
   margin: 10px 0 0;
   color: var(--muted);
   font-size: 13px;
-}
-
-.cloud-count {
-  font-size: 22px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
 }
 
 .cloud-glyph {

@@ -361,7 +361,7 @@ function checkModalInvariants() {
 /**
  * A rule implemented more than once is held together by `contract/` ONLY while
  * both copies exist, both are tested against the fixture, and neither grows a
- * second implementation. The fixtures are run by three different jobs in three
+ * second implementation. The fixtures are run by four different jobs in four
  * languages; nothing in this script can run them, so what it can check is the
  * shape that makes them meaningful:
  *
@@ -372,7 +372,11 @@ function checkModalInvariants() {
  *      which is the half of the pair that disagreed with Python's `isalnum()`;
  *   4. the app's sidecar reader is the one :core tests — an inline `new JSONObject`
  *      in SplatImport would leave `SplatSidecar` tested but unused, which is a test
- *      of dead code.
+ *      of dead code;
+ *   5. the 32-byte record has BOTH readers tested against `contract/splat/` —
+ *      Java's `SplatCloud` and the gallery's `web/src/splat.ts`. The record used to
+ *      be deliberately unfixtured because there was one implementation; there are
+ *      two now, and a fixture only one side reads is not a contract.
  */
 function checkSharedRules() {
   const before = failures.length;
@@ -382,10 +386,17 @@ function checkSharedRules() {
     'contract/deph/cases.json',
     'contract/deph/png-depth.test.mjs',
     'contract/sidecar/cases.json',
+    'contract/splat/cases.json',
+    'contract/splat/records.bin',
+    'contract/splat/generate.mjs',
     'server/comfy-node/tests/test_contract.py',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/TagContractTest.java',
+    'android/core/src/test/java/com/amoshydra/basrelief/core/contract/SplatRecordContractTest.java',
+    'android/core/src/test/java/com/amoshydra/basrelief/core/contract/SidecarContractTest.java',
     'web/src/deph.ts',
     'web/src/deph.test.ts',
+    'web/src/splat.ts',
+    'web/src/splat.test.ts',
     'web/README.md',
     'web/package.json',
     'web/pnpm-lock.yaml',
@@ -423,6 +434,28 @@ function checkSharedRules() {
     failures.push(
       'SplatImport does not read the sidecar through SplatSidecar — the :core ' +
         'contract test would then be testing a reader nothing uses');
+  }
+
+  /**
+   * The splat fixture's hardest cases, held the way `TagContractTest` holds the
+   * tag table's: a fixture that quietly lost the record it exists for is a rule
+   * with no guard, and the loss is silent on both sides.
+   */
+  const splatCases = JSON.parse(readFileSync(join(root, 'contract/splat/cases.json'), 'utf8'));
+  const records = Array.isArray(splatCases.recordsList) ? splatCases.recordsList : [];
+  for (const required of ['first', 'bright', 'opaque', 'padding']) {
+    if (!records.some((r) => r.name === required)) {
+      failures.push(
+        `contract/splat/cases.json lost its "${required}" record — every one of the ` +
+          'four states the fixture pins is load-bearing (see contract/README.md)');
+    }
+  }
+  const bright = records.find((r) => r.name === 'bright');
+  if (!bright || bright.colourWordIsNaNAsFloat !== true
+      || !Array.isArray(bright.color) || bright.color[3] < 128 || bright.color[2] < 128) {
+    failures.push(
+      'contract/splat\'s bright record no longer claims a float-NaN colour word — that ' +
+        'record is the whole reason the integer texture path is not the float one');
   }
 
   if (failures.length === before) {

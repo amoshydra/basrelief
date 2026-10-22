@@ -6,6 +6,7 @@ import {
   formatSplatCount,
   type MediaState,
 } from './media.ts';
+import { parseSidecar } from './splat.ts';
 import { openViewer } from './viewer.ts';
 
 /**
@@ -15,6 +16,13 @@ import { openViewer } from './viewer.ts';
  * gallery. Each one is inspected once — image decode and the `dePH` read are two
  * separate reads of one file, because a decoded ImageBitmap cannot give the
  * chunks back — and the answer is the one `classifyMedia` returned.
+ *
+ * **A sidecar is not a card.** `basrelief_<tag>.splat.json` is the node's lens
+ * measurement for the cloud beside it, so it is an attachment rather than media:
+ * dropping it adds no card and reaches no classifier, it sets the cloud's lens.
+ * The two may arrive in either order (a drop is unordered), which is why the
+ * mapping is kept by cloud filename and a late sidecar still finds its cloud. An
+ * unmatched one is named in the header rather than silently dropped.
  */
 
 export interface GalleryItem {
@@ -26,6 +34,10 @@ export interface GalleryItem {
   depth: Extract<DephResult, { ok: true }> | null;
   width: number;
   height: number;
+  /** `focal / height` from the cloud's sidecar, or 0 when nothing claimed a lens. */
+  lens: number;
+  /** The sidecar that stated it, if one arrived. */
+  lensFrom: string | null;
 }
 
 interface CardParts {
@@ -53,6 +65,9 @@ export interface Gallery {
 export function createGallery(options: GalleryOptions): Gallery {
   const items: GalleryItem[] = [];
   const cards = new Map<string, CardParts>();
+  /** Sidecar lenses by the cloud filename they describe, in either arrival order. */
+  const sidecars = new Map<string, { lens: number; name: string }>();
+  let sidecarFiles = 0;
 
   function isOpenable(state: MediaState): boolean {
     return state.kind === 'relief' || state.kind === 'photo' || state.kind === 'cloud';
@@ -60,6 +75,11 @@ export function createGallery(options: GalleryOptions): Gallery {
 
   function addFiles(files: Iterable<File>): void {
     for (const file of files) {
+      if (isSidecarName(file.name)) {
+        void readSidecar(file);
+        continue;
+      }
+      const lens = sidecars.get(file.name);
       const item: GalleryItem = {
         id: newId(),
         file,
@@ -68,6 +88,8 @@ export function createGallery(options: GalleryOptions): Gallery {
         depth: null,
         width: 0,
         height: 0,
+        lens: lens?.lens ?? 0,
+        lensFrom: lens?.name ?? null,
       };
       items.push(item);
 
@@ -93,6 +115,35 @@ export function createGallery(options: GalleryOptions): Gallery {
 
   function clear(): void {
     for (const item of [...items]) remove(item);
+    sidecars.clear();
+    sidecarFiles = 0;
+    renderCounts();
+  }
+
+  /**
+   * A dropped `*.splat.json`: read it, remember its lens, and hand it to the cloud
+   * it names whether that cloud is already on screen or arrives later.
+   */
+  async function readSidecar(file: File): Promise<void> {
+    sidecarFiles++;
+    renderCounts();
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      return;
+    }
+    const side = parseSidecar(text);
+    const cloudName = file.name.slice(0, file.name.length - '.json'.length);
+    if (!side) return; // an unreadable body is no sidecar, not a sidecar with no lens
+    sidecars.set(cloudName, { lens: side.lens, name: file.name });
+    for (const item of items) {
+      if (item.file.name !== cloudName) continue;
+      item.lens = side.lens;
+      item.lensFrom = file.name;
+      renderCard(item);
+    }
+    renderCounts();
   }
 
   async function inspect(item: GalleryItem): Promise<void> {
@@ -207,12 +258,15 @@ export function createGallery(options: GalleryOptions): Gallery {
       if (!isOpenable(item.state)) return;
       openViewer({
         name: item.file.name,
+        file: item.file,
         url: item.url,
         state: item.state,
         depth: item.depth,
         size: item.file.size,
         width: item.width,
         height: item.height,
+        lens: item.lens,
+        lensFrom: item.lensFrom,
       });
     };
 
@@ -328,7 +382,7 @@ export function createGallery(options: GalleryOptions): Gallery {
     }
 
     const parts: string[] = [
-      `${items.length} ${items.length === 1 ? 'file' : 'files'}`,
+      `${items.length + sidecarFiles} ${items.length + sidecarFiles === 1 ? 'file' : 'files'}`,
     ];
     if (counts.depth > 0) parts.push(`${counts.depth} with depth`);
     if (counts.clouds > 0) {
@@ -336,10 +390,21 @@ export function createGallery(options: GalleryOptions): Gallery {
     }
     if (counts.unreadable > 0) parts.push(`${counts.unreadable} unreadable`);
     if (counts.reading > 0) parts.push(`${counts.reading} reading`);
+    if (sidecarFiles > 0) {
+      const attached = [...sidecars.keys()].filter((name) =>
+        items.some((item) => item.file.name === name),
+      ).length;
+      const unmatched = sidecarFiles - attached;
+      parts.push(
+        `${sidecarFiles} lens ${sidecarFiles === 1 ? 'sidecar' : 'sidecars'}` +
+          (unmatched > 0 ? ` (${unmatched} unmatched)` : ''),
+      );
+    }
 
-    options.count.textContent = items.length === 0 ? 'No files yet' : parts.join(' · ');
-    options.empty.hidden = items.length > 0;
-    options.clear.disabled = items.length === 0;
+    const total = items.length + sidecarFiles;
+    options.count.textContent = total === 0 ? 'No files yet' : parts.join(' · ');
+    options.empty.hidden = total > 0;
+    options.clear.disabled = total === 0;
   }
 
   options.clear.addEventListener('click', clear);
@@ -351,6 +416,17 @@ export function createGallery(options: GalleryOptions): Gallery {
       return items;
     },
   };
+}
+
+/**
+ * `basrelief_<tag>.splat.json` is a lens sidecar, not media: it describes the cloud
+ * at the same path without the `.json`. Matched on the extension because that is
+ * the node's own name for it, and the cloud's name is matched exactly — no fuzzy
+ * pairing, since a sidecar attached to the wrong cloud states a camera for a
+ * picture it does not describe.
+ */
+function isSidecarName(name: string): boolean {
+  return /\.splat\.json$/i.test(name);
 }
 
 function setBadge(

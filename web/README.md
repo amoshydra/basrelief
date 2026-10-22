@@ -2,9 +2,9 @@
 
 A static gallery and viewer for the files the rest of this repository makes. Drop
 a packed depth PNG on the page and it becomes a relief you can move; drop a
-`.splat` cloud and it is listed and counted. **Nothing is uploaded, stored or
-remembered** — the `File` objects in this tab are the gallery, so a refresh
-empties it.
+`.splat` cloud and it becomes a point cloud you can move. **Nothing is uploaded,
+stored or remembered** — the `File` objects in this tab are the gallery, so a
+refresh empties it.
 
 The product shape is *"someone sends you a PNG and you drop it on a page."* There
 is no account, no server and no cloud library, which is also why this exists: no
@@ -21,7 +21,8 @@ one answer.
 |---|---|---|
 | a packed PNG with a `dePH` / `dEPt` chunk | PNG signature + the reader | **relief** — displaced by its depth map |
 | a plain PNG (or other decodable image) | the reader says no chunk | **photo** — shown flat |
-| a `.splat` cloud | `.splat` extension + a length that is whole 32-byte records | **counted** — the renderer is the next change |
+| a `.splat` cloud | `.splat` extension + a length that is whole 32-byte records | **cloud** — a real Gaussian splat cloud, drawn sorted |
+| `basrelief_<tag>.splat.json` | `.splat.json` extension | nothing; it is the **lens sidecar** for the cloud beside it |
 | unreadable / still being read | neither | nothing; the card says why |
 
 ### The three states, and why there is a third
@@ -72,8 +73,50 @@ A `.splat` cloud is a sequence of 32-byte records:
 | 24 | 4 | colour RGBA, 8-bit each |
 | 28 | 4 | quaternion, 8-bit each |
 
-The count shown on a card is `bytes / 32`, so it costs nothing to read before the
-renderer exists.
+The count shown on a card is `bytes / 32`, so it costs nothing to read. A length
+that is not a whole number of records is **unreadable**, not a shorter cloud — and
+the renderer refuses the same file a second time, so a truncated cloud cannot be
+drawn by either path.
+
+## The cloud renderer
+
+`src/cloud.ts` is a WebGL2 port of the Android app's `SplatRenderer` +
+`SplatProjection`, and the look is the app's:
+
+- one card per splat, six vertices of `drawArraysInstanced`, everything derived
+  from `gl_InstanceID` — there is no vertex buffer and no per-frame allocation;
+- the **full covariance** chain (`R S Sᵀ Rᵀ`, through the view rotation and the
+  perspective Jacobian, to a conic), not a screen-space circle;
+- a **back-to-front counting sort** into 262,144 buckets, re-derived only when the
+  camera moves past the app's `1e-3` tilt gate — alpha blending is not commutative,
+  and a sorted cloud is the difference between parallax and speckle;
+- the **2D floor** (`0.5` of the on-screen cell), the **near-plane pull-back**, the
+  **alpha-extent clip** and the **radius clip**, at the app's own constants;
+- **no backdrop.** The gaps a tilt opens are black, which is the app's decision:
+  two fills were tried and rejected.
+
+**The colour path is integer, and that is not a detail.** The record's 32 bytes are
+uploaded as two `RGBA32UI` texels and unpacked with integer shifts. Read as
+`RGBA32F` — what the old prototype does — the four colour bytes of an opaque
+bright splat are a **NaN**, and Mali canonicalises it, so the splat draws flat
+white with no error anywhere. `contract/splat/` pins that.
+
+**The lens comes from the sidecar, or it is the app's fallback and the viewer says
+so.** A cloud's screen size is proportional to the focal it was reconstructed
+through, so drawing it through the wrong one is a plausible-looking wrong picture.
+Drop `basrelief_<tag>.splat.json` beside the cloud (in either order) and its
+`focal / height` is used; without one the viewer draws the app's documented
+no-lens look (64.3° vertical) and states that on the dock, because "no sidecar" and
+"a sidecar that claims no lens" are different facts.
+
+At rest — no tilt, no origin — the picture is **exactly the photograph**: the eye
+is the cloud's own source camera, and the tilt is a turntable about the cloud's
+surface under the centre. `src/splat.test.ts` asserts that through the matrices
+the renderer uploads, at every origin, pivot depth, aspect and lens.
+
+A cloud's cost is its count and the machine's: the demo is ~150k splats, and the
+app's ladder puts 1M at ~5 fps on a 2018 phone. Nothing is capped; the viewer names
+the count, and says so when a cloud is dense enough for that to matter.
 
 ## Running it
 
@@ -83,7 +126,7 @@ pnpm install
 pnpm dev        # HTTPS on :5173
 pnpm build      # typecheck + static bundle in web/dist
 pnpm preview    # serve the built bundle
-pnpm test       # contract/deph fixtures + media-state checks
+pnpm test       # contract/deph, media states and contract/splat, under plain Node
 pnpm typecheck  # tsc --noEmit
 ```
 
@@ -100,12 +143,14 @@ no server-side requirement.
 ### Using the viewer
 
 - **Drag** on the photo to swing the camera; releasing lets it settle back to
-  rest.
+  rest. A cloud does the same: the eye turns about the cloud's own surface under
+  the centre, so the subject holds and the background swings.
 - **Use device tilt** asks for orientation permission where the browser requires
   it (iOS) and drives the same motion from the sensor. If the browser exposes the
   API but emits no events, the hint says so and dragging still works.
 - **Depth** sets how far the relief is displaced; **Motion** sets how far the eye
-  swings. **Reset view** returns both, the tilt and the neutral pose.
+  swings (for a cloud, Motion is the same number the app calls Motion). **Reset
+  view** returns both, the tilt and the neutral pose.
 - **← Gallery** or **Escape** closes the viewer.
 
 The picture fills the viewport (cover, with the reference port's 8 % crop), as
@@ -137,16 +182,27 @@ uses the Android app's time constant (`tau = 0.2 s`) so the feel is the same at
 + dimensions, or whole PNG + its own dimensions, as Java does) and the viewer
 seam are this app's own.
 
+The cloud renderer is a port of the **Android app**, not of the reference port and
+not of `.design/prototype/ab/3d/splatline/`. The prototype's projection is the same
+maths, but its upload is `RGBA32F`, which is the colour path this app replaced. What
+is taken from it is nothing; what is taken from `SplatRenderer` is listed under *The
+cloud renderer* above.
+
 ## What it does not do yet
 
 - **Export / packing** — the Android app packs an image and depth into a PNG;
   this page only reads them.
-- **Drawing `.splat` clouds** — files are listed, counted and opened to a
-  placeholder. The cloud renderer is the next change, with its own warnings.
+- **Zoom, pan, choosing an orbit centre, and the Depth multiplier** — the cloud is
+  drawn through its own camera at the node's own depth; the relief has the same
+  omissions. Both are the app's features and neither has a control here.
+- **The cloud look knobs** (Size, Blur, Resolution) — the gallery draws the app's
+  defaults: a `0.5`-of-the-cell floor, no post-blur, no offscreen scale.
+- **A cloud's colour is not colour-managed.** The baked bytes go to the framebuffer
+  exactly as the app's shader writes them, so the picture matches the app rather
+  than an `sRGB`-converted one.
 - **Accounts, a server, sync with the phone** — none, by design.
 - **Persistence** — no IndexedDB, no localStorage; reload and the gallery is
   empty.
-- **Zoom / pan / choosing an orbit centre** — the first pass is a viewer.
 
 ## Layout
 
@@ -154,14 +210,20 @@ seam are this app's own.
 web/
   index.html          page shell (no framework)
   src/main.ts         file intake: picker + whole-window drag & drop
-  src/gallery.ts      the cards, thumbnails, counts and per-file inspection
+  src/gallery.ts      the cards, thumbnails, counts, sidecars and per-file inspection
   src/media.ts        the one media classifier + formatting (pure, tested)
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
+  src/splat.ts        the .splat record, the cloud camera, the lens, the sort (pure, tested)
+  src/cloud.ts        WebGL2 splat renderer (ported projection, integer texels)
   src/viewer.ts       one dispatch point: relief | photo | cloud | message
   src/relief.ts       three.js relief renderer (ported camera model)
   src/tilt.ts         deviceorientation → a smoothed tilt target
-  src/deph.test.ts    the fixtures, under plain Node
+  src/deph.test.ts    the dePH fixtures, under plain Node
   src/media.test.ts   the three states, without a browser
+  src/splat.test.ts   contract/splat + the camera, lens, sort and floor
 ```
 
-CI's `web-app` job runs `pnpm test`, `pnpm typecheck` and `pnpm build`.
+CI's `web-app` job runs `pnpm test`, `pnpm typecheck` and `pnpm build`; the
+`guards` job's `scripts/check-shaders.mjs` compiles the two GLSL shaders in
+`src/cloud.ts` too, so a shader error is a red build rather than a viewer that
+draws nothing.

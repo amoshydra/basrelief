@@ -1,5 +1,5 @@
 /**
- * Compile every GLSL shader the app builds in Java, off-device.
+ * Compile every GLSL shader in the tree, off-device.
  *
  * WHY THIS EXISTS. The Android build cannot see a shader error: a renderer keeps
  * its GLSL in Java strings, compiles at RUNTIME on the GL thread, and a failed
@@ -8,11 +8,15 @@
  * shares the renderer the crash-loop cost the user their wallpaper, which the
  * system then reverted to a static image and only the picker can restore.
  *
- * It scans the app sources for `private static final String NAME = "..." + "..."`
- * fields whose value starts a shader, joins the literals and runs each through
- * glslangValidator. Two traps, both of which this has already fallen into once: a
- * Java `//` comment between the literals is not part of the string, and a Java
- * comment containing a double quote must not be mistaken for one.
+ * The gallery has the same hole one language over: `web/src/cloud.ts` keeps its
+ * GLSL in template literals, the browser compiles them at runtime, and a shader
+ * error there is a viewer that draws nothing and says why only in a console. So
+ * this scans both — the app's Java string constants and the gallery's exported
+ * template literals — and runs each through glslangValidator.
+ *
+ * Two traps, both of which this has already fallen into once: a Java `//` comment
+ * between the literals is not part of the string, and a Java comment containing a
+ * double quote must not be mistaken for one.
  *
  * Usage: node scripts/check-shaders.mjs
  */
@@ -82,6 +86,34 @@ function javaFiles(dir, out = []) {
   return out;
 }
 
+function tsFiles(dir, out = []) {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) tsFiles(p, out);
+    else if (entry.endsWith('.ts')) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * The gallery's shaders: `export const NAME = ` + a template literal.
+ *
+ * A `${` inside one is refused rather than compiled: an interpolated shader is not
+ * a shader this gate can see, and a gate that skipped it would report a compile it
+ * never did.
+ */
+function* shadersInTs(src) {
+  const re = /export const (\w+) = `([\s\S]*?)`;/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const [, name, text] = m;
+    if (!text.includes('void main')) continue;
+    const kind = name.includes('VERT') ? 'vert' : name.includes('FRAG') ? 'frag' : null;
+    if (!kind) continue;
+    yield { name, kind, text, interpolated: text.includes('${') };
+  }
+}
+
 function ensureGlslang() {
   try {
     execFileSync('glslangValidator', ['--version'], { stdio: 'ignore' });
@@ -98,29 +130,47 @@ let checked = 0;
 let failed = 0;
 ensureGlslang();
 
+function check(file, name, kind, text, rel) {
+  checked++;
+  const dir = mkdtempSync(join(tmpdir(), 'shader-'));
+  const path = join(dir, `${name}.${kind}`);
+  writeFileSync(path, text);
+  let ok = true;
+  let out = '';
+  try {
+    out = execFileSync('glslangValidator', ['-S', kind, path], { encoding: 'utf8' });
+  } catch (e) {
+    ok = false;
+    out = `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log(`${ok ? 'OK  ' : 'FAIL'} ${name} (${kind}) — ${rel}`);
+  if (!ok) {
+    failed++;
+    console.log(out.split('\n').slice(0, 12).join('\n'));
+  }
+}
+
 for (const file of javaFiles(join(ROOT, 'android/app/src/main/java'))) {
   const src = readFileSync(file, 'utf8');
   for (const { name, kind, text } of shadersIn(src)) {
-    checked++;
-    const dir = mkdtempSync(join(tmpdir(), 'shader-'));
-    const path = join(dir, `${name}.${kind}`);
-    writeFileSync(path, text);
-    let ok = true;
-    let out = '';
-    try {
-      out = execFileSync('glslangValidator', ['-S', kind, path], { encoding: 'utf8' });
-    } catch (e) {
-      ok = false;
-      out = `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`;
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    check(file, name, kind, text, file.slice(ROOT.length));
+  }
+}
+
+for (const file of tsFiles(join(ROOT, 'web/src'))) {
+  const src = readFileSync(file, 'utf8');
+  for (const { name, kind, text, interpolated } of shadersInTs(src)) {
     const rel = file.slice(ROOT.length);
-    console.log(`${ok ? 'OK  ' : 'FAIL'} ${name} (${kind}) — ${rel}`);
-    if (!ok) {
+    if (interpolated) {
+      checked++;
       failed++;
-      console.log(out.split('\n').slice(0, 12).join('\n'));
+      console.log(`FAIL ${name} (${kind}) — ${rel}`);
+      console.log('  an interpolated template literal is not a shader this gate can compile');
+      continue;
     }
+    check(file, name, kind, text, rel);
   }
 }
 

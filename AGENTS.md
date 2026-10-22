@@ -66,8 +66,52 @@ gallery.
 - **The viewer has ONE dispatch point.** `openViewer` in `web/src/viewer.ts`
   switches on the media kind; the relief renderer is a named module
   (`web/src/relief.ts`), a photograph is a plain `<img>` because with no depth
-  there is nothing to displace, and a cloud names its count and says its renderer
-  is next. Do not grow a renderer interface: a second medium is a second `case`.
+  there is nothing to displace, and a cloud is a named module
+  (`web/src/cloud.ts`). Do not grow a renderer interface: a second medium is a
+  second `case`.
+- **The cloud renderer is a port of the ANDROID app, and its colour path is
+  integer.** `web/src/cloud.ts` takes `SplatRenderer.VERT` and
+  `SplatProjection.java` — one card per splat from `gl_InstanceID`, the full
+  covariance chain, the 2D floor, the near-plane pull-back, the alpha-extent clip,
+  the radius clip, and the app's own depth sort (a counting sort into 262,144
+  buckets, re-derived only past the `1e-3` tilt gate, because alpha blending is
+  not commutative). The 32-byte record goes up as **two `RGBA32UI` texels** and is
+  unpacked with integer shifts, exactly as the app's `upload` does. **It must not
+  be a float texture**, and the exact condition is the float exponent:
+  `((alpha & 0x7F) << 1) | (blue >> 7) == 0xFF`, i.e. alpha 127 or 255 with blue
+  ≥ 128 — an opaque bright splat has alpha 255, which is why the shorthand "alpha
+  and blue both at or above 128" describes what was actually measured. The off-
+  device prototype at `.design/prototype/ab/3d/splatline/` uploads `RGBA32F`, so
+  its **projection** is a reference and its colour path is the bug: desktop GPUs
+  preserve a NaN payload and render it perfectly, Mali canonicalises it to flat
+  white. Nothing was taken from that prototype's renderer, including its
+  any-frame sort.
+  - **The lens comes from the sidecar or the app's fallback, and the viewer says
+    which.** `basrelief_<tag>.splat.json` is attached by filename in
+    `web/src/gallery.ts` (it adds no card and reaches no classifier, and it may
+    arrive before or after the cloud); its `focal / height` is the camera. Without
+    one the dock says "no lens sidecar — drawn at the app's default look (64.3°
+    vertical)", which is `SplatRenderer.SOURCE_FOVY`; a sidecar that states no
+    lens gets its own sentence, because "absent" and "no claim" are different
+    facts. `web/src/splat.ts` reads the same `contract/sidecar/` cases the Java
+    reader does.
+  - **At rest the picture is exactly the photograph, unqualified.** There is no
+    Origin, Pan, Zoom or Depth multiplier in the gallery, so the source camera is
+    the cloud's own and the tilt is a turntable about the cloud's surface under the
+    centre. `web/src/splat.test.ts` walks every origin, pivot depth, aspect and
+    lens through the matrices the renderer uploads — the app-side invariant, one
+    platform over — and also pins the sort's back-to-front order and the floor's
+    fraction-of-the-cell unit.
+  - **A settled cloud draws nothing.** The loop returns before `draw()` while the
+    smoothed tilt is within `1e-6` of its target and no non-tilt input changed;
+    the residual is far below the sub-pixel bound `SORT_EPS` is set from. This is
+    the web form of the app's request-site doze (`onDrawFrame` tears the screen if
+    it returns early — there is no such rule to break here, so the skip is a real
+    saving).
+  - **A cloud that is too large for the GPU says so**: the upload checks
+    `gl.getError()` and throws the count and the texture size, rather than drawing
+    nothing. Nothing else is capped — the viewer names the count and states the
+    app's ladder (~5 fps at 1M on a 2018 phone) when a cloud is that dense.
 - **The relief renderer is a port of `reference/webgl-port/src/scene.js`, and the
   camera model is taken from it deliberately** — a plane displaced by
   `depth/255 - 0.5` scaled by intensity × plane height, per-vertex normals shaded
@@ -93,12 +137,12 @@ gallery.
   `index.html` is not designed for double-clicking.
 - **The `dePH` reader is the contract's third implementation**, tested against
   `contract/deph/` by `web/src/deph.test.ts`. CI's `web-app` job runs `pnpm test`,
-  `pnpm typecheck` and `pnpm build`; the fixture test is plain Node type
-  stripping, so it needs no browser.
-- **What it does not do yet:** export/packing (the Android app packs), the
-  `.splat` renderer (files are listed and counted), accounts, a server, and
-  persistence. It does not talk to the phone, and it does not share code with the
-  reference port.
+  `pnpm typecheck` and `pnpm build`; the fixture tests are plain Node type
+  stripping, so they need no browser.
+- **What it does not do yet:** export/packing (the Android app packs), accounts, a
+  server, and persistence. It does not talk to the phone, and it does not share
+  code with the reference port. On the cloud it deliberately has no Origin, Pan,
+  Zoom, Depth multiplier or look knobs — see the cloud bullet above.
 
 ## Shared contracts (`contract/`)
 
@@ -107,13 +151,15 @@ copies cannot share code. They share **bytes** instead: one golden fixture at th
 repository root, each implementation tested against it. `contract/README.md` says
 what each fixture is; `scripts/check-parity.mjs` checks the shape that keeps the
 tests meaningful (the files exist, the node has one tag rule, the Java copy is the
-ASCII one, and the app's sidecar reader is the one `:core` tests).
+ASCII one, the app's sidecar reader is the one `:core` tests, and the splat
+fixture still holds its four hard records).
 
 | contract | implementations | fixture |
 |---|---|---|
 | the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` | `contract/tag/cases.json` |
 | the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` | `contract/deph/` |
-| the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` | `contract/sidecar/` |
+| the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` + `web/src/splat.ts` | `contract/sidecar/` |
+| the `.splat` record | `android/core/src/main/java/com/amoshydra/basrelief/core/splat/SplatCloud.java` + `web/src/splat.ts` | `contract/splat/` |
 
 - **The tag rule is ASCII, and that is the fix rather than a preference:** keep
   `[A-Za-z0-9_-]`, then the first 48. Its prose ("alnum plus `-`/`_`, 48") had
@@ -142,6 +188,17 @@ ASCII one, and the app's sidecar reader is the one `:core` tests).
 - **A missing sidecar number is "no claim", never zero to divide by.** `focal`,
   `width` and `height` absent, `focal` 0 (the node's own "fit failed"), or an
   unreadable body all mean no lens, and the cloud draws at the default look.
+- **The `.splat` record is a contract now, and it became one when it got a second
+  reader.** `contract/README.md` used to say it was deliberately unfixtured because
+  `SplatCloudTest` pinned the layout and no second copy existed; `web/src/splat.ts`
+  is that copy, so `contract/splat/` holds four records captured from
+  `android/app/src/main/res/raw/demo.splat` and both `SplatRecordContractTest` and
+  `web/src/splat.test.ts` read them. The fixture's reason is the **integer texture
+  path**: its `bright` record's colour word is a NaN as a float32, and the three
+  others pin the shrinking quad, the opaque identity and the node's zero padding
+  tail. `contract/splat/generate.mjs` picked them by predicate and asserts each one
+  still holds its own reason, so a regeneration cannot silently lose the hard case;
+  `check-parity.mjs` holds the four by name.
 - **`DepthPng` moved to `:core`** (it imports nothing from `android.*`) so its half
   of the fixture can be a unit test at all; `SplatSidecar` was extracted into
   `:core` for the same reason, and `SplatImport` calls it — a reader tested but
@@ -1383,13 +1440,14 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 763 tests across forty-four classes:
+it**. 768 tests across forty-five classes:
 
-- `TagContractTest` / `DepthPngContractTest` / `SidecarContractTest` — the Java half
-  of `contract/`, and the reason that directory exists. Each reads the SAME golden
-  bytes as the node's Python test (`server/comfy-node/tests/test_contract.py`), the
-  reference port's Node test (`contract/deph/png-depth.test.mjs`) or the gallery's
-  TypeScript test (`web/src/deph.test.ts`), from a directory
+- `TagContractTest` / `DepthPngContractTest` / `SidecarContractTest` /
+  `SplatRecordContractTest` — the Java half of `contract/`, and the reason that
+  directory exists. Each reads the SAME golden bytes as the node's Python test
+  (`server/comfy-node/tests/test_contract.py`), the reference port's Node test
+  (`contract/deph/png-depth.test.mjs`) or the gallery's TypeScript tests
+  (`web/src/deph.test.ts`, `web/src/splat.test.ts`), from a directory
   passed in as the `basrelief.contract` system property by
   `android/core/build.gradle` — never a `../../` chain, because the test working
   directory is `android/core` and the build container mounts only `android/`.
@@ -1406,8 +1464,14 @@ it**. 763 tests across forty-four classes:
   picture. `SidecarContractTest` is the three numbers the app reads and the one
   lens it forms, including every way they can be absent: a missing `focal`, a
   missing `height`, the node's own `0` and an unreadable body all resolve to "no
-  lens" rather than a value to divide by. The Python and JS halves are not :core
-  tests and never will be; they run in the `python-contract` job and in `guards`.
+  lens" rather than a value to divide by. `SplatRecordContractTest` is the 32-byte
+  record field for field **and** as the two integer texels the renderer uploads —
+  the position words are asserted to be the floats' own bit patterns, the colour
+  and quaternion words to be the little-endian `uint8x4`, and the fixture's bright
+  record to be a **NaN** when its colour word is read as a float, which is the
+  difference between the integer path and the prototype's float one. The Python and
+  JS halves are not :core tests and never will be; they run in the
+  `python-contract` job and in `guards`.
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for
@@ -1423,7 +1487,11 @@ runtime on the GL thread, and a failed compile throws there. `node
 scripts/check-shaders.mjs` closes that hole — it extracts every shader the app keeps
 in its sources (both the GLES2 and GLES3 variants, `#version` or not) and runs it
 through `glslangValidator`, and CI installs the tool and runs it in the `guards`
-job. It exists because **`sample` is a reserved word in GLSL ES 3.00** and using it
+job. **It compiles the gallery's two shaders too** (`web/src/cloud.ts`'s exported
+template literals), because the browser compiles them at runtime the same way and a
+failed compile there is a viewer that draws nothing; an interpolated template is
+refused rather than skipped, since this gate cannot see through a substitution. It
+exists because **`sample` is a reserved word in GLSL ES 3.00** and using it
 as a variable name put the studio and the live wallpaper into a crash-loop on a real
 phone: the engine crashed on every restart until Android gave up and reverted the
 wallpaper to the system's static image — which only the wallpaper picker can

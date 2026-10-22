@@ -25,9 +25,16 @@
  */
 
 import type { DephResult } from './deph.ts';
+import { SPLAT_RECORD_BYTES } from './splat.ts';
 
-/** One `.splat` record: position 3f, scale 3f, colour 4B, quaternion 4B. */
-export const SPLAT_RECORD_BYTES = 32;
+/**
+ * One `.splat` record: position 3f, scale 3f, colour 4B, quaternion 4B.
+ *
+ * The number's home is `splat.ts`, which reads those fields and packs the record
+ * into the integer texel pair; it is re-exported here because the count this
+ * classifier states is `bytes / 32` and the two must not be able to disagree.
+ */
+export { SPLAT_RECORD_BYTES };
 
 export type MediaState =
   | { kind: 'reading' }
