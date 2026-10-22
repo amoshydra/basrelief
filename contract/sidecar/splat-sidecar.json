@@ -1,0 +1,13 @@
+{
+  "state": "done",
+  "splat": "basrelief_demo-item.splat",
+  "splats": 154000,
+  "selected": 149504,
+  "padding": 4496,
+  "focal": 800,
+  "internal_size": 1536,
+  "budget": 150000,
+  "width": 1200,
+  "height": 1600,
+  "tag": "demo-item"
+}

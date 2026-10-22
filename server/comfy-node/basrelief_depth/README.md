@@ -12,8 +12,11 @@ consumes):
 
 The app never invents these names: it derives every output filename from the
 `tag` it submits, so it can fetch a run it never saw a response for. The rule is
-the same one the app runs (`ComfyWorkflow.streamTag`): keep `isalnum()` and
-`-`/`_`, truncate to 48. Item ids are UUIDs and survive unchanged.
+the same one the app runs (`ComfyWorkflow.streamTag`): keep the **ASCII** characters
+`[A-Za-z0-9_-]`, then the first 48 — nothing is trimmed or normalised. Item ids are
+UUIDs and survive unchanged. The rule lives once, in `contract.py`, and both sides
+are tested against `contract/tag/cases.json`; that fixture's README explains why
+the alphabet is ASCII rather than Python's `isalnum()`.
 
 ---
 

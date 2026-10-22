@@ -26,8 +26,27 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
 }
 
+// The shared contract fixtures live at the REPOSITORY root, while this Gradle
+// build's root is android/. The test working directory is android/core, so a
+// ../../ chain would be a path that depends on where Gradle was invoked from; the
+// directory is passed in instead. In the container only android/ is mounted at
+// /workspace (so rootProject's parent is /), which is why podman-build.sh also
+// mounts ./contract at /contract. Override with -PcontractDir=<path>.
+def contractDir = (project.findProperty('contractDir')
+        ?: new File(rootProject.projectDir.parentFile, 'contract').absolutePath)
+
 test {
     testLogging {
         events 'passed', 'skipped', 'failed'
+    }
+    systemProperty 'basrelief.contract', contractDir
+    // A property alone would let Gradle cache a green run ACROSS a fixture edit:
+    // the expected value lives in an untracked-by-Gradle directory, so a changed
+    // expectation would not be checked until something else forced a rerun. The
+    // directory is declared as an input so it is.
+    if (file(contractDir).isDirectory()) {
+        inputs.dir(contractDir)
+                .withPropertyName('contractFixtures')
+                .withPathSensitivity(PathSensitivity.RELATIVE)
     }
 }

@@ -1,4 +1,4 @@
-package com.amoshydra.basrelief;
+package com.amoshydra.basrelief.core.depth;
 
 /**
  * Port of the web app's png-depth.js: extracts an embedded depth map from a

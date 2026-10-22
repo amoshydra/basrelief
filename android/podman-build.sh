@@ -83,8 +83,17 @@ gradle_task() {
     # rather than the "unknown" a container-side lookup always produced.
     local commit
     commit="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    # The shared contract fixtures at the repository root are OUTSIDE the android/
+    # mount, so :core's contract tests would not find them. Their own mount lands at
+    # /contract, which is exactly what android/core/build.gradle resolves to when the
+    # build root's parent is / (see the basrelief.contract system property).
+    local contract_mount=""
+    if [ -d "$SCRIPT_DIR/../contract" ]; then
+        contract_mount="-v $(cd "$SCRIPT_DIR/.." && pwd)/contract:/contract:Z"
+    fi
     podman run --rm \
         -v "$SCRIPT_DIR:/workspace:Z" \
+        ${contract_mount} \
         ${GRADLE_CACHE_MOUNT:-} \
         ${GRADLE_USER_HOME:+-e GRADLE_USER_HOME=$GRADLE_USER_HOME} \
         -e BASRELIEF_GIT_COMMIT="$commit" \

@@ -349,11 +349,79 @@ function checkModalInvariants() {
   );
 }
 
+/**
+ * A rule implemented more than once is held together by `contract/` ONLY while
+ * both copies exist, both are tested against the fixture, and neither grows a
+ * second implementation. The fixtures are run by three different jobs in three
+ * languages; nothing in this script can run them, so what it can check is the
+ * shape that makes them meaningful:
+ *
+ *   1. the fixture files exist (a test that silently skips is a green build);
+ *   2. the node has ONE tag rule, imported from contract.py — it used to hold two
+ *      (the `_safe_tag` function and a second inline copy in MoGeGeometryNPZ);
+ *   3. the Java copy uses the ASCII predicate, not `Character.isLetterOrDigit`,
+ *      which is the half of the pair that disagreed with Python's `isalnum()`;
+ *   4. the app's sidecar reader is the one :core tests — an inline `new JSONObject`
+ *      in SplatImport would leave `SplatSidecar` tested but unused, which is a test
+ *      of dead code.
+ */
+function checkSharedRules() {
+  const before = failures.length;
+  for (const f of [
+    'contract/README.md',
+    'contract/tag/cases.json',
+    'contract/deph/cases.json',
+    'contract/deph/png-depth.test.mjs',
+    'contract/sidecar/cases.json',
+    'server/comfy-node/tests/test_contract.py',
+    'android/core/src/test/java/com/amoshydra/basrelief/core/contract/TagContractTest.java',
+  ]) {
+    if (!existsSync(join(root, f))) {
+      failures.push(`${f} is missing — the shared contract fixtures need every half`);
+    }
+  }
+
+  const nodes = readFileSync(
+    join(root, 'server/comfy-node/basrelief_depth/nodes.py'), 'utf8');
+  if (nodes.includes('isalnum(')) {
+    failures.push(
+      'nodes.py runs its own tag rule again (isalnum) — the rule lives in ' +
+        'basrelief_depth/contract.py, tested against contract/tag/cases.json, and a ' +
+        'second copy is a second answer to one question');
+  }
+  if (!nodes.includes('from .contract import')) {
+    failures.push('nodes.py does not import the shared rules from .contract');
+  }
+
+  const comfy = stripJavaComments(readFileSync(
+    join(root, 'android/core/src/main/java/com/amoshydra/basrelief/core/depth/ComfyWorkflow.java'),
+    'utf8'));
+  if (/Character\s*\.\s*isLetterOrDigit/.test(comfy)) {
+    failures.push(
+      'ComfyWorkflow.streamTag uses Character.isLetterOrDigit again — that is ' +
+        'Unicode L*+Nd, and the Python copy it must match accepted N* too; the tag ' +
+        'alphabet is ASCII (contract/tag/cases.json says why)');
+  }
+
+  const splatImport = readFileSync(
+    join(root, 'android/app/src/main/java/com/amoshydra/basrelief/SplatImport.java'), 'utf8');
+  if (!splatImport.includes('SplatSidecar.parse(')) {
+    failures.push(
+      'SplatImport does not read the sidecar through SplatSidecar — the :core ' +
+        'contract test would then be testing a reader nothing uses');
+  }
+
+  if (failures.length === before) {
+    console.log('shared rules: contract/ fixtures present, one tag rule per side');
+  }
+}
+
 checkDocLinks();
 checkTestCounts();
 checkParity();
 checkModalInvariants();
 checkTiltSmoothing();
+checkSharedRules();
 
 if (failures.length) {
   console.error(`\ncheck-parity: ${failures.length} problem(s)\n`);

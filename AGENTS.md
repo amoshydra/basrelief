@@ -32,6 +32,56 @@ The code was right; the prototype was wrong. **Read the code (and fix the
 prototype in the same change) before trusting the prototype for anything
 structural.** Every prototype page now carries a drift banner saying so.
 
+## Shared contracts (`contract/`)
+
+Three languages, and several rules are implemented more than once because the
+copies cannot share code. They share **bytes** instead: one golden fixture at the
+repository root, each implementation tested against it. `contract/README.md` says
+what each fixture is; `scripts/check-parity.mjs` checks the shape that keeps the
+tests meaningful (the files exist, the node has one tag rule, the Java copy is the
+ASCII one, and the app's sidecar reader is the one `:core` tests).
+
+| contract | implementations | fixture |
+|---|---|---|
+| the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` | `contract/tag/cases.json` |
+| the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` | `contract/deph/` |
+| the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` | `contract/sidecar/` |
+
+- **The tag rule is ASCII, and that is the fix rather than a preference:** keep
+  `[A-Za-z0-9_-]`, then the first 48. Its prose ("alnum plus `-`/`_`, 48") had
+  under-defined two things and the copies had drifted on both — Python truncated 48
+  *code points* while Java counted 48 *UTF-16 units* (so an emoji truncated in two
+  places, and Java could stop between surrogates), and `str.isalnum()` accepts
+  Unicode N\* (`Ⅷ`, `²`) while `Character.isLetterOrDigit` does not. With an ASCII
+  alphabet "48" is 48 bytes, 48 code units and 48 code points at once, so the unit
+  is not a question. **The node was authoritative on the filenames but its rule was
+  an accident of Python, so both sides were changed**; `nodes.py` no longer holds a
+  copy at all (`MoGeGeometryNPZ` used to hold the second one). A wrong answer is
+  silent: the app derives `basrelief_<tag>_depth.mp4` from the id and the run wrote
+  a name one character different, so a finished import 404s and reports a failure.
+- **A bad `dePH` payload is refused, not guessed at.** One byte too many for raw
+  grey, an empty chunk, or a raw payload placed before `IHDR` (which is where the
+  dimensions come from) is `bad-payload`; a non-PNG is not a PNG with no depth.
+  The fixtures' depth bytes are deliberately unlike the image's pixels, so
+  returning the colour image where the depth belongs fails the digest.
+- **A missing sidecar number is "no claim", never zero to divide by.** `focal`,
+  `width` and `height` absent, `focal` 0 (the node's own "fit failed"), or an
+  unreadable body all mean no lens, and the cloud draws at the default look.
+- **`DepthPng` moved to `:core`** (it imports nothing from `android.*`) so its half
+  of the fixture can be a unit test at all; `SplatSidecar` was extracted into
+  `:core` for the same reason, and `SplatImport` calls it — a reader tested but
+  unused would be a test of dead code, which `check-parity` now refuses.
+- **The Java tests get the path from Gradle, not from `../../`.** The test working
+  directory is `android/core` and the fixtures are at the repository root, so
+  `android/core/build.gradle` passes `basrelief.contract` to the test task;
+  `android/podman-build.sh` mounts `contract/` at `/contract` because the build
+  container mounts only `android/` at `/workspace` and `/workspace/..` is `/`.
+- **The node's test needs no ComfyUI, torch or numpy**, which is what lets it run in
+  a bare container and be the first CI job the node has ever had:
+  `podman run --rm -v "$PWD:/w:ro" -w /w python:3.12-slim python3 server/comfy-node/tests/test_contract.py`.
+  The JS half is `node contract/deph/png-depth.test.mjs` — `png-depth.js` touches
+  no browser API, so it loads in Node unmodified.
+
 ## Build and test
 
 Android is built with Gradle **inside a Podman container**. The host needs only
@@ -1248,7 +1298,30 @@ There is no longer a build script that runs here — everything builds through
 
 `./podman-build.sh test` is the gate — pure JVM, ~15 s, no device, and every
 `assemble`/`bundle` depends on it, so **there is no path to an APK that skips
-it**. 747 tests across forty-one classes:
+it**. 763 tests across forty-four classes:
+
+- `TagContractTest` / `DepthPngContractTest` / `SidecarContractTest` — the Java half
+  of `contract/`, and the reason that directory exists. Each reads the SAME golden
+  bytes as the node's Python test (`server/comfy-node/tests/test_contract.py`) or the
+  reference port's Node test (`contract/deph/png-depth.test.mjs`), from a directory
+  passed in as the `basrelief.contract` system property by
+  `android/core/build.gradle` — never a `../../` chain, because the test working
+  directory is `android/core` and the build container mounts only `android/`.
+  `TagContractTest` walks every case in `contract/tag/cases.json` and then the
+  `names` block, because the tag is only worth pinning through the filenames both
+  sides derive from it without ever having seen a response; it also asserts the
+  table still HOLDS the hard rows (an over-long id, an empty id, a non-BMP
+  character, a leading/trailing dash), since a fixture that quietly lost its
+  hardest case is a rule with no guard. `DepthPngContractTest` requires the refusals
+  as well as the acceptances — a wrong-size payload, an empty chunk and a raw
+  payload placed before `IHDR` are all `null` — and checks the recovered payload
+  by SHA-256, because the fixtures' depth bytes are deliberately unlike the image's
+  pixels and returning the colour image would otherwise pass with a plausible
+  picture. `SidecarContractTest` is the three numbers the app reads and the one
+  lens it forms, including every way they can be absent: a missing `focal`, a
+  missing `height`, the node's own `0` and an unreadable body all resolve to "no
+  lens" rather than a value to divide by. The Python and JS halves are not :core
+  tests and never will be; they run in the `python-contract` job and in `guards`.
 
 **But `test` only runs `:core:test` — it does not compile `:app`, and it will
 report `BUILD SUCCESSFUL` while the app does not build.** It is the gate for

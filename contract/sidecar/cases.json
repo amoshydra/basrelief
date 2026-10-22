@@ -1,0 +1,41 @@
+{
+  "cases": [
+    {
+      "file": "splat-sidecar.json",
+      "focal": 800,
+      "width": 1200,
+      "height": 1600,
+      "lens": 0.5,
+      "why": "the golden the node writes: all eleven fields, focal in pixels of the uploaded frame and height the frame it was measured on"
+    },
+    {
+      "file": "no-focal.json",
+      "focal": 0,
+      "width": 1200,
+      "height": 1600,
+      "lens": 0,
+      "why": "an ABSENT focal is 0 = no claim, not a zero-length lens to invert and not a reason to fail the run"
+    },
+    {
+      "file": "no-height.json",
+      "focal": 800,
+      "width": 1200,
+      "height": 0,
+      "lens": 0,
+      "why": "a focal without the frame it was measured on implies no lens: focal/height cannot be formed, so the answer is 0 rather than a divide"
+    },
+    {
+      "file": "focal-zero.json",
+      "focal": 0,
+      "width": 1200,
+      "height": 1600,
+      "lens": 0,
+      "why": "the node's own 'the fit failed' answer is 0, and the app must draw its default look rather than a 0-degree camera"
+    },
+    {
+      "file": "unreadable.json",
+      "unparseable": true,
+      "why": "a truncated body is no lens (0), not a crash: this file is fetched on the completion path, after the cloud is already on disk"
+    }
+  ]
+}

@@ -55,6 +55,11 @@ import comfy.model_management
 import comfy.utils
 import folder_paths
 
+# The rules this node shares with the app are their own module: same bytes tested
+# on both sides, no third-party import, so `contract/` fixtures can be run in a
+# bare Python container. See basrelief_depth/contract.py and contract/README.md.
+from .contract import safe_tag as _safe_tag, splat_names, splat_sidecar, stream_names
+
 
 # --------------------------------------------------------------- render math (copied)
 
@@ -343,10 +348,7 @@ class MoGeVideoStream:
 
         safe = _safe_tag(tag)
         out_dir = folder_paths.get_output_directory()
-        depth_name = "basrelief_%s_depth.mp4" % safe
-        normal_name = "basrelief_%s_normal.mp4" % safe
-        color_name = "basrelief_%s_color.mp4" % safe
-        progress_name = "basrelief_%s.progress.json" % safe
+        depth_name, normal_name, color_name, progress_name = stream_names(safe)
         depth_final = os.path.join(out_dir, depth_name)
         normal_final = os.path.join(out_dir, normal_name)
         color_final = os.path.join(out_dir, color_name)
@@ -608,20 +610,10 @@ _SHARP_PREDICTOR = None
 _SHARP_PREDICTOR_KEY = None
 
 
-def _safe_tag(tag, fallback=None):
-    """The app's own tag rule: alnum plus '-'/'_', truncated to 48.
-
-    The node derives every output filename from this, and the app derives the same
-    filenames from the item id without ever having seen a response -- so both sides
-    must run the SAME rule. Item ids are UUIDs and survive it unchanged; the rule
-    exists for a hand-edited index whose id carries a space or punctuation. An id
-    that sanitises to nothing falls back to a timestamp+pid, which only a human can
-    follow (the app refuses such a tag before submitting).
-    """
-    safe = "".join(c for c in (tag or "") if c.isalnum() or c in "-_")[:48]
-    if not safe:
-        safe = fallback or ("%d_%d" % (int(time.time()), os.getpid()))
-    return safe
+# The tag rule itself lives in contract.py, beside the fixtures that pin it on
+# both sides. There is deliberately no copy here: this file used to hold one
+# (`_safe_tag`) and MoGeGeometryNPZ held a second, which is how a rule with two
+# live implementations drifts (see contract/README.md).
 
 
 def _sharp_internal_size(n):
@@ -972,8 +964,7 @@ class SharpStill:
 
         safe = _safe_tag(tag)
         out_dir = folder_paths.get_output_directory()
-        splat_name = "basrelief_%s.splat" % safe
-        side_name = "basrelief_%s.splat.json" % safe
+        splat_name, side_name = splat_names(safe)
         splat_path = os.path.join(out_dir, splat_name)
         side_path = os.path.join(out_dir, side_name)
         tmp = splat_path + ".tmp"
@@ -992,10 +983,8 @@ class SharpStill:
         focal_i = int(round(f_px))
         try:
             with open(side_path, "w") as fh:
-                json.dump({"state": "done", "splat": splat_name, "splats": splats + pad,
-                           "selected": splats, "padding": pad, "focal": focal_i,
-                           "internal_size": size, "budget": int(budget),
-                           "width": w, "height": h, "tag": safe}, fh)
+                json.dump(splat_sidecar(splat_name, splats + pad, splats, pad,
+                                        focal_i, size, int(budget), w, h, safe), fh)
         except OSError:
             pass
 
@@ -1034,9 +1023,7 @@ class MoGeGeometryNPZ:
 
     def run(self, moge_geometry, tag):
         import numpy as np
-        safe = "".join(c for c in (tag or "geo") if c.isalnum() or c in "-_")[:48]
-        if not safe:
-            safe = "geo"
+        safe = _safe_tag(tag, fallback="geo")
         name = "basrelief_%s.npz" % safe
         path = os.path.join(folder_paths.get_output_directory(), name)
         arrs = {}

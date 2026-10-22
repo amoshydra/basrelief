@@ -1,6 +1,7 @@
 package com.amoshydra.basrelief;
 
 import com.amoshydra.basrelief.core.depth.BatchBudget;
+import com.amoshydra.basrelief.core.depth.DepthPng;
 import com.amoshydra.basrelief.core.gesture.SheetIntent;
 import com.amoshydra.basrelief.core.gesture.SheetMorph;
 import com.amoshydra.basrelief.core.render.Framing;

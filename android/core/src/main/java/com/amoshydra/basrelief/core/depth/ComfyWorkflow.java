@@ -132,6 +132,17 @@ public final class ComfyWorkflow {
     public static final int STREAM_MAX_LONG_SIDE = 1920;
 
     /**
+     * Kept characters in a tag, inclusive; see {@link #streamTag}.
+     *
+     * <p>A plain count of ASCII characters, which is why it needs no unit: every
+     * character the rule keeps is one byte, one UTF-16 unit and one code point, so
+     * this number cannot mean two things on two sides. The node's copy is
+     * {@code contract.py}'s {@code MAX_TAG_CHARS}, and
+     * {@code contract/tag/cases.json} pins both.
+     */
+    public static final int TAG_MAX_CHARS = 48;
+
+    /**
      * The prefix of every file the stream node writes.
      *
      * <p>The names are the app's whole handle on the run's outputs: the node takes a
@@ -158,25 +169,57 @@ public final class ComfyWorkflow {
      * copy of the node's own rule.
      *
      * <p><b>The app sanitises because the app has to NAME the files without asking.</b>
-     * The node runs {@code c.isalnum() or c in "-_"} and truncates to 48; the fetch
-     * and resume paths derive filenames from the item id and must produce exactly the
-     * string the node would, or they would ask for files that do not exist. Item ids
-     * are UUIDs and survive this unchanged; the rule exists for a hand-edited or
-     * imported index whose id carries a space or punctuation.
+     * The node derives {@code basrelief_<tag>_depth.mp4} and friends, and the fetch
+     * and resume paths derive the same strings from the item id, so they must
+     * produce exactly the string the node would. Item ids are UUIDs and survive
+     * this unchanged; the rule exists for a hand-edited or imported index whose id
+     * carries a space or punctuation.
      *
-     * <p>An id that sanitises to nothing yields the empty tag, and the node then falls
-     * back to its own timestamp name, which the app cannot predict — callers use
-     * {@link #isStreamTagUsable} to refuse that before submitting rather than fetch
-     * names that will never exist.
+     * <p><b>The rule is ASCII: keep {@code [A-Za-z0-9_-]}, then the first
+     * {@link #TAG_MAX_CHARS} of them.</b> Nothing is trimmed or normalised, and an
+     * id that keeps nothing yields the empty string. This is pinned against the
+     * same fixture the node's Python copy is tested with, in
+     * {@code contract/tag/cases.json}.
+     *
+     * <p>It was <b>Unicode {@code alnum}</b> on both sides, which is how the two
+     * copies drifted: Python's {@code str.isalnum()} accepts the N* categories
+     * (so {@code Ⅷ} and {@code ²} survived there) while
+     * {@code Character.isLetterOrDigit} here is L* plus Nd only, and Python
+     * truncated 48 <i>code points</i> while this loop truncated 48 <i>UTF-16
+     * code units</i> -- so an emoji before the boundary made the two answers
+     * differ in length, and could stop between a surrogate pair and leave a lone
+     * surrogate in a filename. Restricting the alphabet removes all of that, and
+     * costs nothing a real id needs: the rule's job is that both sides agree on
+     * one name, not that any particular non-ASCII character survives.
+     *
+     * <p>An id that sanitises to nothing yields the empty tag, and the node then
+     * falls back to its own timestamp name, which the app cannot predict — callers
+     * use {@link #isStreamTagUsable} to refuse that before submitting rather than
+     * fetch names that will never exist.
      */
     public static String streamTag(String itemId) {
         if (itemId == null) return "";
         StringBuilder b = new StringBuilder();
-        for (int i = 0; i < itemId.length() && b.length() < 48; i++) {
+        for (int i = 0; i < itemId.length() && b.length() < TAG_MAX_CHARS; i++) {
             char c = itemId.charAt(i);
-            if (Character.isLetterOrDigit(c) || c == '-' || c == '_') b.append(c);
+            if (isTagChar(c)) b.append(c);
         }
         return b.toString();
+    }
+
+    /**
+     * Whether a character may appear in a tag: ASCII letters, ASCII digits,
+     * {@code '-'} and {@code '_'}.
+     *
+     * <p>Written out rather than {@code Character.isLetterOrDigit}, which is
+     * Unicode and is the exact predicate the Python copy disagreed with. Because
+     * every kept character is ASCII, "48 characters" is 48 code points, 48 UTF-16
+     * units and 48 bytes at once, so {@code b.length()} above is a count of kept
+     * characters and not a unit that needs explaining.
+     */
+    static boolean isTagChar(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '_';
     }
 
     /** Whether a tag is one the node's filenames can be derived from. */

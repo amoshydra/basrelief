@@ -21,6 +21,7 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.Arrays;
 
+import com.amoshydra.basrelief.core.depth.DepthPng;
 import com.amoshydra.basrelief.core.render.CameraModel;
 import com.amoshydra.basrelief.core.render.Framing;
 import com.amoshydra.basrelief.core.render.LightDirection;

@@ -2,6 +2,7 @@ package com.amoshydra.basrelief;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import com.amoshydra.basrelief.core.depth.DepthPng;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;

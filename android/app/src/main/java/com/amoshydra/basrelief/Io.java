@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.widget.ImageView;
+import com.amoshydra.basrelief.core.depth.DepthPng;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;

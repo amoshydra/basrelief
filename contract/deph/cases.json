@@ -1,0 +1,99 @@
+{
+  "chunkKeys": {
+    "accepted": [
+      "dePH",
+      "dEPt"
+    ],
+    "match": "case-insensitive over the four ASCII bytes; both spellings are ordinary ancillary chunks"
+  },
+  "payloadForms": {
+    "png": "a complete PNG file; returned byte-for-byte, its own IHDR naming its dimensions",
+    "raw": "exactly width*height 8-bit grey bytes, dimensions taken from the OUTER IHDR, which must therefore precede the depth chunk"
+  },
+  "status": {
+    "ok": "a depth map was recovered (form says which kind)",
+    "not-png": "the input is not a PNG file at all",
+    "no-depth-chunk": "a PNG was walked and no well-formed dePH/dEPt chunk was found",
+    "bad-payload": "a depth chunk was found but its payload is neither a PNG nor the exact raw size",
+    "java": "DepthPng.extract answers null for all three refusals: the app only ever asks 'is there depth', so the Java API does not distinguish them. The JS API does, and the JS test pins the specific code."
+  },
+  "why": "The app (Java) and the reference port (JS) both read this chunk out of a photograph, and each derives a depth map the renderer draws. A disagreement in what is accepted is a photograph that is 3D on the phone and flat on the web, or the reverse, with no error on either side.",
+  "cases": [
+    {
+      "file": "raw-gray.png",
+      "status": "ok",
+      "form": "raw",
+      "width": 8,
+      "height": 6,
+      "payloadBytes": 48,
+      "payloadSha256": "688b8c7448823039bd7858adce85ce790827e57fe3190bf1d4241d4563bc2d5f",
+      "why": "the ordinary form: raw 8-bit grey, exactly width*height bytes, under the spec-compliant key dePH"
+    },
+    {
+      "file": "whole-png.png",
+      "status": "ok",
+      "form": "png",
+      "payloadBytes": 73,
+      "payloadSha256": "518984ba7c4b37da62b57ea99404e27e90bac5c7f5615d65bc30d7530049a4b6",
+      "why": "a complete PNG payload is passed through byte-for-byte, never re-encoded"
+    },
+    {
+      "file": "case-dEPt.png",
+      "status": "ok",
+      "form": "raw",
+      "width": 5,
+      "height": 4,
+      "payloadBytes": 20,
+      "payloadSha256": "485b9fc510325305347f6bdfcb7273583d34764be1c2458d622edb243ec568e4",
+      "why": "dEPt is the other accepted spelling, in a different case again: matching is case-insensitive on the four ASCII bytes"
+    },
+    {
+      "file": "case-DEPH.png",
+      "status": "ok",
+      "form": "raw",
+      "width": 5,
+      "height": 4,
+      "payloadBytes": 20,
+      "payloadSha256": "485b9fc510325305347f6bdfcb7273583d34764be1c2458d622edb243ec568e4",
+      "why": "all-caps DEPH is accepted too — the key is compared lowercased, not by an exact string"
+    },
+    {
+      "file": "wrong-size.png",
+      "status": "bad-payload",
+      "payloadBytes": 49,
+      "why": "one byte too many for raw grey is REFUSED rather than resized or padded: a chunk and an image that disagree about dimensions cannot both be right"
+    },
+    {
+      "file": "empty-payload.png",
+      "status": "bad-payload",
+      "payloadBytes": 0,
+      "why": "an empty chunk is a refusal, not an empty depth map — an all-zero map would render flat with no error"
+    },
+    {
+      "file": "raw-before-ihdr.png",
+      "status": "bad-payload",
+      "payloadBytes": 48,
+      "why": "raw grey takes its dimensions from IHDR, so the same payload placed BEFORE IHDR claims nothing and is refused; a whole-PNG payload would still be accepted there"
+    },
+    {
+      "file": "near-miss-key.png",
+      "status": "no-depth-chunk",
+      "why": "a four-byte key that is not dePH/dEPt in any case is not a depth chunk at all"
+    },
+    {
+      "file": "no-chunk.png",
+      "status": "no-depth-chunk",
+      "why": "a valid PNG with no depth chunk: \"no depth\" is the honest answer, and it must not be confused with a refusal"
+    },
+    {
+      "file": "not-a-png.png",
+      "status": "not-png",
+      "why": "the signature check is the first gate; a non-PNG is not a PNG with no depth"
+    },
+    {
+      "file": "truncated-chunk.png",
+      "status": "no-depth-chunk",
+      "why": "a chunk that runs past the end of the file is malformed, so the walk stops; it must not throw, and it must not read past the buffer"
+    }
+  ]
+}

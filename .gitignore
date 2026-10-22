@@ -39,6 +39,12 @@ captures/
 .externalNativeBuild/
 .cxx/
 
+# --- python ---
+# The node is not a package anyone installs, but its contract test is run in a
+# container and a local py_compile leaves these behind. Nothing here ships.
+__pycache__/
+*.pyc
+
 # --- design working material (local only, never published) ---
 # Audit, concept, the framework-capability research and the HTML prototype.
 # Kept on disk and out of the repo: it is exploration, not the product, and a

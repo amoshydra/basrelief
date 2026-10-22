@@ -1,6 +1,6 @@
 name: build
 
-# Every push and PR runs three things:
+# Every push and PR runs these things:
 #   - the JVM unit tests and a real debug APK build. The mesh golden test is
 #     the regression net for the depth-banding fix, so a refactor of the blur or
 #     the sampling cannot land without a red build.
@@ -10,6 +10,11 @@ name: build
 #     build cannot see this -- shaders compile at runtime on the GL thread -- and
 #     a reserved word in one has already crashed both the studio and the live
 #     wallpaper on a real phone.
+#   - the shared `contract/` fixtures: the rules implemented more than once (the
+#     tag rule, the dePH chunk, the splat sidecar) are tested against ONE set of
+#     golden bytes by each language. The JS half runs in `guards`, the Java half in
+#     the android job, and the node's Python half in its own container job -- the
+#     node had no CI at all before this.
 #
 # Uses the same containerised Gradle path as `android/podman-build.sh` — the
 # host needs nothing but podman, which ubuntu-latest already has.
@@ -44,6 +49,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq glslang-tools
           node scripts/check-shaders.mjs
+      # The JS half of contract/deph/. Plain Node: png-depth.js touches no browser
+      # API, so it loads unmodified and no install step is needed.
+      - name: Shared contract fixtures (JS)
+        run: node contract/deph/png-depth.test.mjs
 
   android:
     name: android (unit tests + debug APK)
@@ -76,6 +85,25 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  python-contract:
+    # The ComfyUI node had NO CI job before the shared contract/ fixtures existed.
+    # This one runs only the contract test, which is why it needs nothing but a
+    # bare Python image: basrelief_depth/contract.py imports no torch, numpy,
+    # ComfyUI or folder_paths, and the test loads it by path so importing the
+    # package (and its heavy __init__) never happens. No pip step, nothing to break.
+    #
+    # Local equivalent:
+    #   podman run --rm -v "$PWD:/w:ro" -w /w python:3.12-slim \
+    #       python3 server/comfy-node/tests/test_contract.py
+    name: comfy node contract (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    container: python:3.12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shared contract fixtures (Python)
+        run: python3 server/comfy-node/tests/test_contract.py
 
   web:
     # The port is under reference/ and is NOT maintained in sync with the app.

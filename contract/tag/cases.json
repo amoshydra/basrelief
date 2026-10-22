@@ -1,0 +1,125 @@
+{
+  "rule": "Keep only the ASCII characters [A-Za-z0-9_-], in order, then keep the first 48 of them. Nothing is trimmed, normalised or replaced; an id that keeps nothing yields the empty string.",
+  "maxChars": 48,
+  "implementations": [
+    "server/comfy-node/basrelief_depth/contract.py (safe_tag) — the node that CREATES the filenames",
+    "android/core/src/main/java/com/amoshydra/basrelief/core/depth/ComfyWorkflow.java (streamTag) — the app that MUST derive the same names"
+  ],
+  "why": [
+    "Both sides derive basrelief_<tag>_depth.mp4, _normal.mp4, .progress.json, .splat and .splat.json from this one string, and the app has to address files it was never told about. A one-character disagreement asks for a file that does not exist.",
+    "Every kept character is ASCII, so 48 characters is 48 code points, 48 UTF-16 code units and 48 bytes AT THE SAME TIME. That is what removes the old ambiguity: Python truncated 48 code points while Java truncated 48 UTF-16 units, so an emoji before the boundary made the two copies truncate in different places.",
+    "The empty tag is not an error and not a fallback here: the app refuses to submit one (isStreamTagUsable) and the node substitutes its own timestamp name, which the app could never predict. The rule itself has no fallback."
+  ],
+  "cases": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "tag": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "why": "a production UUID survives unchanged — this is the case that runs every day"
+    },
+    {
+      "id": "",
+      "tag": "",
+      "why": "an empty id keeps nothing; the app must refuse it rather than fetch a name the node will not write"
+    },
+    {
+      "id": "a b/c-d",
+      "tag": "abc-d",
+      "why": "space and slash are dropped, not substituted"
+    },
+    {
+      "id": "a_b-c d",
+      "tag": "a_b-cd",
+      "why": "underscore and dash are kept; order is preserved"
+    },
+    {
+      "id": "-item-",
+      "tag": "-item-",
+      "why": "leading and trailing dashes are KEPT — the rule drops characters, it does not trim edges"
+    },
+    {
+      "id": "///",
+      "tag": "",
+      "why": "punctuation only keeps nothing, so the tag is empty rather than a placeholder"
+    },
+    {
+      "id": "photo.1.jpeg",
+      "tag": "photo1jpeg",
+      "why": "a dot is dropped, so an id can never smuggle a second extension into the filename"
+    },
+    {
+      "id": "id with tabs\tand\nnewlines",
+      "tag": "idwithtabsandnewlines",
+      "why": "control characters are dropped"
+    },
+    {
+      "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzq",
+      "tag": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "why": "48 kept characters is the boundary and is INCLUSIVE; the 49th is dropped"
+    },
+    {
+      "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "tag": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "why": "an ASCII id longer than 48 truncates to exactly 48"
+    },
+    {
+      "id": "------------------------------------------------------------------------",
+      "tag": "------------------------------------------------",
+      "why": "truncation is by kept characters, and a kept separator counts toward the 48"
+    },
+    {
+      "id": "café",
+      "tag": "caf",
+      "why": "a non-ASCII letter is dropped: the rule is ASCII alnum, not Unicode alnum"
+    },
+    {
+      "id": "Ⅷ",
+      "tag": "",
+      "why": "Roman numeral EIGHT is Unicode category Nl. Python's str.isalnum() ACCEPTS it and Java's Character.isLetterOrDigit rejects it — this fixture pins the ASCII answer, which both now give"
+    },
+    {
+      "id": "x²",
+      "tag": "x",
+      "why": "SUPERSCRIPT TWO is category No: accepted by Python's isalnum(), rejected by Java. The ASCII rule rejects it on both sides"
+    },
+    {
+      "id": "𐐀𐐀",
+      "tag": "",
+      "why": "a supplementary-plane LETTER (Deseret, category Lo): Python's isalnum() accepts it, while Java's char loop sees two lone surrogates and drops both. Neither survives the ASCII rule"
+    },
+    {
+      "id": "é",
+      "tag": "e",
+      "why": "a combining acute accent is category Mn, not a letter, so it is dropped and not composed"
+    },
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀bbbbbbbbbb",
+      "tag": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "why": "THE TRUNCATION DIVERGENCE, at the boundary: 47 ASCII, then a non-BMP character, then 10 ASCII. Python truncated at 48 code points (47 a + the emoji); Java counted the emoji as two UTF-16 units and could stop mid-surrogate, emitting a lone high surrogate. The ASCII rule drops the emoji and keeps filling, so both answer 47 a + 1 b"
+    },
+    {
+      "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀cccccccccccccccccccccccccccccc",
+      "tag": "cccccccccccccccccccccccccccccc",
+      "why": "the same divergence without the boundary: Python kept 24 emoji + 24 c (48 code points); Java kept 24 emoji (48 UTF-16 units) and no c at all. The ASCII rule drops all 24 emoji on both sides"
+    },
+    {
+      "id": "aaaaaaaaaa😀bbbbbbbbbb",
+      "tag": "aaaaaaaaaabbbbbbbbbb",
+      "why": "a non-BMP character under the limit is dropped and the id continues — it is never replaced with a placeholder, which would make the two sides agree on the wrong string"
+    }
+  ],
+  "names": {
+    "why": "The point of the tag: both sides derive these names from the id without ever having seen a response. The app fetches by them; the node writes them.",
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "tag": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "stream": {
+      "depth": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890_depth.mp4",
+      "normal": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890_normal.mp4",
+      "color": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890_color.mp4",
+      "progress": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890.progress.json"
+    },
+    "splat": {
+      "cloud": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890.splat",
+      "sidecar": "basrelief_a1b2c3d4-e5f6-7890-abcd-ef1234567890.splat.json"
+    }
+  }
+}
