@@ -45,6 +45,20 @@ drop it on a page": no account, no server, no cloud library, and no persistence 
 a refresh empties the gallery because the `File` objects in the tab are the
 gallery.
 
+- **Android owns the design, and `web/` is a copy wherever the two overlap.** The
+  studio in `android/` is the UI's source of truth: a control that exists on both
+  is an Android control first, and when they disagree the Android one is right --
+  the same rule as the code beating this file. `web/` is deliberately narrower
+  (see *What it does not do yet*) and **it is not a mirror**: a mirror is a second
+  UI to keep in step, and this file already records what duplicated *rules* have
+  cost -- the tag rule reached three copies and drifted on two independent things,
+  the blur fraction is checked by a script because a hand-kept copy would not
+  stay equal, and the `dePH` reader now has three implementations with fixtures
+  between them. A second UI is worse than any of those, because nothing can sit
+  between two screens and compare bytes. Where the two must agree on behaviour
+  rather than pixels -- the settings schema, the chunk, the record layout -- the
+  agreement is **bytes in `contract/`**, never a second implementation compared
+  by eye.
 - **The gallery is media-typed, because a file's kind is a property of the
   file.** A file is a **relief** (a `dePH`/`dEPt` chunk was read), a **photo** (a
   decodable image with no chunk), a **cloud** (a `.splat` of whole 32-byte
