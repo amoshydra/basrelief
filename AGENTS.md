@@ -41,9 +41,19 @@ structural.** Every prototype page now carries a drift banner saying so.
 TypeScript app where a file dropped on the page is shown, and a packed PNG is
 shown as a relief. It is `TODO.md`'s ideation item 3, and **it is not an edit of
 `reference/webgl-port/`**. The product shape is "someone sends you a PNG and you
-drop it on a page": no account, no server, no cloud library, and no persistence —
-a refresh empties the gallery because the `File` objects in the tab are the
-gallery.
+drop it on a page": no account, no server, no cloud library. **The library lives
+in the browser**, not in the tab: the truth is OPFS
+(`navigator.storage.getDirectory()`), holding the media files and one
+`library.json` that is the Android app's own `Library` v5 blob, so a tuned look,
+the Renderer choice and the rows themselves survive a refresh — and a folder
+written here can be read by the phone and vice versa. **The mirror is the app's
+storage decision, not a new one** (`TODO.md`, "mirror, not external-as-truth"):
+OPFS is internal truth and a picked folder is a write-through copy with an
+explicit **Back up now** / **Restore**, because a folder is a *permission* — it is
+revoked, an SD card unmounts, a cloud drive goes offline — and with the folder as
+truth every render path needs an "unavailable" state. Nothing renders from the
+folder, ever; every failure at the mirror is a sentence, and the gallery is
+unaffected.
 
 - **Android owns the design so that `web/` can MIRROR it.** The studio in
   `android/` is the reference: a control that exists on both is an Android control
@@ -230,7 +240,8 @@ gallery.
     POST with HTTP 403 otherwise — measured: a direct browser upload failed with
     403 until the header was removed. A failed preflight is a sentence in the
     dialog naming both routes, never a silent nothing. The address is remembered
-    for the tab only, because the gallery stores nothing.
+    for the tab only, because a server address is a session value and not a
+    render value.
 - **The studio's sheet is MIRRORED IN FULL: every group and row is drawn.** A row
   that can act is wired to the real camera; a row that cannot is disabled with a
   sentence. `web/src/sheet.ts` is the vocabulary — the three row roles
@@ -259,14 +270,16 @@ gallery.
     has no photograph, so its Relief option is the one disabled option. The
     **Home/Lock segment, Speed, playlists, archive, Set as wallpaper and Settings
     are still drawn disabled**, each with its one sentence: a page cannot set a
-    wallpaper, it draws no clips, nothing here is stored, and a web page cannot
-    set a live wallpaper.
+    wallpaper, it draws no clips, nothing here rotates a playlist, nothing hides a
+    row from a gallery that has no archived section, and a web page cannot set a
+    live wallpaper.
   - **A cloud build is the studio's Splat tab, and it is here too.**
     `web/src/comfy.ts` also carries `SharpStill`'s two-node graph, the BUDGET
     slider from the app's ladder (a session value, like the address) and the
     `.splat`/sidecar fetch; the asset row's Make one / Rebuild / Regenerate /
-    Delete follow `BuildTab`'s ranking. The result is held in the tab, because the
-    gallery persists nothing.
+    Delete follow `BuildTab`'s ranking. The result is written to the store under
+    the row's own cloud name (`item-<id>.splat`) and named on `splat` with its
+    `splat_lens`, so a built cloud survives a refresh like every other asset.
   - **The gesture set is the studio's**, on one pointer map: **tap** sets the
     orbit centre by ray-casting into the cloud (`SplatCamera.originForRay`) or
     unprojecting to the plane under the finger (the relief); a **one-finger drag
@@ -275,8 +288,9 @@ gallery.
     (`MainActivity`'s mapping — pinch drives Pan Z, while the FOV row is the
     separate crop); and the **crosshair** marks the pivot of the frame that was
     drawn. Every gesture writes the session's values and PUSHES the rows, which
-    is the app's "a gesture owns the renderer's values for its span" rule without
-    the release write, because this page persists nothing.
+    is the app's "a gesture owns the renderer's values for its span"; the index is
+    told **once, on the last lift**, and a gesture that moved nothing writes
+    nothing — the app's release-write rule, applied through `onSettings`.
   - **The asset row is the studio's, per selected mode.** Relief: `No depth map
     yet` / `Has a depth map`, with **Choose a map** and **Generate** — both even
     on a map embedded in the card, because there is no stored depth FILE here and
@@ -293,10 +307,53 @@ gallery.
   - one deliberate departure: the slider's name column is **72px**, not the app's
     66dp, because this page's system font is wider at 13px and "Brightness"
     clipped. The invariant is that every track starts at the same x.
-- **What it does not do yet:** accounts, a server, persistence, clips and the
-  video graph. It does not talk to the phone and does not share code with the
-  reference port. The relief's Zoom is the sheet's FOV row; a cloud's Zoom is the
-  same crop applied to its own lens.
+- **The gallery is the library, and the store has a shape you can explain on
+  disk.** It is one OPFS directory, `basrelief`: `library.json` (the app's
+  `Library` v5 blob),
+  `playlists.json` if one arrived in a backup (opaque, never read here), and one
+  file per row named `item-<id>.<ext>` / `item-<id>.splat`. Flat and
+  bare-filename, because `PrefFiles`' rule is what makes a backup portable. The
+  order of writes is the app's: **a row's bytes land before the blob that names
+  them**, and on a delete the blob is *awaited* before the files go, so the two
+  half-states are an invisible orphan rather than a row that cannot open. The
+  index is parsed once per load and re-written only by an edit — never on load,
+  because a rewrite would drop keys this build does not know.
+- **`library.json` is `Library`'s schema, not a new one.** `web/src/library.ts`
+  reads and writes the same blob `Library.java` does (`surfaces.home`/`lock`,
+  `render`, `archived`, `focal`, `splat`, `splat_lens`, the opaque `video`), and
+  `contract/library/cases.json` pins a populated blob, the defaults, a flat v1/v2
+  row and five junk bodies. It **never throws**: corrupt is an empty gallery plus
+  a sentence and the original kept as `library.corrupt.json`; a *newer* version is
+  `readOnly` — no import, edit, delete or Clear can overwrite a future build's
+  gallery. **The Java half of this fixture is `check-parity`'s key-set claim, not
+  a Java test**, which `contract/README.md` states; the next Java change should
+  add the test. Playlists are a *different* app blob (`Playlists.KEY`), so nothing
+  in the index round-trips them and nothing here rotates them.
+- **A control commits when it is released, and a row's Renderer is a stored
+  value.** `SliderRowOptions.onRelease` is the one hook: a drag previews at the
+  finger's rate and writes once at the end, a nudge and a keyboard step commit
+  immediately, and a release that moved nothing writes nothing. Opening a row is
+  this page's "set as wallpaper" — it moves `active` and stamps `last_used_at`,
+  which is `Library.markUsed`.
+- **A lone `.splat` is session-only, and the card says so.** The schema gives
+  every row a photograph (the poster and the fallback), so a dropped cloud with
+  no picture has no valid row. It draws, it counts, and it closes with the tab; a
+  cloud **built from** a photograph persists. Encoding it as `image: <the
+  .splat>` would be a blob the phone opens with a broken row.
+- **Each storage failure is a sentence, not a silent nothing:** no OPFS (a memory
+  store, "not saved — this tab only"), quota (`QuotaExceededError` named, the
+  card dropped and no row written), a revoked folder (`NotAllowedError` →
+  *unavailable*), a folder that is gone (`NotFoundError` → *unavailable*), a
+  corrupt blob, and a row naming a file the store does not have (the row is kept
+  and the card says what it wanted). The mirror's handle lives in IndexedDB
+  because a `FileSystemHandle` is structured-cloneable; the *permission* does not
+  survive a reload, which is why `needs-permission` is a state with a button
+  rather than a failure.
+- **What it does not do yet:** accounts, a server, clips and the video graph,
+  playlists that rotate, and the archive. The mirror needs a Chromium desktop
+  (the folder picker); OPFS is the part that works everywhere. It does not talk
+  to the phone and does not share code with the reference port. The relief's Zoom
+  is the sheet's FOV row; a cloud's Zoom is the same crop applied to its own lens.
 
 ## Shared contracts (`contract/`)
 
@@ -315,6 +372,7 @@ fixture still holds its four hard records).
 | the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` + `web/src/splat.ts` | `contract/sidecar/` |
 | the `.splat` record | `android/core/src/main/java/com/amoshydra/basrelief/core/splat/SplatCloud.java` + `web/src/splat.ts` | `contract/splat/` |
 | the settings body | `android/core/src/main/java/com/amoshydra/basrelief/core/store/SurfaceSettings.java` + `web/src/settings.ts` | `contract/settings/` (its `ranges` are read by `check-parity`) |
+| the library index | `android/core/src/main/java/com/amoshydra/basrelief/core/store/Library.java` + `LibraryItem.java` (the writers) + `web/src/library.ts` | `contract/library/` (its key lists are read by `check-parity`) |
 
 - **The tag rule is ASCII, and that is the fix rather than a preference:** keep
   `[A-Za-z0-9_-]`, then the first 48. Its prose ("alnum plus `-`/`_`, 48") had
@@ -388,10 +446,10 @@ fixture still holds its four hard records).
   no browser API, so it loads in Node unmodified. The gallery's third copy is
   `web/src/deph.test.ts`, run as
   `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
-  test framework) — which is now eight files: the `dePH` reader and writer, the
+  test framework) — which is now nine files: the `dePH` reader and writer, the
   media states, the splat record/camera and its Depth mapping, the relief camera
-  (`camera.test.ts`), the settings body, the picture/light mappings, and the
-  ComfyUI still/cloud graph and history reader.
+  (`camera.test.ts`), the settings body, the library index, the picture/light
+  mappings, and the ComfyUI still/cloud graph and history reader.
 
 ## Build and test
 

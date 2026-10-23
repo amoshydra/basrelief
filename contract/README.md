@@ -24,6 +24,7 @@ can never fail.
 | the splat sidecar | node writes it (`contract.py::splat_sidecar`) + app reads it (`:core/render/SplatSidecar.java`) + gallery reads it (`web/src/splat.ts`) | `sidecar/*.json` | `SidecarContractTest` (Java) · `test_contract.py` (Python) · `web/src/splat.test.ts` (TypeScript) |
 | the `.splat` 32-byte record | app `:core/splat/SplatCloud.java` + gallery `web/src/splat.ts` | `splat/records.bin` + `splat/cases.json` | `SplatRecordContractTest` (Java) · `web/src/splat.test.ts` (TypeScript) |
 | the settings body | app `:core/store/SurfaceSettings.java` + gallery `web/src/settings.ts` | `settings/cases.json` | `web/src/settings.test.ts` (TypeScript) · `scripts/check-parity.mjs` (both sources, for the ranges) |
+| the library index | app `:core/store/Library.java` + `LibraryItem.java` (the writers) + gallery `web/src/library.ts` | `library/cases.json` | `web/src/library.test.ts` (TypeScript) · `scripts/check-parity.mjs` (the schema number and both key sets) |
 
 **The record became a contract when it got a second reader.** This file used to say
 it was deliberately not fixtured — `SplatCloudTest` pinned the layout field for
@@ -197,7 +198,6 @@ must agree about:
 The schema number is part of the contract: the fixture's `schema`, `Library.VERSION`
 and `SETTINGS_SCHEMA` must be one number, so a version bump that adds a settings
 field cannot land without the fixture and the web reader.
-
 **What a wrong answer looks like, per row:** an absent field read as 0 (a photo that
 goes flat when a partial body arrives); pan clamped like origin (a picture that
 jumps); azimuth clamped like elevation (a dead zone at 0/360); a Size max of 0.9
@@ -210,6 +210,48 @@ range would only be caught by review. The next change to `SurfaceSettings` shoul
 add a `SurfaceSettingsContractTest` that reads this table, and `check-parity`'s
 shared-file list is where that test belongs — the fixture is deliberately written to
 be readable by it (JSON bodies, no browser or Android types).
+
+## The library index
+
+`Library` is the app's gallery: one versioned JSON object holding the rows, each
+row's settings per surface, the selection and the list order. The gallery in
+`web/` keeps its library in the browser's origin-private file system and mirrors
+it into a folder the user picks, so **`library.json` has to be the phone's blob**
+— otherwise a folder written here opens on the phone with different render
+values, and a folder the phone wrote opens here with a photograph missing.
+`web/src/library.ts` is the second reader and writer, and `library/cases.json` is
+what the two must agree about:
+
+- **`populated`** — three rows carrying different halves of the schema: a cloud
+  row in Splat mode with both surfaces tuned (its home body is *exactly* the
+  settings fixture's populated body, so the two fixtures cannot disagree about a
+  render value), an archived photograph with a separate depth file and a supplied
+  normal, and a clip whose opaque `video` object and three filenames must survive
+  a round trip. Parse → write must give the blob back.
+- **`defaults`** — the body the app writes for a fresh import: the twelve required
+  settings keys, the five optional ones absent.
+- **`flat`** — a v1/v2 row whose settings were flat on the item and whose origin
+  was spelled `orbit_*`. A reader that dropped it would silently un-frame a
+  photograph the phone wrote before per-item settings existed.
+- **`junk`** — five bodies: not JSON (`corrupt`), a newer version (`newer`, and
+  `readOnly` so an older build cannot overwrite a future one), a blob of bad rows
+  (every usable row kept, every bad one dropped, the traversal name collapsed to
+  a basename), blank (`empty`), and a duplicated id (the first row wins).
+
+**What a wrong answer looks like:** a dropped `video` is a clip whose files no
+backup copies; a dropped `label` is a card that reads `item-<uuid>.png`; a
+reader that threw on a corrupt blob is a dead page; a reader that treated a newer
+blob as writable erases a future version's gallery; a writer that stored
+`focal: 0` or the five default-valued optional keys changes every stored item on
+upgrade for no rendered difference. None of those crashes on either side, which is
+why the bytes are fixtured.
+
+**The Java half is `check-parity`'s key-set claim, not a Java test.** No JVM test
+reads this table yet; the script holds `Library.VERSION` and every key in
+`blobKeys`/`itemKeys` against `Library.java`/`LibraryItem.java`, and the sort and
+surface keys against `SortOrder`/`Surface`, while `web/src/library.test.ts` holds
+the bodies. The settings body has the same gap and says so above; a
+`LibraryContractTest` reading this table is the obvious next change.
 
 ## The `.splat` record
 
@@ -310,14 +352,16 @@ test framework, no install beyond the app's own dependencies):
 cd web && pnpm test
 ```
 
-That one command runs six files: `src/deph.test.ts` (the packed PNG),
+That one command runs nine files: `src/deph.test.ts` (the packed PNG),
 `src/pack.test.ts` (the writer, its fixture and the round trip through the
 reference port), `src/media.test.ts` (the media vocabulary), `src/splat.test.ts`
 (the record, the camera, the lens and the sort), `src/settings.test.ts` (the
-settings body and its clamps) and `src/picture.test.ts` (the brightness, shadow
-and light mappings).
+settings body and its clamps), `src/library.test.ts` (the index the gallery
+persists and mirrors), `src/picture.test.ts` (the brightness, shadow and light
+mappings), `src/camera.test.ts` (the relief camera) and `src/comfy.test.ts` (the
+ComfyUI graphs and the tag rule).
 
-CI runs all six: the JS check and the TypeScript check (in the `web-app` job),
+CI runs all nine: the JS check and the TypeScript check (in the `web-app` job),
 the Java check inside the `android` job's `test` step, and the Python one in its
 own `python-contract` job (there was no Python job at all before this directory
 existed).

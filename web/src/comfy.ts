@@ -17,8 +17,9 @@
  * here: `AGENTS.md` records that it answers for the WRONG run, and every build
  * then finished instantly with the previous run's output.
  *
- * **Nothing is stored.** The base URL is a module-level value remembered for the
- * tab's lifetime; a refresh empties it, because the gallery persists nothing.
+ * **The address is a session value, not a stored one.** The base URL is a
+ * module-level value remembered for the tab's lifetime; the gallery stores the
+ * library and its render values, and a server address is neither.
  *
  * The transport is plain `fetch`. It needs CORS when the page and ComfyUI are on
  * different origins; `vite.config.ts` proxies `/comfy` in development, which is

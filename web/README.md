@@ -4,9 +4,11 @@ A static gallery and viewer for the files the rest of this repository makes. Dro
 a packed depth PNG on the page and it becomes a relief you can move; drop a
 `.splat` cloud and it becomes a point cloud you can move; a photo can have a depth
 map generated on your own ComfyUI server; a relief can be saved back out as a
-packed PNG. **Nothing is uploaded, stored or remembered** — the `File` objects in
-this tab are the gallery, so a refresh empties it (and the ComfyUI address is
-remembered only for the tab).
+packed PNG. **Nothing is uploaded, and the library is saved in this browser** —
+the rows, their per-photo look and the Renderer choice survive a refresh, and a
+folder you pick can hold a **write-through copy** of the whole library (Back up
+now / Restore) in the Android app's own schema. The ComfyUI address stays a
+session value, because a server address is not a render value.
 
 The product shape is *"someone sends you a PNG and you drop it on a page."* There
 is no account, no server and no cloud library, which is also why this exists: no
@@ -229,9 +231,9 @@ model chooser. Then:
    carries the server's `execution_error` words into the row.
 3. **The depth image is fetched from `/view`, scaled to the photo, packed with the
    tested `dePH` writer** (`src/pack.ts`, the same one Save packed PNG uses), and
-   shown as a relief. The gallery card is replaced with that packed file too, so
-   closing and reopening the viewer still shows the generated relief — in memory,
-   because the gallery persists nothing.
+   shown as a relief. The gallery card is replaced with that packed file too — in
+   the library, under the row's own image name — so closing and reopening the
+   viewer, and a refresh, still show the generated relief.
 4. **A failed preflight appears as a sentence**, not a silent nothing.
 
 ### Build a splat cloud
@@ -289,8 +291,9 @@ it is why the proxy is the path that works rather than a convenience.
 A **static build has no proxy**, so it must either be served behind a proxy of
 your own or talk to ComfyUI directly with ComfyUI started with
 `--enable-cors-header`. `pnpm preview` also uses the dev proxy. The address is
-remembered **for this tab only**; a refresh empties it, because the gallery stores
-nothing. A failed request says both routes explicitly ("a direct cross-origin
+remembered **for this tab only**: a server address is a session value, not a
+render value, so it has no row to live on. A failed request says both routes
+explicitly ("a direct cross-origin
 request needs ComfyUI to allow CORS… or run pnpm dev and use /comfy"), and a
 static build's `/comfy` 404 says that this is what happened.
 
@@ -366,8 +369,8 @@ no server-side requirement.
   closes the Build dialog first, then collapses the sheet).
 - **Not on this page**, drawn disabled with a sentence rather than left as an
   absence: the Home/Lock surfaces, playlists, archive, Set as wallpaper, Settings
-  and Speed. A page cannot set a wallpaper, nothing here is stored, and it draws
-  no clips.
+  and Speed. A page cannot set a wallpaper, it rotates no playlists, it hides no
+  row in an archive, and it draws no clips.
 
 The picture fills the viewport (cover, with the reference port's 8 % crop) at FOV
 45°, as the wallpaper does. Pan moves the picture at every depth; FOV scales the
@@ -412,6 +415,52 @@ maths, but its upload is `RGBA32F`, which is the colour path this app replaced. 
 is taken from it is nothing; what is taken from `SplatRenderer` is listed under *The
 cloud renderer* above.
 
+## Where the library lives
+
+**OPFS is the truth.** `navigator.storage.getDirectory()` needs no gesture and no
+permission, works on a phone, and holds:
+
+```
+basrelief/
+  library.json              the Android app's Library v5 blob
+  playlists.json            optional, opaque — copied, never read here
+  item-<id>.<ext>           one colour image per row, original bytes
+  item-<id>.splat           a Gaussian cloud, when a row has one
+```
+
+`library.json` is `Library`'s schema — `surfaces.home`/`lock` of the same
+seventeen values, `render`, `archived`, `focal`, `splat`, `splat_lens`, the opaque
+`video`, the sort and the selection — so a folder written here can be opened on
+the phone and a folder the phone wrote can be opened here. The parser never
+throws: a corrupt blob is an empty gallery with a sentence and the original kept
+as `library.corrupt.json`, and a blob from a *newer* build is read-only (no
+import, edit, delete or Clear can overwrite it). `contract/library/cases.json` is
+the shared statement of that schema. Filenames are bare, never paths, which is
+what makes a backup portable.
+
+**A picked folder is a write-through copy, never a second truth.** This is the
+app's decision (`TODO.md`): a folder is a *permission* — revoked, unmounted,
+offline — and with a folder as truth every render path needs an "unavailable"
+state and a missing folder becomes an empty gallery. So:
+
+- **Choose backup folder…** stores the `FileSystemHandle` in IndexedDB (it is
+  structured-cloneable, so it survives a reload). The *permission* does not
+  survive: `queryPermission` answers `prompt`, which is the **Allow the folder**
+  button, not a failure.
+- **Back up now** writes every stored file, then `library.json` **last**, so an
+  interrupted backup never names a file it did not copy.
+- **Restore** reads the folder's `library.json`, validates it, copies the files it
+  names plus an optional `playlists.json`, then writes the index last. A file the
+  folder is missing is named in the sentence and the row is kept, with the card
+  saying what it wanted — never a silently shorter gallery.
+- **Unavailable** is a visible state with its own sentence: the folder is gone
+  (`NotFoundError`) or the browser refuses writes (`NotAllowedError`). The gallery
+  is untouched either way, because nothing renders from the folder.
+
+Unsupported browsers (no folder picker) get that sentence too, and a browser
+without OPFS gets a memory store, the line **Not saved — this tab only**, and a
+page that otherwise works.
+
 ## What it does not do yet
 
 - **Clips and the video graph** — a `.mp4` pair is not read, and the Speed row is
@@ -420,8 +469,14 @@ cloud renderer* above.
   exactly as the app's shader writes them, so the picture matches the app rather
   than an `sRGB`-converted one.
 - **Accounts, a server, sync with the phone** — none, by design.
-- **Persistence** — no IndexedDB, no localStorage; reload and the gallery is
-  empty (the ComfyUI address and a built cloud live for the tab only).
+- **Playlist behaviour and the archive** — the schema round-trips both, and
+  nothing rotates or hides.
+- **A lone `.splat` is not persisted** — the app's schema gives every row a
+  photograph as its poster, so a cloud dropped without a picture is kept for the
+  session and the card says so. A cloud built from a photo persists.
+- **The folder picker is Chromium desktop only** — OPFS, the part that is the
+  truth, works everywhere. A browser without OPFS says that nothing will be saved
+  and keeps working for the session.
 
 ## Layout
 
@@ -429,7 +484,10 @@ cloud renderer* above.
 web/
   index.html          page shell (no framework)
   src/main.ts         file intake: picker + whole-window drag & drop
-  src/gallery.ts      the cards, thumbnails, counts, sidecars and per-file inspection
+  src/gallery.ts      the library: cards, inspection, imports and per-row writes
+  src/library.ts      the Library v5 blob: reader, writer, names, sort (pure, tested)
+  src/store.ts        OPFS (and the memory fallback): the files and library.json
+  src/mirror.ts       a picked folder: the handle in IndexedDB, Back up / Restore
   src/media.ts        the one media classifier + formatting (pure, tested)
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
   src/pack.ts         the dePH writer + the browser colour re-encode (pure half tested)
@@ -449,6 +507,7 @@ web/
   src/splat.test.ts   contract/splat + the camera, lens, sort, tap and floor
   src/camera.test.ts  the relief camera: at-rest, turntable, Pan and the tap round trip
   src/settings.test.ts  contract/settings: ranges, bodies, clamps and junk
+  src/library.test.ts   contract/library: the populated blob, defaults, flat and junk
   src/picture.test.ts   the two Picture mappings and the light convention
   src/comfy.test.ts     the depth and SHARP graphs, the tag rule, the history gates
 ```

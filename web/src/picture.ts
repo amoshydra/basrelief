@@ -75,8 +75,16 @@ export function lightDirection(
  */
 export function normaliseAzimuth(degrees: number): number {
   if (!Number.isFinite(degrees)) return DEFAULT_LIGHT_AZIMUTH;
-  const wrapped = ((degrees % 360) + 360) % 360;
-  return wrapped === 0 ? 0 : wrapped;
+  // The same arithmetic as `LightDirection.normaliseAzimuth`: take the remainder,
+  // and only add a turn when it is negative. The `((x % 360) + 360) % 360` form
+  // looks equivalent and is not — adding 360 to an in-range value re-rounds it one
+  // ulp, so a stored azimuth would change on every save and a blob would never be
+  // a fixed point. The Java copy already took this form; this is the copy that was
+  // wrong.
+  const wrapped = degrees % 360;
+  const positive = wrapped < 0 ? wrapped + 360 : wrapped;
+  // -0 compares equal to 0 and would round-trip as a different JSON text.
+  return positive === 0 ? 0 : positive;
 }
 
 /** Elevation clamps: 0° rakes across the relief, 90° is head-on. */

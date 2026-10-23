@@ -422,8 +422,17 @@ export interface SliderRowOptions {
   max: number;
   /** How the value is written: `%`, `°`, or a signed offset. */
   format: (value: number) => string;
-  /** Every change, live — the renderer follows the finger and nothing persists. */
+  /** Every change, live — the renderer follows the finger. */
   onInput: (value: number) => void;
+  /**
+   * The value to keep, once the user has let go.
+   *
+   * The app's rule for every slider on its sheet is "preview while dragging,
+   * commit on release": a page that stored on every input would rewrite its
+   * library at the drag's frame rate. A nudge and a keyboard step are discrete
+   * committed edits, so they call this too — they have no drag to end.
+   */
+  onRelease?: (value: number) => void;
   /** A row whose value nothing on this page can change: drawn, inert, honest. */
   disabled?: boolean;
 }
@@ -522,6 +531,12 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
     options.onInput(next);
   }
 
+  /** The edit is over: hand the kept value to whoever stores it. */
+  function commit(): void {
+    if (options.disabled) return;
+    options.onRelease?.(shown);
+  }
+
   function nudge(glyph: string, direction: number): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
@@ -529,7 +544,11 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
     button.textContent = glyph;
     button.setAttribute('aria-label', `${options.label} ${glyph}`);
     button.disabled = options.disabled === true;
-    button.addEventListener('click', () => move(shown + direction));
+    button.addEventListener('click', () => {
+      const before = shown;
+      move(shown + direction);
+      if (shown !== before) commit();
+    });
     return button;
   }
 
@@ -591,7 +610,13 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
     // A cancelled drag returns to where it began: the renderer followed the
     // preview, so leaving the bar showing a value nothing holds would be a second
     // thing on screen the picture does not agree with.
-    if (event.type === 'pointercancel' && shown !== pressedAt) move(pressedAt);
+    if (event.type === 'pointercancel' && shown !== pressedAt) {
+      move(pressedAt);
+      return; // the value on screen is the one that was already stored
+    }
+    // A release that moved nothing writes nothing — the same rule
+    // `ReliefRenderer.saveFramingToPrefs` follows for a gesture.
+    if (shown !== pressedAt) commit();
   };
   track.addEventListener('pointerup', endDrag);
   track.addEventListener('pointercancel', endDrag);
@@ -600,6 +625,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
   // still operable without a drag.
   track.addEventListener('keydown', (event) => {
     if (options.disabled) return;
+    const before = shown;
     switch (event.key) {
       case 'ArrowLeft':
       case 'ArrowDown':
@@ -625,6 +651,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
         return;
     }
     event.preventDefault();
+    if (shown !== before) commit();
   });
 
   // Laid out after it is in the document: the "is the fill wide enough for the
@@ -702,7 +729,7 @@ export function segmentRow(options: SegmentRowOptions): HTMLElement {
 /**
  * A text field on a plate. Used by Generate depth for the ComfyUI base URL: the
  * studio writes that address to prefs, and this page keeps it in memory for the
- * session only (the gallery stores nothing).
+ * session only — an address is not a render value, so it has no row to live on.
  */
 export function inputRow(options: {
   label: string;

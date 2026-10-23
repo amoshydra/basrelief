@@ -1,0 +1,322 @@
+{
+  "schema": 5,
+  "why": "Library is the app's gallery index: one versioned JSON object holding the rows, each row's SurfaceSettings per surface, the selection and the list order. The app writes it in Library.toJson / LibraryItem.toJson and reads it in Library.parse / LibraryItem.fromJson; web/src/library.ts is the second reader and writer, and this table is the only shared statement of the bodies the two must agree on. scripts/check-parity.mjs holds the schema number against Library.VERSION, every key in blobKeys and itemKeys against the Java sources and library.ts, and the sort keys against SortOrder. The reason it matters is the mirror: library.json in this page's storage is meant to be a blob the phone can read, and a blob the phone wrote is meant to be one this page can read. A copy that drifted would not crash either side — it would open somebody's gallery with a different picture on the wallpaper and a slider at a value the other side never stores.",
+  "blobKeys": ["version", "sort", "applied", "items", "active"],
+  "itemKeys": [
+    "id",
+    "image",
+    "added_at",
+    "last_used_at",
+    "surfaces",
+    "depth",
+    "normal",
+    "video",
+    "focal",
+    "splat_lens",
+    "splat",
+    "render",
+    "label",
+    "archived"
+  ],
+  "sortKeys": ["added_desc", "name_asc", "recently_used"],
+  "surfaceKeys": ["home", "lock"],
+  "populated": {
+    "why": "Three rows, each carrying a different half of the schema so that a reader which dropped one would be caught: row one is a cloud row in Splat mode with both surfaces tuned (its home body is exactly contract/settings/cases.json's populated body, so the two fixtures cannot disagree about a render value) and a stored lens; row two is an archived photograph with a separate depth file, a supplied normal and no focal; row three is a clip — this page draws none, but its opaque video object and its three filenames must survive, because a mirror that loses them loses the user's video. A round trip must give this blob back byte for byte: a writer that dropped an absent-only key, wrote a 0 focal, or reordered a surface body is a stored picture that changes when it is re-saved.",
+    "blob": {
+      "version": 5,
+      "sort": "recently_used",
+      "applied": ["home", "lock"],
+      "items": [
+        {
+          "id": "5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60",
+          "image": "item-5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60.png",
+          "added_at": 1721550000000,
+          "last_used_at": 1721553600000,
+          "surfaces": {
+            "home": {
+              "depth": 62,
+              "zoom": 140,
+              "motion": 58,
+              "origin_x": -0.375,
+              "origin_y": 0.125,
+              "pan_x": 86.5,
+              "pan_y": -42,
+              "brightness": 24,
+              "shadow": -18,
+              "light_azimuth": 210.5,
+              "light_elevation": 34.25,
+              "speed": 75,
+              "splat_depth": 1.75,
+              "splat_eps2d": 0.35,
+              "splat_blur": 2.5,
+              "splat_scale": 0.75,
+              "pan_z": 1.6
+            },
+            "lock": {
+              "depth": 40,
+              "zoom": 120,
+              "motion": 0,
+              "origin_x": 0,
+              "origin_y": 0,
+              "pan_x": 0,
+              "pan_y": 0,
+              "brightness": -10,
+              "shadow": 0,
+              "light_azimuth": 90,
+              "light_elevation": 20,
+              "speed": 100
+            }
+          },
+          "focal": 1234.5,
+          "splat_lens": 0.8125,
+          "splat": "item-5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60.splat",
+          "render": "splat",
+          "label": "beach.png"
+        },
+        {
+          "id": "b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e",
+          "image": "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e.png",
+          "added_at": 1721400000000,
+          "last_used_at": 0,
+          "surfaces": {
+            "home": {
+              "depth": 75,
+              "zoom": 100,
+              "motion": 33,
+              "origin_x": 0.5,
+              "origin_y": 0,
+              "pan_x": -135,
+              "pan_y": 0,
+              "brightness": 0,
+              "shadow": 34,
+              "light_azimuth": 125,
+              "light_elevation": 51,
+              "speed": 100
+            }
+          },
+          "depth": "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e-depth.png",
+          "normal": "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e-normal.png",
+          "label": "old wall.png",
+          "archived": true
+        },
+        {
+          "id": "c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20",
+          "image": "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20.png",
+          "added_at": 1721300000000,
+          "last_used_at": 1721310000000,
+          "surfaces": {
+            "home": {
+              "depth": 90,
+              "zoom": 100,
+              "motion": 33,
+              "origin_x": 0,
+              "origin_y": 0,
+              "pan_x": 0,
+              "pan_y": 0,
+              "brightness": 0,
+              "shadow": 0,
+              "light_azimuth": 124.992,
+              "light_elevation": 50.862,
+              "speed": 60
+            }
+          },
+          "video": {
+            "color": "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20.mp4",
+            "depth": "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20-depth.mp4",
+            "normal": "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20-normal.mp4"
+          },
+          "focal": 987.25,
+          "label": "holiday.mp4"
+        }
+      ],
+      "active": "5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60"
+    },
+    "expected": {
+      "ids": [
+        "5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60",
+        "b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e",
+        "c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20"
+      ],
+      "active": "5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60",
+      "sort": "recently_used",
+      "applied": ["home", "lock"],
+      "render": ["splat", "relief", "relief"],
+      "archived": [false, true, false],
+      "labels": ["beach.png", "old wall.png", "holiday.mp4"],
+      "files": [
+        "item-5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60.png",
+        "item-5d1c7a2e-7f2b-4a3c-8f2a-1c2b3d4e5f60.splat",
+        "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e.png",
+        "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e-depth.png",
+        "item-b7e2c4d6-1a3f-4b5c-9d7e-2f4a6b8c0d1e-normal.png",
+        "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20.png",
+        "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20.mp4",
+        "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20-depth.mp4",
+        "item-c9a3e5f7-2b4d-4c6e-8f0a-3b5c7d9e1f20-normal.mp4"
+      ]
+    }
+  },
+  "defaults": {
+    "why": "One row nobody has adjusted: the body the app writes for a fresh import. Every one of the twelve required settings keys is present and resolves to its documented default, and the five optional ones (the splat look and Pan Z) are absent — so a writer that always emitted them would rewrite every stored item on upgrade for no rendered difference. parse → write must give this blob back, and the item it produces must be exactly the values LibraryItem would default.",
+    "blob": {
+      "version": 5,
+      "sort": "added_desc",
+      "applied": ["home"],
+      "items": [
+        {
+          "id": "0b6f6e1a-0000-4000-8000-000000000001",
+          "image": "item-0b6f6e1a-0000-4000-8000-000000000001.png",
+          "added_at": 0,
+          "last_used_at": 0,
+          "surfaces": {
+            "home": {
+              "depth": 90,
+              "zoom": 100,
+              "motion": 33,
+              "origin_x": 0,
+              "origin_y": 0,
+              "pan_x": 0,
+              "pan_y": 0,
+              "brightness": 0,
+              "shadow": 0,
+              "light_azimuth": 124.99202019855868,
+              "light_elevation": 50.862324846430646,
+              "speed": 100
+            }
+          },
+          "label": "unnamed.png"
+        }
+      ]
+    },
+    "expected": {
+      "id": "0b6f6e1a-0000-4000-8000-000000000001",
+      "image": "item-0b6f6e1a-0000-4000-8000-000000000001.png",
+      "depth": null,
+      "normal": null,
+      "video": null,
+      "focal": 0,
+      "splat": null,
+      "splatLens": 0,
+      "render": "relief",
+      "label": "unnamed.png",
+      "addedAt": 0,
+      "lastUsedAt": 0,
+      "archived": false,
+      "lock": null
+    }
+  },
+  "flat": {
+    "why": "A flat v1/v2 row, read the way LibraryItem.homeFrom reads one: the six render values sat on the item, origin was spelled orbit_*, and Motion was global so the item has none. This page must not lose the framing of a photograph the phone wrote before per-item settings existed — and it must rewrite the row into the nested shape on the next save, which is a migration by parse, not a second version.",
+    "blob": {
+      "version": 2,
+      "items": [
+        {
+          "id": "flat-row",
+          "image": "flat-row.png",
+          "intensity": 55,
+          "zoom": 130,
+          "orbit_x": -0.25,
+          "orbit_y": 0.75,
+          "pan_x": 12,
+          "pan_y": -8,
+          "brightness": 9,
+          "shadow": -4,
+          "light_azimuth": 300,
+          "light_elevation": 10
+        }
+      ]
+    },
+    "expectedHome": {
+      "depth": 55,
+      "zoom": 130,
+      "motion": 33,
+      "origin_x": -0.25,
+      "origin_y": 0.75,
+      "pan_x": 12,
+      "pan_y": -8,
+      "brightness": 9,
+      "shadow": -4,
+      "light_azimuth": 300,
+      "light_elevation": 10,
+      "speed": 100,
+      "splat_depth": 1,
+      "splat_eps2d": 0.5,
+      "splat_blur": 0,
+      "splat_scale": 1,
+      "pan_z": 1
+    }
+  },
+  "junk": [
+    {
+      "why": "A body that is not JSON is a corrupt file, not a dead page: the app's parse rule. The page keeps a copy, starts empty, and says so.",
+      "raw": "{ this is not json",
+      "status": "corrupt"
+    },
+    {
+      "why": "A blob from a NEWER build is not this build's to interpret OR to overwrite: it answers an empty library with readOnly set, so no import, edit, delete or Clear can erase a future version's gallery.",
+      "raw": { "version": 6, "items": [] },
+      "status": "newer",
+      "newerVersion": 6,
+      "readOnly": true
+    },
+    {
+      "why": "Every unusable row is dropped and every good one kept — losing one unreadable entry is recoverable, losing forty good ones because of the forty-first is not. The traversal image name collapses to its basename rather than escaping the store; an out-of-range depth is clamped by the settings reader; a string is neither a boolean nor a render mode; a negative stamp is 0; and a blank label is no label.",
+      "raw": {
+        "version": 5,
+        "sort": "sideways",
+        "applied": ["lock", "ceiling"],
+        "active": "nowhere",
+        "items": [
+          {
+            "id": "keep",
+            "image": "../keep.png",
+            "added_at": -5,
+            "last_used_at": "yesterday",
+            "surfaces": { "home": { "depth": 999, "zoom": "wide", "pan_x": 86.5 } },
+            "archived": "yes",
+            "render": "SIDE",
+            "label": ""
+          },
+          { "id": "no-image", "image": null },
+          { "id": "bad/id", "image": "x.png" },
+          { "image": "no-id.png" },
+          "not an object"
+        ]
+      },
+      "status": "ok",
+      "expectedIds": ["keep"],
+      "expectedActive": null,
+      "expectedSort": "added_desc",
+      "expectedApplied": ["lock"],
+      "expectedItem": {
+        "image": "keep.png",
+        "depth": 100,
+        "zoom": 100,
+        "panX": 86.5,
+        "addedAt": 0,
+        "lastUsedAt": 0,
+        "archived": false,
+        "render": "relief",
+        "label": null
+      }
+    },
+    {
+      "why": "A blank body is a fresh install, not corruption: it answers 'empty' with nothing to say. The alternative — a dirty site with an empty library reported as a broken one — teaches the user to ignore the warning that matters.",
+      "raw": "   ",
+      "status": "empty"
+    },
+    {
+      "why": "A duplicated id keeps the FIRST row, exactly as Library.of does: obeying the second copy would let one row silently replace another.",
+      "raw": {
+        "version": 5,
+        "items": [
+          { "id": "same", "image": "first.png" },
+          { "id": "same", "image": "second.png" }
+        ]
+      },
+      "status": "ok",
+      "expectedIds": ["same"],
+      "expectedActive": null
+    }
+  ]
+}

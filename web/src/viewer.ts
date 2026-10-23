@@ -100,8 +100,8 @@ import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
  *
  * A dropped `.splat` keeps its `File` (its bytes are read on open, because a card
  * should not read a 13 MB file to show a count); a cloud built on this page is
- * held in memory, because the gallery persists nothing and rebuilding it is the
- * only reason to lose it.
+ * written to the library store by the gallery, and this session's copy carries
+ * the bytes until it has been.
  */
 export interface CloudAsset {
   /** The dropped file, when the cloud arrived as one. */
@@ -135,6 +135,25 @@ export interface OpenableItem {
   lensFrom: string | null;
   /** A cloud built on this page for this card, if one was. */
   cloud: CloudAsset | null;
+  /**
+   * The row's own render values for this surface, from `library.json`.
+   *
+   * The studio's values belong to a photograph and a screen, not to the tab, so
+   * the viewer starts from the row rather than from the defaults — which is what
+   * makes a tuned look survive a refresh.
+   */
+  settings: SurfaceSettings;
+  /** Which asset the row asks for (`RenderMode`). */
+  mode: Mode;
+  /**
+   * Called when a control commits: on release, on a nudge, on a mode switch and
+   * on Reset. The gallery owns the row, so it is the one that writes it.
+   *
+   * Deliberately not called per input frame: a page that stored at the drag's
+   * frame rate would rewrite its library sixty times for one gesture, and the
+   * app's own rule is preview while dragging, commit on release.
+   */
+  onSettings?: (settings: SurfaceSettings, mode: Mode) => void;
   /**
    * Called when this page packs a new depth map into the photo. The gallery owns
    * the card, so it replaces the dropped file with the packed one and repaints —
@@ -238,14 +257,25 @@ export function openViewer(item: OpenableItem): void {
   let generatedUrl: string | null = null;
 
   /** The card's own state, and the values the rows write. */
-  const settings: SurfaceSettings = defaultSettings();
+  const settings: SurfaceSettings = { ...item.settings };
   /** The cloud budget is generation-side, not a render value: a session value. */
   let sharpBudget = SHARP_BUDGET;
-  /** The selected renderer: the app's row mode. A dropped cloud is splat-only. */
-  let mode: Mode = item.state.kind === 'cloud' ? 'splat' : 'relief';
+  /** The selected renderer: the app's row mode, from `library.json`. */
+  let mode: Mode = item.mode;
   /** A generated cloud this session, until the gallery has it. */
   let cardCloud: CloudAsset | null = item.cloud;
   let build: BuildState | null = null;
+
+  /**
+   * Hand the committed values to the gallery, once per gesture.
+   *
+   * A copy, not the live object: the gallery may keep it while the viewer keeps
+   * mutating the one it reads from, and two owners of one settings object is the
+   * `SurfaceSettings.with` bug with a different name.
+   */
+  function persist(): void {
+    item.onSettings?.({ ...settings }, mode);
+  }
 
   /*
    * The card's own assets, as THIS page knows them. The gallery mutates its item
@@ -416,6 +446,9 @@ export function openViewer(item: OpenableItem): void {
     if (next === mode) return;
     if (next === 'relief' && !hasColour()) return;
     mode = next;
+    // The Renderer choice is per row, so it is a stored value like Depth: a row
+    // that was set to Splat has to come back that way.
+    persist();
     mount();
   }
 
@@ -518,6 +551,7 @@ export function openViewer(item: OpenableItem): void {
         view.setOrigin(settings.originX, settings.originY);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const originYRow = sliderRow({
       label: 'Origin Y',
@@ -530,6 +564,7 @@ export function openViewer(item: OpenableItem): void {
         view.setOrigin(settings.originX, settings.originY);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     panel.body.append(originXRow.element, originYRow.element);
 
@@ -545,6 +580,7 @@ export function openViewer(item: OpenableItem): void {
         view.setPan(settings.panX, settings.panY);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const panYRow = sliderRow({
       label: 'Pan Y',
@@ -557,6 +593,7 @@ export function openViewer(item: OpenableItem): void {
         view.setPan(settings.panX, settings.panY);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const panZRow = sliderRow({
       label: 'Pan Z',
@@ -569,6 +606,7 @@ export function openViewer(item: OpenableItem): void {
         view.setPanZ(settings.panZ);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     panel.body.append(panXRow.element, panYRow.element, panZRow.element);
     panel.body.append(
@@ -851,6 +889,7 @@ export function openViewer(item: OpenableItem): void {
         view.setDepth(v / 100);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     panel.body.append(depthRow.element);
 
@@ -865,6 +904,7 @@ export function openViewer(item: OpenableItem): void {
         settings.motion = v;
         view.setMotion(v / 100);
       },
+      onRelease: persist,
     });
     const zoomRow = sliderRow({
       label: 'FOV',
@@ -877,6 +917,7 @@ export function openViewer(item: OpenableItem): void {
         view.setZoom(v / 100);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const tiltControl = tiltRow();
     panel.body.append(motionRow.element, zoomRow.element, tiltControl.element);
@@ -894,6 +935,7 @@ export function openViewer(item: OpenableItem): void {
         settings.brightness = v;
         applyAdjust();
       },
+      onRelease: persist,
     });
     const shadowRow = sliderRow({
       label: 'Shadow',
@@ -905,6 +947,7 @@ export function openViewer(item: OpenableItem): void {
         settings.shadow = v;
         applyAdjust();
       },
+      onRelease: persist,
     });
     panel.body.append(brightnessRow.element, shadowRow.element);
 
@@ -920,6 +963,7 @@ export function openViewer(item: OpenableItem): void {
         settings.lightAzimuth = v;
         applyLight();
       },
+      onRelease: persist,
     });
     const elevationRow = sliderRow({
       label: 'Elevation',
@@ -931,6 +975,7 @@ export function openViewer(item: OpenableItem): void {
         settings.lightElevation = v;
         applyLight();
       },
+      onRelease: persist,
     });
     panel.body.append(
       azimuthRow.element,
@@ -1020,6 +1065,9 @@ export function openViewer(item: OpenableItem): void {
       pushFraming();
       syncCrosshair();
       tilt?.calibrate();
+      // Reset is a committed edit like any other: the row goes back to the values
+      // the studio would show, not just this session.
+      persist();
     });
 
     setSheet(panel);
@@ -1229,6 +1277,7 @@ export function openViewer(item: OpenableItem): void {
         view.setDepth(settings.splatDepth);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const sizeRow = sliderRow({
       label: 'Size',
@@ -1240,6 +1289,7 @@ export function openViewer(item: OpenableItem): void {
         settings.splatEps2d = v / 100;
         view.setSize(settings.splatEps2d);
       },
+      onRelease: persist,
     });
     const blurRow = sliderRow({
       label: 'Blur',
@@ -1251,6 +1301,7 @@ export function openViewer(item: OpenableItem): void {
         settings.splatBlur = v;
         view.setBlur(v);
       },
+      onRelease: persist,
     });
     const resolutionRow = sliderRow({
       label: 'Resolution',
@@ -1262,6 +1313,7 @@ export function openViewer(item: OpenableItem): void {
         settings.splatScale = v / 100;
         view.setResolution(settings.splatScale);
       },
+      onRelease: persist,
     });
     panel.body.append(depthRow.element, sizeRow.element, blurRow.element, resolutionRow.element);
     panel.body.append(
@@ -1279,6 +1331,7 @@ export function openViewer(item: OpenableItem): void {
         settings.motion = v;
         view.setMotion(v / 100);
       },
+      onRelease: persist,
     });
     const zoomRow = sliderRow({
       label: 'FOV',
@@ -1291,6 +1344,7 @@ export function openViewer(item: OpenableItem): void {
         view.setZoom(v / 100);
         syncCrosshair();
       },
+      onRelease: persist,
     });
     const tiltControl = tiltRow();
     panel.body.append(motionRow.element, zoomRow.element, tiltControl.element);
@@ -1308,6 +1362,7 @@ export function openViewer(item: OpenableItem): void {
         settings.brightness = v;
         applyAdjust();
       },
+      onRelease: persist,
     });
     const shadowRow = sliderRow({
       label: 'Shadow',
@@ -1319,6 +1374,7 @@ export function openViewer(item: OpenableItem): void {
         settings.shadow = v;
         applyAdjust();
       },
+      onRelease: persist,
     });
     panel.body.append(brightnessRow.element, shadowRow.element);
 
@@ -1367,6 +1423,9 @@ export function openViewer(item: OpenableItem): void {
       pushFraming();
       syncCrosshair();
       tilt?.calibrate();
+      // Reset is a committed edit like any other: the row goes back to the values
+      // the studio would show, not just this session.
+      persist();
     });
 
     setSheet(panel);
@@ -1418,6 +1477,8 @@ export function openViewer(item: OpenableItem): void {
     let pinchStartPanZ = 1;
     let lastMidX = 0;
     let lastMidY = 0;
+    /** Set by any gesture that moved a stored value; committed on the last lift. */
+    let framingTouched = false;
 
     const local = (event: PointerEvent): { x: number; y: number; rect: DOMRect } => {
       const rect = target.getBoundingClientRect();
@@ -1444,8 +1505,13 @@ export function openViewer(item: OpenableItem): void {
       const limit = Math.max(target.clientWidth, target.clientHeight, 1);
       // The finger moves the picture with it: a positive dx is a negative Pan X,
       // which is `ReliefRenderer.panBy`'s own sign.
+      const wasX = settings.panX;
+      const wasY = settings.panY;
       settings.panX = Math.max(-limit, Math.min(limit, settings.panX - dx));
       settings.panY = Math.max(-limit, Math.min(limit, settings.panY - dy));
+      // A drag against a stop moved nothing, and a release that moved nothing
+      // writes nothing — the app's `framingMoved` rule.
+      if (settings.panX !== wasX || settings.panY !== wasY) framingTouched = true;
       view.setPan(settings.panX, settings.panY);
       pushFraming();
       syncCrosshair();
@@ -1490,6 +1556,7 @@ export function openViewer(item: OpenableItem): void {
           const next = Math.max(PAN_Z_MIN, Math.min(PAN_Z_MAX, pinchStartPanZ * (pinchStartDist / now)));
           if (next !== settings.panZ) {
             settings.panZ = next;
+            framingTouched = true;
             view.setPanZ(next);
             pushFraming();
             syncCrosshair();
@@ -1523,6 +1590,9 @@ export function openViewer(item: OpenableItem): void {
           const ndcY = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
           const origin = view.tapOrigin(ndcX, ndcY);
           if (origin) {
+            if (origin.x !== settings.originX || origin.y !== settings.originY) {
+              framingTouched = true;
+            }
             settings.originX = origin.x;
             settings.originY = origin.y;
             pushFraming();
@@ -1533,6 +1603,12 @@ export function openViewer(item: OpenableItem): void {
       if (pointers.size === 0) {
         moved = false;
         pinchStartDist = 0;
+        // A gesture owns the renderer's values for its span and the index is told
+        // once, at the end — and a gesture that moved nothing writes nothing.
+        if (framingTouched) {
+          framingTouched = false;
+          persist();
+        }
       }
     };
 
@@ -1594,7 +1670,7 @@ export function openViewer(item: OpenableItem): void {
     });
     dialog.body.append(urlRow.element);
     dialog.body.append(
-      note('Kept for this tab only — the gallery stores nothing, so a refresh empties it.'),
+      note('Kept for this tab only — the ComfyUI address is a session value, not a render value.'),
     );
 
     const status = note('Not connected — test the address to see what this server can build.');
@@ -2019,6 +2095,9 @@ function lensLine(lens: number, from: string | null): string {
   }
   if (from) {
     return `${from} states no lens (focal or height missing), so this is the app’s default look — ${NO_LENS_FOVY_DEG.toFixed(1)}° vertical field of view.`;
+  }
+  if (lens > 0) {
+    return `lens stored on this photo — ${sourceFovy(lens).toFixed(1)}° vertical field of view. The sidecar it came from is not needed once the row carries the number.`;
   }
   return `no lens sidecar — drawn at the app’s default look (${NO_LENS_FOVY_DEG.toFixed(1)}° vertical field of view).`;
 }

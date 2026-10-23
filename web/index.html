@@ -6,7 +6,7 @@
     <title>Basrelief — open a 3D photo</title>
     <meta
       name="description"
-      content="Open a packed depth PNG or a Gaussian splat cloud in the browser. Nothing is uploaded; files stay in the tab."
+      content="Open a packed depth PNG or a Gaussian splat cloud in the browser. The library is saved in this browser; nothing is uploaded."
     />
   </head>
   <body>
@@ -26,7 +26,25 @@
           <span class="intake-or">or</span>
           <button type="button" class="primary" id="pick">Choose files</button>
         </div>
-        <p class="intake-note">Files stay in this tab — nothing is uploaded, stored or remembered.</p>
+        <p class="intake-note">
+          Saved in this browser — nothing is uploaded. A packable PNG or a cloud you build
+          keeps its look after a refresh.
+        </p>
+      </section>
+
+      <section class="library" aria-label="Where the library is kept">
+        <div class="library-lines">
+          <span class="library-state" id="storage-state">Opening the library…</span>
+          <span class="library-folder" id="mirror-state">Checking the backup folder…</span>
+        </div>
+        <div class="library-actions">
+          <button type="button" class="quiet" id="mirror-pick">Choose backup folder…</button>
+          <button type="button" class="quiet" id="mirror-grant" hidden>Allow the folder</button>
+          <button type="button" class="quiet" id="mirror-backup" disabled>Back up now</button>
+          <button type="button" class="quiet" id="mirror-restore" disabled>Restore</button>
+          <button type="button" class="quiet" id="mirror-forget" hidden>Forget folder</button>
+        </div>
+        <p class="library-notice" id="library-notice" role="status" hidden></p>
       </section>
 
       <div class="gallery-head">
@@ -84,9 +102,11 @@
             which.
           </p>
           <p class="about-limits">
-            <strong>Not here yet:</strong> generating a depth map from a photo (that is the
-            ComfyUI node's job), accounts, a server, and persistence — a refresh empties
-            the gallery.
+            <strong>Not here yet:</strong> generating a depth map inside the page (that is the
+            ComfyUI node's job, driven from the viewer), accounts, a server, clips and the
+            video graph, and playlists that rotate. The library itself — the rows, their
+            per-photo look and the Renderer choice — is saved in this browser, in the
+            Android app's own schema, and can be mirrored into a folder you choose.
           </p>
         </div>
       </details>

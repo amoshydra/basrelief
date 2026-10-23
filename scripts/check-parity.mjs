@@ -362,6 +362,121 @@ function checkSettingsParity() {
   }
 }
 
+// ------------------------------------------------------ library contract
+
+/**
+ * The gallery index, held across the fixture, the app's own writers and the
+ * gallery's copy.
+ *
+ * This is the guard `contract/library/cases.json` exists for, and it is the same
+ * shape as the settings body's: the fixture is the shared statement, and two
+ * copies that cannot share code are held to it. What this script can see is the
+ * *shape* — the schema number, and the key set each side writes — because no JVM
+ * test reads this fixture and nothing here can run TypeScript. The bodies
+ * themselves are round-tripped by `web/src/library.test.ts`, and the byte-for-byte
+ * claim between the two languages is the fixture's job on the next Java test.
+ *
+ * The failure this prevents is not a crash. A reader that dropped `video` is a
+ * mirror that copies no files for a clip; a writer that emitted `focal: 0` is
+ * every stored row changing on save; a schema number that drifted is an older
+ * build deciding a newer blob is its own and overwriting somebody's gallery.
+ */
+function checkLibraryParity() {
+  const fixturePath = 'contract/library/cases.json';
+  const cases = JSON.parse(readFileSync(join(root, fixturePath), 'utf8'));
+  const LIB = 'android/core/src/main/java/com/amoshydra/basrelief/core/store/Library.java';
+  const ITEM = 'android/core/src/main/java/com/amoshydra/basrelief/core/store/LibraryItem.java';
+  const SORT = 'android/core/src/main/java/com/amoshydra/basrelief/core/store/SortOrder.java';
+  const SURFACE = 'android/core/src/main/java/com/amoshydra/basrelief/core/store/Surface.java';
+  const WEB = 'web/src/library.ts';
+
+  const read = (file) => readFileSync(join(root, file), 'utf8');
+  const libText = read(LIB);
+  const itemText = read(ITEM);
+  const sortText = read(SORT);
+  const surfaceText = read(SURFACE);
+  const webText = read(WEB);
+  const before = failures.length;
+
+  const libraryVersion = readNumber(LIB, 'VERSION');
+  const webSchema = readNumber(WEB, 'LIBRARY_SCHEMA');
+  if (libraryVersion === null || webSchema === null) {
+    failures.push('could not read Library.VERSION or LIBRARY_SCHEMA — update this script');
+  } else if (cases.schema !== libraryVersion || cases.schema !== webSchema) {
+    failures.push(
+      `the library fixture says schema ${cases.schema}, Library.VERSION is ${libraryVersion} and ` +
+        `LIBRARY_SCHEMA is ${webSchema} — the index and the reader that mirrors it are one version`,
+    );
+  }
+
+  const checkKeys = (keys, javaText, javaFile, what) => {
+    const seen = new Set();
+    for (const key of keys) {
+      if (typeof key !== 'string' || key.length === 0) {
+        failures.push(`${fixturePath}: ${what} has a key that is not a name`);
+        continue;
+      }
+      if (seen.has(key)) failures.push(`${fixturePath}: ${what} lists "${key}" twice`);
+      seen.add(key);
+      if (!javaText.includes(`put("${key}"`)) {
+        failures.push(
+          `${javaFile} does not write "${key}" — ${fixturePath} says the ${what} has it, and a ` +
+            'key one side writes and the other drops is a value that disappears on a round trip',
+        );
+      }
+      // A presence check, not a structural one: this script cannot parse
+      // TypeScript. The writer's actual key placement is pinned by the round trip
+      // in web/src/library.test.ts, and the lists it looks for here are the
+      // exported BLOB_KEYS / ITEM_KEYS that same test holds to this fixture.
+      if (!webText.includes(`"${key}"`) && !webText.includes(`'${key}'`)) {
+        failures.push(
+          `${WEB} never mentions "${key}" — the gallery’s copy of the index has no such field`,
+        );
+      }
+    }
+  };
+  checkKeys(cases.blobKeys, libText, LIB, 'blob');
+  checkKeys(cases.itemKeys, itemText, ITEM, 'item');
+
+  const javaSorts = [...sortText.matchAll(/[A-Z_]+\(\s*"([a-z_]+)"\s*\)/g)].map((m) => m[1]);
+  const fixtureSorts = [...cases.sortKeys].sort();
+  if (javaSorts.length === 0) {
+    failures.push(`could not read SortOrder’s stored keys from ${SORT} — update this script`);
+  } else if (JSON.stringify([...javaSorts].sort()) !== JSON.stringify(fixtureSorts)) {
+    failures.push(
+      `SortOrder's stored keys are ${javaSorts.join(', ')} but ${fixturePath} says ` +
+        `${fixtureSorts.join(', ')} — a sort the phone writes and the page reads as "newest" is a ` +
+        'list order that changes on a restore',
+    );
+  }
+  for (const key of fixtureSorts) {
+    if (!webText.includes(`'${key}'`)) {
+      failures.push(`${WEB} has no sort key '${key}' — the reader would fall back to the default`);
+    }
+  }
+
+  const javaSurfaces = [...surfaceText.matchAll(/[A-Z_]+\(\s*"([a-z_]+)"\s*\)/g)].map((m) => m[1]);
+  const fixtureSurfaces = [...cases.surfaceKeys].sort();
+  if (JSON.stringify([...javaSurfaces].sort()) !== JSON.stringify(fixtureSurfaces)) {
+    failures.push(
+      `Surface's stored keys are ${javaSurfaces.join(', ') || '(none)'} but ${fixturePath} says ` +
+        `${fixtureSurfaces.join(', ')}`,
+    );
+  }
+  for (const key of fixtureSurfaces) {
+    if (!webText.includes(`'${key}'`)) {
+      failures.push(`${WEB} has no surface key '${key}'`);
+    }
+  }
+
+  if (failures.length === before) {
+    console.log(
+      `parity: library schema ${cases.schema}, ${cases.blobKeys.length} blob keys and ` +
+        `${cases.itemKeys.length} item keys across Java and web`,
+    );
+  }
+}
+
 // --------------------------------------------------------- modal architecture
 
 /**
@@ -517,6 +632,7 @@ function checkSharedRules() {
     'contract/splat/records.bin',
     'contract/splat/generate.mjs',
     'contract/settings/cases.json',
+    'contract/library/cases.json',
     'server/comfy-node/tests/test_contract.py',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/TagContractTest.java',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/SplatRecordContractTest.java',
@@ -532,6 +648,10 @@ function checkSharedRules() {
     'web/src/splat.test.ts',
     'web/src/settings.ts',
     'web/src/settings.test.ts',
+    'web/src/library.ts',
+    'web/src/library.test.ts',
+    'web/src/store.ts',
+    'web/src/mirror.ts',
     'web/src/picture.ts',
     'web/src/picture.test.ts',
     'web/src/comfy.ts',
@@ -625,6 +745,7 @@ checkDocLinks();
 checkTestCounts();
 checkParity();
 checkSettingsParity();
+checkLibraryParity();
 checkModalInvariants();
 checkTiltSmoothing();
 checkSharedRules();
