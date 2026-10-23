@@ -235,6 +235,133 @@ function checkParity() {
   }
 }
 
+// ------------------------------------------------------ settings contract
+
+/** Read a numeric constant, allowing a leading `-` for a symmetric bound. */
+function readNumber(file, expression) {
+  if (expression === null) return null;
+  const negate = expression.startsWith('-');
+  const name = negate ? expression.slice(1) : expression;
+  const text = readFileSync(join(root, file), 'utf8');
+  const m = text.match(new RegExp(`\\b${name}\\s*=\\s*(-?[0-9]+(?:\\.[0-9]+)?)f?\\s*[,;]`));
+  if (!m) return null;
+  const value = Number(m[1]);
+  return negate ? -value : value;
+}
+
+/**
+ * The settings body's RANGES, held across the fixture and both readers.
+ *
+ * This is the guard `contract/settings/cases.json` exists for. The fixture is
+ * the shared statement; `SurfaceSettings`/`Splat`/`LightDirection` own the app's
+ * copies, and `web/src/settings.ts` owns the sheet's. The failure this prevents
+ * is not a crash: a Size slider that reaches 0.9 where the app stops at 0.8 lets
+ * a visitor tune a picture the phone cannot produce, and each side's own tests
+ * pass because each side agrees with itself.
+ *
+ * The two light DEFAULTS are deliberately absent: they are derived from the
+ * historical vector `(-0.35, 0.5, 0.75)` in both languages, so there is no
+ * literal to compare. `web/src/picture.test.ts` holds the derivation to the
+ * vector, which is the invariant that stops an upgrade relighting every photo.
+ */
+function checkSettingsParity() {
+  const fixturePath = 'contract/settings/cases.json';
+  const cases = JSON.parse(readFileSync(join(root, fixturePath), 'utf8'));
+  const SS = 'android/core/src/main/java/com/amoshydra/basrelief/core/store/SurfaceSettings.java';
+  const SPLAT = 'android/core/src/main/java/com/amoshydra/basrelief/core/render/Splat.java';
+  const LIGHT = 'android/core/src/main/java/com/amoshydra/basrelief/core/render/LightDirection.java';
+  const WEB = 'web/src/settings.ts';
+
+  // fixture range -> the three Java constants and the three TypeScript ones.
+  // `null` is a bound one side states structurally rather than as a constant:
+  // Splat has no BLUR_MIN (its clamp answers the identity below 0), and the
+  // light's defaults are derived angles rather than literals.
+  const shared = [
+    { range: 'depth', java: [SS, 'DEPTH_MIN', 'DEPTH_MAX', 'DEFAULT_DEPTH'], web: ['DEPTH_MIN', 'DEPTH_MAX', 'DEPTH_DEFAULT'] },
+    { range: 'zoom', java: [SS, 'ZOOM_MIN', 'ZOOM_MAX', 'DEFAULT_ZOOM'], web: ['ZOOM_MIN', 'ZOOM_MAX', 'ZOOM_DEFAULT'] },
+    { range: 'motion', java: [SS, 'MOTION_MIN', 'MOTION_MAX', 'DEFAULT_MOTION'], web: ['MOTION_MIN', 'MOTION_MAX', 'MOTION_DEFAULT'] },
+    { range: 'adjust', java: [SS, 'ADJUST_MIN', 'ADJUST_MAX', 'DEFAULT_ADJUST'], web: ['ADJUST_MIN', 'ADJUST_MAX', 'ADJUST_DEFAULT'] },
+    { range: 'origin', java: [SS, '-ORIGIN_LIMIT', 'ORIGIN_LIMIT', 'DEFAULT_ORIGIN'], web: ['-ORIGIN_LIMIT', 'ORIGIN_LIMIT', 'ORIGIN_DEFAULT'] },
+    { range: 'panZ', java: [SS, 'PAN_Z_MIN', 'PAN_Z_MAX', 'DEFAULT_PAN_Z'], web: ['PAN_Z_MIN', 'PAN_Z_MAX', 'PAN_Z_DEFAULT'] },
+    { range: 'speed', java: [SS, 'SPEED_MIN', 'SPEED_MAX', 'DEFAULT_SPEED'], web: ['SPEED_MIN', 'SPEED_MAX', 'SPEED_DEFAULT'] },
+    { range: 'splatDepth', java: [SPLAT, 'DEPTH_MUL_MIN', 'DEPTH_MUL_MAX', 'DEPTH_MUL_DEFAULT'], web: ['SPLAT_DEPTH_MIN', 'SPLAT_DEPTH_MAX', 'SPLAT_DEPTH_DEFAULT'] },
+    { range: 'splatEps2d', java: [SPLAT, 'EPS_2D_MIN', 'EPS_2D_MAX', 'EPS_2D_DEFAULT'], web: ['SPLAT_EPS2D_MIN', 'SPLAT_EPS2D_MAX', 'SPLAT_EPS2D_DEFAULT'] },
+    { range: 'splatBlur', java: [SPLAT, null, 'BLUR_MAX', 'BLUR_DEFAULT'], web: ['SPLAT_BLUR_MIN', 'SPLAT_BLUR_MAX', 'SPLAT_BLUR_DEFAULT'] },
+    { range: 'splatScale', java: [SPLAT, 'RENDER_SCALE_MIN', 'RENDER_SCALE_MAX', 'RENDER_SCALE_DEFAULT'], web: ['SPLAT_SCALE_MIN', 'SPLAT_SCALE_MAX', 'SPLAT_SCALE_DEFAULT'] },
+    { range: 'azimuth', java: [LIGHT, 'AZIMUTH_MIN', 'AZIMUTH_MAX', null], web: ['AZIMUTH_MIN', 'AZIMUTH_MAX', null] },
+    { range: 'elevation', java: [LIGHT, 'ELEVATION_MIN', 'ELEVATION_MAX', null], web: ['ELEVATION_MIN', 'ELEVATION_MAX', null] },
+  ];
+
+  let checked = 0;
+  for (const entry of shared) {
+    const range = cases.ranges[entry.range];
+    if (!range) {
+      failures.push(`${fixturePath} lost its "${entry.range}" range — the settings schema needs it`);
+      continue;
+    }
+    const [javaFile, javaMin, javaMax, javaDef] = entry.java;
+    const [webMin, webMax, webDef] = entry.web;
+    const sides = [
+      ['min', range.min, javaMin, webMin],
+      ['max', range.max, javaMax, webMax],
+      ['default', range.default, javaDef, webDef],
+    ];
+    for (const [which, expected, javaExpr, webExpr] of sides) {
+      if (expected === undefined && javaExpr === null && webExpr === null) continue;
+      if (expected === undefined) {
+        failures.push(`range ${entry.range}: the fixture has no ${which}`);
+        continue;
+      }
+      // A null expression is a bound that side states structurally rather than
+      // as a named constant (Splat's blur has no minimum constant because its
+      // clamp answers the identity below 0), so there is nothing to compare.
+      if (javaExpr !== null) {
+        const javaValue = readNumber(javaFile, javaExpr);
+        if (javaValue === null) {
+          failures.push(`could not read ${entry.range} ${which} from ${javaFile} — update this script`);
+        } else if (javaValue !== expected) {
+          failures.push(
+            `range ${entry.range} ${which}: android has ${javaValue}, the fixture says ${expected} ` +
+              `(${range.why ?? 'the settings contract needs the same number on both sides'})`,
+          );
+        } else {
+          checked++;
+        }
+      }
+      if (webExpr !== null) {
+        const webValue = readNumber(WEB, webExpr);
+        if (webValue === null) {
+          failures.push(`could not read ${entry.range} ${which} (${webExpr}) from ${WEB}`);
+        } else if (webValue !== expected) {
+          failures.push(
+            `range ${entry.range} ${which}: web/src/settings.ts has ${webValue}, the fixture says ` +
+              `${expected} — a slider whose bound differs from the app's tunes a picture the phone cannot make`,
+          );
+        }
+        checked++;
+      }
+    }
+  }
+
+  // The body belongs to a versioned blob. A schema bump that adds a settings
+  // field must reach the fixture and the web reader in the same commit.
+  const libraryVersion = readNumber(
+    'android/core/src/main/java/com/amoshydra/basrelief/core/store/Library.java',
+    'VERSION',
+  );
+  const webSchema = readNumber(WEB, 'SETTINGS_SCHEMA');
+  if (libraryVersion === null || webSchema === null) {
+    failures.push('could not read Library.VERSION or SETTINGS_SCHEMA — update this script');
+  } else if (cases.schema !== libraryVersion || cases.schema !== webSchema) {
+    failures.push(
+      `the settings fixture says schema ${cases.schema}, Library.VERSION is ${libraryVersion} and ` +
+        `SETTINGS_SCHEMA is ${webSchema} — the settings body and the blob it lives in are one version`,
+    );
+  } else {
+    console.log(`parity: settings schema ${cases.schema}, ${checked} range bounds across Java and web`);
+  }
+}
+
 // --------------------------------------------------------- modal architecture
 
 /**
@@ -389,6 +516,7 @@ function checkSharedRules() {
     'contract/splat/cases.json',
     'contract/splat/records.bin',
     'contract/splat/generate.mjs',
+    'contract/settings/cases.json',
     'server/comfy-node/tests/test_contract.py',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/TagContractTest.java',
     'android/core/src/test/java/com/amoshydra/basrelief/core/contract/SplatRecordContractTest.java',
@@ -402,6 +530,11 @@ function checkSharedRules() {
     'contract/deph/generate.mjs',
     'web/src/splat.ts',
     'web/src/splat.test.ts',
+    'web/src/settings.ts',
+    'web/src/settings.test.ts',
+    'web/src/picture.ts',
+    'web/src/picture.test.ts',
+    'web/src/sheet.ts',
     'web/README.md',
     'web/package.json',
     'web/pnpm-lock.yaml',
@@ -471,6 +604,7 @@ function checkSharedRules() {
 checkDocLinks();
 checkTestCounts();
 checkParity();
+checkSettingsParity();
 checkModalInvariants();
 checkTiltSmoothing();
 checkSharedRules();

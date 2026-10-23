@@ -23,6 +23,7 @@ can never fail.
 | the `dePH`/`dEPt` PNG chunk | app `:core/depth/DepthPng.java` + reference port `src/png-depth.js` + gallery `web/src/deph.ts` (readers) + gallery `web/src/pack.ts` (the writer) | `deph/*.png` + `deph/cases.json` (including its `pack` block) | `DepthPngContractTest` (Java) · `png-depth.test.mjs` (Node) · `web/src/deph.test.ts` and `web/src/pack.test.ts` (TypeScript) |
 | the splat sidecar | node writes it (`contract.py::splat_sidecar`) + app reads it (`:core/render/SplatSidecar.java`) + gallery reads it (`web/src/splat.ts`) | `sidecar/*.json` | `SidecarContractTest` (Java) · `test_contract.py` (Python) · `web/src/splat.test.ts` (TypeScript) |
 | the `.splat` 32-byte record | app `:core/splat/SplatCloud.java` + gallery `web/src/splat.ts` | `splat/records.bin` + `splat/cases.json` | `SplatRecordContractTest` (Java) · `web/src/splat.test.ts` (TypeScript) |
+| the settings body | app `:core/store/SurfaceSettings.java` + gallery `web/src/settings.ts` | `settings/cases.json` | `web/src/settings.test.ts` (TypeScript) · `scripts/check-parity.mjs` (both sources, for the ranges) |
 
 **The record became a contract when it got a second reader.** This file used to say
 it was deliberately not fixtured — `SplatCloudTest` pinned the layout field for
@@ -162,6 +163,54 @@ walk the writer's output: `DepthPngContractTest` passing on it is the Java half
 of the round trip, and the writer's byte-identity with that fixture is what makes
 the guarantee transitive rather than a claim about similar files.
 
+## The settings body
+
+`SurfaceSettings` is the app's render-value body inside the `Library` **v5** blob:
+seventeen values — Depth, Zoom, Motion, Origin, Pan, Pan Z, Brightness, Shadow,
+the light's two angles, Speed and the four splat-look values — every one clamped
+where it is constructed, and an absent field meaning its documented **default**
+rather than zero. The gallery's sheet edits the same values, so `web/src/settings.ts`
+is the schema's second reader and writer, and `settings/cases.json` is what the two
+must agree about:
+
+- **`ranges`** — each value's `min`/`max`/`default`, with a `why`. This is the part
+  `scripts/check-parity.mjs` holds across the Java constants (`SurfaceSettings`,
+  `Splat`, `LightDirection`) and the TypeScript ones, against the fixture's own
+  numbers. A Size slider that reaches 0.9 where the app stops at 0.8 is not a crash:
+  it lets a visitor tune a picture the phone cannot produce, and each side's own
+  tests pass because each side agrees with itself.
+- **`defaults`** — an empty body and the object it resolves to. Every required key
+  is stated, so a default assigned to the wrong field is a red test rather than a
+  quietly flattened photo.
+- **`populated`** — one body with every field off its default, and the same body as
+  the writer must give back. The round trip is exact: a writer that dropped an
+  optional key or rounded a float is a stored picture that changes when re-saved.
+- **`clamps`** — 27 rows of `stored → expected`. Two of them must **not** clamp:
+  pan is in **pixels**, and its bound is the surface's own larger dimension, which
+  the body's layer cannot know. Clamping it to Origin's fraction range once turned
+  a stored −135 px into −0.5 px. Azimuth **wraps** instead of clamping, because 0°
+  and 360° are one light and a clamp would put a dead zone at the seam.
+- **`junk`** — a body of nulls, strings, booleans and arrays, which must resolve to
+  the defaults and not throw. The app parses this on the GL thread at wallpaper
+  cold start; a reader that throws here is a crash on the home screen.
+
+The schema number is part of the contract: the fixture's `schema`, `Library.VERSION`
+and `SETTINGS_SCHEMA` must be one number, so a version bump that adds a settings
+field cannot land without the fixture and the web reader.
+
+**What a wrong answer looks like, per row:** an absent field read as 0 (a photo that
+goes flat when a partial body arrives); pan clamped like origin (a picture that
+jumps); azimuth clamped like elevation (a dead zone at 0/360); a Size max of 0.9
+(a picture the app cannot produce); a writer that always emits the five optional
+keys (every stored body rewritten on upgrade for no rendered difference).
+
+**The one half still missing:** no Java test reads these bodies. The ranges are held
+on both sides by `check-parity`, but a body-shape change inside Java that kept every
+range would only be caught by review. The next change to `SurfaceSettings` should
+add a `SurfaceSettingsContractTest` that reads this table, and `check-parity`'s
+shared-file list is where that test belongs — the fixture is deliberately written to
+be readable by it (JSON bodies, no browser or Android types).
+
 ## The `.splat` record
 
 A cloud is a sequence of 32-byte little-endian records, and each record is
@@ -261,12 +310,14 @@ test framework, no install beyond the app's own dependencies):
 cd web && pnpm test
 ```
 
-That one command runs four files: `src/deph.test.ts` (the packed PNG),
+That one command runs six files: `src/deph.test.ts` (the packed PNG),
 `src/pack.test.ts` (the writer, its fixture and the round trip through the
-reference port), `src/media.test.ts` (the media vocabulary) and
-`src/splat.test.ts` (the record, the camera, the lens and the sort).
+reference port), `src/media.test.ts` (the media vocabulary), `src/splat.test.ts`
+(the record, the camera, the lens and the sort), `src/settings.test.ts` (the
+settings body and its clamps) and `src/picture.test.ts` (the brightness, shadow
+and light mappings).
 
-CI runs all four: the JS check and the TypeScript check (in the `web-app` job),
+CI runs all six: the JS check and the TypeScript check (in the `web-app` job),
 the Java check inside the `android` job's `test` step, and the Python one in its
 own `python-contract` job (there was no Python job at all before this directory
 existed).

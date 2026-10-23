@@ -45,20 +45,20 @@ drop it on a page": no account, no server, no cloud library, and no persistence 
 a refresh empties the gallery because the `File` objects in the tab are the
 gallery.
 
-- **Android owns the design, and `web/` is a copy wherever the two overlap.** The
-  studio in `android/` is the UI's source of truth: a control that exists on both
-  is an Android control first, and when they disagree the Android one is right --
-  the same rule as the code beating this file. `web/` is deliberately narrower
-  (see *What it does not do yet*) and **it is not a mirror**: a mirror is a second
-  UI to keep in step, and this file already records what duplicated *rules* have
-  cost -- the tag rule reached three copies and drifted on two independent things,
-  the blur fraction is checked by a script because a hand-kept copy would not
-  stay equal, and the `dePH` reader now has three implementations with fixtures
-  between them. A second UI is worse than any of those, because nothing can sit
-  between two screens and compare bytes. Where the two must agree on behaviour
-  rather than pixels -- the settings schema, the chunk, the record layout -- the
-  agreement is **bytes in `contract/`**, never a second implementation compared
-  by eye.
+- **Android owns the design so that `web/` can MIRROR it.** The studio in
+  `android/` is the reference: a control that exists on both is an Android control
+  first, and when they disagree the Android one is right -- the same rule as the
+  code beating this file. The point of fixing the reference is that the copy has
+  something to copy: `web/` reproduces the studio's **vocabulary and look** -- the
+  three row roles, the grip, the captions, the type scale, the numeric ranges --
+  and reproduces **only the rows that can act there**. A page cannot set a
+  wallpaper, so the surfaces segment, the playlists and the archive are omitted
+  and the sheet says why, because a control that cannot change anything is the lie
+  this file keeps refusing to ship. The look comes from the **Android code's own
+  constants**, not from `.design/prototype/`, which is a sketch. Where the two must
+  agree on behaviour rather than pixels -- the settings schema and its clamps, the
+  chunk, the record layout -- the agreement is **bytes in `contract/`**, never a
+  second implementation compared by eye.
 - **The gallery is media-typed, because a file's kind is a property of the
   file.** A file is a **relief** (a `dePH`/`dEPt` chunk was read), a **photo** (a
   decodable image with no chunk), a **cloud** (a `.splat` of whole 32-byte
@@ -138,8 +138,10 @@ gallery.
   the viewer; no tap-to-set-orbit, pan or zoom; and the smoothing is time-based
   (`tau = 0.2 s`, as the app's `TiltFilter` does) rather than the port's
   frame-rate-dependent `lerp 0.08`. The picture fills the viewport (cover + the
-  8% crop), as the wallpaper does — there is no zoom/pan yet, so a landscape
-  photo on a portrait phone is cropped.
+  8% crop) at Zoom 100 %, as the wallpaper does; there is no pan or orbit centre
+  yet, so a landscape photo on a portrait phone is cropped, and the sheet's FOV
+  row is the only camera control (it scales the plane, which is a crop of the
+  same camera — the app's own `computeScale`).
 - **A packed PNG is read as two independent things.** The chunk needs the bytes
   (an `ArrayBuffer`), and the colour needs a decode (an object URL / `<img>` /
   `TextureLoader`); a decoded `ImageBitmap` cannot give the chunks back. The
@@ -192,10 +194,42 @@ gallery.
     disabled button**: **Save packed PNG** downloads `<name>.packed.png`; a photo
     says it has no depth to pack; a cloud says a `.splat` is not a PNG. **Generate
     depth is deliberately not here** — it is a client of the ComfyUI node.
+- **The studio's sheet is COPIED, and a row that cannot act is not drawn.**
+  `web/src/sheet.ts` is the vocabulary — the three row roles (`switchRow`,
+  `actionRow`, `readingRow`), the grip, the captions and the one-line slider —
+  taken from `ModalSheet`/`BasreliefSlider`'s own constants (`#171b21`, the 11 /
+  12 / 13 / 14 px type scale, 11px-radius plates, `0x57FFFFFF` captions) rather
+  than from `.design/prototype/`, which is a sketch. `viewer.ts` composes it from
+  the rows a page can honour, and every one of them is wired to the render:
+  - a **relief** gets Depth, Motion, FOV, Brightness, Shadow, Azimuth and
+    Elevation. `relief.ts` was given the mappings before their rows existed:
+    `picture.ts` holds `Picture`'s brightness (2^stops) and shadow (the lift) and
+    `LightDirection`'s angle→vector, and Zoom scales the plane (`computeScale`'s
+    own rule) so it is a crop of the same camera rather than a second one.
+  - a **cloud** gets Motion, because its renderer honours it; the four look knobs
+    are phase 2 and the sheet says so rather than drawing them.
+  - the **Home/Lock segment, playlists, archive and Renderer segment are omitted
+    with a sentence** in a reading row: a page cannot set a wallpaper, nothing
+    here is stored to rotate or hide, and the file's own kind picks the renderer.
+    Origin and Pan are omitted too — this camera has no orbit centre — so their
+    rows would move a number nothing draws.
+  - **A row is added only when its renderer honours it**, which is why the sheet
+    grew after `relief.ts` did and not before. The three roles are a rule, not a
+    palette: a reading row's factory takes no listener, so a fact cannot drift
+    into looking like a control.
+  - the grip drags the sheet by **layout height** between open and collapsed, and
+    collapsed leaves the grip bar alone over the picture. The release is
+    `SheetIntent.SHEET`'s projection (0.20 s, 1.2 travels/s, 0.95/0.40); a web
+    sheet has two rest states rather than the studio's free position, so a release
+    inside the dead band settles to the nearer one.
+  - one deliberate departure: the slider's name column is **72px**, not the app's
+    66dp, because this page's system font is wider at 13px and "Brightness"
+    clipped. The invariant is that every track starts at the same x.
 - **What it does not do yet:** generating a depth map (the ComfyUI node's job),
   accounts, a server, and persistence. It does not talk to the phone, and it does
-  not share code with the reference port. On the cloud it deliberately has no
-  Origin, Pan, Zoom, Depth multiplier or look knobs — see the cloud bullet above.
+  not share code with the reference port. On the cloud it still has no Origin,
+  Pan, Zoom, Depth multiplier or look knobs — see the cloud bullet above. The
+  relief's Zoom is the sheet's FOV row, not a cloud knob.
 
 ## Shared contracts (`contract/`)
 
@@ -213,6 +247,7 @@ fixture still holds its four hard records).
 | the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` (readers) + `web/src/pack.ts` (the writer) | `contract/deph/` (its `pack` block pins the writer's output and chunk) |
 | the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` + `web/src/splat.ts` | `contract/sidecar/` |
 | the `.splat` record | `android/core/src/main/java/com/amoshydra/basrelief/core/splat/SplatCloud.java` + `web/src/splat.ts` | `contract/splat/` |
+| the settings body | `android/core/src/main/java/com/amoshydra/basrelief/core/store/SurfaceSettings.java` + `web/src/settings.ts` | `contract/settings/` (its `ranges` are read by `check-parity`) |
 
 - **The tag rule is ASCII, and that is the fix rather than a preference:** keep
   `[A-Za-z0-9_-]`, then the first 48. Its prose ("alnum plus `-`/`_`, 48") had
@@ -241,6 +276,24 @@ fixture still holds its four hard records).
 - **A missing sidecar number is "no claim", never zero to divide by.** `focal`,
   `width` and `height` absent, `focal` 0 (the node's own "fit failed"), or an
   unreadable body all mean no lens, and the cloud draws at the default look.
+- **The settings body is a contract now that the gallery has a sheet over it, and
+  the RANGES are what it is for.** `SurfaceSettings` is the app's seventeen-value
+  render body inside the `Library` v5 blob; `web/src/settings.ts` is its second
+  reader and writer, `contract/settings/cases.json` states the defaults, a
+  populated body, 27 clamps and a junk body, and `check-parity` reads the fixture
+  and holds **both** languages' constants to it (`SurfaceSettings`, `Splat`,
+  `LightDirection` on one side; `web/src/settings.ts` on the other) — plus the
+  schema number against `Library.VERSION` and `SETTINGS_SCHEMA`. **A wrong answer
+  is not a crash:** a Size slider that reaches 0.9 where the app stops at 0.8 lets
+  a visitor tune a picture the phone cannot produce, and each side's own tests pass
+  because each side agrees with itself. Two clamps are stated as *not* clamps: pan
+  is in **pixels** and its bound is the surface's own larger dimension (clamping it
+  to Origin's fraction range once turned a stored −135 px into −0.5 px), and
+  azimuth **wraps** because 0° and 360° are one light, so a clamp would put a dead
+  zone at the seam. **The Java half of the body is still untested**: no Java test
+  reads the fixture yet, which `contract/README.md` says plainly; a body-shape
+  change that kept every range would need review until a
+  `SurfaceSettingsContractTest` exists.
 - **The `.splat` record is a contract now, and it became one when it got a second
   reader.** `contract/README.md` used to say it was deliberately unfixtured because
   `SplatCloudTest` pinned the layout and no second copy existed; `web/src/splat.ts`
@@ -268,7 +321,9 @@ fixture still holds its four hard records).
   no browser API, so it loads in Node unmodified. The gallery's third copy is
   `web/src/deph.test.ts`, run as
   `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
-  test framework).
+  test framework) — which is now six files: the `dePH` reader and writer, the
+  media states, the splat record/camera, the settings body and the picture/light
+  mappings.
 
 ## Build and test
 
@@ -305,8 +360,9 @@ worked, because the build still succeeds. Override the location with
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
 every push, plus a pnpm/vite build of the reference port, a `web-app` job
 (`pnpm test`, `pnpm typecheck`, `pnpm build` for the gallery — the `dePH` fixture
-test is its gate) and a `guards` job: AGENTS.md's paths
-and the port parity, `scripts/check-shaders.mjs`, which compiles every GLSL
+test is its gate) and a `guards` job: AGENTS.md's paths, the port parity and the
+settings ranges `contract/settings/` shares between Java and TypeScript,
+`scripts/check-shaders.mjs`, which compiles every GLSL
 shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
 float handed to `JSONObject.put`. It invokes the scripts from the repo
 root, so **`podman-build.sh` must stay runnable from any working directory**.
@@ -317,7 +373,8 @@ then `pnpm run build` (or `pnpm dev` to serve it over HTTPS for the gyro). See
 
 Web gallery (a product): in `web/`, `pnpm install`, then `pnpm dev` (HTTPS on
 :5173, so a phone on the LAN can use the gyro) or `pnpm build` + `pnpm preview`.
-`pnpm test` runs the `contract/deph/` fixture test and the media-state test;
+`pnpm test` runs the `contract/deph/` fixture test, the writer's round trip, the
+media-state test, the splat test, and the settings and picture contracts;
 `pnpm typecheck` is `tsc --noEmit`. See `web/README.md`.
 
 ## Architecture
@@ -867,7 +924,10 @@ already cost real time.
     - **BLUR is a real post-softness on the splat FBO, and it trades detail away.**
       One extra FBO and a separable Gaussian (13 taps per axis, fullscreen triangle
       from `gl_VertexID`), skipped entirely at radius 0, so the identity costs
-      nothing. `Splat.BLUR_MAX` = 6 render-target pixels. **MSAA was assessed and is
+      nothing. `Splat.BLUR_MAX` is **12** render-target pixels in the store's own
+      clamp, and the 13-tap kernel makes anything past **6** identical — so 6 is the
+      row's useful top and 12 is the tolerance `clampBlurPx` accepts. **MSAA was
+      assessed and is
       NOT the tool**: it antialiases the EDGES of the triangles that are drawn, and
       the artifact is the BLACK GAPS between splats that are not drawn — a coverage
       problem, not an aliasing one, which is why the 4x MSAA already on the surface

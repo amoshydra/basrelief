@@ -1,5 +1,19 @@
 import * as THREE from 'three';
 import type { DephSuccess } from './deph.ts';
+import {
+  DEFAULT_LIGHT_AZIMUTH,
+  DEFAULT_LIGHT_ELEVATION,
+  brightnessGain,
+  lightDirection,
+  shadowLift,
+} from './picture.ts';
+import {
+  DEPTH_DEFAULT,
+  MOTION_DEFAULT,
+  ZOOM_DEFAULT,
+  ZOOM_MAX,
+  ZOOM_MIN,
+} from './settings.ts';
 
 /**
  * The relief renderer.
@@ -23,14 +37,20 @@ import type { DephSuccess } from './deph.ts';
  *
  * What is NOT ported from it:
  *
- *   - the "set an orbit centre by tapping" gesture, pan and zoom. The first pass
- *     is a viewer, not an editor; the centre is the image centre and the pointer
- *     only moves the eye.
+ *   - the "set an orbit centre by tapping" gesture and pan. The first pass is a
+ *     viewer, not an editor; the centre is the image centre and the pointer only
+ *     moves the eye. Zoom IS here, because the app's zoom is a scale on the same
+ *     plane and therefore a crop of the same camera rather than a second one.
  *   - its frame-rate-dependent smoothing (`lerp 0.08 per frame`), which feels
  *     different at 60/90/120 Hz. This uses the time constant the Android app
  *     already settled on (`TILT_FILTER`'s 0.2 s), applied as an exponential.
  *   - its structure: one scene per open item, created and destroyed with the
  *     viewer, rather than a module-level singleton wired to global DOM ids.
+ *
+ * What is added beyond the port, because the studio's sheet has the rows: the
+ * picture adjustments (`Picture`) and the light angles (`LightDirection`), both
+ * mapped in `picture.ts` where they are tested, plus the zoom above. Every one
+ * is a uniform or a model scale — none of them rebuilds the mesh or the shader.
  */
 
 const FOV = 45;
@@ -44,13 +64,25 @@ const SMOOTHING_TAU = 0.2;
 /** Fraction of the depth map's width; the banding fix. Keep in step with Java. */
 export const DEPTH_BLUR_FRACTION = 1 / 78;
 
-/** The app's defaults: Depth 90 %, Motion 33 % (which is MOTION_GAIN's 1.0). */
-export const DEFAULT_DEPTH = 0.9;
-export const DEFAULT_MOTION = 1 / 3;
+/** The app's defaults, from the one settings schema rather than retyped here. */
+export const DEFAULT_DEPTH = DEPTH_DEFAULT / 100;
+export const DEFAULT_MOTION = MOTION_DEFAULT / 100;
+export const DEFAULT_ZOOM = ZOOM_DEFAULT / 100;
 
 export interface ReliefView {
   setDepth(value: number): void;
   setMotion(value: number): void;
+  /**
+   * Zoom as a multiplier (25 % is 0.25, 100 % is 1.0, 200 % is 2.0). It scales
+   * the plane, exactly as `CameraModel.computeScale` does, which is why it is a
+   * crop of the same camera rather than a second one: the eye-to-picture
+   * geometry, and therefore the parallax, is unchanged and only magnified.
+   */
+  setZoom(value: number): void;
+  /** Brightness and shadow, as the app's stored hundredths. 0/0 is the identity. */
+  setAdjust(brightness: number, shadow: number): void;
+  /** The light's angles in degrees; `LightDirection`'s convention. */
+  setLight(azimuthDegrees: number, elevationDegrees: number): void;
   /** Tilt target in [-1, 1]; the rendered value eases toward it. */
   setTilt(x: number, y: number): void;
   resize(): void;
@@ -183,17 +215,58 @@ export async function createReliefView(
   // shading that the recomputed normals make visible.
   scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
   const sun = new THREE.DirectionalLight(0xffffff, 0.5);
-  sun.position.set(-0.4, 0.7, 1).normalize();
+  // The app's default light, through the app's own mapping: the historical
+  // vector `(-0.35, 0.5, 0.75)` normalised. It is not a round pair of angles
+  // picked to look right — the angles are DERIVED from that vector, so the page
+  // starts on the same lighting every existing photo has.
+  const [lx, ly, lz] = lightDirection(DEFAULT_LIGHT_AZIMUTH, DEFAULT_LIGHT_ELEVATION);
+  sun.position.set(lx, ly, lz);
   scene.add(sun);
 
   const geometry = new THREE.PlaneGeometry(1, 1, SEGMENTS, SEGMENTS);
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+
+  /**
+   * Brightness and shadow, applied to the SAMPLED TEXEL and before the lighting.
+   *
+   * That placement is the app's (`ReliefRenderer.FRAG`): a lift applied after
+   * the diffuse multiply would be re-darkened by it, so both tone values go onto
+   * the photograph first. Only the arithmetic is the app's — the mapping from
+   * the stored hundredths lives in `picture.ts`, where it is tested, and the
+   * shader holds one multiply and one mix exactly as `Picture`'s javadoc asks.
+   */
+  const tones = {
+    uBrightnessGain: { value: brightnessGain(0) },
+    uShadowLift: { value: shadowLift(0) },
+  };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uBrightnessGain = tones.uBrightnessGain;
+    shader.uniforms.uShadowLift = tones.uShadowLift;
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform float uBrightnessGain;\nuniform float uShadowLift;',
+      )
+      .replace(
+        '#include <map_fragment>',
+        [
+          '#include <map_fragment>',
+          'diffuseColor.rgb *= uBrightnessGain;',
+          'diffuseColor.rgb += uShadowLift * (1.0 - diffuseColor.rgb);',
+        ].join('\n'),
+      );
+  };
+  // One program for one material: without a stable key three would recompile a
+  // second copy for every variant it thinks it sees.
+  material.customProgramCacheKey = () => 'basrelief-picture';
+
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   scene.add(mesh);
 
   let intensity = DEFAULT_DEPTH;
   let motion = DEFAULT_MOTION;
+  let zoom = DEFAULT_ZOOM;
   let planeAspect = 1;
 
   const signal = options.signal;
@@ -269,7 +342,10 @@ export async function createReliefView(
 
     const visibleHeight = 2 * CAM_DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
     const visibleWidth = visibleHeight * viewAspect;
-    const scale = Math.max(visibleHeight, visibleWidth / planeAspect) * CROP_MARGIN;
+    // Zoom scales the PLANE, which is `CameraModel.computeScale`'s own rule:
+    // the camera does not move, so the picture is a crop of the same photograph
+    // and the parallax under a tilt keeps its proportions, only magnified.
+    const scale = Math.max(visibleHeight, visibleWidth / planeAspect) * CROP_MARGIN * zoom;
     mesh.scale.set(scale * planeAspect, scale, 1);
     applyIntensity();
   }
@@ -321,6 +397,20 @@ export async function createReliefView(
     },
     setMotion(value: number): void {
       motion = Math.max(0, Math.min(1, value));
+    },
+    setZoom(value: number): void {
+      zoom = Math.max(ZOOM_MIN / 100, Math.min(ZOOM_MAX / 100, value));
+      fit();
+    },
+    setAdjust(brightness: number, shadow: number): void {
+      // Repainting a uniform, not a geometry or a shader: the two lines live in
+      // the compiled program already, so a drag costs no recompile.
+      tones.uBrightnessGain.value = brightnessGain(brightness);
+      tones.uShadowLift.value = shadowLift(shadow);
+    },
+    setLight(azimuthDegrees: number, elevationDegrees: number): void {
+      const [x, y, z] = lightDirection(azimuthDegrees, elevationDegrees);
+      sun.position.set(x, y, z);
     },
     setTilt(x: number, y: number): void {
       targetX = Math.max(-1, Math.min(1, x));

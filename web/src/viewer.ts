@@ -8,7 +8,33 @@ import {
 } from './media.ts';
 import { createCloudView, type CloudView } from './cloud.ts';
 import { colourPngBytes, packPng, packedFileName } from './pack.ts';
-import { DEFAULT_DEPTH, DEFAULT_MOTION, createReliefView, type ReliefView } from './relief.ts';
+import { createReliefView, type ReliefView } from './relief.ts';
+import {
+  ADJUST_MAX,
+  ADJUST_MIN,
+  AZIMUTH_MAX,
+  AZIMUTH_MIN,
+  DEPTH_MAX,
+  DEPTH_MIN,
+  ELEVATION_MAX,
+  ELEVATION_MIN,
+  MOTION_MAX,
+  MOTION_MIN,
+  ZOOM_MAX,
+  ZOOM_MIN,
+  defaultSettings,
+} from './settings.ts';
+import {
+  actionRow,
+  caption,
+  createSheet,
+  note,
+  readingRow,
+  sheetButton,
+  sliderRow,
+  switchRow,
+  type Sheet,
+} from './sheet.ts';
 import { NO_LENS_FOVY_DEG, sourceFovy } from './splat.ts';
 import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
 
@@ -21,6 +47,12 @@ import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
  * behind `cloud.ts`. That is deliberately a `switch` with a named function per
  * case rather than a renderer interface: one more medium is one more case, not an
  * abstraction to design around.
+ *
+ * The controls are the studio's bottom sheet (`sheet.ts`), mounted from the OPEN
+ * ITEM rather than from the gallery, and composed here from the rows that can
+ * actually act on this page. A row whose renderer does not honour it is not
+ * drawn, and an omission is stated in a reading row instead: see
+ * {@link notOnThisPage}.
  */
 
 export interface OpenableItem {
@@ -86,6 +118,7 @@ export function openViewer(item: OpenableItem): void {
   let relief: ReliefView | null = null;
   let cloud: CloudView | null = null;
   let tilt: DeviceTilt | null = null;
+  let sheet: Sheet | null = null;
   let abort: AbortController | null = null;
   let closed = false;
 
@@ -96,6 +129,7 @@ export function openViewer(item: OpenableItem): void {
     tilt?.stop();
     relief?.destroy();
     cloud?.destroy();
+    sheet?.destroy();
     for (const fn of teardown) fn();
     document.removeEventListener('keydown', onKey);
     overlay.remove();
@@ -104,10 +138,16 @@ export function openViewer(item: OpenableItem): void {
   }
 
   function onKey(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
+    if (event.key !== 'Escape') return;
+    // The topmost thing first: Escape closes the sheet before it leaves the
+    // picture, the way BACK does on the phone.
+    if (sheet && !sheet.collapsed()) {
       event.preventDefault();
-      close();
+      sheet.collapse();
+      return;
     }
+    event.preventDefault();
+    close();
   }
 
   document.addEventListener('keydown', onKey);
@@ -136,9 +176,61 @@ export function openViewer(item: OpenableItem): void {
       break;
   }
 
-  function setDock(dock: HTMLElement): void {
-    overlay.append(dock);
-    teardown.push(() => dock.remove());
+  function setSheet(next: Sheet): void {
+    sheet = next;
+    overlay.append(next.element);
+    // Torn down by close() with the renderer, so there is one order for the
+    // picture and the controls over it.
+  }
+
+  /**
+   * The rows that cannot act here, each with the sentence that makes the
+   * omission a decision rather than an absence.
+   *
+   * Every one of these is a control the studio has: the Home/Lock segment picks
+   * which surface a ROW renders, the playlists rotate what the wallpaper shows,
+   * the archive hides photos from the gallery, and the Renderer segment switches
+   * relief and cloud. None of them can change a pixel on this page — the file's
+   * own kind decides its renderer and there is no wallpaper to set — so drawing
+   * them would be the lie this project keeps refusing to ship.
+   */
+  function notOnThisPage(): HTMLElement[] {
+    return [
+      readingRow('Home and Lock', 'A page cannot set a wallpaper, so there is no second surface to adjust.'),
+      readingRow('Playlists and archive', 'Nothing here is stored or kept, so there is nothing to rotate or hide.'),
+      readingRow('Relief and Splat', 'The file’s own kind picks the renderer; this page does not convert one into the other.'),
+      readingRow('Origin and Pan', 'This page’s camera has no orbit centre or pan, so those rows would move a number nothing draws.'),
+    ];
+  }
+
+  /** One tilt row, shared by the two media: a state you can flip, or a reason. */
+  function tiltRow(): ReturnType<typeof switchRow> {
+    const row = switchRow({
+      title: 'Device tilt',
+      sub: 'Tilt the device to swing the camera; dragging does the same.',
+      on: false,
+      onToggle: (on) => {
+        if (!tilt) return;
+        if (!on) {
+          tilt.stop();
+          row.setSub('Tilt the device to swing the camera; dragging does the same.');
+          return;
+        }
+        void tilt.start().then((started) => {
+          if (closed) return;
+          if (!started) {
+            // The capability, not the user, said no. Turn the switch back off and
+            // say which of the two happened rather than promising motion that
+            // will never arrive.
+            row.set(false);
+            row.setSub('This browser exposes no orientation sensor — drag on the picture.');
+            return;
+          }
+          row.setSub('Using the sensor. Tilt the device, or drag on the picture.');
+        });
+      },
+    });
+    return row;
   }
 
   async function mountRelief(depth: DephSuccess): Promise<void> {
@@ -168,32 +260,127 @@ export function openViewer(item: OpenableItem): void {
       relief.destroy();
       return;
     }
+    const view = relief;
 
     stage.classList.add('stage--relief');
-    tilt = createDeviceTilt((x, y) => relief?.setTilt(x, y));
+    tilt = createDeviceTilt((x, y) => view.setTilt(x, y));
+    const settings = defaultSettings();
 
-    // The controls are built only once the renderer is actually showing, so a
-    // failed decode never leaves sliders that cannot change a pixel.
-    const dock = document.createElement('div');
-    dock.className = 'viewer-dock';
+    const panel = createSheet({ label: 'Picture settings' });
 
-    const depthControl = slider({
+    // ---------------------------------------------------------------- "Depth"
+    panel.body.append(caption('Standing out of the plane', true));
+    const depthRow = sliderRow({
       label: 'Depth',
-      value: Math.round(DEFAULT_DEPTH * 100),
-      onInput: (value) => relief?.setDepth(value / 100),
+      value: settings.depth,
+      min: DEPTH_MIN,
+      max: DEPTH_MAX,
+      format: (v) => `${v}%`,
+      onInput: (v) => view.setDepth(v / 100),
     });
-    const motionControl = slider({
-      label: 'Motion',
-      value: Math.round(DEFAULT_MOTION * 100),
-      onInput: (value) => relief?.setMotion(value / 100),
-    });
+    panel.body.append(depthRow.element);
 
-    const reset = button('Reset view', () => {
-      depthControl.set(Math.round(DEFAULT_DEPTH * 100));
-      motionControl.set(Math.round(DEFAULT_MOTION * 100));
-      relief?.setTilt(0, 0);
-      tilt?.calibrate();
+    // ------------------------------------------------------------- "How it moves"
+    panel.body.append(caption('How it moves'));
+    const motionRow = sliderRow({
+      label: 'Motion',
+      value: settings.motion,
+      min: MOTION_MIN,
+      max: MOTION_MAX,
+      format: (v) => `${v}%`,
+      onInput: (v) => view.setMotion(v / 100),
     });
+    // The app's FOV row: the stored unit is a percentage of zoom, and the number
+    // printed is the field of view that percentage leaves — 45° at 100%.
+    const zoomRow = sliderRow({
+      label: 'FOV',
+      value: settings.zoom,
+      min: ZOOM_MIN,
+      max: ZOOM_MAX,
+      format: (v) => `${Math.round(45 / (v / 100))}°`,
+      onInput: (v) => view.setZoom(v / 100),
+    });
+    const tiltControl = tiltRow();
+    panel.body.append(motionRow.element, zoomRow.element, tiltControl.element);
+
+    // --------------------------------------------------------------- "Picture"
+    panel.body.append(caption('Picture'));
+    let brightness = settings.brightness;
+    let shadow = settings.shadow;
+    const applyAdjust = (): void => view.setAdjust(brightness, shadow);
+    const brightnessRow = sliderRow({
+      label: 'Brightness',
+      value: brightness,
+      min: ADJUST_MIN,
+      max: ADJUST_MAX,
+      format: signed,
+      onInput: (v) => {
+        brightness = v;
+        applyAdjust();
+      },
+    });
+    const shadowRow = sliderRow({
+      label: 'Shadow',
+      value: shadow,
+      min: ADJUST_MIN,
+      max: ADJUST_MAX,
+      format: signed,
+      onInput: (v) => {
+        shadow = v;
+        applyAdjust();
+      },
+    });
+    panel.body.append(brightnessRow.element, shadowRow.element);
+
+    // ----------------------------------------------------------------- "Light"
+    panel.body.append(caption('Light'));
+    let azimuth = settings.lightAzimuth;
+    let elevation = settings.lightElevation;
+    const applyLight = (): void => view.setLight(azimuth, elevation);
+    // The row's domain is whole degrees. Azimuth's canonical range is [0, 360),
+    // so its top is 359: 360 is the same light as 0, which the bottom already
+    // offers — the app's own derivation.
+    const azimuthRow = sliderRow({
+      label: 'Azimuth',
+      value: Math.round(azimuth) % 360,
+      min: AZIMUTH_MIN,
+      max: AZIMUTH_MAX - 1,
+      format: (v) => `${v}°`,
+      onInput: (v) => {
+        azimuth = v;
+        applyLight();
+      },
+    });
+    const elevationRow = sliderRow({
+      label: 'Elevation',
+      value: Math.round(elevation),
+      min: ELEVATION_MIN,
+      max: ELEVATION_MAX,
+      format: (v) => `${v}°`,
+      onInput: (v) => {
+        elevation = v;
+        applyLight();
+      },
+    });
+    panel.body.append(
+      azimuthRow.element,
+      elevationRow.element,
+      note('Azimuth runs counter-clockwise from the right. Elevation 0 rakes across the relief; 90 is head-on.'),
+    );
+
+    // ------------------------------------------------------------- "This file"
+    panel.body.append(caption('This file'));
+
+    const packNote = note('');
+    packNote.hidden = true;
+    packNote.setAttribute('role', 'status');
+
+    const save = actionRow({
+      label: 'Save packed PNG',
+      sub: 'The colour and the depth map it carries, in one PNG',
+      onClick: () => void savePacked(),
+    });
+    panel.body.append(save, packNote);
 
     /**
      * Save packed PNG: the one action on this page that writes a file. A relief
@@ -201,19 +388,13 @@ export function openViewer(item: OpenableItem): void {
      * same depth, one chunk, in the slot every reader walks to. The writer exists
      * for the next task — generating a depth map for a photo — which is why it
      * carries a re-encode path this button cannot reach yet.
-     *
-     * The re-encode sentence is unreachable from here as long as a relief must
-     * have a `dePH`/`dEPt` chunk and only a PNG can carry one. It is written now
-     * so that path cannot arrive with the colour silently re-encoded.
      */
-    const packNote = document.createElement('div');
-    packNote.className = 'viewer-note';
-    packNote.hidden = true;
-
-    const save = button('Save packed PNG', async () => {
+    async function savePacked(): Promise<void> {
       save.disabled = true;
-      save.textContent = 'Packing…';
-      packNote.classList.remove('viewer-note--warn');
+      const label = save.querySelector('.sheet-action-label');
+      if (label) label.textContent = 'Packing…';
+      packNote.hidden = true;
+      packNote.classList.remove('sheet-note--warn');
       try {
         const colour = await colourPngBytes(item.file);
         // The viewer can be closed while a large image decodes; downloading a file
@@ -222,13 +403,13 @@ export function openViewer(item: OpenableItem): void {
         const packed = packPng(colour.bytes, depth);
         if (!packed.ok) {
           packNote.hidden = false;
-          packNote.classList.add('viewer-note--warn');
+          packNote.classList.add('sheet-note--warn');
           packNote.textContent = `Could not pack this photo: ${packed.detail}`;
           return;
         }
         const filename = packedFileName(item.file.name);
         downloadPng(packed.png, filename);
-        save.textContent = 'Saved packed PNG';
+        if (label) label.textContent = 'Saved packed PNG';
         packNote.hidden = false;
         packNote.textContent = colour.reencoded
           ? 'The colour was re-encoded to PNG because the dropped file was not a PNG — ' +
@@ -237,98 +418,62 @@ export function openViewer(item: OpenableItem): void {
             `${packed.replaced > 0 ? ', replacing the depth chunk it already had' : ''}.`;
       } catch (err) {
         packNote.hidden = false;
-        packNote.classList.add('viewer-note--warn');
+        packNote.classList.add('sheet-note--warn');
         packNote.textContent =
           `Could not pack this photo: ` +
           `${err instanceof Error ? err.message : 'the file could not be read'}`;
       } finally {
         save.disabled = false;
-        if (save.textContent === 'Packing…') save.textContent = 'Save packed PNG';
+        if (label?.textContent === 'Packing…') label.textContent = 'Save packed PNG';
       }
+    }
+
+    // -------------------------------------------------------- "Not on this page"
+    panel.body.append(caption('Not on this page'), ...notOnThisPage());
+
+    // -------------------------------------------------------------------- foot
+    const reset = sheetButton('Reset view', false, () => {
+      const d = defaultSettings();
+      brightness = d.brightness;
+      shadow = d.shadow;
+      azimuth = d.lightAzimuth;
+      elevation = d.lightElevation;
+      depthRow.set(d.depth);
+      motionRow.set(d.motion);
+      zoomRow.set(d.zoom);
+      brightnessRow.set(d.brightness);
+      shadowRow.set(d.shadow);
+      azimuthRow.set(Math.round(d.lightAzimuth) % 360);
+      elevationRow.set(Math.round(d.lightElevation));
+      view.setDepth(d.depth / 100);
+      view.setMotion(d.motion / 100);
+      view.setZoom(d.zoom / 100);
+      view.setAdjust(d.brightness, d.shadow);
+      view.setLight(d.lightAzimuth, d.lightElevation);
+      view.setTilt(0, 0);
+      tilt?.calibrate();
     });
+    const done = sheetButton('Done', false, () => panel.collapse());
+    panel.footer.append(reset, done);
 
-    const hint = document.createElement('div');
-    hint.className = 'viewer-hint';
-    hint.textContent = 'drag on the photo, or use device tilt';
+    setSheet(panel);
 
-    let tiltRunning = false;
-    const tiltButton = button('Use device tilt', async () => {
-      if (!tilt) return;
-      if (!tiltRunning) {
-        const started = await tilt.start();
-        if (!started) {
-          tiltButton.textContent = 'No device tilt';
-          hint.textContent = 'this browser exposes no orientation sensor — drag on the photo';
-          return;
-        }
-        tiltRunning = true;
-        tiltButton.textContent = 'Using device tilt';
-        hint.textContent = 'waiting for the orientation sensor…';
-        // A laptop can expose the API and never emit an event. Say which it was
-        // rather than promising motion that will not come.
-        window.setTimeout(() => {
-          if (closed || !tiltRunning) return;
-          hint.textContent = tilt?.isActive()
-            ? 'tilt your device, or drag on the photo'
-            : 'no orientation events arrived — drag on the photo';
-        }, 1000);
-      } else {
-        tilt.stop();
-        tiltRunning = false;
-        tiltButton.textContent = 'Use device tilt';
-        hint.textContent = 'drag on the photo, or use device tilt';
-      }
-    });
+    // The initial values go to the renderer explicitly rather than relying on its
+    // own defaults: the rows and the picture must be one number, and a row that
+    // shows 90 while the renderer holds 0.5 is the disagreement this whole sheet
+    // is built to prevent.
+    view.setDepth(settings.depth / 100);
+    view.setMotion(settings.motion / 100);
+    view.setZoom(settings.zoom / 100);
+    applyAdjust();
+    applyLight();
 
-    const actions = document.createElement('div');
-    actions.className = 'viewer-actions';
-    actions.append(reset, tiltButton, save);
-
-    dock.append(depthControl.element, motionControl.element, actions, packNote, hint);
-    setDock(dock);
-
-    // Pointer drag drives the same tilt target the gyro does. A drag that ends
-    // lets the picture settle back to rest rather than holding the last tilt.
-    let dragging = false;
-    const applyPointer = (event: PointerEvent): void => {
-      const rect = stage.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      relief?.setTilt(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        ((event.clientY - rect.top) / rect.height) * 2 - 1,
-      );
-    };
-    const onDown = (event: PointerEvent): void => {
-      if (tilt?.isActive()) return;
-      dragging = true;
-      try {
-        stage.setPointerCapture(event.pointerId);
-      } catch {
-        // A synthetic or already-released pointer cannot be captured; the drag
-        // still works from the move events, so this is not a failure.
-      }
-      applyPointer(event);
-    };
-    const onMove = (event: PointerEvent): void => {
-      if (dragging) applyPointer(event);
-    };
-    const onUp = (event: PointerEvent): void => {
-      if (!dragging) return;
-      dragging = false;
-      if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
-      relief?.setTilt(0, 0);
-    };
-
-    stage.addEventListener('pointerdown', onDown);
-    stage.addEventListener('pointermove', onMove);
-    stage.addEventListener('pointerup', onUp);
-    stage.addEventListener('pointercancel', onUp);
-    teardown.push(() => {
-      stage.removeEventListener('pointerdown', onDown);
-      stage.removeEventListener('pointermove', onMove);
-      stage.removeEventListener('pointerup', onUp);
-      stage.removeEventListener('pointercancel', onUp);
-    });
+    installDrag(
+      stage,
+      teardown,
+      () => tilt?.isActive() === true,
+      (x, y) => view.setTilt(x, y),
+    );
   }
 
   function mountPhoto(): void {
@@ -338,12 +483,13 @@ export function openViewer(item: OpenableItem): void {
     image.alt = item.name;
     stage.append(image);
 
-    const note = document.createElement('div');
-    note.className = 'viewer-hint viewer-hint--floating';
-    // The reason a Save action is not here, stated where its absence is: a
-    // packed PNG is a colour image PLUS a depth map, and there is no map.
-    note.textContent = 'No embedded depth — shown flat, nothing to pack.';
-    stage.append(note);
+    const noteEl = document.createElement('div');
+    noteEl.className = 'viewer-hint viewer-hint--floating';
+    // The reason a sheet is not here, stated where its absence is: every row on
+    // the studio's sheet changes a displaced surface, and with no depth map there
+    // is nothing to displace.
+    noteEl.textContent = 'No embedded depth — shown flat, and there is nothing to adjust.';
+    stage.append(noteEl);
   }
 
   /**
@@ -351,11 +497,10 @@ export function openViewer(item: OpenableItem): void {
    * renderer is built only after that succeeds — so a failed read leaves a
    * message, never a canvas with no data.
    *
-   * The controls are the relief's, minus Depth (a cloud's shape is the node's
-   * measurement, and this viewer does not displace it): Motion and the tilt come
-   * from the same two sources, and the lens line states which camera is drawing —
-   * because a cloud drawn through the wrong lens looks perfectly fine and is the
-   * wrong picture.
+   * The sheet is the relief's minus every row a cloud's renderer does not honour.
+   * Motion is here because the cloud follows it; the app's cloud look knobs
+   * (Depth, Size, Blur, Resolution) are not, and the sheet says so rather than
+   * drawing four sliders over a picture they cannot change.
    */
   async function mountCloud(): Promise<void> {
     if (item.state.kind !== 'cloud') return;
@@ -395,129 +540,75 @@ export function openViewer(item: OpenableItem): void {
       return;
     }
     loader.remove();
+    const view = cloud;
 
     stage.classList.add('stage--cloud');
-    tilt = createDeviceTilt((x, y) => cloud?.setTilt(x, y));
+    tilt = createDeviceTilt((x, y) => view.setTilt(x, y));
+    const settings = defaultSettings();
 
-    const dock = document.createElement('div');
-    dock.className = 'viewer-dock';
+    const panel = createSheet({ label: 'Cloud settings' });
 
-    const motionControl = slider({
+    panel.body.append(caption('How it moves', true));
+    const motionRow = sliderRow({
       label: 'Motion',
-      value: Math.round(DEFAULT_MOTION * 100),
-      onInput: (value) => cloud?.setMotion(value / 100),
+      value: settings.motion,
+      min: MOTION_MIN,
+      max: MOTION_MAX,
+      format: (v) => `${v}%`,
+      onInput: (v) => view.setMotion(v / 100),
     });
+    const tiltControl = tiltRow();
+    panel.body.append(motionRow.element, tiltControl.element);
 
-    const reset = button('Reset view', () => {
-      motionControl.set(Math.round(DEFAULT_MOTION * 100));
-      cloud?.setTilt(0, 0);
-      tilt?.calibrate();
-    });
-
-    const hint = document.createElement('div');
-    hint.className = 'viewer-hint';
-    hint.textContent = 'drag on the cloud, or use device tilt';
-
-    let tiltRunning = false;
-    const tiltButton = button('Use device tilt', async () => {
-      if (!tilt) return;
-      if (!tiltRunning) {
-        const started = await tilt.start();
-        if (!started) {
-          tiltButton.textContent = 'No device tilt';
-          hint.textContent = 'this browser exposes no orientation sensor — drag on the cloud';
-          return;
-        }
-        tiltRunning = true;
-        tiltButton.textContent = 'Using device tilt';
-        hint.textContent = 'waiting for the orientation sensor…';
-        window.setTimeout(() => {
-          if (closed || !tiltRunning) return;
-          hint.textContent = tilt?.isActive()
-            ? 'tilt your device, or drag on the cloud'
-            : 'no orientation events arrived — drag on the cloud';
-        }, 1000);
-      } else {
-        tilt.stop();
-        tiltRunning = false;
-        tiltButton.textContent = 'Use device tilt';
-        hint.textContent = 'drag on the cloud, or use device tilt';
-      }
-    });
-
-    // Which camera is drawing, said rather than guessed. A cloud through the wrong
-    // lens is not visibly broken — it is the wrong picture — so the two answers a
-    // missing number can have are both stated, and they are not the same sentence.
-    const lens = document.createElement('div');
-    lens.className = 'viewer-note';
-    lens.textContent = lensLine(item.lens, item.lensFrom);
-
+    panel.body.append(caption('This file'));
+    // Which camera is drawing, said rather than guessed. A cloud through the
+    // wrong lens is not visibly broken — it is the wrong picture — so the two
+    // answers a missing number can have are both stated, and they are not the
+    // same sentence.
+    panel.body.append(readingRow('Lens', lensLine(item.lens, item.lensFrom)));
     // A cloud is not a PNG, so there is nothing for the packer to insert a chunk
     // into. Said rather than left as a disabled button nobody can explain.
-    const packNote = document.createElement('div');
-    packNote.className = 'viewer-note';
-    packNote.textContent = 'Nothing to save as a packed PNG — a .splat cloud is not a PNG.';
-
-    const actions = document.createElement('div');
-    actions.className = 'viewer-actions';
-    actions.append(reset, tiltButton);
-
-    dock.append(motionControl.element, actions, lens, packNote);
+    panel.body.append(
+      readingRow('Packed PNG', 'Nothing to save — a .splat cloud is not a PNG.'),
+    );
     if (splats >= 750_000) {
-      const cost = document.createElement('div');
-      cost.className = 'viewer-note viewer-note--warn';
       // The app's own ladder, stated as what it is: measured on a phone, not a
       // promise about this machine.
-      cost.textContent =
-        `${formatSplatCount(splats)} — a cloud this dense is the top of the app's ` +
-        'ladder: ~5 fps on a 2018 phone. Your machine decides.';
-      dock.append(cost);
-    }
-    dock.append(hint);
-    setDock(dock);
-
-    // Pointer drag drives the same tilt target the gyro does, and a drag that ends
-    // lets the cloud settle back to rest rather than holding the last tilt.
-    let dragging = false;
-    const applyPointer = (event: PointerEvent): void => {
-      const rect = stage.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      cloud?.setTilt(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        ((event.clientY - rect.top) / rect.height) * 2 - 1,
+      panel.body.append(
+        readingRow(
+          `${formatSplatCount(splats)} splats`,
+          'A cloud this dense is the top of the app’s ladder: ~5 fps on a 2018 phone. Your machine decides.',
+        ),
       );
-    };
-    const onDown = (event: PointerEvent): void => {
-      if (tilt?.isActive()) return;
-      dragging = true;
-      try {
-        stage.setPointerCapture(event.pointerId);
-      } catch {
-        // A synthetic or already-released pointer cannot be captured; the drag
-        // still works from the move events, so this is not a failure.
-      }
-      applyPointer(event);
-    };
-    const onMove = (event: PointerEvent): void => {
-      if (dragging) applyPointer(event);
-    };
-    const onUp = (event: PointerEvent): void => {
-      if (!dragging) return;
-      dragging = false;
-      if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
-      cloud?.setTilt(0, 0);
-    };
+    }
 
-    stage.addEventListener('pointerdown', onDown);
-    stage.addEventListener('pointermove', onMove);
-    stage.addEventListener('pointerup', onUp);
-    stage.addEventListener('pointercancel', onUp);
-    teardown.push(() => {
-      stage.removeEventListener('pointerdown', onDown);
-      stage.removeEventListener('pointermove', onMove);
-      stage.removeEventListener('pointerup', onUp);
-      stage.removeEventListener('pointercancel', onUp);
+    panel.body.append(caption('Not on this page'));
+    panel.body.append(
+      ...notOnThisPage(),
+      readingRow(
+        'Cloud look',
+        'Depth, Size, Blur and Resolution are not wired on this page yet, so this cloud is drawn at the app’s defaults.',
+      ),
+    );
+
+    const reset = sheetButton('Reset view', false, () => {
+      motionRow.set(settings.motion);
+      view.setMotion(settings.motion / 100);
+      view.setTilt(0, 0);
+      tilt?.calibrate();
     });
+    const done = sheetButton('Done', false, () => panel.collapse());
+    panel.footer.append(reset, done);
+
+    setSheet(panel);
+    view.setMotion(settings.motion / 100);
+
+    installDrag(
+      stage,
+      teardown,
+      () => tilt?.isActive() === true,
+      (x, y) => view.setTilt(x, y),
+    );
   }
 
   function mountMessage(title: string, detail: string): void {
@@ -531,6 +622,65 @@ export function openViewer(item: OpenableItem): void {
     card.append(headingEl, body);
     stage.append(card);
   }
+}
+
+/** A signed offset, bare: "+40"/"-10" already reads as an offset on this range. */
+function signed(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+/**
+ * Pointer drag on the stage drives the same tilt target the gyro does, and a
+ * drag that ends lets the picture settle back to rest rather than holding the
+ * last tilt. Suspended while the sensor is live, because two inputs writing one
+ * target at once is a picture that argues with itself.
+ */
+function installDrag(
+  stage: HTMLElement,
+  teardown: Array<() => void>,
+  isTilting: () => boolean,
+  setTilt: (x: number, y: number) => void,
+): void {
+  let dragging = false;
+  const applyPointer = (event: PointerEvent): void => {
+    const rect = stage.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    setTilt(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      ((event.clientY - rect.top) / rect.height) * 2 - 1,
+    );
+  };
+  const onDown = (event: PointerEvent): void => {
+    if (isTilting()) return;
+    dragging = true;
+    try {
+      stage.setPointerCapture(event.pointerId);
+    } catch {
+      // A synthetic or already-released pointer cannot be captured; the drag
+      // still works from the move events, so this is not a failure.
+    }
+    applyPointer(event);
+  };
+  const onMove = (event: PointerEvent): void => {
+    if (dragging) applyPointer(event);
+  };
+  const onUp = (event: PointerEvent): void => {
+    if (!dragging) return;
+    dragging = false;
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+    setTilt(0, 0);
+  };
+
+  stage.addEventListener('pointerdown', onDown);
+  stage.addEventListener('pointermove', onMove);
+  stage.addEventListener('pointerup', onUp);
+  stage.addEventListener('pointercancel', onUp);
+  teardown.push(() => {
+    stage.removeEventListener('pointerdown', onDown);
+    stage.removeEventListener('pointermove', onMove);
+    stage.removeEventListener('pointerup', onUp);
+    stage.removeEventListener('pointercancel', onUp);
+  });
 }
 
 /**
@@ -549,65 +699,6 @@ function lensLine(lens: number, from: string | null): string {
   const fallback = `${NO_LENS_FOVY_DEG.toFixed(1)}° vertical, the app’s default look`;
   if (from) return `${from} states no usable lens — drawn at ${fallback}`;
   return `no lens sidecar — drawn at ${fallback}`;
-}
-
-interface SliderOptions {
-  label: string;
-  value: number;
-  onInput: (value: number) => void;
-}
-
-interface SliderControl {
-  element: HTMLElement;
-  set(value: number): void;
-}
-
-function slider(options: SliderOptions): SliderControl {
-  const row = document.createElement('label');
-  row.className = 'viewer-slider';
-
-  const label = document.createElement('span');
-  label.className = 'viewer-slider-label';
-  label.textContent = options.label;
-
-  const input = document.createElement('input');
-  input.type = 'range';
-  input.min = '0';
-  input.max = '100';
-  input.step = '1';
-  input.value = String(options.value);
-
-  const output = document.createElement('span');
-  output.className = 'viewer-slider-value';
-  output.textContent = `${options.value}%`;
-
-  const set = (value: number): void => {
-    input.value = String(value);
-    output.textContent = `${value}%`;
-    options.onInput(value);
-  };
-
-  input.addEventListener('input', () => set(Number(input.value)));
-  set(options.value);
-
-  row.append(label, input, output);
-  return {
-    element: row,
-    set(value: number): void {
-      input.value = String(value);
-      output.textContent = `${value}%`;
-      options.onInput(value);
-    },
-  };
-}
-
-function button(text: string, onClick: () => void | Promise<void>): HTMLButtonElement {
-  const element = document.createElement('button');
-  element.type = 'button';
-  element.className = 'viewer-button';
-  element.textContent = text;
-  element.addEventListener('click', () => void onClick());
-  return element;
 }
 
 /**

@@ -1,0 +1,329 @@
+{
+  "schema": 5,
+  "why": "SurfaceSettings is the app's render-value body inside the Library v5 blob: seventeen stored values, every one clamped where it is constructed, and an absent field meaning its documented default rather than zero. The app writes it in SurfaceSettings.toJson and reads it in fromJson; web/src/settings.ts is the second reader, and this table is the only shared statement of the bodies the two must agree on. The ranges are stated here too, so scripts/check-parity.mjs can hold the Java constants (SurfaceSettings, Splat, LightDirection), the TypeScript constants and these numbers as one claim: a Size slider that reaches 0.9 where the app stops at 0.8 would let a visitor tune a picture the phone cannot produce, and no test on either side could see the other copy.",
+  "approximately": {
+    "fields": ["light_azimuth", "light_elevation"],
+    "tolerance": 0.01,
+    "why": "These two are DERIVED from the historical light vector (-0.35, 0.5, 0.75) rather than written as literals, in Java and here, so the stored values are a float and a double of the same angle. picture.test.ts holds the derivation to the vector itself within 1e-6, which is the property that matters; this table only needs to say which default the body resolves to."
+  },
+  "ranges": {
+    "depth": {
+      "min": 0,
+      "max": 100,
+      "default": 90,
+      "why": "the slider's own percent; the oldest build wrote 0..200 and nothing records which build wrote a value"
+    },
+    "zoom": {
+      "min": 25,
+      "max": 200,
+      "default": 100,
+      "why": "percent of 1.0x; below 25% the camera would invert"
+    },
+    "motion": {
+      "min": 0,
+      "max": 100,
+      "default": 33,
+      "why": "scaled to 0..3 by the renderer, so 33 is the app's 1.0 and 100 is 3.0"
+    },
+    "adjust": {
+      "min": -100,
+      "max": 100,
+      "default": 0,
+      "why": "Brightness and Shadow are signed offsets and 0 is the identity for both"
+    },
+    "origin": {
+      "min": -2,
+      "max": 2,
+      "default": 0,
+      "why": "ORIGIN_LIMIT: two picture-widths of orbit-centre travel. Origin names the orbit centre, not a position on the photo"
+    },
+    "panZ": {
+      "min": 0.5,
+      "max": 5,
+      "default": 1,
+      "why": "a multiplier on the camera distance; 1.0 is the source camera"
+    },
+    "speed": {
+      "min": 25,
+      "max": 200,
+      "default": 100,
+      "why": "a clip's playback rate in percent; a photograph ignores it"
+    },
+    "splatDepth": {
+      "min": 0,
+      "max": 5,
+      "default": 1,
+      "why": "the cloud's Depth multiplier; 0 is the flat photograph and 1 the identity"
+    },
+    "splatEps2d": {
+      "min": 0,
+      "max": 0.8,
+      "default": 0.5,
+      "why": "the cloud's Size as a FRACTION OF THE ON-SCREEN CELL; 0 is no floor and 0.8 is under one whole cell"
+    },
+    "splatBlur": {
+      "min": 0,
+      "max": 12,
+      "default": 0,
+      "why": "a post-blur radius in render-target pixels; 0 is the identity. 12 is the store's own clamp, and the renderer's 13-tap kernel makes anything past 6 identical, so 6 is the useful top of the row rather than an untested bound"
+    },
+    "splatScale": {
+      "min": 0.1,
+      "max": 1,
+      "default": 1,
+      "why": "the fraction of the surface the cloud is rasterised at; 1 is a straight draw"
+    },
+    "azimuth": {
+      "min": 0,
+      "max": 360,
+      "why": "azimuth WRAPS rather than clamps, because 0 and 360 are the same light and a clamp would make a dead zone at the seam"
+    },
+    "elevation": {
+      "min": 0,
+      "max": 90,
+      "why": "0 rakes across the relief, 90 is head-on"
+    }
+  },
+  "defaults": {
+    "why": "The body an item with nothing adjusted stores. Every one of the twelve required keys resolves to this; the five optional keys are absent, and parse(toJson(defaults)) must give this back.",
+    "body": {},
+    "expected": {
+      "depth": 90,
+      "zoom": 100,
+      "motion": 33,
+      "origin_x": 0,
+      "origin_y": 0,
+      "pan_x": 0,
+      "pan_y": 0,
+      "brightness": 0,
+      "shadow": 0,
+      "light_azimuth": 124.992,
+      "light_elevation": 50.862,
+      "speed": 100,
+      "splat_depth": 1,
+      "splat_eps2d": 0.5,
+      "splat_blur": 0,
+      "splat_scale": 1,
+      "pan_z": 1
+    }
+  },
+  "populated": {
+    "why": "One body with every field off its default and inside its range, including a pan that is not a fraction (86.5 pixels) and a wrapped-free azimuth. The reader must return these values unchanged, and the writer must give back exactly this body: a re-serialisation that dropped an optional key or rounded a float would be a stored picture that changes on a round trip.",
+    "body": {
+      "depth": 62,
+      "zoom": 140,
+      "motion": 58,
+      "origin_x": -0.375,
+      "origin_y": 0.125,
+      "pan_x": 86.5,
+      "pan_y": -42,
+      "brightness": 24,
+      "shadow": -18,
+      "light_azimuth": 210.5,
+      "light_elevation": 34.25,
+      "speed": 75,
+      "splat_depth": 1.75,
+      "splat_eps2d": 0.35,
+      "splat_blur": 2.5,
+      "splat_scale": 0.75,
+      "pan_z": 1.6
+    },
+    "expected": {
+      "depth": 62,
+      "zoom": 140,
+      "motion": 58,
+      "origin_x": -0.375,
+      "origin_y": 0.125,
+      "pan_x": 86.5,
+      "pan_y": -42,
+      "brightness": 24,
+      "shadow": -18,
+      "light_azimuth": 210.5,
+      "light_elevation": 34.25,
+      "speed": 75,
+      "splat_depth": 1.75,
+      "splat_eps2d": 0.35,
+      "splat_blur": 2.5,
+      "splat_scale": 0.75,
+      "pan_z": 1.6
+    }
+  },
+  "clamps": [
+    {
+      "field": "depth",
+      "stored": 150,
+      "expected": 100,
+      "why": "a 0..200 value written by an older build is clamped, not guessed at"
+    },
+    {
+      "field": "depth",
+      "stored": -20,
+      "expected": 0,
+      "why": "negative depth is not a shallower picture, it is the bottom of the range"
+    },
+    {
+      "field": "zoom",
+      "stored": 10,
+      "expected": 25,
+      "why": "below 25% the camera would invert"
+    },
+    {
+      "field": "zoom",
+      "stored": 400,
+      "expected": 200,
+      "why": "200% is the top of the crop; more would be a magnified photograph"
+    },
+    {
+      "field": "motion",
+      "stored": 140,
+      "expected": 100,
+      "why": "100 is already the renderer's 3.0x swing"
+    },
+    {
+      "field": "origin_x",
+      "stored": 9,
+      "expected": 2,
+      "why": "ORIGIN_LIMIT is ±2 picture-widths, and an origin outside it is not an orbit centre the model means"
+    },
+    {
+      "field": "origin_y",
+      "stored": -9,
+      "expected": -2,
+      "why": "the same bound on the other axis"
+    },
+    {
+      "field": "brightness",
+      "stored": -140,
+      "expected": -100,
+      "why": "-100 is already a stop down"
+    },
+    {
+      "field": "shadow",
+      "stored": 140,
+      "expected": 100,
+      "why": "100 lifts black to white; past it is not a shadow adjustment"
+    },
+    {
+      "field": "light_azimuth",
+      "stored": 370,
+      "expected": 10,
+      "why": "azimuth WRAPS, so 370 is the same light as 10 and a clamp would put a dead zone at 360"
+    },
+    {
+      "field": "light_azimuth",
+      "stored": -10,
+      "expected": 350,
+      "why": "wrapping backwards is the same light, not the bottom of a range"
+    },
+    {
+      "field": "light_azimuth",
+      "stored": 360,
+      "expected": 0,
+      "why": "360 and 0 are one light; the canonical domain is [0, 360)"
+    },
+    {
+      "field": "light_elevation",
+      "stored": 120,
+      "expected": 90,
+      "why": "elevation clamps: 90 is head-on and there is no light from behind the paper"
+    },
+    {
+      "field": "light_elevation",
+      "stored": -30,
+      "expected": 0,
+      "why": "0 rakes across the relief; negative would light it from behind"
+    },
+    {
+      "field": "speed",
+      "stored": 500,
+      "expected": 200,
+      "why": "2x is the top of the speed range"
+    },
+    {
+      "field": "splat_depth",
+      "stored": 9,
+      "expected": 5,
+      "why": "the Depth multiplier's top"
+    },
+    {
+      "field": "splat_depth",
+      "stored": -1,
+      "expected": 0,
+      "why": "0 is the flat photograph, and negative depth is behind the eye"
+    },
+    {
+      "field": "splat_eps2d",
+      "stored": 0.95,
+      "expected": 0.8,
+      "why": "the Size row's top is 0.8 of the cell, not the 0.9 a hand-typed bound guesses"
+    },
+    {
+      "field": "splat_eps2d",
+      "stored": -0.2,
+      "expected": 0,
+      "why": "0 is the identity floor and a real setting; it must not be clamped up"
+    },
+    {
+      "field": "splat_blur",
+      "stored": 40,
+      "expected": 12,
+      "why": "a larger radius is a different effect, not a cleaner version of this one"
+    },
+    {
+      "field": "splat_blur",
+      "stored": -3,
+      "expected": 0,
+      "why": "a blur is one-sided, and a negative radius answers the identity"
+    },
+    {
+      "field": "splat_scale",
+      "stored": 0.01,
+      "expected": 0.1,
+      "why": "below a tenth the picture is softer than the fill it saves"
+    },
+    {
+      "field": "splat_scale",
+      "stored": 2,
+      "expected": 1,
+      "why": "1 is a straight draw to the surface; there is nothing above it"
+    },
+    {
+      "field": "pan_z",
+      "stored": 0.1,
+      "expected": 0.5,
+      "why": "half the source camera distance is the near stop"
+    },
+    {
+      "field": "pan_z",
+      "stored": 9,
+      "expected": 5,
+      "why": "five times the source distance is the far stop"
+    },
+    {
+      "field": "pan_x",
+      "stored": 1000000000,
+      "expected": 1000000000,
+      "why": "pan is in PIXELS and is deliberately NOT clamped: its bound is the surface's own larger dimension, which this layer cannot know. Clamping it to Origin's fraction range once flattened a stored -135px pan to -0.5px"
+    },
+    {
+      "field": "pan_y",
+      "stored": -1000000000,
+      "expected": -1000000000,
+      "why": "the same for the other axis, and in both directions"
+    }
+  ],
+  "junk": [
+    {
+      "body": {
+        "depth": null,
+        "zoom": "big",
+        "motion": true,
+        "origin_x": {},
+        "brightness": [],
+        "pan_x": "12",
+        "light_azimuth": null
+      },
+      "why": "The wallpaper parses this body on the GL thread at cold start, so a field that is not a finite number must answer its DEFAULT rather than throw. A string that happens to look numeric is not a number either: coercing it would store a value the writer never wrote."
+    }
+  ]
+}

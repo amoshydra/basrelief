@@ -155,6 +155,56 @@ A cloud's cost is its count and the machine's: the demo is ~150k splats, and the
 app's ladder puts 1M at ~5 fps on a 2018 phone. Nothing is capped; the viewer names
 the count, and says so when a cloud is dense enough for that to matter.
 
+## The sheet
+
+The viewer's controls are the Android studio's bottom sheet, reproduced rather
+than reinvented: `src/sheet.ts` is the vocabulary, and `src/viewer.ts` composes it
+from the rows a page can actually honour.
+
+- **Three row roles, and no fourth.** A switch row carries a state you can flip
+  (Device tilt), an action row is a plate you can press (Save packed PNG), and a
+  reading row is information and cannot be pressed at all — its factory takes no
+  listener, so a fact cannot drift into looking like a control. Captions, the
+  11/12/13/14px type scale, the 11px-radius plates, the grip and the one-line
+  slider are the app's own constants from `ModalSheet`/`BasreliefSlider`.
+- **The grip drags.** Pull it down and the sheet follows by height; release and it
+  settles by `SheetIntent`'s rule (a 0.20 s velocity projection with a fling
+  override, at the studio's 0.95/0.40 thresholds). A tap on the grip toggles.
+  Collapsed, only the grip bar is left over the picture.
+- **A row is drawn only when its renderer honours it.** On a relief: Depth,
+  Motion, FOV (the app calls Zoom's printed value FOV — 45° at 100 %), Brightness,
+  Shadow, Azimuth and Elevation. On a cloud: Motion. Brightness and Shadow are the
+  app's own mapping (`Picture`: 2^stops and a lift), and the light angles go
+  through `LightDirection`'s azimuth/elevation convention. Nothing on the sheet is
+  a number that does not move the picture.
+- **Omitted, with a sentence** (a caption "Not on this page" and a reading row
+  each): the Home/Lock segment, the playlists and the archive, the Renderer
+  segment, and Origin/Pan. A page cannot set a wallpaper, nothing here is
+  persisted to rotate or hide, the file's kind picks its own renderer, and this
+  camera has no orbit centre. A cloud's look knobs (Depth, Size, Blur,
+  Resolution) are phase 2 and the cloud sheet says so rather than drawing them.
+- **The values and ranges are the app's schema**, not this page's taste:
+  `src/settings.ts` reads and writes the `SurfaceSettings` body and
+  `contract/settings/` pins it — see below.
+
+### The settings contract
+
+`SurfaceSettings` is the app's seventeen-value render body inside the `Library` v5
+blob, and `src/settings.ts` is its second reader and writer.
+`contract/settings/cases.json` states what the two agree about: the ranges, the
+defaults an absent field resolves to, one populated body the writer must give back
+byte for byte, 27 clamps, and a junk body that must not throw. `src/settings.test.ts`
+holds the TypeScript side to it, and `scripts/check-parity.mjs` reads the fixture
+and holds **both** languages' constants to the same numbers — so a Size slider
+that reached 0.9 where the app stops at 0.8 would be a red build rather than a
+picture a visitor can tune and the phone cannot produce.
+
+Two fields are deliberately *not* clamped the way their neighbours are: **pan is in
+pixels**, and its bound is the surface's own larger dimension, which this layer
+cannot know (clamping it to Origin's fraction range once turned a stored −135 px
+into −0.5 px); and **azimuth wraps**, because 0° and 360° are the same light, so a
+clamp would make a dead zone at the seam.
+
 ## Running it
 
 ```
@@ -163,7 +213,7 @@ pnpm install
 pnpm dev        # HTTPS on :5173
 pnpm build      # typecheck + static bundle in web/dist
 pnpm preview    # serve the built bundle
-pnpm test       # contract/deph (reader and writer), media states and contract/splat, under plain Node
+pnpm test       # all six contract/state tests, under plain Node
 pnpm typecheck  # tsc --noEmit
 ```
 
@@ -182,21 +232,34 @@ no server-side requirement.
 - **Drag** on the photo to swing the camera; releasing lets it settle back to
   rest. A cloud does the same: the eye turns about the cloud's own surface under
   the centre, so the subject holds and the background swings.
-- **Use device tilt** asks for orientation permission where the browser requires
-  it (iOS) and drives the same motion from the sensor. If the browser exposes the
-  API but emits no events, the hint says so and dragging still works.
-- **Depth** sets how far the relief is displaced; **Motion** sets how far the eye
-  swings (for a cloud, Motion is the same number the app calls Motion). **Reset
-  view** returns both, the tilt and the neutral pose.
-- **Save packed PNG** (a relief only) writes the colour and the depth map it read
-  into one PNG and downloads it as `<name>.packed.png`. A photo says why there is
-  nothing to pack, and a cloud says a `.splat` is not a PNG — neither leaves a
-  dead button.
-- **← Gallery** or **Escape** closes the viewer.
+- **Device tilt** (a switch row on the sheet) asks for orientation permission
+  where the browser requires it (iOS) and drives the same motion from the sensor.
+  If the browser exposes the API but emits no events, the switch turns itself back
+  off and says so; dragging still works.
+- **The sheet** holds the render values. On a relief: **Depth** (how far the
+  relief is displaced), **Motion** (how far the eye swings), **FOV** (a crop of the
+  same camera; the number printed is the field of view, 45° at 100 %),
+  **Brightness** and **Shadow** (the app's two picture adjustments), and the
+  light's **Azimuth**/**Elevation**. On a cloud: **Motion** only. Each slider is
+  a fill with the value printed on it and a −/＋ pair; the track is draggable and
+  the arrow keys step it. **Reset view** returns every value, the tilt and the
+  neutral pose.
+- **Save packed PNG** (a relief only, an action row on the sheet) writes the colour
+  and the depth map it read into one PNG and downloads it as `<name>.packed.png`.
+  A photo says why there is nothing to pack, and a cloud says a `.splat` is not a
+  PNG — neither leaves a dead button.
+- **Grip**: drag it down to collapse the sheet to the handle, tap it to toggle.
+  **Done** collapses it; **← Gallery** or **Escape** closes the viewer (Escape
+  collapses the sheet first).
+- **Not on this page**, said in the sheet rather than left as an absence: the
+  Home/Lock surfaces, the playlists and archive, the Renderer segment, and
+  Origin/Pan. A page cannot set a wallpaper, nothing here is stored, the file's
+  kind picks the renderer, and this camera has no orbit centre.
 
-The picture fills the viewport (cover, with the reference port's 8 % crop), as
-the wallpaper does. There is no zoom or pan yet, so a landscape photo on a
-portrait phone is cropped — rotate the phone for the whole thing.
+The picture fills the viewport (cover, with the reference port's 8 % crop) at FOV
+45°, as the wallpaper does. There is no pan or orbit centre yet, so a landscape
+photo on a portrait phone starts cropped — the FOV row narrows the crop further,
+and below 100 % the picture is inset on the clear colour, as the app's Zoom does.
 
 ## What it takes from the reference port
 
@@ -234,11 +297,12 @@ cloud renderer* above.
 - **Generate depth** — the next task, and a client of the ComfyUI node rather than
   anything in the browser. The writer above is its prerequisite: a generated depth
   map plus a colour image is exactly what it packs.
-- **Zoom, pan, choosing an orbit centre, and the Depth multiplier** — the cloud is
-  drawn through its own camera at the node's own depth; the relief has the same
-  omissions. Both are the app's features and neither has a control here.
-- **The cloud look knobs** (Size, Blur, Resolution) — the gallery draws the app's
-  defaults: a `0.5`-of-the-cell floor, no post-blur, no offscreen scale.
+- **Pan, choosing an orbit centre, and the cloud's Depth multiplier** — the relief
+  has the FOV row (a crop of the same camera) but no pan or orbit centre, and the
+  cloud is drawn through its own camera at the node's own depth. The sheet says so
+  in a reading row rather than drawing a row that moves nothing.
+- **The cloud look knobs** (Depth, Size, Blur, Resolution) — the gallery draws the
+  app's defaults: a `0.5`-of-the-cell floor, no post-blur, no offscreen scale.
 - **A cloud's colour is not colour-managed.** The baked bytes go to the framebuffer
   exactly as the app's shader writes them, so the picture matches the app rather
   than an `sRGB`-converted one.
@@ -257,14 +321,19 @@ web/
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
   src/pack.ts         the dePH writer + the browser colour re-encode (pure half tested)
   src/splat.ts        the .splat record, the cloud camera, the lens, the sort (pure, tested)
+  src/settings.ts     the SurfaceSettings schema: ranges, defaults, clamps (pure, tested)
+  src/picture.ts      brightness, shadow and the light vector (pure, tested)
+  src/sheet.ts        the studio's bottom sheet: rows, grip, captions, the slider
   src/cloud.ts        WebGL2 splat renderer (ported projection, integer texels)
-  src/viewer.ts       one dispatch point: relief | photo | cloud | message
-  src/relief.ts       three.js relief renderer (ported camera model)
+  src/viewer.ts       one dispatch point: relief | photo | cloud | message, and the rows
+  src/relief.ts       three.js relief renderer (ported camera model + the app's tone/light)
   src/tilt.ts         deviceorientation → a smoothed tilt target
   src/deph.test.ts    the dePH fixtures, under plain Node
   src/pack.test.ts    the writer's fixture, chunk/CRC and both round trips
   src/media.test.ts   the three states, without a browser
   src/splat.test.ts   contract/splat + the camera, lens, sort and floor
+  src/settings.test.ts  contract/settings: ranges, bodies, clamps and junk
+  src/picture.test.ts   the two Picture mappings and the light convention
 ```
 
 CI's `web-app` job runs `pnpm test`, `pnpm typecheck` and `pnpm build`; the

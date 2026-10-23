@@ -548,66 +548,418 @@ summary:focus-visible {
   text-overflow: ellipsis;
 }
 
-.viewer-dock {
+/* ------------------------------------------------------------------ sheet */
+/*
+ * The studio's card, from `ModalSheet.java`'s own tokens: `#171b21`, a 20px top
+ * corner, ONE top hairline (a four-sided border drew a bright line down the
+ * sides and along a foot that is flush with the screen), 16px sides and a grip
+ * above the scroll. The sheet floats over the picture; collapsed it is the grip
+ * alone, so the photograph is not covered by a panel nobody is using.
+ */
+
+.sheet {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 2;
+  z-index: 3;
   width: min(620px, 100%);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 30px 18px calc(env(safe-area-inset-bottom) + 18px);
-  background: linear-gradient(rgba(5, 7, 11, 0), rgba(5, 7, 11, 0.92) 34%);
+  overflow: hidden;
+  background: #171b21;
+  border-top: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.32);
+  transition: height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.viewer-slider {
+/* During a drag the height IS the finger; a transition would fight it. */
+.sheet--dragging {
+  transition: none;
+}
+
+/*
+ * Collapsed to the grip, and the card is gone rather than a dark 30px bar over
+ * the picture: the only thing left on screen is the handle itself.
+ */
+.sheet--collapsed {
+  background: transparent;
+  border-top-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.sheet-grip {
+  flex: none;
   display: grid;
-  grid-template-columns: 54px 1fr 46px;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.viewer-slider input[type="range"] {
+  place-items: center;
   width: 100%;
-  accent-color: var(--accent);
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: grab;
+  touch-action: none;
 }
 
-.viewer-slider-value {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
+.sheet-grip:active {
+  cursor: grabbing;
 }
 
-.viewer-actions {
+.sheet-grip-bar {
+  display: block;
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  /* The design's rgba(255,255,255,.42); collapsed it needs to read over a
+     photograph, so it brightens slightly when it is the only thing left. */
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.sheet--collapsed .sheet-grip-bar {
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.sheet-body {
+  min-height: 0;
+  padding: 0 16px 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sheet-footer {
+  flex: none;
   display: flex;
   gap: 8px;
+  padding: 14px 16px calc(env(safe-area-inset-bottom) + 20px);
 }
 
-.viewer-actions .viewer-button {
+.sheet-footer:empty {
+  display: none;
+}
+
+/* `.caption` — 11px, caps, .09em, --dimmer, 16 above and 7 below. */
+.sheet-caption {
+  margin: 16px 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.341);
+}
+
+.sheet-caption--first {
+  margin-top: 4px;
+}
+
+/* `.note` — 11px, --dimmer, centred. */
+.sheet-note {
+  margin: 7px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.341);
+  text-align: center;
+}
+
+.sheet-note--warn {
+  color: #e8b454;
+}
+
+/* An author `display` would beat the UA's `[hidden]` rule, which is a note that
+   is supposed to appear only after an action. */
+.sheet-note[hidden] {
+  display: none;
+}
+
+/* A fact: a title and a subtitle, no border and no pressed state, quieter ink. */
+.sheet-reading {
+  margin: 0 0 8px;
+}
+
+.sheet-reading-title {
+  font-size: 14px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.549);
+}
+
+.sheet-reading-sub {
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.341);
+}
+
+/* `.opt` / `.btn.ghost` — the plate a tappable row wears. */
+.sheet-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 49px;
+  margin: 0 0 8px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 11px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sheet-action:hover:not(:disabled),
+.sheet-action:focus-visible {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.sheet-action:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.085);
+}
+
+.sheet-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sheet-action-text {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sheet-action-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sheet-action-sub {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.549);
+}
+
+.sheet-action-chevron {
+  flex: none;
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.549);
+}
+
+/* A switch row: the label leads, the control trails, and the row owns the tap. */
+.sheet-switch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 11px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sheet-switch:hover,
+.sheet-switch:focus-visible {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.sheet-switch-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sheet-switch-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sheet-switch-sub {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.549);
+}
+
+.sheet-switch-track {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.141);
+  transition: background-color 140ms ease;
+}
+
+.sheet-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.549);
+  transition: transform 140ms ease, background-color 140ms ease;
+}
+
+.sheet-switch.is-on .sheet-switch-track {
+  background: rgba(127, 209, 193, 0.6);
+}
+
+.sheet-switch.is-on .sheet-switch-thumb {
+  transform: translateX(18px);
+  background: #7fd1c1;
+}
+
+/* `.btn` — a filled white plate, or the transparent ghost. */
+.sheet-btn {
+  flex: 1;
+  min-height: 49px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.102);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sheet-btn--ghost {
+  background: transparent;
+}
+
+.sheet-btn--primary {
+  background: #fff;
+  border-color: transparent;
+  color: #08110f;
+}
+
+.sheet-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sheet-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sheet-btn--primary:hover {
+  background: #e2e2e2;
+}
+
+/* ------------------------------------------------------ the slider (one line) */
+/*
+ * `BasreliefSlider`'s geometry: a 66px name column so every track starts at the
+ * same x, a 34px bar with the value printed ON the accent fill, and a −/＋ pair.
+ * A fill, not a thumb, and the fill is clipped by the track rather than given its
+ * own rounded right end — that round cap is the one part of a bar the eye reads
+ * as a thumb.
+ */
+
+.bslider {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+}
+
+.bslider-label {
+  flex: none;
+  /* The app's column is 66dp, which is where "Brightness" fits in Roboto at
+     13sp. This page's system font is wider at the same size and "Brightness"
+     clips, so the fixed column is 72px — the invariant is that every track
+     starts at the same x, not the number itself. */
+  width: 72px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.549);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bslider-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.102);
+  overflow: hidden;
+  outline: none;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.bslider-track:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(127, 209, 193, 0.8);
+}
+
+.bslider-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-radius: 9px 0 0 9px;
+  background: rgba(127, 209, 193, 0.85);
+}
+
+.bslider-value {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.bslider-value.is-on-fill {
+  color: #08110f;
+}
+
+.bslider-nudges {
+  flex: none;
+  display: flex;
+  gap: 5px;
+}
+
+.bslider-nudge {
+  width: 28px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.102);
+  color: #fff;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bslider-nudge:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.bslider-nudge:active {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .viewer-hint {
   text-align: center;
   font-size: 11.5px;
   color: var(--muted);
-}
-
-/* The lens line, and the cost note for a dense cloud: facts, not controls. */
-.viewer-note {
-  text-align: center;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-
-.viewer-note--warn {
-  color: #c9b78f;
 }
 
 .viewer-hint--floating {
