@@ -5,6 +5,9 @@
  * `android/core/.../depth/DepthPng.java` (Java) and
  * `reference/webgl-port/src/png-depth.js` (JavaScript). All three are tested
  * against the same golden bytes; this one is tested by `web/src/deph.test.ts`.
+ * The WRITER lives in `web/src/pack.ts` and is held to the same fixture's `pack`
+ * block, so the chunk this reader accepts and the chunk that writer emits are one
+ * format rather than two that happen to agree today.
  *
  * What it keeps from the reference port, deliberately:
  *
@@ -84,7 +87,8 @@ function asBytes(input: ArrayBuffer | Uint8Array): Uint8Array {
   return input instanceof Uint8Array ? input : new Uint8Array(input);
 }
 
-function isPngSignature(bytes: Uint8Array, at = 0): boolean {
+/** The 8-byte PNG signature, optionally at an offset (a whole-PNG payload). */
+export function isPngSignature(bytes: Uint8Array, at = 0): boolean {
   if (bytes.length - at < PNG_SIG.length) return false;
   for (let i = 0; i < PNG_SIG.length; i++) {
     if (bytes[at + i] !== PNG_SIG[i]) return false;
@@ -92,20 +96,36 @@ function isPngSignature(bytes: Uint8Array, at = 0): boolean {
   return true;
 }
 
-/**
- * `dePH` / `dEPt`, case-insensitively over four ASCII bytes. Both spellings are
- * ordinary ancillary chunks; the shared suffix is `dep` + `h` or `t`.
- */
-function isDepthKey(bytes: Uint8Array, at: number): boolean {
-  const a = bytes[at] | 0x20;
-  const b = bytes[at + 1] | 0x20;
-  const c = bytes[at + 2] | 0x20;
-  const d = bytes[at + 3] | 0x20;
-  return a === 0x64 && b === 0x65 && c === 0x70 && (d === 0x68 || d === 0x74);
-}
-
 function chunkType(bytes: Uint8Array, at: number): string {
   return String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+}
+
+/** ASCII-only lowercasing: `0x41..0x5a`, and nothing a Unicode table can widen. */
+function lowerAscii(code: number): number {
+  return code >= 0x41 && code <= 0x5a ? code | 0x20 : code;
+}
+
+/**
+ * `dePH` / `dEPt`, case-insensitively over the four ASCII bytes. Both spellings
+ * are ordinary ancillary chunks; the shared suffix is `dep` + `h` or `t`.
+ *
+ * Exported because the writer (`web/src/pack.ts`) must recognise the chunk it is
+ * replacing with exactly the rule the reader accepts. Two copies of "which keys
+ * count" is how a file ends up carrying two depth chunks, the writer's and an
+ * old one, with the first-found rule deciding which one a reader sees.
+ */
+export function isDepthChunkKey(type: string): boolean {
+  if (type.length !== 4) return false;
+  return (
+    lowerAscii(type.charCodeAt(0)) === 0x64 && // d
+    lowerAscii(type.charCodeAt(1)) === 0x65 && // e
+    lowerAscii(type.charCodeAt(2)) === 0x70 && // p
+    (lowerAscii(type.charCodeAt(3)) === 0x68 || lowerAscii(type.charCodeAt(3)) === 0x74)
+  ); // h / t
+}
+
+function isDepthKey(bytes: Uint8Array, at: number): boolean {
+  return isDepthChunkKey(chunkType(bytes, at));
 }
 
 function u32(view: DataView, at: number): number {

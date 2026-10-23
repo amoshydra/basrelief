@@ -20,7 +20,7 @@ can never fail.
 | contract | implementations | fixture | tested by |
 |---|---|---|---|
 | the tag rule | node `basrelief_depth/contract.py` (creates the filenames) + app `ComfyWorkflow.streamTag` (derives them) | `tag/cases.json` | `TagContractTest` (Java) · `test_contract.py` (Python) |
-| the `dePH`/`dEPt` PNG chunk | app `:core/depth/DepthPng.java` + reference port `src/png-depth.js` + gallery `web/src/deph.ts` | `deph/*.png` + `deph/cases.json` | `DepthPngContractTest` (Java) · `png-depth.test.mjs` (Node) · `web/src/deph.test.ts` (TypeScript) |
+| the `dePH`/`dEPt` PNG chunk | app `:core/depth/DepthPng.java` + reference port `src/png-depth.js` + gallery `web/src/deph.ts` (readers) + gallery `web/src/pack.ts` (the writer) | `deph/*.png` + `deph/cases.json` (including its `pack` block) | `DepthPngContractTest` (Java) · `png-depth.test.mjs` (Node) · `web/src/deph.test.ts` and `web/src/pack.test.ts` (TypeScript) |
 | the splat sidecar | node writes it (`contract.py::splat_sidecar`) + app reads it (`:core/render/SplatSidecar.java`) + gallery reads it (`web/src/splat.ts`) | `sidecar/*.json` | `SidecarContractTest` (Java) · `test_contract.py` (Python) · `web/src/splat.test.ts` (TypeScript) |
 | the `.splat` 32-byte record | app `:core/splat/SplatCloud.java` + gallery `web/src/splat.ts` | `splat/records.bin` + `splat/cases.json` | `SplatRecordContractTest` (Java) · `web/src/splat.test.ts` (TypeScript) |
 
@@ -112,6 +112,55 @@ dimensions. The gallery needs both dimension pairs to refuse a depth map that is
 not the photo's size (`whole-png.png` is 3×2 under an 8×6 photo, and the app
 layer refuses to stretch it). It never re-encodes the payload: raw grey stays
 raw grey, and a whole-PNG payload is passed through byte-for-byte.
+
+### The writer, and the `pack` block
+
+`web/src/pack.ts` is the first **writer** of this format and therefore the
+format's second implementation: a colour image plus a depth map become one PNG.
+It shares no code with the three readers and is held to the same bytes instead.
+`cases.json`'s `pack` block names the input (`pack-colour.png`), the output
+(`pack-raw.png`), the output's SHA-256, and the depth chunk's exact bytes —
+length, type, data and **CRC** — as hex.
+
+- **A PNG input is never re-encoded.** The output is the input's own bytes with
+  one ancillary chunk inserted; every other byte is copied. That is possible
+  because the page has the dropped file's bytes, where the Android app's
+  `DepthPngPacker` takes a `Bitmap` and always re-encodes. Only a non-PNG (a
+  JPEG) goes through a canvas, and the browser half says `reencoded` so the UI
+  can say the colour is no longer the file the user dropped.
+- **The chunk goes immediately before the first `IDAT`, after `IHDR`.** In front
+  of `IHDR` a raw payload claims no dimensions (the reader refuses it — see
+  `raw-before-ihdr.png`); after `IDAT` it is legal and missed by readers that
+  stop walking at the image data. A file that already carries a depth chunk gets
+  it **replaced**, not duplicated, so "which chunk wins" is never a reader's walk
+  order.
+- **The CRC is CRC-32 over the type and the data, big-endian, and the fixture is
+  the only independent check of it.** This page's reader walks by length and
+  never validates a CRC, so a wrong one round-trips perfectly here and is
+  silently skipped by a strict reader (libpng drops the chunk with a warning).
+  `pack.test.ts` also recomputes this payload's CRC with `node:zlib`'s `crc32`.
+
+**What a wrong answer looks like:** a wrong CRC is depth on one machine and none
+on another; a chunk after `IDAT` is the same failure for a different reader; a
+re-encoded colour is a slightly softer picture nobody can compare; a payload of
+the wrong length is a file the reader refuses after the writer claimed success —
+which is why the writer refuses a depth map whose dimensions or byte count
+disagree with the colour before it writes anything.
+
+The round trip is not through one reader. `pack.test.ts` packs the fixture's
+colour and depth, asserts the output is byte-identical to `pack-raw.png`, reads
+that file back with `web/src/deph.ts` (payload digest and both dimension pairs),
+and reads it a second time with `reference/webgl-port/src/png-depth.js`, loaded
+from its real source in Node — decoding the PNG that port re-encodes to compare
+the depth **pixels**, not merely "some bytes came back". A whole-PNG payload is
+round-tripped too, and asserted byte-for-byte by both readers: the writer passes
+it through rather than re-encoding it. A writer only its own reader accepts would
+agree with itself and prove nothing.
+
+`pack-raw.png` is also an ordinary `ok` case in the table, so all three readers
+walk the writer's output: `DepthPngContractTest` passing on it is the Java half
+of the round trip, and the writer's byte-identity with that fixture is what makes
+the guarantee transitive rather than a claim about similar files.
 
 ## The `.splat` record
 
@@ -212,9 +261,10 @@ test framework, no install beyond the app's own dependencies):
 cd web && pnpm test
 ```
 
-That one command runs three files: `src/deph.test.ts` (the packed PNG),
-`src/media.test.ts` (the media vocabulary) and `src/splat.test.ts` (the record, the
-camera, the lens and the sort).
+That one command runs four files: `src/deph.test.ts` (the packed PNG),
+`src/pack.test.ts` (the writer, its fixture and the round trip through the
+reference port), `src/media.test.ts` (the media vocabulary) and
+`src/splat.test.ts` (the record, the camera, the lens and the sort).
 
 CI runs all four: the JS check and the TypeScript check (in the `web-app` job),
 the Java check inside the `android` job's `test` step, and the Python one in its

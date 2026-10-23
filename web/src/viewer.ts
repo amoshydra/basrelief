@@ -7,6 +7,7 @@ import {
   type MediaState,
 } from './media.ts';
 import { createCloudView, type CloudView } from './cloud.ts';
+import { colourPngBytes, packPng, packedFileName } from './pack.ts';
 import { DEFAULT_DEPTH, DEFAULT_MOTION, createReliefView, type ReliefView } from './relief.ts';
 import { NO_LENS_FOVY_DEG, sourceFovy } from './splat.ts';
 import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
@@ -194,6 +195,58 @@ export function openViewer(item: OpenableItem): void {
       tilt?.calibrate();
     });
 
+    /**
+     * Save packed PNG: the one action on this page that writes a file. A relief
+     * already carries its depth, so today this re-packs it: same colour bytes,
+     * same depth, one chunk, in the slot every reader walks to. The writer exists
+     * for the next task — generating a depth map for a photo — which is why it
+     * carries a re-encode path this button cannot reach yet.
+     *
+     * The re-encode sentence is unreachable from here as long as a relief must
+     * have a `dePH`/`dEPt` chunk and only a PNG can carry one. It is written now
+     * so that path cannot arrive with the colour silently re-encoded.
+     */
+    const packNote = document.createElement('div');
+    packNote.className = 'viewer-note';
+    packNote.hidden = true;
+
+    const save = button('Save packed PNG', async () => {
+      save.disabled = true;
+      save.textContent = 'Packing…';
+      packNote.classList.remove('viewer-note--warn');
+      try {
+        const colour = await colourPngBytes(item.file);
+        // The viewer can be closed while a large image decodes; downloading a file
+        // nobody is waiting for is worse than doing nothing.
+        if (closed) return;
+        const packed = packPng(colour.bytes, depth);
+        if (!packed.ok) {
+          packNote.hidden = false;
+          packNote.classList.add('viewer-note--warn');
+          packNote.textContent = `Could not pack this photo: ${packed.detail}`;
+          return;
+        }
+        const filename = packedFileName(item.file.name);
+        downloadPng(packed.png, filename);
+        save.textContent = 'Saved packed PNG';
+        packNote.hidden = false;
+        packNote.textContent = colour.reencoded
+          ? 'The colour was re-encoded to PNG because the dropped file was not a PNG — ' +
+            'the saved picture is a canvas render of it, not the original bytes.'
+          : `Saved as ${filename}: the original colour bytes with the depth map inserted` +
+            `${packed.replaced > 0 ? ', replacing the depth chunk it already had' : ''}.`;
+      } catch (err) {
+        packNote.hidden = false;
+        packNote.classList.add('viewer-note--warn');
+        packNote.textContent =
+          `Could not pack this photo: ` +
+          `${err instanceof Error ? err.message : 'the file could not be read'}`;
+      } finally {
+        save.disabled = false;
+        if (save.textContent === 'Packing…') save.textContent = 'Save packed PNG';
+      }
+    });
+
     const hint = document.createElement('div');
     hint.className = 'viewer-hint';
     hint.textContent = 'drag on the photo, or use device tilt';
@@ -229,9 +282,9 @@ export function openViewer(item: OpenableItem): void {
 
     const actions = document.createElement('div');
     actions.className = 'viewer-actions';
-    actions.append(reset, tiltButton);
+    actions.append(reset, tiltButton, save);
 
-    dock.append(depthControl.element, motionControl.element, actions, hint);
+    dock.append(depthControl.element, motionControl.element, actions, packNote, hint);
     setDock(dock);
 
     // Pointer drag drives the same tilt target the gyro does. A drag that ends
@@ -287,7 +340,9 @@ export function openViewer(item: OpenableItem): void {
 
     const note = document.createElement('div');
     note.className = 'viewer-hint viewer-hint--floating';
-    note.textContent = 'No embedded depth — shown flat.';
+    // The reason a Save action is not here, stated where its absence is: a
+    // packed PNG is a colour image PLUS a depth map, and there is no map.
+    note.textContent = 'No embedded depth — shown flat, nothing to pack.';
     stage.append(note);
   }
 
@@ -397,11 +452,17 @@ export function openViewer(item: OpenableItem): void {
     lens.className = 'viewer-note';
     lens.textContent = lensLine(item.lens, item.lensFrom);
 
+    // A cloud is not a PNG, so there is nothing for the packer to insert a chunk
+    // into. Said rather than left as a disabled button nobody can explain.
+    const packNote = document.createElement('div');
+    packNote.className = 'viewer-note';
+    packNote.textContent = 'Nothing to save as a packed PNG — a .splat cloud is not a PNG.';
+
     const actions = document.createElement('div');
     actions.className = 'viewer-actions';
     actions.append(reset, tiltButton);
 
-    dock.append(motionControl.element, actions, lens);
+    dock.append(motionControl.element, actions, lens, packNote);
     if (splats >= 750_000) {
       const cost = document.createElement('div');
       cost.className = 'viewer-note viewer-note--warn';
@@ -547,4 +608,26 @@ function button(text: string, onClick: () => void | Promise<void>): HTMLButtonEl
   element.textContent = text;
   element.addEventListener('click', () => void onClick());
   return element;
+}
+
+/**
+ * Hand the packed bytes to the browser as a download.
+ *
+ * The object URL is revoked late rather than immediately: a revoke in the same
+ * task as the click is a download some browsers cancel, and the symptom is a
+ * button that appears to work and a file that never arrives.
+ */
+function downloadPng(bytes: Uint8Array, filename: string): void {
+  // `new Uint8Array(bytes)` copies into an ArrayBuffer-backed view, which is what
+  // `Blob` accepts; the writer's own array is typed over `ArrayBufferLike`.
+  const blob = new Blob([new Uint8Array(bytes)], { type: 'image/png' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

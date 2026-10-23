@@ -153,10 +153,49 @@ gallery.
   `contract/deph/` by `web/src/deph.test.ts`. CI's `web-app` job runs `pnpm test`,
   `pnpm typecheck` and `pnpm build`; the fixture tests are plain Node type
   stripping, so they need no browser.
-- **What it does not do yet:** export/packing (the Android app packs), accounts, a
-  server, and persistence. It does not talk to the phone, and it does not share
-  code with the reference port. On the cloud it deliberately has no Origin, Pan,
-  Zoom, Depth multiplier or look knobs — see the cloud bullet above.
+- **The gallery also WRITES a packed PNG, and the writer is the format's second
+  implementation.** `web/src/pack.ts` takes the colour image and a depth map and
+  inserts one `dePH` chunk; `web/src/pack.test.ts` holds it to the `pack` block in
+  `contract/deph/cases.json`, which pins the output's SHA-256 and the chunk's
+  exact bytes — **length, type, data and CRC** — as hex. Three rules, each with a
+  failure that looks like success:
+  - **A PNG input is never re-encoded.** The output is the input's own bytes with
+    one chunk inserted, so the colour is exactly what the user sent; the Android
+    app's `DepthPngPacker` takes a `Bitmap` and always re-encodes, but the page has
+    the original bytes and throwing them away would be a choice. Only a non-PNG (a
+    JPEG) goes through a canvas, and `colourPngBytes` reports `reencoded` so the
+    viewer can say the saved picture is a render, not the file. That branch is
+    unreachable today (a relief must carry a chunk and only a PNG can) and is the
+    prerequisite for the next task, Generate depth.
+  - **The chunk goes immediately before the first `IDAT`, after `IHDR`.** Before
+    `IHDR`, a raw payload claims no dimensions and the reader refuses it; after
+    `IDAT` it is legal and missed by readers that stop at the image data. A file
+    that already carries a depth chunk gets it **replaced**, not duplicated, so
+    "which chunk wins" is never a reader's walk order.
+  - **The CRC is CRC-32 over the chunk's type and data, big-endian, and the fixture
+    is the only independent check.** This page's reader walks by length and never
+    validates one, so a wrong CRC round-trips here perfectly and is silently
+    dropped by a strict reader (libpng warns and skips). `pack.test.ts` also
+    recomputes the payload's CRC with `node:zlib`'s `crc32`. **What a wrong answer
+    looks like:** that skip (depth on one machine, none on another), a chunk after
+    `IDAT` for a different reader, a softer colour from a re-encode, or a payload
+    of the wrong length — which the reader refuses one layer up, so the writer
+    refuses a mismatched depth map before writing anything.
+  - **The round trip is through two readers, not one.** The test packs the fixture,
+    asserts byte-equality with `contract/deph/pack-raw.png`, reads it with
+    `web/src/deph.ts`, and reads it again with
+    `reference/webgl-port/src/png-depth.js` loaded from its real source in Node —
+    decoding that port's re-encoded PNG to compare depth **pixels**, and
+    round-tripping a whole-PNG payload byte-for-byte. A writer only its own reader
+    accepts agrees with itself and proves nothing.
+  - **The UI is one action on a relief, and the reasons are sentences rather than a
+    disabled button**: **Save packed PNG** downloads `<name>.packed.png`; a photo
+    says it has no depth to pack; a cloud says a `.splat` is not a PNG. **Generate
+    depth is deliberately not here** — it is a client of the ComfyUI node.
+- **What it does not do yet:** generating a depth map (the ComfyUI node's job),
+  accounts, a server, and persistence. It does not talk to the phone, and it does
+  not share code with the reference port. On the cloud it deliberately has no
+  Origin, Pan, Zoom, Depth multiplier or look knobs — see the cloud bullet above.
 
 ## Shared contracts (`contract/`)
 
@@ -171,7 +210,7 @@ fixture still holds its four hard records).
 | contract | implementations | fixture |
 |---|---|---|
 | the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` | `contract/tag/cases.json` |
-| the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` | `contract/deph/` |
+| the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` (readers) + `web/src/pack.ts` (the writer) | `contract/deph/` (its `pack` block pins the writer's output and chunk) |
 | the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` + `web/src/splat.ts` | `contract/sidecar/` |
 | the `.splat` record | `android/core/src/main/java/com/amoshydra/basrelief/core/splat/SplatCloud.java` + `web/src/splat.ts` | `contract/splat/` |
 

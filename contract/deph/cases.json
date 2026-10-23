@@ -10,6 +10,20 @@
     "png": "a complete PNG file; returned byte-for-byte, its own IHDR naming its dimensions",
     "raw": "exactly width*height 8-bit grey bytes, dimensions taken from the OUTER IHDR, which must therefore precede the depth chunk"
   },
+  "pack": {
+    "why": "the writer (web/src/pack.ts) is a SECOND implementation of this format. The output file and the chunk's exact bytes (length, type, data and CRC) are pinned here because the readers walk by length and none of them validates a CRC: a wrong CRC would be silently skipped by a strict reader and accepted by a lenient one, which is depth on one machine and none on another. The colour is a gradient and the depth is a different gradient so a re-encoded colour or a swapped payload cannot match by accident.",
+    "colour": "pack-colour.png",
+    "colourSha256": "cbd0a40d8475bc28feb4e745e831534c9f3d32c6fc4991a0302998693e24c49b",
+    "output": "pack-raw.png",
+    "outputSha256": "98d8d9d2ef6de09f7e09b1d1840cb65e956ce4e9a94efe7fecf128f49c567e5f",
+    "chunkKey": "dePH",
+    "placement": "before the first IDAT, after IHDR",
+    "chunkBytes": 60,
+    "chunkHex": "000000306465504890959a9fa4a9aeb3b8bdc2c7ccd1d6dbe0e5eaeff4f9fe03080d12171c21262b30353a3f44494e53585d62676c71767bb6c1ac7a",
+    "payloadBytes": 48,
+    "payloadSha256": "694ade6af501da11c83b20e0d6420376cd893157e35c621cb67a5b19f3430359",
+    "rule": "a PNG input is never re-encoded: the output is the input byte-for-byte with one chunk inserted, and any existing dePH/dEPt chunk replaced rather than duplicated"
+  },
   "status": {
     "ok": "a depth map was recovered (form says which kind)",
     "not-png": "the input is not a PNG file at all",
@@ -94,6 +108,21 @@
       "file": "truncated-chunk.png",
       "status": "no-depth-chunk",
       "why": "a chunk that runs past the end of the file is malformed, so the walk stops; it must not throw, and it must not read past the buffer"
+    },
+    {
+      "file": "pack-colour.png",
+      "status": "no-depth-chunk",
+      "why": "the writer's input: a valid colour PNG with no depth chunk. Packing it must insert exactly one chunk and change no other byte"
+    },
+    {
+      "file": "pack-raw.png",
+      "status": "ok",
+      "form": "raw",
+      "width": 8,
+      "height": 6,
+      "payloadBytes": 48,
+      "payloadSha256": "694ade6af501da11c83b20e0d6420376cd893157e35c621cb67a5b19f3430359",
+      "why": "the writer's output: raw grey depth under dePH, inserted before the first IDAT and after IHDR, with the colour bytes untouched — the `pack` block above pins this file and the chunk byte for byte"
     }
   ]
 }

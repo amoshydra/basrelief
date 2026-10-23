@@ -7,7 +7,8 @@
  * The same golden bytes are read by `DepthPngContractTest` (Java, inside the
  * Android gate) and `contract/deph/png-depth.test.mjs` (the reference port).
  * This reader has no dependencies and touches no browser API, so the test needs
- * no install and no shim.
+ * no install and no shim. The writer's half of the directory is
+ * `web/src/pack.test.ts`.
  *
  * The table is the contract, so the test asserts its shape as well as its
  * answers: every case needs a stated `why`, every one is walked, and all four

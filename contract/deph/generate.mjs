@@ -194,6 +194,48 @@ emit('no-chunk.png', withChunk(colour8x6(), 'tEXt', Buffer.from('comment\0basrel
   });
 }
 
+/**
+ * The PACK expectation: the writer's input, the chunk it must produce, and the
+ * exact output file.
+ *
+ * The colour is a gradient and the depth is a different gradient, so an
+ * implementation that re-encodes the colour, mixes up the payloads or writes the
+ * chunk somewhere else cannot land on the pinned digest by accident. The chunk's
+ * bytes (length, type, data AND CRC) are pinned as hex because this page's reader
+ * does not validate CRCs — it walks by length — so the CRC's correctness cannot
+ * be seen by reading the output back. The independent implementation here is the
+ * only thing that can say the CRC is right.
+ *
+ * Placement: before the first IDAT. In front of IHDR a raw payload claims no
+ * dimensions, and after IDAT a reader that stops at the image data misses it.
+ */
+const packWidth = 8;
+const packHeight = 6;
+const packColourPixels = Buffer.from(
+  Array.from({ length: packWidth * packHeight }, (_, i) => (0x30 + i * 7) & 0xff),
+);
+const packDepth = Buffer.from(
+  Array.from({ length: packWidth * packHeight }, (_, i) => (0x90 + i * 5) & 0xff),
+);
+const packColour = grayPng(packWidth, packHeight, packColourPixels);
+const packChunk = chunk('dePH', packDepth);
+const packed = withChunk(packColour, 'dePH', packDepth, 'IDAT');
+
+emit('pack-colour.png', packColour, {
+  status: 'no-depth-chunk',
+  why: 'the writer\'s input: a valid colour PNG with no depth chunk. Packing it must insert exactly one chunk and change no other byte',
+});
+
+emit('pack-raw.png', packed, {
+  status: 'ok',
+  form: 'raw',
+  width: packWidth,
+  height: packHeight,
+  payloadBytes: packDepth.length,
+  payloadSha256: sha(packDepth),
+  why: 'the writer\'s output: raw grey depth under dePH, inserted before the first IDAT and after IHDR, with the colour bytes untouched — the `pack` block above pins this file and the chunk byte for byte',
+});
+
 const doc = {
   chunkKeys: {
     accepted: ['dePH', 'dEPt'],
@@ -202,6 +244,20 @@ const doc = {
   payloadForms: {
     png: 'a complete PNG file; returned byte-for-byte, its own IHDR naming its dimensions',
     raw: 'exactly width*height 8-bit grey bytes, dimensions taken from the OUTER IHDR, which must therefore precede the depth chunk',
+  },
+  pack: {
+    why: 'the writer (web/src/pack.ts) is a SECOND implementation of this format. The output file and the chunk\'s exact bytes (length, type, data and CRC) are pinned here because the readers walk by length and none of them validates a CRC: a wrong CRC would be silently skipped by a strict reader and accepted by a lenient one, which is depth on one machine and none on another. The colour is a gradient and the depth is a different gradient so a re-encoded colour or a swapped payload cannot match by accident.',
+    colour: 'pack-colour.png',
+    colourSha256: sha(packColour),
+    output: 'pack-raw.png',
+    outputSha256: sha(packed),
+    chunkKey: 'dePH',
+    placement: 'before the first IDAT, after IHDR',
+    chunkBytes: packChunk.length,
+    chunkHex: packChunk.toString('hex'),
+    payloadBytes: packDepth.length,
+    payloadSha256: sha(packDepth),
+    rule: 'a PNG input is never re-encoded: the output is the input byte-for-byte with one chunk inserted, and any existing dePH/dEPt chunk replaced rather than duplicated',
   },
   status: {
     ok: 'a depth map was recovered (form says which kind)',

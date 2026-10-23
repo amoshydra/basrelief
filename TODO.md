@@ -72,8 +72,9 @@ need storing separately.
    without the user asking in their own words.
 3. **Portable packed PNG (export/import) + a static web viewer** — the only distribution the
    platform permits, since no app can rebind its own wallpaper. **The viewer half
-   has started in `web/`** (gallery, `dePH` reader, relief; `.splat` clouds are
-   listed and counted, not drawn). Export/import from the Android app is still open.
+   has started in `web/`** (gallery, `dePH` reader and writer — a relief can be
+   saved back out as a packed PNG — relief, and `.splat` clouds drawn).
+   Export/import from the Android app is still open.
 4. **Depth polarity invert per photo** — one tap for inside-out maps from monocular models.
 5. **Diorama** — subject over a treated background.
 6. **ComfyUI workflow templates** — the run machine is already generic over an image output.

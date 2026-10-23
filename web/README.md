@@ -2,9 +2,9 @@
 
 A static gallery and viewer for the files the rest of this repository makes. Drop
 a packed depth PNG on the page and it becomes a relief you can move; drop a
-`.splat` cloud and it becomes a point cloud you can move. **Nothing is uploaded,
-stored or remembered** — the `File` objects in this tab are the gallery, so a
-refresh empties it.
+`.splat` cloud and it becomes a point cloud you can move; a relief can be saved
+back out as a packed PNG. **Nothing is uploaded, stored or remembered** — the
+`File` objects in this tab are the gallery, so a refresh empties it.
 
 The product shape is *"someone sends you a PNG and you drop it on a page."* There
 is no account, no server and no cloud library, which is also why this exists: no
@@ -63,6 +63,43 @@ payload placed *before* `IHDR` (so it claims no dimensions), and a non-PNG are a
 refused. The fixtures and their stated failure modes live in `contract/deph/`;
 this reader is the contract's third implementation, beside
 `DepthPng.java` and `reference/webgl-port/src/png-depth.js`.
+
+### Writing one
+
+`src/pack.ts` is the format's writer, and the gallery's **Save packed PNG**
+action uses it. It takes the colour image and the depth map it already read and
+produces one PNG:
+
+- **a PNG input is never re-encoded** — the output is the dropped file's own
+  bytes with one `dePH` chunk inserted, so the colour is exactly what was sent;
+- the chunk goes **immediately before the first `IDAT`, after `IHDR`** — a raw
+  payload in front of `IHDR` claims no dimensions, and a chunk after `IDAT` is
+  missed by readers that stop walking at the image data;
+- a file that already has a depth chunk gets it **replaced**, so there is never
+  more than one;
+- the **CRC** is CRC-32 over the chunk's type and data. This page's reader never
+  checks one, which is why `contract/deph/cases.json`'s `pack` block pins the
+  chunk's exact bytes and the output's SHA-256, and `src/pack.test.ts` also
+  recomputes the CRC with `node:zlib`.
+
+A non-PNG colour (a JPEG) can only be packed after a canvas re-encode, because a
+`dePH` chunk needs a PNG to live in. That path is written and the viewer says
+when it was taken ("the colour was re-encoded…") — today it is unreachable,
+since a relief must carry a chunk and only a PNG can. It is what the Generate
+action will use on a JPEG photo.
+
+**What a wrong answer looks like:** a bad CRC is depth on one machine and none on
+another (strict readers drop the chunk); a chunk after `IDAT` is the same for a
+reader that stops early; a re-encoded colour is a softer picture nobody can
+compare side by side; and a depth payload of the wrong length is a file the
+writer claimed to make and the reader refuses — so the writer refuses a
+mismatched depth map before writing anything.
+
+The round trip is through two readers: `src/pack.test.ts` packs the fixture,
+asserts the result is byte-identical to `contract/deph/pack-raw.png`, reads it
+back with `src/deph.ts`, and reads it again with
+`reference/webgl-port/src/png-depth.js` (imported from its real source in Node),
+comparing the depth pixels the reference port re-encodes.
 
 A `.splat` cloud is a sequence of 32-byte records:
 
@@ -126,7 +163,7 @@ pnpm install
 pnpm dev        # HTTPS on :5173
 pnpm build      # typecheck + static bundle in web/dist
 pnpm preview    # serve the built bundle
-pnpm test       # contract/deph, media states and contract/splat, under plain Node
+pnpm test       # contract/deph (reader and writer), media states and contract/splat, under plain Node
 pnpm typecheck  # tsc --noEmit
 ```
 
@@ -151,6 +188,10 @@ no server-side requirement.
 - **Depth** sets how far the relief is displaced; **Motion** sets how far the eye
   swings (for a cloud, Motion is the same number the app calls Motion). **Reset
   view** returns both, the tilt and the neutral pose.
+- **Save packed PNG** (a relief only) writes the colour and the depth map it read
+  into one PNG and downloads it as `<name>.packed.png`. A photo says why there is
+  nothing to pack, and a cloud says a `.splat` is not a PNG — neither leaves a
+  dead button.
 - **← Gallery** or **Escape** closes the viewer.
 
 The picture fills the viewport (cover, with the reference port's 8 % crop), as
@@ -190,8 +231,9 @@ cloud renderer* above.
 
 ## What it does not do yet
 
-- **Export / packing** — the Android app packs an image and depth into a PNG;
-  this page only reads them.
+- **Generate depth** — the next task, and a client of the ComfyUI node rather than
+  anything in the browser. The writer above is its prerequisite: a generated depth
+  map plus a colour image is exactly what it packs.
 - **Zoom, pan, choosing an orbit centre, and the Depth multiplier** — the cloud is
   drawn through its own camera at the node's own depth; the relief has the same
   omissions. Both are the app's features and neither has a control here.
@@ -213,12 +255,14 @@ web/
   src/gallery.ts      the cards, thumbnails, counts, sidecars and per-file inspection
   src/media.ts        the one media classifier + formatting (pure, tested)
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
+  src/pack.ts         the dePH writer + the browser colour re-encode (pure half tested)
   src/splat.ts        the .splat record, the cloud camera, the lens, the sort (pure, tested)
   src/cloud.ts        WebGL2 splat renderer (ported projection, integer texels)
   src/viewer.ts       one dispatch point: relief | photo | cloud | message
   src/relief.ts       three.js relief renderer (ported camera model)
   src/tilt.ts         deviceorientation → a smoothed tilt target
   src/deph.test.ts    the dePH fixtures, under plain Node
+  src/pack.test.ts    the writer's fixture, chunk/CRC and both round trips
   src/media.test.ts   the three states, without a browser
   src/splat.test.ts   contract/splat + the camera, lens, sort and floor
 ```
