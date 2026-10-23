@@ -571,6 +571,21 @@ function checkSharedRules() {
         'alphabet is ASCII (contract/tag/cases.json says why)');
   }
 
+  /**
+   * The gallery's copy is the tag rule's third implementation, because the cloud
+   * build derives `basrelief_<tag>.splat` / `.splat.json` without ever having seen
+   * a response — the same filenames the node writes. It is a copy that cannot share
+   * code, so it must read the same fixture the other two do; a copy tested against
+   * its own examples agrees with itself and proves nothing.
+   */
+  const comfyTagTest = readFileSync(join(root, 'web/src/comfy.test.ts'), 'utf8');
+  if (!/join\(contractDir,\s*'tag',\s*'cases\.json'\)/.test(comfyTagTest)) {
+    failures.push(
+      'web/src/comfy.test.ts does not read contract/tag/cases.json — the gallery’s ' +
+        'tag copy (comfy.ts sanitiseTag) is a third implementation and must be held ' +
+        'to the shared bytes');
+  }
+
   const splatImport = readFileSync(
     join(root, 'android/app/src/main/java/com/amoshydra/basrelief/SplatImport.java'), 'utf8');
   if (!splatImport.includes('SplatSidecar.parse(')) {
