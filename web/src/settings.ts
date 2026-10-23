@@ -24,8 +24,9 @@
  * **Pan is in pixels and is deliberately NOT clamped.** Unlike every other
  * value, its bound is the surface's own larger dimension, which this layer
  * cannot know; the app's `SurfaceSettings` documents the bug that a clamp to
- * Origin's fraction range caused (a stored −135 px became −0.5 px). The web has
- * no pan control yet, so this is schema fidelity rather than a rendered value.
+ * Origin's fraction range caused (a stored −135 px became −0.5 px). The viewer
+ * carries Pan as a live row and as a gesture, so its bound is applied where the
+ * surface is: `ReliefRenderer.panBy`'s `-limit..limit`.
  */
 import {
   DEFAULT_LIGHT_AZIMUTH,

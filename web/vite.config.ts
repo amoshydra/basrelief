@@ -1,12 +1,42 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv, type HttpProxy } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 // HTTPS is not decoration here. Browsers expose `deviceorientation` only in a
 // secure context, and `pnpm dev` on localhost is one — but a phone opening the
 // LAN address is not. The self-signed certificate is what lets the gyro be tried
 // on a real device; accept the warning once.
-export default defineConfig({
-  plugins: [basicSsl()],
-  server: { host: true },
-  build: { target: 'es2022' },
+//
+// The `/comfy` proxy is the CORS answer for the path this gallery is actually run
+// through: a browser cannot POST to ComfyUI on another origin unless that server
+// allows it, and the dev server is a same-origin hop. Point it elsewhere with
+// `COMFY_URL=http://host:8188 pnpm dev`. A static build has no proxy, so it needs
+// ComfyUI's own `--enable-cors-header` — the README says so.
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const target = env.COMFY_URL || 'http://127.0.0.1:8188';
+  const proxy = {
+    '/comfy': {
+      target,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/comfy/, ''),
+      // ComfyUI's CSRF check compares the Origin header with the Host it was
+      // reached on, and a proxied request otherwise carries the page's origin
+      // (`http://localhost:5173`) against the proxy target's host — a 403 on
+      // every POST. The dev server is the same-origin hop, so its Origin is not
+      // a claim ComfyUI can check; strip it rather than pretend it matches.
+      configure: (proxyServer: HttpProxy.ProxyServer) => {
+        proxyServer.on('proxyReq', (request) => {
+          request.removeHeader('origin');
+          request.removeHeader('referer');
+        });
+      },
+    },
+  };
+
+  return {
+    plugins: [basicSsl()],
+    server: { host: true, proxy },
+    preview: { host: true, proxy },
+    build: { target: 'es2022' },
+  };
 });

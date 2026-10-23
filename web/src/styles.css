@@ -493,6 +493,34 @@ summary:focus-visible {
   display: block;
 }
 
+/*
+ * The studio's orbit crosshair (`ReliefRenderer.drawOrbitMarker`): a cyan ring
+ * with a white centre point, drawn at the pivot the frame was drawn with. It is
+ * a screen-space overlay rather than a third GL pass, but its position comes from
+ * that frame's own `projPanned * view`, so the marker and the picture cannot name
+ * different pivots.
+ */
+.orbit-marker {
+  position: fixed;
+  z-index: 3;
+  border: 2px solid rgba(51, 204, 255, 0.95);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35) inset;
+  pointer-events: none;
+}
+
+.orbit-marker::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%;
+  background: #fff;
+}
+
 .viewer-bar {
   position: absolute;
   top: 0;
@@ -723,6 +751,132 @@ summary:focus-visible {
   cursor: default;
 }
 
+.sheet-action.is-selected {
+  border-color: rgba(127, 209, 193, 0.7);
+  background: rgba(127, 209, 193, 0.1);
+}
+
+/* The two-option track the Home/Lock and Renderer segments use. */
+.sheet-segment {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin: 0 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.078);
+}
+
+.sheet-segment-btn {
+  flex: 1;
+  height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.549);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.sheet-segment-btn.is-active {
+  background: rgba(255, 255, 255, 0.157);
+  color: #fff;
+}
+
+.sheet-segment-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* The asset row: the selected mode's sentence, then its compact buttons. */
+.sheet-asset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+
+.sheet-asset-state {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.549);
+}
+
+.sheet-asset-btn {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.102);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sheet-asset-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sheet-asset-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* A field on a plate, for the server address. */
+.sheet-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 11px;
+}
+
+.sheet-input-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.341);
+}
+
+.sheet-input {
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.141);
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.sheet-input:focus {
+  border-bottom-color: rgba(127, 209, 193, 0.7);
+}
+
+/* A second sheet over the first: the Generate-depth dialog. */
+.sheet--dialog {
+  z-index: 5;
+}
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  background: rgba(5, 7, 11, 0.45);
+}
+
 .sheet-action-text {
   flex: 1;
   display: flex;
@@ -868,6 +1022,18 @@ summary:focus-visible {
   align-items: center;
   gap: 9px;
   margin-top: 8px;
+}
+
+.bslider.is-disabled {
+  opacity: 0.5;
+}
+
+.bslider.is-disabled .bslider-track {
+  cursor: default;
+}
+
+.bslider.is-disabled .bslider-nudge {
+  cursor: default;
 }
 
 .bslider-label {

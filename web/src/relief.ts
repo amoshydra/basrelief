@@ -1,4 +1,15 @@
 import * as THREE from 'three';
+import {
+  RELIEF_FAR,
+  RELIEF_FOV_DEG,
+  RELIEF_NEAR,
+  heightAt,
+  projectWorld,
+  reliefScreenToOrbit,
+  reliefCamera,
+  type ReliefCamera,
+} from './camera.ts';
+import { CAM_DIST } from './splat.ts';
 import type { DephSuccess } from './deph.ts';
 import {
   DEFAULT_LIGHT_AZIMUTH,
@@ -10,6 +21,7 @@ import {
 import {
   DEPTH_DEFAULT,
   MOTION_DEFAULT,
+  ORIGIN_LIMIT,
   ZOOM_DEFAULT,
   ZOOM_MAX,
   ZOOM_MIN,
@@ -37,10 +49,13 @@ import {
  *
  * What is NOT ported from it:
  *
- *   - the "set an orbit centre by tapping" gesture and pan. The first pass is a
- *     viewer, not an editor; the centre is the image centre and the pointer only
- *     moves the eye. Zoom IS here, because the app's zoom is a scale on the same
- *     plane and therefore a crop of the same camera rather than a second one.
+ *   - the camera and the gestures are NOT its any more: they are the Android
+ *     app's (`AGENTS.md`: the app is the reference). `camera.ts` is
+ *     `CameraModel.frame` and `screenToOrbit` — the turntable about the surface
+ *     under the origin, the fixed rest eye, the pan shift, the zoom crop — and
+ *     the tap, the pan and the crosshair all go through it. The port's
+ *     "centre is the image centre, no pan" view is exactly what the user asked
+ *     to be fixed.
  *   - its frame-rate-dependent smoothing (`lerp 0.08 per frame`), which feels
  *     different at 60/90/120 Hz. This uses the time constant the Android app
  *     already settled on (`TILT_FILTER`'s 0.2 s), applied as an exponential.
@@ -53,11 +68,6 @@ import {
  * is a uniform or a model scale — none of them rebuilds the mesh or the shader.
  */
 
-const FOV = 45;
-const CAM_DIST = 1.2;
-const CROP_MARGIN = 1.08;
-const CAM_RANGE_FRACTION = 0.15;
-const MOTION_GAIN = 3;
 const SEGMENTS = 256;
 const SMOOTHING_TAU = 0.2;
 
@@ -72,6 +82,22 @@ export const DEFAULT_ZOOM = ZOOM_DEFAULT / 100;
 export interface ReliefView {
   setDepth(value: number): void;
   setMotion(value: number): void;
+  /** The Origin row: the orbit centre as a fraction of the picture. */
+  setOrigin(x: number, y: number): void;
+  /** The Pan row, in CSS pixels of the drawing surface; follows the finger. */
+  setPan(x: number, y: number): void;
+  /** Pan Z: the camera distance. 1 is the source camera. */
+  setPanZ(scale: number): void;
+  /** The orbit centre on the glass, in CSS pixels, from the frame last drawn. */
+  pivotPixel(): { x: number; y: number } | null;
+  /** Called after every rendered frame, so the marker follows the drawn picture. */
+  onDraw(callback: () => void): void;
+  /**
+   * A tap on the picture, in NDC: unprojected through the camera as it is (Pan,
+   * zoom and the current pivot height included) to the plane point under the
+   * finger, which becomes the new origin. Null when the tap misses the picture.
+   */
+  tapOrigin(ndcX: number, ndcY: number): { x: number; y: number } | null;
   /**
    * Zoom as a multiplier (25 % is 0.25, 100 % is 1.0, 200 % is 2.0). It scales
    * the plane, exactly as `CameraModel.computeScale` does, which is why it is a
@@ -203,11 +229,13 @@ export async function createReliefView(
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0e14);
 
+  // The pose and the projection are overwritten every frame by `applyCamera`
+  // from `camera.ts`; these are only the constructor's required arguments.
   const camera = new THREE.PerspectiveCamera(
-    FOV,
+    RELIEF_FOV_DEG,
     Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight),
-    0.1,
-    10,
+    RELIEF_NEAR,
+    RELIEF_FAR,
   );
   camera.position.set(0, 0, CAM_DIST);
 
@@ -268,6 +296,16 @@ export async function createReliefView(
   let motion = DEFAULT_MOTION;
   let zoom = DEFAULT_ZOOM;
   let planeAspect = 1;
+  /** The camera state the studio's framing rows own. */
+  let orbitX = 0;
+  let orbitY = 0;
+  let panX = 0;
+  let panY = 0;
+  let camDist = 1;
+  let pivotHeight = 0;
+  /** The frame last handed to three; the marker and a tap read this one. */
+  let latest: ReliefCamera | null = null;
+  let frameListener: (() => void) | null = null;
 
   const signal = options.signal;
   const aborted = () => signal?.aborted === true;
@@ -325,29 +363,80 @@ export async function createReliefView(
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
-  function applyIntensity(): void {
-    // Displacement is a fraction of the plane's height, so the relief keeps its
-    // perceived depth at every zoom and viewport aspect (the port's rule).
-    mesh.scale.z = intensity * mesh.scale.y;
+  /**
+   * The pivot's height is the field's MODEL value under the origin — "orbit the
+   * subject", not the background.
+   *
+   * The blurred field holds 8-bit grey (0..255); the mesh displaces by
+   * `v/255 - 0.5`, and the pivot must be lifted through that SAME mapping or it
+   * marks a point the surface is not at. `heightAt` is the bilinear read.
+   */
+  function resolvePivotHeight(): void {
+    const value = heightAt(field, pixels.width, pixels.height, orbitX, orbitY);
+    pivotHeight = Math.max(-0.5, Math.min(0.5, value / 255 - 0.5));
+  }
+
+  function surfaceWidth(): number {
+    return container.clientWidth || window.innerWidth;
+  }
+
+  function surfaceHeight(): number {
+    return container.clientHeight || window.innerHeight;
+  }
+
+  /**
+   * Hand the framing to `camera.ts` and lay that answer onto three.
+   *
+   * One camera, one source of truth: the eye, up and matrix all come from
+   * `reliefCamera` (`CameraModel.frame`), and three is told the result rather
+   * than deriving its own. The projection is the PANNED one, so Pan moves the
+   * picture at every depth just as the app's clip-space shift does.
+   */
+  function applyCamera(): void {
+    const width = surfaceWidth();
+    const height = surfaceHeight();
+    const surfaceAspect = width / Math.max(1, height);
+
+    const frame = reliefCamera({
+      imageAspect: planeAspect,
+      surfaceAspect,
+      zoom,
+      depth: intensity,
+      pivotHeight,
+      motion,
+      camDist,
+      orbitX,
+      orbitY,
+      panX,
+      panY,
+      tiltX: smoothX,
+      tiltY: smoothY,
+      surfaceWidth: width,
+      surfaceHeight: height,
+    });
+    latest = frame;
+
+    // `mesh.scale.z` is the world depth factor, so a displaced point's world z
+    // is `h * zScale` — the same factor the pivot's height is lifted through.
+    mesh.scale.set(frame.scale * planeAspect, frame.scale, frame.zScale);
+    camera.position.set(frame.eye[0], frame.eye[1], frame.eye[2]);
+    camera.up.set(frame.up[0], frame.up[1], frame.up[2]);
+    camera.lookAt(
+      frame.eye[0] + frame.forward[0],
+      frame.eye[1] + frame.forward[1],
+      frame.eye[2] + frame.forward[2],
+    );
+    camera.updateMatrixWorld(true);
+    camera.projectionMatrix.fromArray(frame.projPanned);
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   }
 
   function fit(): void {
-    const width = container.clientWidth || window.innerWidth;
-    const height = container.clientHeight || window.innerHeight;
+    const width = surfaceWidth();
+    const height = surfaceHeight();
     renderer.setSize(width, height, false);
-
-    const viewAspect = width / height;
-    camera.aspect = viewAspect;
-    camera.updateProjectionMatrix();
-
-    const visibleHeight = 2 * CAM_DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
-    const visibleWidth = visibleHeight * viewAspect;
-    // Zoom scales the PLANE, which is `CameraModel.computeScale`'s own rule:
-    // the camera does not move, so the picture is a crop of the same photograph
-    // and the parallax under a tilt keeps its proportions, only magnified.
-    const scale = Math.max(visibleHeight, visibleWidth / planeAspect) * CROP_MARGIN * zoom;
-    mesh.scale.set(scale * planeAspect, scale, 1);
-    applyIntensity();
+    camera.aspect = width / Math.max(1, height);
+    applyCamera();
   }
 
   let targetX = 0;
@@ -363,10 +452,9 @@ export async function createReliefView(
     smoothX += (targetX - smoothX) * alpha;
     smoothY += (targetY - smoothY) * alpha;
 
-    const range = motion * MOTION_GAIN * CAM_RANGE_FRACTION * mesh.scale.y;
-    camera.position.set(smoothX * range, -smoothY * range, CAM_DIST);
-    camera.lookAt(0, 0, 0);
+    applyCamera();
     renderer.render(scene, camera);
+    frameListener?.();
   });
 
   const observer = new ResizeObserver(() => {
@@ -393,14 +481,60 @@ export async function createReliefView(
   return {
     setDepth(value: number): void {
       intensity = Math.max(0, Math.min(1, value));
-      applyIntensity();
+      applyCamera();
     },
     setMotion(value: number): void {
       motion = Math.max(0, Math.min(1, value));
     },
+    setOrigin(x: number, y: number): void {
+      orbitX = Number.isFinite(x) ? x : 0;
+      orbitY = Number.isFinite(y) ? y : 0;
+      // The pivot is the SURFACE under the origin, so a new origin re-reads the
+      // field's height there before the camera moves.
+      resolvePivotHeight();
+      applyCamera();
+    },
+    setPan(x: number, y: number): void {
+      panX = Number.isFinite(x) ? x : 0;
+      panY = Number.isFinite(y) ? y : 0;
+      applyCamera();
+    },
+    setPanZ(scale: number): void {
+      camDist = Number.isFinite(scale) ? Math.max(0.5, Math.min(5, scale)) : 1;
+      applyCamera();
+    },
     setZoom(value: number): void {
       zoom = Math.max(ZOOM_MIN / 100, Math.min(ZOOM_MAX / 100, value));
       fit();
+    },
+    onDraw(callback: () => void): void {
+      frameListener = callback;
+    },
+    pivotPixel(): { x: number; y: number } | null {
+      if (!latest) return null;
+      const ndc = projectWorld(latest, latest.pivot[0], latest.pivot[1], latest.pivot[2]);
+      if (!ndc) return null;
+      return {
+        x: (ndc[0] * 0.5 + 0.5) * surfaceWidth(),
+        y: (0.5 - ndc[1] * 0.5) * surfaceHeight(),
+      };
+    },
+    tapOrigin(ndcX: number, ndcY: number): { x: number; y: number } | null {
+      if (!latest) return null;
+      const orbit = reliefScreenToOrbit(
+        latest,
+        ndcX,
+        ndcY,
+        planeAspect,
+        surfaceWidth() / Math.max(1, surfaceHeight()),
+        zoom,
+      );
+      if (!orbit) return null;
+      orbitX = Math.max(-ORIGIN_LIMIT, Math.min(ORIGIN_LIMIT, orbit[0]));
+      orbitY = Math.max(-ORIGIN_LIMIT, Math.min(ORIGIN_LIMIT, orbit[1]));
+      resolvePivotHeight();
+      applyCamera();
+      return { x: orbitX, y: orbitY };
     },
     setAdjust(brightness: number, shadow: number): void {
       // Repainting a uniform, not a geometry or a shader: the two lines live in

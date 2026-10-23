@@ -19,15 +19,17 @@
  *     Sigma2D = J SigmaV J^T, the conic, the eigen extents;
  *   - the floor (`eps2dFor`) is `Splat.eps2dFor`, the near-plane pull-back is
  *     `SplatCamera.minViewDistancePerSize`, and the alpha-extent clip is
- *     `Splat.extentScaleForAlpha`'s mapping, mirrored in the shader.
+ *     `Splat.extentScaleForAlpha`'s mapping, mirrored in the shader;
+ *   - **the studio's whole framing: Origin, Pan, Pan Z, Zoom, the tap and the
+ *     crosshair.** `cloudCamera` is `SplatCamera.frame` including the Z-only
+ *     Depth multiplier, the pan clip-space shift, the dolly and the zoom's FOV
+ *     crop; `originForRay` is the tap's ray-cast, `tapRay` undoes Pan, and both
+ *     call the same `pivotAt` the orbit uses, so the tap, the pivot, the aim and
+ *     the crosshair cannot name different points. `splat.test.ts` pins the
+ *     fixed point and the at-rest invariant through the real matrices.
  *
  * What is deliberately NOT ported, and why:
  *
- *   - **Origin, Pan, Zoom and the Depth multiplier.** The gallery's viewer is a
- *     viewer: the orbit centre is the centre, the picture is not panned, the
- *     camera is the cloud's own and the node's depth is used as measured. That
- *     makes the at-rest invariant absolute here — the picture at rest is the
- *     photograph, with no qualification about a Depth value.
  *   - **The derived sort bound** (`SplatCamera.sortEps`, an O(count) max over
  *     every splat). It is a performance lever measured on one phone; the
  *     constant it is floored at (`SORT_EPS`) is what ships at high Motion, so it
@@ -66,6 +68,21 @@ export const MIN_FOVY_DEG = 20;
 export const MAX_FOVY_DEG = 100;
 
 /**
+ * The Zoom row's range as a multiplier: `SurfaceSettings.ZOOM_MIN/_MAX`, which
+ * `SplatRenderer` also clamps the FOV crop to. Zoom is a crop of the same camera
+ * for a cloud — `fovy = the cloud's own lens / zoom` — not a second camera.
+ */
+export const ZOOM_MIN = 0.25;
+export const ZOOM_MAX = 2;
+
+/**
+ * Pan Z, the camera distance, as a multiplier of the source camera:
+ * `SurfaceSettings.PAN_Z_MIN/_MAX`. `SplatCamera.setCamDistScale` clamps here too.
+ */
+export const CAM_DIST_MIN = 0.5;
+export const CAM_DIST_MAX = 5;
+
+/**
  * How near the origin's ray a splat must project to count as "under it", in
  * tangent-plane units. `SplatCamera.PIVOT_RADIUS`.
  */
@@ -83,6 +100,20 @@ export const ALPHA_DISCARD = 1 / 255;
 
 /** `Splat.EPS_2D_DEFAULT`: the 2D floor as a fraction of the on-screen cell. */
 export const EPS_2D_DEFAULT = 0.5;
+
+/** `Splat.BLUR_DEFAULT` / `Splat.BLUR_MAX`: the post-blur radius, in render pixels. */
+export const BLUR_DEFAULT = 0;
+export const BLUR_MAX = 12;
+
+/** `Splat.RENDER_SCALE_MIN` / `_MAX`: the fraction of the surface the cloud is rasterised at. */
+export const RENDER_SCALE_MIN = 0.1;
+export const RENDER_SCALE_MAX = 1;
+export const RENDER_SCALE_DEFAULT = 1;
+
+/** `Splat.DEPTH_MUL_MIN` / `_MAX`: the Z-only depth multiplier. */
+export const DEPTH_MUL_MIN = 0;
+export const DEPTH_MUL_MAX = 5;
+export const DEPTH_MUL_DEFAULT = 1;
 
 /** Texels per row of the data texture: two per splat. `SplatRenderer.DATA_W`. */
 export const DATA_WIDTH = 2048;
@@ -325,6 +356,25 @@ export function sourceFovy(lens: number): number {
   return own > 0 ? own : NO_LENS_FOVY_DEG;
 }
 
+/**
+ * The fovy a framing draws at: the cloud's own camera, cropped by Zoom.
+ *
+ * `SplatRenderer.upload`'s three lines, in one place: `fovy = sourceFovy(lens) /
+ * clamp(zoom)`, then the app's `MIN_FOVY`/`MAX_FOVY` clamp so a broken lens or an
+ * extreme zoom cannot become a fisheye. Zoom 1 is the source view — the picture
+ * at rest is the photograph — and any other value is a crop of that same camera.
+ */
+export function cloudFovy(lens: number, zoom = 1): number {
+  const z = Number.isFinite(zoom) ? Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom)) : 1;
+  return Math.min(MAX_FOVY_DEG, Math.max(MIN_FOVY_DEG, sourceFovy(lens) / z));
+}
+
+/** `SplatCamera.setCamDistScale`: a non-finite dolly is the source camera. */
+export function clampCamDist(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(CAM_DIST_MIN, Math.min(CAM_DIST_MAX, value));
+}
+
 // ------------------------------------------------------------- the camera
 
 export type Vec3 = readonly [number, number, number];
@@ -334,6 +384,16 @@ export interface CloudCamera {
   view: Float32Array;
   /** The projection from the source camera, column-major. */
   proj: Float32Array;
+  /**
+   * `T(pan) * proj` — the projection the DRAW uses. Pan is one clip-space shift,
+   * so it moves the picture at every depth and does not move the camera.
+   */
+  projPanned: Float32Array;
+  /** `projPanned * view`: the crosshair and a tap are resolved through this. */
+  viewProjection: Float32Array;
+  /** The Pan row's clip-space shift: `-2*panX/W`, `+2*panY/H`. */
+  shiftX: number;
+  shiftY: number;
   /** World-to-view rotation, column-major — GLSL's `mat3` layout. */
   viewRot: Float32Array;
   eye: Vec3;
@@ -348,23 +408,34 @@ export interface CloudCamera {
 }
 
 export interface CloudCameraOptions {
+  /**
+   * The drawing surface in CSS pixels. Pan is stated in the same unit, so the
+   * shift is a ratio and a finger's travel is what the row prints.
+   */
   surfaceWidth: number;
   surfaceHeight: number;
-  /** The vertical field of view; `sourceFovy(lens)` for a cloud. */
+  /** The vertical field of view; `cloudFovy(lens, zoom)` for a cloud. */
   fovyDeg: number;
   /** Already smoothed tilt in [-1, 1], the relief's sign convention. */
   tiltX: number;
   tiltY: number;
   /** `SurfaceSettings.motionScale`; 0 parks the camera. */
   motion: number;
-  /** The orbit centre as a fraction of the viewport; the viewer passes 0, 0. */
+  /** The orbit centre as a fraction of the picture; `ORIGIN_LIMIT` is the row's bound. */
   originX?: number;
   originY?: number;
+  /** The Pan row, in surface pixels. Positive x moves the picture right. */
+  panX?: number;
+  panY?: number;
+  /** Pan Z: the camera distance, `clampCamDist`. 1 is the source camera. */
+  camDist?: number;
   /** The cloud's xyz mirror, `count * 3` floats. */
   positions: Float32Array;
   count: number;
   /** The depth the pivot falls back to: the cloud's median z. */
   refDepth: number;
+  /** `SurfaceSettings.splatDepth`; 1 is the node's own depth. */
+  depthMul?: number;
   /** Reuse a pivot resolved earlier — see `pivotAt`; it does not depend on tilt. */
   pivot?: Pivot;
 }
@@ -423,12 +494,22 @@ export function cloudCamera(options: CloudCameraOptions): CloudCamera {
   const [tanX, tanY] = originRay(options.fovyDeg, aspect, originX, originY);
   const pivot =
     options.pivot ??
-    pivotAt(options.positions, options.count, tanX, tanY, options.refDepth);
+    pivotAt(
+      options.positions,
+      options.count,
+      tanX,
+      tanY,
+      options.refDepth,
+      options.depthMul ?? DEPTH_MUL_DEFAULT,
+    );
 
   // The turntable: R = Rx(b) * Ry(-a) about the pivot. The signs are the
   // relief's — positive tiltX moves the eye +x (right) and positive tiltY +y in
   // this frame (down), which is the same visual direction the relief moves it.
-  const angle = (TILT_RANGE / CAM_DIST) * (options.motion ?? 0);
+  // Pan Z is a DOLLY on the rest eye, so its angle is divided by it exactly as
+  // `SplatCamera.frame` divides it.
+  const camDist = clampCamDist(options.camDist ?? 1);
+  const angle = (TILT_RANGE / (CAM_DIST * camDist)) * (options.motion ?? 0);
   const a = (options.tiltX ?? 0) * angle;
   const b = (options.tiltY ?? 0) * angle;
   const ca = Math.cos(a);
@@ -436,14 +517,18 @@ export function cloudCamera(options: CloudCameraOptions): CloudCamera {
   const cb = Math.cos(b);
   const sb = Math.sin(b);
 
-  // r = E0 - P = -P, through Ry(-a) then Rx(b); the eye sits at P + r.
+  // r = E0 - P, through Ry(-a) then Rx(b); the eye sits at P + r. E0 is the rest
+  // eye (0, 0, CAM_DIST * camDist) — the image centre at the source distance.
+  const dolly = CAM_DIST * (camDist - 1);
   const rx = -pivot.x;
-  const rz = -pivot.z;
+  const ry = -pivot.y;
+  const rz = -pivot.z - dolly;
   const yx = rx * ca - rz * sa;
+  const yy = ry;
   const yz = rx * sa + rz * ca;
   const ex = yx;
-  const ey = -pivot.y * cb - yz * sb;
-  const ez = -pivot.y * sb + yz * cb;
+  const ey = yy * cb - yz * sb;
+  const ez = yy * sb + yz * cb;
   const eye: Vec3 = [pivot.x + ex, pivot.y + ey, pivot.z + ez];
 
   // forward = R * (0, 0, 1), up = R * (0, -1, 0).
@@ -459,9 +544,24 @@ export function cloudCamera(options: CloudCameraOptions): CloudCamera {
     view[8], view[9], view[10],
   ]);
 
+  // Pan is one clip-space shift and NOTHING else: Origin does not enter it (it
+  // names the turntable's axis), which is what keeps the at-rest picture the
+  // photograph translated by Pan alone.
+  const shiftX = surfaceW > 0 ? (-2 * (options.panX ?? 0)) / surfaceW : 0;
+  const shiftY = surfaceH > 0 ? (2 * (options.panY ?? 0)) / surfaceH : 0;
+  const panMatrix = identity();
+  panMatrix[12] = shiftX;
+  panMatrix[13] = shiftY;
+  const projPanned = multiply(panMatrix, proj);
+  const viewProjection = multiply(projPanned, view);
+
   return {
     view,
     proj,
+    projPanned,
+    viewProjection,
+    shiftX,
+    shiftY,
     viewRot,
     eye,
     forward,
@@ -472,10 +572,58 @@ export function cloudCamera(options: CloudCameraOptions): CloudCamera {
 }
 
 /**
- * The cloud surface point under a ray — `SplatCamera.pivot`, without the Depth
- * knob (not ported: the node's own depth is what is drawn).
+ * The cloud surface point under a tap, as an Origin fraction — `SplatCamera.originForRay`.
  *
- * The pick is the **frontmost splat within `PIVOT_RADIUS`**, because a
+ * <p>The ray arrives in the SOURCE camera's tangent plane, because Origin is a
+ * fraction of the picture and not of the tilted screen. The pick is `pivotAt`'s,
+ * so the tap, the pivot, the aim and the crosshair cannot name different points;
+ * that is why tapping a point and then resolving the origin it names is a fixed
+ * point (`splat.test.ts`).
+ */
+export function originForRay(
+  positions: Float32Array,
+  count: number,
+  tanX: number,
+  tanY: number,
+  refDepth: number,
+  depthMul: number,
+  proj0: number,
+  proj5: number,
+): { originX: number; originY: number; found: boolean } {
+  const pick = pivotAt(positions, count, tanX, tanY, refDepth, depthMul);
+  const invz = pick.z > 1e-6 ? 1 / pick.z : 0;
+  return {
+    originX: pick.x * invz * proj0 * 0.5,
+    originY: -pick.y * invz * proj5 * 0.5,
+    found: pick.found,
+  };
+}
+
+/**
+ * A tap's ray in the source camera's tangent plane, undoing Pan.
+ *
+ * The drawn picture is shifted by `shiftX`/`shiftY` clip units, so the source
+ * pixel under the finger is `ndc - shift`. `SplatRenderer.tapOrigin`'s two lines.
+ */
+export function tapRay(
+  ndcX: number,
+  ndcY: number,
+  shiftX: number,
+  shiftY: number,
+  proj0: number,
+  proj5: number,
+): { tanX: number; tanY: number } {
+  return {
+    tanX: proj0 !== 0 ? (ndcX - shiftX) / proj0 : 0,
+    tanY: proj5 !== 0 ? -(ndcY - shiftY) / proj5 : 0,
+  };
+}
+
+/**
+ * The cloud surface point under a ray — `SplatCamera.pivot`, including the Depth
+ * knob.
+ *
+ * <p>The pick is the **frontmost splat within `PIVOT_RADIUS`**, because a
  * nearest-in-image pick can name a background splat behind the subject. When no
  * splat is inside the radius the nearest one is used anyway (a real point beats a
  * guess), and when the cloud has nothing in front of the camera the answer is the
@@ -484,8 +632,9 @@ export function cloudCamera(options: CloudCameraOptions): CloudCamera {
  *
  * **It does not depend on the tilt**, so the viewer resolves it once per framing
  * rather than per frame: the ray is the source camera's and the positions do not
- * move. The app resolves it inside `frame()` because that call builds the whole
- * camera at once; the answer is the same one.
+ * move. It DOES depend on the Depth knob, because the shader draws the moved
+ * depth and a pivot resolved on the node's own z would mark a point the cloud has
+ * left. `depthScale` is the same mapping the vertex shader mirrors.
  */
 export function pivotAt(
   positions: Float32Array,
@@ -493,6 +642,7 @@ export function pivotAt(
   tanX: number,
   tanY: number,
   refDepth: number,
+  depthMul = DEPTH_MUL_DEFAULT,
 ): Pivot {
   if (count <= 0 || positions.length < count * 3) {
     return { x: tanX * refDepth, y: tanY * refDepth, z: refDepth, found: false };
@@ -514,7 +664,11 @@ export function pivotAt(
     const z = positions[j + 2];
     // Behind or on the camera: no image position, so not under any ray.
     if (!(z > 1e-4)) continue;
-    const invz = 1 / z;
+    // The moved depth the shader writes (Z-only displacement): x and y stay in
+    // place, so the drawn image position is x / movedZ, y / movedZ.
+    const moved = z * depthScale(z, refDepth, depthMul);
+    if (!(moved > 1e-4)) continue;
+    const invz = 1 / moved;
     const dx = x * invz - tanX;
     const dy = y * invz - tanY;
     const d2 = dx * dx + dy * dy;
@@ -522,11 +676,11 @@ export function pivotAt(
       nearD2 = d2;
       nearX = x;
       nearY = y;
-      nearZ = z;
+      nearZ = moved;
       near = true;
     }
-    if (d2 <= r2 && z < frontZ) {
-      frontZ = z;
+    if (d2 <= r2 && moved < frontZ) {
+      frontZ = moved;
       frontX = x;
       frontY = y;
       front = true;
@@ -554,8 +708,7 @@ export function medianDepth(positions: Float32Array, count: number): number {
 }
 
 /** `Splat.eps2dFor`: the 2D floor as `fraction * cell`, cell from the viewport. */
-export function eps2dFor(
-  fraction: number,
+export function eps2dFor(  fraction: number,
   viewportW: number,
   viewportH: number,
   count: number,
@@ -566,6 +719,41 @@ export function eps2dFor(
   const z = Number.isFinite(zoom) ? Math.max(0.25, Math.min(2, zoom)) : 1;
   const cell = ((viewportW * viewportH) / count) * z * z;
   return fraction * cell;
+}
+
+/** `Splat.clampBlurPx`: a one-sided quantity; a non-finite radius is the identity. */
+export function clampBlurPx(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return BLUR_DEFAULT;
+  return Math.min(value, BLUR_MAX);
+}
+
+/** `Splat.clampRenderScale`: a non-finite scale is the default rather than a bound. */
+export function clampRenderScale(value: number): number {
+  if (!Number.isFinite(value)) return RENDER_SCALE_DEFAULT;
+  return Math.max(RENDER_SCALE_MIN, Math.min(RENDER_SCALE_MAX, value));
+}
+
+/** `Splat.clampDepthMul`: a non-finite multiplier is the identity rather than a bound. */
+export function clampDepthMul(value: number): number {
+  if (!Number.isFinite(value)) return DEPTH_MUL_DEFAULT;
+  return Math.max(DEPTH_MUL_MIN, Math.min(DEPTH_MUL_MAX, value));
+}
+
+/**
+ * `Splat.depthScale`: the moved depth over the original,
+ * `(ref + mul * (z - ref)) / z`.
+ *
+ * The vertex shader applies this to `z` ALONE (a Z-only displacement), so the
+ * at-rest picture changes with the Depth knob the way the relief's intensity
+ * does; x and y stay in their image position. A splat pushed through the eye
+ * answers a non-positive scale, and both the shader's near cull and `pivotAt`
+ * drop it rather than drawing it mirrored.
+ */
+export function depthScale(z: number, refDepth: number, mul: number): number {
+  if (!Number.isFinite(z) || z <= 1e-4) return 1;
+  if (!Number.isFinite(refDepth) || refDepth <= 0) return 1;
+  const moved = refDepth + clampDepthMul(mul) * (z - refDepth);
+  return Math.max(0, moved) / z;
 }
 
 /**
@@ -592,18 +780,54 @@ export function minViewDistancePerSize(proj5: number, maxExtentFraction: number)
  * against a restatement of the arithmetic.
  */
 export function project(camera: CloudCamera, x: number, y: number, z: number): [number, number] | null {
-  const m = camera.view;
+  return through(camera.proj, camera.view, x, y, z);
+}
+
+/** The same point as the DRAW places it: through `projPanned * view`, Pan included. */
+export function projectPanned(camera: CloudCamera, x: number, y: number, z: number): [number, number] | null {
+  return through(camera.projPanned, camera.view, x, y, z);
+}
+
+function through(
+  proj: Float32Array,
+  view: Float32Array,
+  x: number,
+  y: number,
+  z: number,
+): [number, number] | null {
+  const m = view;
   // View-space point, column-major V.
   const vx = m[0] * x + m[4] * y + m[8] * z + m[12];
   const vy = m[1] * x + m[5] * y + m[9] * z + m[13];
   const vz = m[2] * x + m[6] * y + m[10] * z + m[14];
   const vw = m[3] * x + m[7] * y + m[11] * z + m[15];
-  const p = camera.proj;
+  const p = proj;
   const cx = p[0] * vx + p[4] * vy + p[8] * vz + p[12] * vw;
   const cy = p[1] * vx + p[5] * vy + p[9] * vz + p[13] * vw;
   const cw = p[3] * vx + p[7] * vy + p[11] * vz + p[15] * vw;
   if (!(cw > 0)) return null;
   return [cx / cw, cy / cw];
+}
+
+/** Column-major 4x4 product `a * b`, the order `projPanned * view` needs. */
+export function multiply(a: Float32Array, b: Float32Array): Float32Array {
+  const out = new Float32Array(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] =
+        a[r] * b[c * 4] +
+        a[4 + r] * b[c * 4 + 1] +
+        a[8 + r] * b[c * 4 + 2] +
+        a[12 + r] * b[c * 4 + 3];
+    }
+  }
+  return out;
+}
+
+function identity(): Float32Array {
+  const out = new Float32Array(16);
+  out[0] = out[5] = out[10] = out[15] = 1;
+  return out;
 }
 
 /**

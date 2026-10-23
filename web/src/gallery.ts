@@ -7,7 +7,7 @@ import {
   type MediaState,
 } from './media.ts';
 import { parseSidecar } from './splat.ts';
-import { openViewer } from './viewer.ts';
+import { openViewer, type CloudAsset } from './viewer.ts';
 
 /**
  * The gallery: files in, cards out, one inspection per file.
@@ -38,6 +38,11 @@ export interface GalleryItem {
   lens: number;
   /** The sidecar that stated it, if one arrived. */
   lensFrom: string | null;
+  /**
+   * A cloud built on this page for this card. Held in memory, because the gallery
+   * persists nothing — a rebuild replaces it, and Delete removes it.
+   */
+  cloud: CloudAsset | null;
 }
 
 interface CardParts {
@@ -90,6 +95,7 @@ export function createGallery(options: GalleryOptions): Gallery {
         height: 0,
         lens: lens?.lens ?? 0,
         lensFrom: lens?.name ?? null,
+        cloud: null,
       };
       items.push(item);
 
@@ -267,6 +273,42 @@ export function createGallery(options: GalleryOptions): Gallery {
         height: item.height,
         lens: item.lens,
         lensFrom: item.lensFrom,
+        cloud: item.cloud,
+        onCloud: (cloud) => {
+          if (cloud) {
+            item.cloud = cloud;
+            renderCard(item);
+            renderCounts();
+            return;
+          }
+          // No cloud left. On a card that IS the cloud file there is nothing to
+          // draw, so the card goes with it; on a photo the card stays a photo.
+          item.cloud = null;
+          if (item.state.kind === 'cloud') remove(item);
+          else renderCard(item);
+          renderCounts();
+        },
+        onGenerated: (file, depth, width, height) => {
+          // The gallery is the files in the tab, so a generated map replaces the
+          // dropped file with the packed one. Revoke the old object URL; the new
+          // one belongs to the gallery item and is revoked when the card is
+          // removed.
+          URL.revokeObjectURL(item.url);
+          item.file = file;
+          item.url = URL.createObjectURL(file);
+          item.depth = depth;
+          item.state = { kind: 'relief', form: depth.form };
+          item.width = width;
+          item.height = height;
+          const parts = cards.get(item.id);
+          if (parts) {
+            parts.name.textContent = file.name;
+            parts.name.title = file.name;
+            parts.open.setAttribute('aria-label', `Open ${file.name}`);
+          }
+          renderCard(item);
+          renderCounts();
+        },
       });
     };
 
@@ -321,6 +363,10 @@ export function createGallery(options: GalleryOptions): Gallery {
     const facts: string[] = [];
     if (state.kind === 'cloud') {
       facts.push(formatSplatCount(state.splats));
+    } else if (item.cloud) {
+      // A cloud built on this page is an asset on the card, and a rebuild must be
+      // visible FROM THE CARD: a stale count would read as "nothing happened".
+      facts.push(`${formatSplatCount(item.cloud.splats)} cloud`);
     }
     const dims = formatDimensions(item.width, item.height);
     if (dims) facts.push(dims);
@@ -363,6 +409,7 @@ export function createGallery(options: GalleryOptions): Gallery {
   function renderCounts(): void {
     const counts = { depth: 0, clouds: 0, unreadable: 0, reading: 0 };
     for (const item of items) {
+      if (item.cloud && item.state.kind !== 'cloud') counts.clouds++;
       switch (item.state.kind) {
         case 'relief':
           counts.depth++;

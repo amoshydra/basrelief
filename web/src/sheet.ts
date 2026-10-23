@@ -424,6 +424,8 @@ export interface SliderRowOptions {
   format: (value: number) => string;
   /** Every change, live — the renderer follows the finger and nothing persists. */
   onInput: (value: number) => void;
+  /** A row whose value nothing on this page can change: drawn, inert, honest. */
+  disabled?: boolean;
 }
 
 /** `BasreliefSlider`'s geometry lives in `styles.css` (66px name, 34px track,
@@ -457,7 +459,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
   const pxPerUnit = Math.min(MAX_STEP_PX, FULL_SWEEP_PX / Math.max(1, max - min));
 
   const row = document.createElement('div');
-  row.className = 'bslider';
+  row.className = options.disabled ? 'bslider is-disabled' : 'bslider';
 
   const label = document.createElement('span');
   label.className = 'bslider-label';
@@ -465,11 +467,12 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
 
   const track = document.createElement('div');
   track.className = 'bslider-track';
-  track.tabIndex = 0;
+  track.tabIndex = options.disabled ? -1 : 0;
   track.setAttribute('role', 'slider');
   track.setAttribute('aria-label', options.label);
   track.setAttribute('aria-valuemin', String(min));
   track.setAttribute('aria-valuemax', String(max));
+  if (options.disabled) track.setAttribute('aria-disabled', 'true');
 
   const fill = document.createElement('div');
   fill.className = 'bslider-fill';
@@ -512,6 +515,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
   }
 
   function move(value: number): void {
+    if (options.disabled) return;
     const next = clamp(value);
     if (next === shown) return;
     paint(next);
@@ -524,6 +528,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
     button.className = 'bslider-nudge';
     button.textContent = glyph;
     button.setAttribute('aria-label', `${options.label} ${glyph}`);
+    button.disabled = options.disabled === true;
     button.addEventListener('click', () => move(shown + direction));
     return button;
   }
@@ -542,7 +547,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
   let pressedAt = 0;
 
   track.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
+    if (options.disabled || event.button !== 0) return;
     pointerId = event.pointerId;
     dragging = true;
     downX = event.clientX;
@@ -594,6 +599,7 @@ export function sliderRow(options: SliderRowOptions): SliderRow {
   // The keyboard is the same steps the nudges are, so a control with no thumb is
   // still operable without a drag.
   track.addEventListener('keydown', (event) => {
+    if (options.disabled) return;
     switch (event.key) {
       case 'ArrowLeft':
       case 'ArrowDown':
@@ -650,4 +656,83 @@ export function sheetButton(
   button.textContent = label;
   button.addEventListener('click', onClick);
   return button;
+}
+
+/** One button of a two-option segment (the Home/Lock and Renderer rows). */
+export interface SegmentRowOptions {
+  labels: readonly [string, string];
+  /** Which option is marked as current, or -1 for neither. */
+  active: number;
+  /** A segment nothing on this page can move: drawn, both options inert. */
+  disabled?: boolean;
+  /**
+   * Options that cannot act even though the segment can. The Renderer segment on
+   * a cloud-only card is the case: Splat is a real choice, and Relief is not.
+   */
+  disabledIndices?: readonly number[];
+  onSelect?: (index: number) => void;
+}
+
+/**
+ * The studio's two-button track, used by the Home/Lock and Renderer segments.
+ *
+ * A segment is a mode selector, not a switch row: both options are always
+ * visible and the marked one is the current state. When `disabled`, it is still
+ * drawn — a missing control with no sentence is indistinguishable from one that
+ * was forgotten — and the caption/reading row beside it says why.
+ */
+export function segmentRow(options: SegmentRowOptions): HTMLElement {
+  const segment = document.createElement('div');
+  segment.className = 'sheet-segment';
+  options.labels.forEach((label, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sheet-segment-btn';
+    button.textContent = label;
+    button.disabled =
+      options.disabled === true || options.disabledIndices?.includes(index) === true;
+    button.classList.toggle('is-active', index === options.active);
+    button.setAttribute('aria-pressed', String(index === options.active));
+    if (options.onSelect) button.addEventListener('click', () => options.onSelect?.(index));
+    segment.append(button);
+  });
+  return segment;
+}
+
+/**
+ * A text field on a plate. Used by Generate depth for the ComfyUI base URL: the
+ * studio writes that address to prefs, and this page keeps it in memory for the
+ * session only (the gallery stores nothing).
+ */
+export function inputRow(options: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  inputMode?: 'url' | 'text';
+  onInput: (value: string) => void;
+}): { element: HTMLElement; input: HTMLInputElement } {
+  const element = document.createElement('label');
+  element.className = 'sheet-input-row';
+  const label = document.createElement('span');
+  label.className = 'sheet-input-label';
+  label.textContent = options.label;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'sheet-input';
+  input.value = options.value;
+  input.placeholder = options.placeholder ?? '';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  if (options.inputMode) input.inputMode = options.inputMode;
+  input.addEventListener('input', () => options.onInput(input.value));
+  element.append(label, input);
+  return { element, input };
+}
+
+/** A plate that is drawn but cannot be pressed, with the sentence that says why. */
+export function disabledActionRow(label: string, sub: string): HTMLButtonElement {
+  const row = actionRow({ label, sub, onClick: () => undefined });
+  row.disabled = true;
+  row.classList.add('is-disabled');
+  return row;
 }

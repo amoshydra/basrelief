@@ -51,11 +51,14 @@ gallery.
   code beating this file. The point of fixing the reference is that the copy has
   something to copy: `web/` reproduces the studio's **vocabulary and look** -- the
   three row roles, the grip, the captions, the type scale, the numeric ranges --
-  and reproduces **only the rows that can act there**. A page cannot set a
-  wallpaper, so the surfaces segment, the playlists and the archive are omitted
-  and the sheet says why, because a control that cannot change anything is the lie
-  this file keeps refusing to ship. The look comes from the **Android code's own
-  constants**, not from `.design/prototype/`, which is a sketch. Where the two must
+  and reproduces **every group and row, in the studio's order**. A row that can act
+  there is wired to the render; a row that cannot (the surfaces segment, the
+  playlists and the archive, Speed, Origin/Pan, Set as wallpaper, the Renderer
+  segment) is still drawn, **disabled, with one sentence saying why**, because a
+  missing control is indistinguishable from a forgotten one and a dead *enabled*
+  control is the lie this file keeps refusing to ship. The look comes from the
+  **Android code's own constants**, not from `.design/prototype/`, which is a
+  sketch. Where the two must
   agree on behaviour rather than pixels -- the settings schema and its clamps, the
   chunk, the record layout -- the agreement is **bytes in `contract/`**, never a
   second implementation compared by eye.
@@ -109,13 +112,24 @@ gallery.
     lens gets its own sentence, because "absent" and "no claim" are different
     facts. `web/src/splat.ts` reads the same `contract/sidecar/` cases the Java
     reader does.
-  - **At rest the picture is exactly the photograph, unqualified.** There is no
-    Origin, Pan, Zoom or Depth multiplier in the gallery, so the source camera is
-    the cloud's own and the tilt is a turntable about the cloud's surface under the
-    centre. `web/src/splat.test.ts` walks every origin, pivot depth, aspect and
-    lens through the matrices the renderer uploads — the app-side invariant, one
-    platform over — and also pins the sort's back-to-front order and the floor's
-    fraction-of-the-cell unit.
+  - **At rest the picture is exactly the photograph, translated by Pan alone.**
+    The source camera is the cloud's own, the tilt is a turntable about the cloud's
+    surface under the origin's ray, and Origin names only that axis — it does not
+    move the picture. Pan is one clip-space shift on the projection, Pan Z is the
+    dolly and Zoom divides the cloud's own fovy by the multiplier — a crop of the
+    same camera; a tap
+    ray-casts into the cloud (`SplatCamera.originForRay`) and, because it calls the
+    same `pivotAt` the orbit does, **tapping and then resolving is a fixed point**.
+    `web/src/splat.test.ts` walks every origin, pivot depth, aspect and lens through
+    the matrices the renderer uploads — the app-side invariant, one platform over —
+    and also pins the fixed point at every Depth, the Pan shift at every depth, the
+    sort's back-to-front order and the floor's fraction-of-the-cell unit.
+  - **The crosshair is placed from the frame that DREW it, not from the next
+    one.** `cloud.ts`/`relief.ts` call an `onDraw` listener at the end of each
+    draw, and the viewer's marker reads `pivotPixel()` from that frame's
+    `projPanned * view`; the pivot does not move under a tilt (it is the rotation
+    centre), so this is the only thing that keeps the marker and the picture from
+    naming different points after a tap, a pan or a Depth change.
   - **A settled cloud draws nothing.** The loop returns before `draw()` while the
     smoothed tilt is within `1e-6` of its target and no non-tilt input changed;
     the residual is far below the sub-pixel bound `SORT_EPS` is set from. This is
@@ -126,22 +140,21 @@ gallery.
     `gl.getError()` and throws the count and the texture size, rather than drawing
     nothing. Nothing else is capped — the viewer names the count and states the
     app's ladder (~5 fps at 1M on a 2018 phone) when a cloud is that dense.
-- **The relief renderer is a port of `reference/webgl-port/src/scene.js`, and the
-  camera model is taken from it deliberately** — a plane displaced by
+- **The relief renderer ports `reference/webgl-port/src/scene.js` for the MESH,
+  and the Android app for the CAMERA.** The mesh half: a plane displaced by
   `depth/255 - 0.5` scaled by intensity × plane height, per-vertex normals shaded
-  by ambient + directional light, a fixed 45° camera at `CAM_DIST` with
-  `CROP_MARGIN`, the eye swinging by `motion × MOTION_GAIN × CAM_RANGE_FRACTION ×
-  planeHeight`, and the separable FLOAT box blur at `DEPTH_BLUR_FRACTION = 1/78`
-  that keeps 8-bit terraces from becoming contour lines. That fraction is now
-  checked in all three copies by `scripts/check-parity.mjs`. The port's
-  **structure** is not taken: one scene per open item, created and destroyed with
-  the viewer; no tap-to-set-orbit, pan or zoom; and the smoothing is time-based
-  (`tau = 0.2 s`, as the app's `TiltFilter` does) rather than the port's
+  by ambient + directional light, and the separable FLOAT box blur at
+  `DEPTH_BLUR_FRACTION = 1/78` that keeps 8-bit terraces from becoming contour
+  lines. That fraction is checked in all three copies by
+  `scripts/check-parity.mjs`. The camera half is `web/src/camera.ts`, a port of
+  `CameraModel`: the fixed rest eye at `CAM_DIST`, the turntable about the
+  SURFACE under the origin (`heightAt` on the blurred field, mapped `v/255 - 0.5`
+  like the mesh), the clip-space Pan, `computeScale`'s zoom crop, and
+  `screenToOrbit`'s tap unprojection. The port's structure is not taken: one
+  scene per open item, created and destroyed with the viewer, and the smoothing is
+  time-based (`tau = 0.2 s`, as the app's `TiltFilter` does) rather than its
   frame-rate-dependent `lerp 0.08`. The picture fills the viewport (cover + the
-  8% crop) at Zoom 100 %, as the wallpaper does; there is no pan or orbit centre
-  yet, so a landscape photo on a portrait phone is cropped, and the sheet's FOV
-  row is the only camera control (it scales the plane, which is a crop of the
-  same camera — the app's own `computeScale`).
+  8% crop) at Zoom 100 %, as the wallpaper does.
 - **A packed PNG is read as two independent things.** The chunk needs the bytes
   (an `ArrayBuffer`), and the colour needs a decode (an object URL / `<img>` /
   `TextureLoader`); a decoded `ImageBitmap` cannot give the chunks back. The
@@ -166,9 +179,9 @@ gallery.
     app's `DepthPngPacker` takes a `Bitmap` and always re-encodes, but the page has
     the original bytes and throwing them away would be a choice. Only a non-PNG (a
     JPEG) goes through a canvas, and `colourPngBytes` reports `reencoded` so the
-    viewer can say the saved picture is a render, not the file. That branch is
-    unreachable today (a relief must carry a chunk and only a PNG can) and is the
-    prerequisite for the next task, Generate depth.
+    viewer can say the saved picture is a render, not the file. That branch is now
+    reachable: **Generate depth** accepts a JPEG photo, re-encodes its colour once,
+    and says so when the saved PNG is a render rather than the original bytes.
   - **The chunk goes immediately before the first `IDAT`, after `IHDR`.** Before
     `IHDR`, a raw payload claims no dimensions and the reader refuses it; after
     `IDAT` it is legal and missed by readers that stop at the image data. A file
@@ -192,31 +205,86 @@ gallery.
     accepts agrees with itself and proves nothing.
   - **The UI is one action on a relief, and the reasons are sentences rather than a
     disabled button**: **Save packed PNG** downloads `<name>.packed.png`; a photo
-    says it has no depth to pack; a cloud says a `.splat` is not a PNG. **Generate
-    depth is deliberately not here** — it is a client of the ComfyUI node.
-- **The studio's sheet is COPIED, and a row that cannot act is not drawn.**
-  `web/src/sheet.ts` is the vocabulary — the three row roles (`switchRow`,
-  `actionRow`, `readingRow`), the grip, the captions and the one-line slider —
-  taken from `ModalSheet`/`BasreliefSlider`'s own constants (`#171b21`, the 11 /
-  12 / 13 / 14 px type scale, 11px-radius plates, `0x57FFFFFF` captions) rather
-  than from `.design/prototype/`, which is a sketch. `viewer.ts` composes it from
-  the rows a page can honour, and every one of them is wired to the render:
-  - a **relief** gets Depth, Motion, FOV, Brightness, Shadow, Azimuth and
-    Elevation. `relief.ts` was given the mappings before their rows existed:
-    `picture.ts` holds `Picture`'s brightness (2^stops) and shadow (the lift) and
-    `LightDirection`'s angle→vector, and Zoom scales the plane (`computeScale`'s
-    own rule) so it is a crop of the same camera rather than a second one.
-  - a **cloud** gets Motion, because its renderer honours it; the four look knobs
-    are phase 2 and the sheet says so rather than drawing them.
-  - the **Home/Lock segment, playlists, archive and Renderer segment are omitted
-    with a sentence** in a reading row: a page cannot set a wallpaper, nothing
-    here is stored to rotate or hide, and the file's own kind picks the renderer.
-    Origin and Pan are omitted too — this camera has no orbit centre — so their
-    rows would move a number nothing draws.
-  - **A row is added only when its renderer honours it**, which is why the sheet
-    grew after `relief.ts` did and not before. The three roles are a rule, not a
-    palette: a reading row's factory takes no listener, so a fact cannot drift
-    into looking like a control.
+    says it has no depth to pack; a cloud says a `.splat` is not a PNG.
+- **Generate depth is a row on the studio's asset card, not a separate feature.**
+  `web/src/comfy.ts` is the ComfyUI client AND the still graph, a port of
+  `ComfyWorkflow.java`'s shape: `LoadImage → <node> → SaveImage`, or MoGe's seven
+  nodes with two renders off one inference and two saver prefixes. Every scalar is
+  discovered from `/object_info` at its own default; the inputs the flow owns (the
+  uploaded name, `output`, saver prefixes, `filename_prefix`) are the overrides. A
+  server missing a node says so rather than substituting one.
+  - **The poll is by the prompt id `/prompt` returned.** An absent history entry is
+    `running`, not a verdict — a prompt queued behind another has none. A run is
+    finished only when `status.completed` is true, because a running entry can
+    already carry outputs; the app's fixed-name sidecar is deliberately never read
+    here (it answers for the wrong run, per the streaming-node section).
+  - **The fetched depth is scaled to the photo and packed by `web/src/pack.ts`**,
+    the same fixtured writer Save packed PNG uses, then shown as a relief. The
+    gallery card is replaced with that packed `File` in memory, so closing and
+    reopening the viewer still shows the generated relief; nothing persists.
+  - **CORS is the dev server's job on the path the page is run through.**
+    `web/vite.config.ts` proxies `/comfy` to http://127.0.0.1:8188 (override with
+    `COMFY_URL`); a static build has no proxy and needs ComfyUI's own
+    `--enable-cors-header`. The proxy also **strips the page's `Origin`/`Referer`**,
+    because ComfyUI's CSRF check compares Origin with the Host and refuses every
+    POST with HTTP 403 otherwise — measured: a direct browser upload failed with
+    403 until the header was removed. A failed preflight is a sentence in the
+    dialog naming both routes, never a silent nothing. The address is remembered
+    for the tab only, because the gallery stores nothing.
+- **The studio's sheet is MIRRORED IN FULL: every group and row is drawn.** A row
+  that can act is wired to the real camera; a row that cannot is disabled with a
+  sentence. `web/src/sheet.ts` is the vocabulary — the three row roles
+  (`switchRow`, `actionRow`, `readingRow`), the two-option segment, the grip, the
+  captions and the one-line slider — taken from
+  `ModalSheet`/`BasreliefSlider`'s own constants (`#171b21`, the 11 / 12 / 13 / 14
+  px type scale, 11px-radius plates, `0x57FFFFFF` captions) rather than from
+  `.design/prototype/`, which is a sketch. `viewer.ts` composes the studio's order:
+  - a **relief** gets Depth, Motion, FOV, Brightness, Shadow, Azimuth, Elevation,
+    Origin X/Y and Pan X/Y/Pan Z. The camera is `CameraModel`'s, in
+    `web/src/camera.ts`: the turntable about the surface under the origin, the
+    fixed rest eye, the pan shift, the zoom crop, the tap unprojection and the
+    crosshair all come from it, and `camera.test.ts` pins the round trips.
+  - a **cloud** gets Depth, Size, Blur, Resolution, Motion, Brightness, Shadow,
+    Origin X/Y and Pan X/Y/Pan Z. The four look knobs are `cloud.ts`'s: the
+    Z-only depth multiplier with the pivot resolved on the moved depth,
+    `eps2dFor`'s fraction of the render-target cell, the 13-tap separable blur,
+    and the offscreen render scale copied up with a fullscreen triangle. Light is
+    disabled with a sentence: a cloud carries baked colour and no surface normal.
+  - a **photo** gets the whole card with the displacement controls disabled until a
+    map exists; its asset row is the studio's state machine, offering **Choose a
+    map** and **Generate**, and never a second build while one is running.
+  - the **Renderer segment is LIVE now that a card can hold BOTH assets** — a
+    packed depth PNG and a cloud built from it — so selecting Relief or Splat is a
+    real action rather than a fact the file's kind decides. A dropped `.splat`
+    has no photograph, so its Relief option is the one disabled option. The
+    **Home/Lock segment, Speed, playlists, archive, Set as wallpaper and Settings
+    are still drawn disabled**, each with its one sentence: a page cannot set a
+    wallpaper, it draws no clips, nothing here is stored, and a web page cannot
+    set a live wallpaper.
+  - **A cloud build is the studio's Splat tab, and it is here too.**
+    `web/src/comfy.ts` also carries `SharpStill`'s two-node graph, the BUDGET
+    slider from the app's ladder (a session value, like the address) and the
+    `.splat`/sidecar fetch; the asset row's Make one / Rebuild / Regenerate /
+    Delete follow `BuildTab`'s ranking. The result is held in the tab, because the
+    gallery persists nothing.
+  - **The gesture set is the studio's**, on one pointer map: **tap** sets the
+    orbit centre by ray-casting into the cloud (`SplatCamera.originForRay`) or
+    unprojecting to the plane under the finger (the relief); a **one-finger drag
+    pans** (Pan X/Y follow the finger, bounded by the surface's larger dimension);
+    **two fingers** pan by their midpoint and **pinch the camera distance**
+    (`MainActivity`'s mapping — pinch drives Pan Z, while the FOV row is the
+    separate crop); and the **crosshair** marks the pivot of the frame that was
+    drawn. Every gesture writes the session's values and PUSHES the rows, which
+    is the app's "a gesture owns the renderer's values for its span" rule without
+    the release write, because this page persists nothing.
+  - **The asset row is the studio's, per selected mode.** Relief: `No depth map
+    yet` / `Has a depth map`, with **Choose a map** and **Generate** — both even
+    on a map embedded in the card, because there is no stored depth FILE here and
+    replacing it is the same in-memory re-pack Save packed PNG does. Splat: `no
+    cloud yet — make one?` / `N splats · SHARP` with **Make one**, **Rebuild**,
+    **Delete**, a run in flight offering nothing and a failure outranking the
+    asset (Regenerate). A dropped `.splat` card has no photograph, so it offers
+    Delete and says why Rebuild needs the photo.
   - the grip drags the sheet by **layout height** between open and collapsed, and
     collapsed leaves the grip bar alone over the picture. The release is
     `SheetIntent.SHEET`'s projection (0.20 s, 1.2 travels/s, 0.95/0.40); a web
@@ -225,11 +293,10 @@ gallery.
   - one deliberate departure: the slider's name column is **72px**, not the app's
     66dp, because this page's system font is wider at 13px and "Brightness"
     clipped. The invariant is that every track starts at the same x.
-- **What it does not do yet:** generating a depth map (the ComfyUI node's job),
-  accounts, a server, and persistence. It does not talk to the phone, and it does
-  not share code with the reference port. On the cloud it still has no Origin,
-  Pan, Zoom, Depth multiplier or look knobs — see the cloud bullet above. The
-  relief's Zoom is the sheet's FOV row, not a cloud knob.
+- **What it does not do yet:** accounts, a server, persistence, clips and the
+  video graph. It does not talk to the phone and does not share code with the
+  reference port. The relief's Zoom is the sheet's FOV row; a cloud's Zoom is the
+  same crop applied to its own lens.
 
 ## Shared contracts (`contract/`)
 
@@ -243,7 +310,7 @@ fixture still holds its four hard records).
 
 | contract | implementations | fixture |
 |---|---|---|
-| the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` | `contract/tag/cases.json` |
+| the tag rule | node `server/comfy-node/basrelief_depth/contract.py` + `ComfyWorkflow.streamTag` + `web/src/comfy.ts`'s `sanitiseTag` (the cloud build derives the same two filenames) | `contract/tag/cases.json` |
 | the `dePH` chunk | `android/core/src/main/java/com/amoshydra/basrelief/core/depth/DepthPng.java` + `reference/webgl-port/src/png-depth.js` + `web/src/deph.ts` (readers) + `web/src/pack.ts` (the writer) | `contract/deph/` (its `pack` block pins the writer's output and chunk) |
 | the splat sidecar | node `contract.py::splat_sidecar` + `android/core/src/main/java/com/amoshydra/basrelief/core/render/SplatSidecar.java` + `web/src/splat.ts` | `contract/sidecar/` |
 | the `.splat` record | `android/core/src/main/java/com/amoshydra/basrelief/core/splat/SplatCloud.java` + `web/src/splat.ts` | `contract/splat/` |
@@ -321,9 +388,10 @@ fixture still holds its four hard records).
   no browser API, so it loads in Node unmodified. The gallery's third copy is
   `web/src/deph.test.ts`, run as
   `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
-  test framework) — which is now six files: the `dePH` reader and writer, the
-  media states, the splat record/camera, the settings body and the picture/light
-  mappings.
+  test framework) — which is now eight files: the `dePH` reader and writer, the
+  media states, the splat record/camera and its Depth mapping, the relief camera
+  (`camera.test.ts`), the settings body, the picture/light mappings, and the
+  ComfyUI still/cloud graph and history reader.
 
 ## Build and test
 

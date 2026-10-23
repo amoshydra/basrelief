@@ -26,26 +26,36 @@ import {
   ALPHA_DISCARD,
   DATA_WIDTH,
   EPS_2D_DEFAULT,
+  NEAR,
+  FAR,
   NO_LENS_FOVY_DEG,
   SORT_BUCKETS,
   SPLAT_RECORD_BYTES,
   CAM_DIST,
   TILT_RANGE,
+  perspective,
+  clampCamDist,
   cloudCamera,
+  cloudFovy,
   createDepthOrder,
+  depthScale,
   eps2dFor,
   focalOverHeight,
   fovyForLens,
   medianDepth,
+  originForRay,
+  originRay,
   packIntegerTexels,
   parseSidecar,
   pivotAt,
   positionsOf,
   project,
+  projectPanned,
   readRecord,
   recordCount,
   sourceFovy,
   sourceNdc,
+  tapRay,
 } from './splat.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -420,6 +430,205 @@ test('the alpha threshold the shader reads is one number', () => {
   assert.equal(extent(1), 1, 'an opaque splat is the identity');
   close(extent(43 / 255), 0.914, 1e-3);
   assert.equal(extent(0), 0, 'a transparent splat is dropped outright');
+});
+
+test('the Depth multiplier is the identity at 1 and the flat photograph at 0', () => {
+  // `Splat.depthScale`: the moved depth over the original. The shader writes it
+  // into z alone, so 1 must leave every splat exactly where the node put it and
+  // 0 must land every splat on the reference plane.
+  const ref = 2.4;
+  for (const z of [0.5, 1, 2.4, 6]) {
+    close(depthScale(z, ref, 1), 1, 1e-12);
+    close(z * depthScale(z, ref, 0), ref, 1e-12);
+  }
+  // A splat pushed through the eye reports a non-positive moved depth, which
+  // the shader's near cull and `pivotAt` both drop rather than drawing mirrored.
+  assert.equal(depthScale(0.1, ref, 5), 0);
+  // A value that cannot claim a number is the identity, not a bound.
+  assert.equal(depthScale(1, ref, Number.NaN), 1);
+  assert.equal(depthScale(1, 0, 3), 1);
+});
+
+test('the pivot resolves on the depth the shader draws, not the node’s own z', () => {
+  // One splat straight down the centre ray at z = 1. At 1x the pivot is its own
+  // depth; at half depth it is the moved z (ref + 0.5 * (z - ref)), because that
+  // is the surface the vertex shader draws and the crosshair must mark.
+  const positions = new Float32Array([0, 0, 1]);
+  close(pivotAt(positions, 1, 0, 0, 2, 1).z, 1, 1e-12);
+  close(pivotAt(positions, 1, 0, 0, 2, 0.5).z, 1.5, 1e-12);
+  close(pivotAt(positions, 1, 0, 0, 2, 0).z, 2, 1e-12);
+});
+
+// ------------------------------------------------- the studio's gestures
+
+test('tapping and then resolving is a fixed point, at every origin and Depth', () => {
+  // `SplatCameraTest`'s property, one platform over. The tap names the image
+  // position of the frontmost splat under the ray; the pivot resolved for that
+  // origin must be THAT splat. A tap that used the tapped screen fraction would
+  // drift with Pan and with the Depth knob — the bug the app fixed.
+  const fovy = sourceFovy(0.5);
+  const aspect = 1.4;
+  const proj = perspective(fovy, aspect, NEAR, FAR);
+  // A cloud whose splats have DISTINCT image positions, spaced wider than the
+  // pivot radius: the probe cloud is built as x*z, so several splats share one
+  // image position and "the frontmost under the ray" is ambiguous there — which
+  // is a property of that fixture, not of the tap.
+  const image: Array<[number, number, number]> = [
+    [-0.3, -0.2, 0.4], [-0.1, 0.15, 0.4], [0.12, -0.05, 0.4], [0.33, 0.22, 0.4],
+    [-0.24, 0.1, 0.9], [-0.02, -0.18, 0.9], [0.2, 0.06, 0.9], [0.38, -0.12, 0.9],
+    [-0.35, 0.18, 2.5], [-0.08, -0.22, 2.5], [0.16, 0.12, 2.5], [0.3, -0.16, 2.5],
+  ];
+  const positions = new Float32Array(image.flatMap(([u, v, z]) => [u * z, v * z, z]));
+  const count = image.length;
+  for (const depthMul of [1, 0.4, 2]) {
+    for (const [u, v, z] of image) {
+      // The image position the SHADER draws, Depth knob included: x / movedZ.
+      const moved = z * depthScale(z, refDepth, depthMul);
+      // A splat the knob pushes through the eye has no image position and is
+      // skipped by the shader and by the pick; a tap cannot name it.
+      if (!(moved > 1e-4)) continue;
+      const drawnX = (u * z) / moved;
+      const drawnY = (v * z) / moved;
+      // The tap ray -> the origin it names -> the ray that origin resolves: the
+      // pivot must be the SAME splat, depth knob included.
+      const origin = originForRay(positions, count, drawnX, drawnY, refDepth, depthMul, proj[0], proj[5]);
+      const [backX, backY] = originRay(fovy, aspect, origin.originX, origin.originY);
+      const picked = pivotAt(positions, count, drawnX, drawnY, refDepth, depthMul);
+      const rebuilt = pivotAt(positions, count, backX, backY, refDepth, depthMul);
+      close(origin.originX, drawnX * proj[0] * 0.5);
+      close(origin.originY, -drawnY * proj[5] * 0.5);
+      close(rebuilt.x, picked.x);
+      close(rebuilt.y, picked.y);
+      close(rebuilt.z, picked.z);
+      // And the pick is the splat that was tapped.
+      close(picked.x, u * z);
+      close(picked.y, v * z);
+    }
+  }
+});
+
+test('a tap ray undoes Pan and nothing else', () => {
+  // The drawn picture is shifted by Pan, so the source pixel under the finger is
+  // `ndc - shift`; without that subtraction a tap after a pan lands away from the
+  // point that was touched (the app's own regression).
+  const tapped = tapRay(0.4, -0.2, 0.1, -0.05, 2.9, 3.6);
+  close(tapped.tanX, (0.4 - 0.1) / 2.9, 1e-12);
+  close(tapped.tanY, -(-0.2 - -0.05) / 3.6, 1e-12);
+  // With no pan the ray is the source fraction itself.
+  const plain = tapRay(0.4, -0.2, 0, 0, 2.9, 3.6);
+  close(plain.tanX, 0.4 / 2.9, 1e-12);
+});
+
+test('Pan is a clip-space shift at every depth and does not move the eye', () => {
+  const plain = cloudCamera({
+    surfaceWidth: 1000,
+    surfaceHeight: 1400,
+    fovyDeg: sourceFovy(0.7631),
+    tiltX: 0,
+    tiltY: 0,
+    motion: 1,
+    positions: probes,
+    count: probeCount,
+    refDepth,
+  });
+  const panned = cloudCamera({
+    surfaceWidth: 1000,
+    surfaceHeight: 1400,
+    fovyDeg: sourceFovy(0.7631),
+    tiltX: 0,
+    tiltY: 0,
+    motion: 1,
+    panX: 75,
+    panY: -30,
+    positions: probes,
+    count: probeCount,
+    refDepth,
+  });
+  assert.deepEqual(Array.from(panned.eye), Array.from(plain.eye));
+  close(panned.shiftX, -2 * 75 / 1000, 1e-12);
+  close(panned.shiftY, 2 * -30 / 1400, 1e-12);
+  for (let i = 0; i < probeCount; i++) {
+    const a = projectPanned(plain, probes[i * 3], probes[i * 3 + 1], probes[i * 3 + 2]);
+    const b = projectPanned(panned, probes[i * 3], probes[i * 3 + 1], probes[i * 3 + 2]);
+    assert.ok(a && b);
+    close(b[0] - a[0], panned.shiftX, 1e-6);
+    close(b[1] - a[1], panned.shiftY, 1e-6);
+  }
+});
+
+test('the at-rest picture through the PANNED chain is the photograph for every origin', () => {
+  // The draw uses `projPanned`; the first test asserts `proj`. With Pan at 0
+  // they must agree exactly, which is what "the photograph at every origin"
+  // means for the matrix the renderer actually uploads.
+  for (const originX of [-0.5, 0, 1.3]) {
+    for (const originY of [-0.9, 0, 0.6]) {
+      const camera = cloudCamera({
+        surfaceWidth: 900,
+        surfaceHeight: 1600,
+        fovyDeg: sourceFovy(0.7631),
+        tiltX: 0,
+        tiltY: 0,
+        motion: 1,
+        originX,
+        originY,
+        positions: probes,
+        count: probeCount,
+        refDepth,
+      });
+      for (let i = 0; i < probeCount; i++) {
+        const drawn = projectPanned(camera, probes[i * 3], probes[i * 3 + 1], probes[i * 3 + 2]);
+        const source = sourceNdc(sourceFovy(0.7631), 900 / 1600, probes[i * 3], probes[i * 3 + 1], probes[i * 3 + 2]);
+        assert.ok(drawn && source);
+        close(drawn[0], source[0], 1e-5);
+        close(drawn[1], source[1], 1e-5);
+      }
+    }
+  }
+});
+
+test('Zoom is a crop of the cloud’s own camera, and Pan Z is the dolly', () => {
+  // The FOV row: fovy = the cloud's lens / zoom, clamped to the app's drawable
+  // band. 1x is the source camera, so the at-rest picture is the photograph.
+  close(cloudFovy(0.7631, 1), sourceFovy(0.7631), 1e-12);
+  assert.ok(cloudFovy(0.7631, 2) < cloudFovy(0.7631, 1));
+  assert.ok(cloudFovy(0.7631, 0.25) > cloudFovy(0.7631, 1));
+  assert.ok(cloudFovy(0, 4) >= 20);
+  // Pan Z is clamped like `SplatCamera.setCamDistScale`; a non-finite value is
+  // the source camera, not a bound.
+  assert.equal(clampCamDist(Number.NaN), 1);
+  assert.equal(clampCamDist(0.1), 0.5);
+  assert.equal(clampCamDist(9), 5);
+
+  // A dolly moves the rest eye: with camDist > 1 the source camera sits farther
+  // back along the cloud's own axis, and with camDist 1 it is exactly the source
+  // camera (the origin, looking down +z).
+  const one = cloudCamera({
+    surfaceWidth: 1000,
+    surfaceHeight: 1000,
+    fovyDeg: sourceFovy(0),
+    tiltX: 0,
+    tiltY: 0,
+    motion: 1,
+    positions: probes,
+    count: probeCount,
+    refDepth,
+  });
+  close(one.eye[0], 0, 1e-9);
+  close(one.eye[1], 0, 1e-9);
+  close(one.eye[2], 0, 1e-9);
+  const back = cloudCamera({
+    surfaceWidth: 1000,
+    surfaceHeight: 1000,
+    fovyDeg: sourceFovy(0),
+    tiltX: 0,
+    tiltY: 0,
+    motion: 1,
+    camDist: 2,
+    positions: probes,
+    count: probeCount,
+    refDepth,
+  });
+  close(back.eye[2], -CAM_DIST, 1e-6);
 });
 
 console.log(`splat: ${count} checks agree with the app and contract/splat`);
