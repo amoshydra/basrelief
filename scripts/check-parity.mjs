@@ -477,6 +477,80 @@ function checkLibraryParity() {
   }
 }
 
+// ------------------------------------------------------ ComfyUI prefs parity
+
+/**
+ * The ComfyUI prefs, held across the app's `SharedPreferences` keys and the
+ * gallery's `prefs.json`.
+ *
+ * The page stores what the phone stores, so a file copied between them has to
+ * mean the same thing: one key spelled differently is a value that silently
+ * disappears, and a history capped at a different depth is a chooser that orders
+ * the two sides differently. Like the library's key-set claim, this checks the
+ * shape and the one constant, because nothing here can run TypeScript or Java —
+ * the values themselves are `web/src/prefs.test.ts`'s.
+ */
+function checkComfyPrefsParity() {
+  const JAVA = 'android/app/src/main/java/com/amoshydra/basrelief/BuildDialog.java';
+  const WEB = 'web/src/prefs.ts';
+  const RANKING =
+    'android/core/src/main/java/com/amoshydra/basrelief/core/depth/ModelRanking.java';
+  const javaText = readFileSync(join(root, JAVA), 'utf8');
+  const webText = readFileSync(join(root, WEB), 'utf8');
+  const before = failures.length;
+
+  const javaKey = (constant) => {
+    const match = javaText.match(new RegExp(`${constant}\\s*=\\s*"([^"]+)"`));
+    return match ? match[1] : null;
+  };
+  const javaKeys = [
+    javaKey('KEY_HOST'),
+    javaKey('KEY_MODEL'),
+    javaKey('KEY_MODEL_HISTORY'),
+  ];
+  if (javaKeys.some((key) => key === null)) {
+    failures.push(
+      `could not read KEY_HOST/KEY_MODEL/KEY_MODEL_HISTORY from ${JAVA} — update this script`,
+    );
+  } else {
+    const list = webText.match(/PREF_KEYS\s*=\s*\[([^\]]*)\]/);
+    const webKeys = list
+      ? [...list[1].matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => m[1] ?? m[2])
+      : [];
+    const java = [...javaKeys].sort();
+    const web = [...webKeys].sort();
+    if (JSON.stringify(java) !== JSON.stringify(web)) {
+      failures.push(
+        `the ComfyUI prefs keys are ${java.join(', ')} in ${JAVA} but ` +
+          `${web.join(', ') || '(none)'} in ${WEB} — the page stores what the phone ` +
+          'stores, or a copied prefs file means something different on each side',
+      );
+    }
+    for (const key of javaKeys) {
+      if (!webText.includes(`'${key}'`)) {
+        failures.push(`${WEB} never names the pref key '${key}'`);
+      }
+    }
+  }
+
+  const javaCap = readNumber(RANKING, 'HISTORY_CAP');
+  const webCap = readNumber(WEB, 'MODEL_HISTORY_CAP');
+  if (javaCap === null || webCap === null) {
+    failures.push('could not read ModelRanking.HISTORY_CAP or MODEL_HISTORY_CAP — update this script');
+  } else if (javaCap !== webCap) {
+    failures.push(
+      `ModelRanking.HISTORY_CAP is ${javaCap} but web/src/prefs.ts caps the history at ` +
+        `${webCap} — the chooser would order the same server differently on each side`,
+    );
+  }
+
+  if (failures.length === before) {
+    console.log(
+      `parity: ComfyUI prefs keys match BuildDialog and the history cap is ${webCap}`,
+    );
+  }
+}
+
 // --------------------------------------------------------- modal architecture
 
 /**
@@ -650,6 +724,8 @@ function checkSharedRules() {
     'web/src/settings.test.ts',
     'web/src/library.ts',
     'web/src/library.test.ts',
+    'web/src/prefs.ts',
+    'web/src/prefs.test.ts',
     'web/src/store.ts',
     'web/src/mirror.ts',
     'web/src/picture.ts',
@@ -746,6 +822,7 @@ checkTestCounts();
 checkParity();
 checkSettingsParity();
 checkLibraryParity();
+checkComfyPrefsParity();
 checkModalInvariants();
 checkTiltSmoothing();
 checkSharedRules();

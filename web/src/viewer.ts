@@ -13,22 +13,25 @@ import {
   clampSharpBudget,
   describeComfyError,
   friendlyName,
-  getBaseUrl,
   getObjectInfo,
-  getRememberedModel,
   hasDepthNode,
   hasSharpStill,
-  rankModels,
-  rememberModel,
   runDepth,
   runSplat,
-  setBaseUrl,
   usableDepthModels,
   type ComfyPhase,
   type ObjectInfo,
 } from './comfy.ts';
 import { createCloudView, type CloudView } from './cloud.ts';
 import { colourPngBytes, packPng, packedFileName } from './pack.ts';
+import {
+  getComfyUrl,
+  getModelChoice,
+  getModelHistory,
+  rankModels,
+  selectModel,
+  setComfyUrl,
+} from './prefs.ts';
 import { createReliefView, type ReliefView } from './relief.ts';
 import {
   ADJUST_MAX,
@@ -1659,18 +1662,23 @@ export function openViewer(item: OpenableItem): void {
     let nodeInfo: ObjectInfo | null = null;
     let busy = false;
     let testSeq = 0;
+    /** The app's warning when `comfy_model` is no longer offered, or null. */
+    let savedGoneNote: string | null = null;
 
     dialog.body.append(caption('Server', true));
     const urlRow = inputRow({
       label: 'ComfyUI address',
-      value: getBaseUrl(),
+      value: getComfyUrl(),
       placeholder: '/comfy or http://host:8188',
       inputMode: 'url',
-      onInput: (value) => setBaseUrl(value),
+      onInput: (value) => setComfyUrl(value),
     });
     dialog.body.append(urlRow.element);
     dialog.body.append(
-      note('Kept for this tab only — the ComfyUI address is a session value, not a render value.'),
+      note(
+        'Saved in this browser with the library (prefs.json) — the app’s `comfy_url`, ' +
+          'not a render value, so it survives a reload.',
+      ),
     );
 
     const status = note('Not connected — test the address to see what this server can build.');
@@ -1736,7 +1744,12 @@ export function openViewer(item: OpenableItem): void {
             sub: model,
             onClick: () => {
               chosen = model;
-              rememberModel(model);
+              // The app records the SELECTION in the history, not the outcome:
+              // a checkpoint tapped and backed out of is still the one the user
+              // reaches for, so it heads the next Test connection's list. The
+              // saved model (`comfy_model`) moves at submission instead.
+              selectModel(model);
+              savedGoneNote = null;
               renderReliefTab();
               updatePrimary();
             },
@@ -1744,6 +1757,7 @@ export function openViewer(item: OpenableItem): void {
           row.classList.toggle('is-selected', model === chosen);
           list.append(row);
         }
+        if (savedGoneNote !== null) tabBody.append(note(savedGoneNote));
       }
       tabBody.append(caption('Output'));
       tabBody.append(
@@ -1812,6 +1826,7 @@ export function openViewer(item: OpenableItem): void {
       models = [];
       chosen = '';
       nodeInfo = null;
+      savedGoneNote = null;
       renderTab();
       try {
         const info = await getObjectInfo(dialogAbort.signal);
@@ -1824,8 +1839,24 @@ export function openViewer(item: OpenableItem): void {
             ? 'This server has depth nodes, but none this page can drive from one image plus its defaults.'
             : 'This server has no depth node this page can use.';
         } else {
-          models = rankModels(usable, getRememberedModel());
-          chosen = models[0];
+          // `ModelRanking.rank`: the history first, then discovery order. The
+          // selection is `BuildDialog.buildModelRows`': the saved model when the
+          // server still offers it, else the history's first entry — and when the
+          // saved one is gone the change is stated, because a swap nobody sees is
+          // a swap they blame the map for.
+          models = rankModels(usable, getModelHistory());
+          const saved = getModelChoice();
+          const savedIdx = models.indexOf(saved);
+          if (savedIdx >= 0) {
+            chosen = models[savedIdx];
+          } else {
+            chosen = models[0];
+            if (saved !== '') {
+              savedGoneNote =
+                `The model this page ran last (${friendlyName(saved)}) is not on this server, ` +
+                `so the selection moved to ${friendlyName(models[0])}.`;
+            }
+          }
         }
         const parts: string[] = [];
         parts.push(`${usable.length} usable depth ${usable.length === 1 ? 'model' : 'models'}`);

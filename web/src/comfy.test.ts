@@ -37,9 +37,7 @@ import {
   hasSharpStill,
   isMoGeModel,
   normaliseBaseUrl,
-  rankModels,
   sanitiseTag,
-  setBaseUrl,
   sharpSidecarName,
   sharpSplatName,
   sharpWorkflow,
@@ -47,6 +45,7 @@ import {
   type HistoryEntry,
   type ObjectInfo,
 } from './comfy.ts';
+import { setComfyUrl } from './prefs.ts';
 
 const contractDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'contract');
 
@@ -201,12 +200,6 @@ check('a node whose first output is not an image is not offered', () => {
   assert.deepEqual(usableDepthModels(info), []);
 });
 
-check('the remembered model is ranked first without inventing one', () => {
-  assert.deepEqual(rankModels(['a', 'b', 'c'], 'b'), ['b', 'a', 'c']);
-  assert.deepEqual(rankModels(['a', 'b'], 'gone'), ['a', 'b']);
-  assert.deepEqual(rankModels(['a', 'b'], ''), ['a', 'b']);
-});
-
 // ---------------------------------------------------------------- history
 
 check('an absent history entry is "still running", not a failure', () => {
@@ -275,12 +268,12 @@ check('the base URL normalises without inventing a scheme on the proxy path', ()
 });
 
 check('the CORS failure names both routes rather than saying nothing', () => {
-  setBaseUrl('http://box:8188');
+  setComfyUrl('http://box:8188');
   const sentence = describeComfyError(new ComfyError('network', 'the request failed', 'Failed to fetch'));
   assert.match(sentence, /Failed to fetch/);
   assert.match(sentence, /CORS/);
   assert.match(sentence, /\/comfy/);
-  setBaseUrl('/comfy');
+  setComfyUrl('/comfy');
 });
 
 check('friendly names read as models rather than class names', () => {

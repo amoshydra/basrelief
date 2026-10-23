@@ -728,8 +728,9 @@ export function segmentRow(options: SegmentRowOptions): HTMLElement {
 
 /**
  * A text field on a plate. Used by Generate depth for the ComfyUI base URL: the
- * studio writes that address to prefs, and this page keeps it in memory for the
- * session only — an address is not a render value, so it has no row to live on.
+ * studio writes that address to its prefs, and this page writes the app's own
+ * `comfy_url` to `prefs.json` beside the library — an address is not a render
+ * value, so it has no row to live on.
  */
 export function inputRow(options: {
   label: string;

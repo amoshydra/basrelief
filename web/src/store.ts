@@ -16,6 +16,7 @@
  *
  *     basrelief/
  *       library.json        the app's Library v5 blob (see library.ts)
+ *       prefs.json          the app's app prefs — comfy_url/model/history (see prefs.ts)
  *       playlists.json      optional, opaque — the app's own blob, copied not read
  *       item-<id>.<ext>     one colour image per row, original bytes
  *       item-<id>.splat     a Gaussian cloud, when a row has one

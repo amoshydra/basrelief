@@ -17,9 +17,9 @@
  * here: `AGENTS.md` records that it answers for the WRONG run, and every build
  * then finished instantly with the previous run's output.
  *
- * **The address is a session value, not a stored one.** The base URL is a
- * module-level value remembered for the tab's lifetime; the gallery stores the
- * library and its render values, and a server address is neither.
+ * **The address and the model are the app's prefs, not this module's.** They live
+ * in `prefs.ts` and are written to `prefs.json` beside `library.json`; this module
+ * only reads them at the request and reports the model a run was submitted with.
  *
  * The transport is plain `fetch`. It needs CORS when the page and ComfyUI are on
  * different origins; `vite.config.ts` proxies `/comfy` in development, which is
@@ -29,6 +29,12 @@
  */
 
 import { isPngSignature } from './deph.ts';
+import {
+  DEFAULT_BASE_URL,
+  getComfyUrl,
+  getModelChoice,
+  setModelChoice,
+} from './prefs.ts';
 import { parseSidecar, type SplatSidecar } from './splat.ts';
 
 // --------------------------------------------------------------------- types
@@ -89,49 +95,23 @@ export class ComfyError extends Error {
   }
 }
 
-// ---------------------------------------------------------------- the session
-
-let sessionBase = '/comfy';
-let sessionModel = '';
+// ------------------------------------------------------------------ the address
 
 /**
- * The ComfyUI base URL for this tab.
+ * The ComfyUI base URL, formatted for a request.
  *
- * `/comfy` is the default because `pnpm dev` proxies it, and that is the path
- * this gallery is run through. A typed address is kept exactly as typed (minus a
- * trailing slash); a bare `host:port` gets `http://`, because `fetch` would
- * otherwise read it as a relative path.
+ * The stored value comes from `prefs.ts`; `/comfy` is what an empty one means,
+ * because `pnpm dev` proxies it and that is the path this gallery is run through.
+ * A typed address is kept exactly as typed (minus a trailing slash); a bare
+ * `host:port` gets `http://`, because `fetch` would otherwise read it as a
+ * relative path.
  */
 export function normaliseBaseUrl(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) return '/comfy';
-  if (trimmed.startsWith('/')) return trimmed.replace(/\/+$/, '') || '/comfy';
+  if (!trimmed) return DEFAULT_BASE_URL;
+  if (trimmed.startsWith('/')) return trimmed.replace(/\/+$/, '') || DEFAULT_BASE_URL;
   if (/^https?:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, '');
   return `http://${trimmed}`.replace(/\/+$/, '');
-}
-
-export function getBaseUrl(): string {
-  return sessionBase;
-}
-
-/**
- * Remember an address for this tab.
- *
- * Stored as typed (trimmed) rather than normalised on every keystroke: typing
- * `http://` would otherwise be rewritten to `http:` mid-word. The request path
- * normalises once, in `endpoint`.
- */
-export function setBaseUrl(value: string): void {
-  const trimmed = value.trim();
-  sessionBase = trimmed || '/comfy';
-}
-
-export function getRememberedModel(): string {
-  return sessionModel;
-}
-
-export function rememberModel(model: string): void {
-  sessionModel = model;
 }
 
 // ------------------------------------------------------------------ the graph
@@ -606,14 +586,6 @@ export function hasDepthNode(info: ObjectInfo): boolean {
   return Object.keys(info).some(looksLikeDepthModel);
 }
 
-/** The most-recently-used model first, then discovery order. */
-export function rankModels(models: readonly string[], remembered: string): string[] {
-  if (!remembered) return [...models];
-  const index = models.indexOf(remembered);
-  if (index <= 0) return [...models];
-  return [models[index], ...models.slice(0, index), ...models.slice(index + 1)];
-}
-
 /** Human names for the chooser, matching `ComfyWorkflow.friendlyName`. */
 export function friendlyName(name: string): string {
   if (name.includes('DepthAnythingV2')) return 'Depth Anything V2';
@@ -728,7 +700,7 @@ export function classifyHistory(entry: HistoryEntry | null, normalExpected: bool
 // ----------------------------------------------------------------- transport
 
 function endpoint(path: string): string {
-  return `${normaliseBaseUrl(sessionBase)}${path}`;
+  return `${normaliseBaseUrl(getComfyUrl())}${path}`;
 }
 
 function detailOf(error: unknown): string {
@@ -1002,14 +974,17 @@ export async function runDepth(options: DepthRunOptions): Promise<DepthRunResult
       'Expected a single image-to-image depth node, or the MoGe pipeline (LoadMoGeModel, MoGeInference, MoGeRender).',
     );
   }
-  const remembered = getRememberedModel();
+  const remembered = getModelChoice();
   const model =
     options.model && models.includes(options.model)
       ? options.model
       : remembered && models.includes(remembered)
         ? remembered
         : models[0];
-  rememberModel(model);
+  // `comfy_model`: the app writes this at submission, not at the tap. The
+  // chooser's history is `selectModel`'s, and a selection with no run is only a
+  // history entry.
+  setModelChoice(model);
   const normalExpected = isMoGeModel(info, model);
 
   phase('uploading');
@@ -1156,7 +1131,7 @@ export async function runSplat(options: SplatRunOptions): Promise<SplatRunResult
  * with no proxy — the other half of the same mistake.
  */
 export function describeComfyError(error: unknown): string {
-  const base = normaliseBaseUrl(getBaseUrl());
+  const base = normaliseBaseUrl(getComfyUrl());
   if (error instanceof DOMException && error.name === 'AbortError') {
     return 'Stopped.';
   }

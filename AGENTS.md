@@ -239,9 +239,11 @@ unaffected.
     because ComfyUI's CSRF check compares Origin with the Host and refuses every
     POST with HTTP 403 otherwise — measured: a direct browser upload failed with
     403 until the header was removed. A failed preflight is a sentence in the
-    dialog naming both routes, never a silent nothing. The address is remembered
-    for the tab only, because a server address is a session value and not a
-    render value.
+    dialog naming both routes, never a silent nothing. **The address and the chosen
+    model are stored, not session values**: `web/src/prefs.ts` writes the app's own
+    `comfy_url`, `comfy_model` and `comfy_model_history` to `prefs.json` beside
+    `library.json`, with the app's defaults, so a reload does not make you retype
+    an address or re-pick a model — see the prefs bullet below.
 - **The studio's sheet is MIRRORED IN FULL: every group and row is drawn.** A row
   that can act is wired to the real camera; a row that cannot is disabled with a
   sentence. `web/src/sheet.ts` is the vocabulary — the three row roles
@@ -275,7 +277,8 @@ unaffected.
     live wallpaper.
   - **A cloud build is the studio's Splat tab, and it is here too.**
     `web/src/comfy.ts` also carries `SharpStill`'s two-node graph, the BUDGET
-    slider from the app's ladder (a session value, like the address) and the
+    slider from the app's ladder (a session value: read at submission, never
+    stored) and the
     `.splat`/sidecar fetch; the asset row's Make one / Rebuild / Regenerate /
     Delete follow `BuildTab`'s ranking. The result is written to the store under
     the row's own cloud name (`item-<id>.splat`) and named on `splat` with its
@@ -309,7 +312,7 @@ unaffected.
     clipped. The invariant is that every track starts at the same x.
 - **The gallery is the library, and the store has a shape you can explain on
   disk.** It is one OPFS directory, `basrelief`: `library.json` (the app's
-  `Library` v5 blob),
+  `Library` v5 blob), `prefs.json` (the app's app/device prefs — see below),
   `playlists.json` if one arrived in a backup (opaque, never read here), and one
   file per row named `item-<id>.<ext>` / `item-<id>.splat`. Flat and
   bare-filename, because `PrefFiles`' rule is what makes a backup portable. The
@@ -318,6 +321,29 @@ unaffected.
   half-states are an invisible orphan rather than a row that cannot open. The
   index is parsed once per load and re-written only by an edit — never on load,
   because a rewrite would drop keys this build does not know.
+- **`prefs.json` is the app's prefs, not its library, and the reason is the app's
+  own.** A ComfyUI address and a model choice are app/device settings with no
+  photograph to live on, so the phone keeps them under `comfy_url`,
+  `comfy_model` and `comfy_model_history` in SharedPreferences while the rows go
+  in the `library` blob. `web/src/prefs.ts` writes those three keys in one
+  `prefs.json` beside `library.json`, and the gallery reads it once at startup and
+  binds a single writer to it — the same arrangement as the app's `comfyBase`/
+  `savedModel`/`modelHistory` read when a panel opens and written at the events
+  that change them. A missing key is the app's default, never a guess:
+  `comfy_url` is `''` (this page draws its dev-proxy `/comfy` for that),
+  `comfy_model` is absent, and `comfy_model_history` is `''`. **The history's
+  stored form is the app's newline string**, not a JSON array, because that is
+  what `ModelRanking.encode` writes; the rule is `ModelRanking`'s too — most
+  recent first, then discovery order, capped at four and deduplicated, a model the
+  server no longer offers skipped rather than invented — and it is recorded **on
+  the selection**, not on a finished run, while `comfy_model` is the different
+  fact written at submission. A blob that is not JSON, or not an object, is the
+  defaults plus a sentence and the original kept as `prefs.corrupt.json`; a single
+  key of the wrong type is that key's default rather than a dead gallery; keys
+  this build does not know are carried through a rewrite. Nothing is written on
+  load, for the index's reason. A backup folder copies `prefs.json` like any other
+  store file, but Restore is library-driven and leaves the running device's
+  settings alone.
 - **`library.json` is `Library`'s schema, not a new one.** `web/src/library.ts`
   reads and writes the same blob `Library.java` does (`surfaces.home`/`lock`,
   `render`, `archived`, `focal`, `splat`, `splat_lens`, the opaque `video`), and
@@ -344,7 +370,8 @@ unaffected.
   store, "not saved — this tab only"), quota (`QuotaExceededError` named, the
   card dropped and no row written), a revoked folder (`NotAllowedError` →
   *unavailable*), a folder that is gone (`NotFoundError` → *unavailable*), a
-  corrupt blob, and a row naming a file the store does not have (the row is kept
+  corrupt blob (the library's or the prefs'), and a row naming a file the store
+  does not have (the row is kept
   and the card says what it wanted). The mirror's handle lives in IndexedDB
   because a `FileSystemHandle` is structured-cloneable; the *permission* does not
   survive a reload, which is why `needs-permission` is a state with a button
@@ -446,9 +473,10 @@ fixture still holds its four hard records).
   no browser API, so it loads in Node unmodified. The gallery's third copy is
   `web/src/deph.test.ts`, run as
   `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
-  test framework) — which is now nine files: the `dePH` reader and writer, the
+  test framework) — which is now ten files: the `dePH` reader and writer, the
   media states, the splat record/camera and its Depth mapping, the relief camera
-  (`camera.test.ts`), the settings body, the library index, the picture/light
+  (`camera.test.ts`), the settings body, the library index, the app's prefs and
+  `ModelRanking`'s history rule (`prefs.test.ts`), the picture/light
   mappings, and the ComfyUI still/cloud graph and history reader.
 
 ## Build and test
@@ -500,7 +528,8 @@ then `pnpm run build` (or `pnpm dev` to serve it over HTTPS for the gyro). See
 Web gallery (a product): in `web/`, `pnpm install`, then `pnpm dev` (HTTPS on
 :5173, so a phone on the LAN can use the gyro) or `pnpm build` + `pnpm preview`.
 `pnpm test` runs the `contract/deph/` fixture test, the writer's round trip, the
-media-state test, the splat test, and the settings and picture contracts;
+media-state test, the splat test, the settings, library and prefs contracts, and
+the picture/light mappings;
 `pnpm typecheck` is `tsc --noEmit`. See `web/README.md`.
 
 ## Architecture

@@ -7,8 +7,10 @@ map generated on your own ComfyUI server; a relief can be saved back out as a
 packed PNG. **Nothing is uploaded, and the library is saved in this browser** —
 the rows, their per-photo look and the Renderer choice survive a refresh, and a
 folder you pick can hold a **write-through copy** of the whole library (Back up
-now / Restore) in the Android app's own schema. The ComfyUI address stays a
-session value, because a server address is not a render value.
+now / Restore) in the Android app's own schema. The ComfyUI address and the chosen
+model are saved too — `prefs.json` beside `library.json`, under the app's own
+`comfy_url`, `comfy_model` and `comfy_model_history` keys — so a reload does not
+make you retype them.
 
 The product shape is *"someone sends you a PNG and you drop it on a page."* There
 is no account, no server and no cloud library, which is also why this exists: no
@@ -291,9 +293,9 @@ it is why the proxy is the path that works rather than a convenience.
 A **static build has no proxy**, so it must either be served behind a proxy of
 your own or talk to ComfyUI directly with ComfyUI started with
 `--enable-cors-header`. `pnpm preview` also uses the dev proxy. The address is
-remembered **for this tab only**: a server address is a session value, not a
-render value, so it has no row to live on. A failed request says both routes
-explicitly ("a direct cross-origin
+saved with the library in `prefs.json` (the app's `comfy_url`), so it survives a
+reload; it is not a render value and has no row to live on. A failed request says
+both routes explicitly ("a direct cross-origin
 request needs ComfyUI to allow CORS… or run pnpm dev and use /comfy"), and a
 static build's `/comfy` 404 says that this is what happened.
 
@@ -323,7 +325,7 @@ pnpm install
 pnpm dev        # HTTPS on :5173
 pnpm build      # typecheck + static bundle in web/dist
 pnpm preview    # serve the built bundle
-pnpm test       # all eight contract/state tests, under plain Node
+pnpm test       # all ten contract/state tests, under plain Node
 pnpm typecheck  # tsc --noEmit
 ```
 
@@ -423,6 +425,7 @@ permission, works on a phone, and holds:
 ```
 basrelief/
   library.json              the Android app's Library v5 blob
+  prefs.json                the app's prefs: comfy_url, comfy_model, comfy_model_history
   playlists.json            optional, opaque — copied, never read here
   item-<id>.<ext>           one colour image per row, original bytes
   item-<id>.splat           a Gaussian cloud, when a row has one
@@ -438,6 +441,19 @@ import, edit, delete or Clear can overwrite it). `contract/library/cases.json` i
 the shared statement of that schema. Filenames are bare, never paths, which is
 what makes a backup portable.
 
+`prefs.json` is the app's **prefs**, not more of its library: a ComfyUI address and
+a model choice are device/app settings, so the phone keeps them under
+`comfy_url`, `comfy_model` and `comfy_model_history` in SharedPreferences while
+the rows go in the `library` blob. `src/prefs.ts` writes those same three keys,
+with the app's defaults (no address, no saved model, no history), and a history in
+the app's **newline form** — `ModelRanking`'s `encode`/`decode` — so a
+`prefs.json` copied between the two means the same thing. The history is
+`ModelRanking`'s rule: most recent first, then discovery order, four deep and
+deduplicated, a model the server no longer offers skipped rather than invented,
+recorded on the **selection** rather than a finished run. A corrupt blob is the
+defaults with a sentence and the original kept as `prefs.corrupt.json`; one
+wrong-typed key falls back to that key's default; unknown keys survive a rewrite.
+
 **A picked folder is a write-through copy, never a second truth.** This is the
 app's decision (`TODO.md`): a folder is a *permission* — revoked, unmounted,
 offline — and with a folder as truth every render path needs an "unavailable"
@@ -448,7 +464,9 @@ state and a missing folder becomes an empty gallery. So:
   survive: `queryPermission` answers `prompt`, which is the **Allow the folder**
   button, not a failure.
 - **Back up now** writes every stored file, then `library.json` **last**, so an
-  interrupted backup never names a file it did not copy.
+  interrupted backup never names a file it did not copy. `prefs.json` is copied
+  like any other store file; **Restore** is library-driven and does not write
+  device settings back over the running browser's.
 - **Restore** reads the folder's `library.json`, validates it, copies the files it
   names plus an optional `playlists.json`, then writes the index last. A file the
   folder is missing is named in the sentence and the row is kept, with the card
@@ -486,7 +504,7 @@ web/
   src/main.ts         file intake: picker + whole-window drag & drop
   src/gallery.ts      the library: cards, inspection, imports and per-row writes
   src/library.ts      the Library v5 blob: reader, writer, names, sort (pure, tested)
-  src/store.ts        OPFS (and the memory fallback): the files and library.json
+  src/store.ts        OPFS (and the memory fallback): the files and the two blobs
   src/mirror.ts       a picked folder: the handle in IndexedDB, Back up / Restore
   src/media.ts        the one media classifier + formatting (pure, tested)
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
@@ -494,6 +512,7 @@ web/
   src/splat.ts        the .splat record, the cloud camera, the lens, the sort (pure, tested)
   src/camera.ts       the relief camera: CameraModel's frame, tap and heightAt (pure, tested)
   src/settings.ts     the SurfaceSettings schema: ranges, defaults, clamps (pure, tested)
+  src/prefs.ts        the app's prefs: comfy_url/model/history + ModelRanking's rule (pure, tested)
   src/picture.ts      brightness, shadow and the light vector (pure, tested)
   src/comfy.ts        the ComfyUI client: the depth and SHARP graphs, the poll, the fetch
   src/sheet.ts        the studio's bottom sheet: rows, grip, captions, the slider
@@ -508,6 +527,7 @@ web/
   src/camera.test.ts  the relief camera: at-rest, turntable, Pan and the tap round trip
   src/settings.test.ts  contract/settings: ranges, bodies, clamps and junk
   src/library.test.ts   contract/library: the populated blob, defaults, flat and junk
+  src/prefs.test.ts     the prefs blob, the history form and the ranking rule
   src/picture.test.ts   the two Picture mappings and the light convention
   src/comfy.test.ts     the depth and SHARP graphs, the tag rule, the history gates
 ```

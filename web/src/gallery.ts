@@ -24,6 +24,15 @@ import {
 } from './media.ts';
 import { parseSidecar } from './splat.ts';
 import {
+  PREFS_CORRUPT_FILE,
+  PREFS_FILE,
+  bindPrefsSink,
+  hydratePrefs,
+  readPrefs,
+  writePrefs,
+  type AppPrefs,
+} from './prefs.ts';
+import {
   LIBRARY_FILE,
   describeStoreError,
   openStore,
@@ -146,7 +155,62 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     options.notice.classList.toggle('is-warn', warn);
   }
 
+  /**
+   * Add a sentence without dropping one already shown.
+   *
+   * Two blobs can be unreadable at once, and the prefs are read after the
+   * library; a plain `notice` would let one broken file's sentence disappear
+   * behind the other's.
+   */
+  function noticeMore(text: string): void {
+    const shown =
+      options.notice.hidden || !options.notice.textContent ? '' : `${options.notice.textContent} `;
+    notice(`${shown}${text}`, true);
+  }
+
   if (storeMessage !== null) notice(storeMessage, true);
+
+  // ------------------------------------------------------------------- prefs
+  //
+  // The app's prefs, not its library: a server address and a model choice are
+  // device/app settings, so they live in their own blob beside `library.json`
+  // (`prefs.ts`). Read before anything can open a viewer, so the first address
+  // the build dialog shows is the stored one, and hydrate without writing — a
+  // rewrite on load would drop keys this build does not know.
+
+  let prefsRaw: string | null = null;
+  let prefsReadError: string | null = null;
+  try {
+    prefsRaw = await store.readText(PREFS_FILE);
+  } catch (err) {
+    prefsReadError =
+      `The saved ComfyUI settings could not be read (${describeStoreError(err)}); ` +
+      'this page starts from the app’s defaults.';
+  }
+  const prefsRead = readPrefs(prefsRaw);
+  hydratePrefs(prefsRead.prefs);
+  const prefsExtra = prefsRead.extra;
+  if (prefsRead.status === 'corrupt' && prefsRaw !== null) {
+    // The `library.corrupt.json` rule: keep the only record of what the file said.
+    try {
+      await store.writeText(PREFS_CORRUPT_FILE, prefsRaw);
+    } catch {
+      // A full disk can refuse the copy too; the sentence already names the file.
+    }
+  }
+
+  /** One chain, so two keystrokes cannot interleave two blobs. */
+  let prefsChain: Promise<void> = Promise.resolve();
+  bindPrefsSink((prefs: AppPrefs) => {
+    // Capture the text NOW: a later change must write the newer blob, not
+    // whatever the in-memory values look like when this write finishes.
+    const text = writePrefs(prefs, prefsExtra);
+    prefsChain = prefsChain
+      .then(() => store.writeText(PREFS_FILE, text))
+      .catch((err) => {
+        notice(`Could not save the ComfyUI settings: ${describeStoreError(err)}`, true);
+      });
+  });
 
   // ------------------------------------------------------------------- writes
 
@@ -1060,6 +1124,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
   options.clear.addEventListener('click', () => void clear());
 
   await load();
+
+  // After the library's own sentence, so neither can hide the other: both blobs
+  // can be unreadable, and the prefs are the second one read.
+  const prefsMessage = prefsRead.message ?? prefsReadError;
+  if (prefsMessage !== null) noticeMore(prefsMessage);
 
   return {
     get items(): readonly GalleryItem[] {
