@@ -59,6 +59,13 @@ function checkDocLinks() {
   const GENERATED = new Set(['android/debug.keystore', 'debug.keystore']);
   let generated = 0;
 
+  // `.design/` is working material that is deliberately not published (see the
+  // note at the top of this file). AGENTS.md cites it so the author can find the
+  // sketch a decision came from; a clone will never have it, and requiring it
+  // would mean the local check passes and CI fails — the same trap the generated
+  // keystore set. */
+  let unpublished = 0;
+
   for (const span of pathish) {
     // Not repo paths: absolute host/device locations (/tmp, /usr/bin/env),
     // ~ and $VAR expansions, and shebangs. Their absence here says nothing.
@@ -72,6 +79,10 @@ function checkDocLinks() {
     }
     if (GENERATED.has(span)) {
       generated++;
+      continue;
+    }
+    if (span.startsWith('.design/')) {
+      unpublished++;
       continue;
     }
     // API family shorthand: `setTranslationX/Y`, `width/height`. Two bare
@@ -106,7 +117,8 @@ function checkDocLinks() {
   console.log(
     `doc links: ${seen.size} repo paths checked, ` +
       `${hostPaths} host paths skipped, ${platform} platform references skipped, ` +
-      `${generated} generated artefacts tolerated`
+      `${generated} generated artefacts tolerated, ` +
+      `${unpublished} unpublished-tree references`
   );
 }
 
