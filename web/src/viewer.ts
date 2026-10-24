@@ -31,6 +31,7 @@ import {
   rankModels,
   selectModel,
   setComfyUrl,
+  comfyUrlIsSet,
 } from './prefs.ts';
 import { createReliefView, type ReliefView } from './relief.ts';
 import {
@@ -222,6 +223,9 @@ interface BuildState {
   /** The last failure's own words, or null. */
   failed: string | null;
 }
+
+const NO_SERVER =
+  'No ComfyUI server configured. Enter an address, or this page can show and tune photos but not build them.';
 
 export function openViewer(item: OpenableItem): ViewerHandle {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1777,12 +1781,24 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     dialog.body.append(caption('Server', true));
     const urlRow = inputRow({
       label: 'ComfyUI address',
-      value: getComfyUrl(),
+      value: comfyUrlIsSet() ? getComfyUrl() : '',
       placeholder: '/comfy or http://host:8188',
       inputMode: 'url',
-      onInput: (value) => setComfyUrl(value),
+      // Typing is not a commit; the blur and Enter handlers below are.
+      onInput: () => undefined,
     });
     dialog.body.append(urlRow.element);
+    // Committed on release, not on every keystroke: `onInput` would persist a
+    // half-typed `https://foo:818` and the next reload would present it as the
+    // user's own server being down. The sheet's rule for every other control.
+    const urlInput = urlRow.element.querySelector('input');
+    urlInput?.addEventListener('blur', () => setComfyUrl(urlInput.value));
+    urlInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        setComfyUrl(urlInput.value);
+        urlInput.blur();
+      }
+    });
     dialog.body.append(
       note(
         'Saved in this browser with the library (prefs.json) — the app’s `comfy_url`, ' +
@@ -1790,7 +1806,24 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       ),
     );
 
-    const status = note('Not connected — test the address to see what this server can build.');
+    const clearRow = actionRow({
+      label: 'Clear address',
+      sub: 'Forget this server. The library, the photos and the look are untouched.',
+      onClick: () => {
+        setComfyUrl('');
+        if (urlInput) urlInput.value = '';
+        models = [];
+        chosen = '';
+        status.textContent = NO_SERVER;
+      },
+    });
+    dialog.body.append(clearRow);
+
+    const status = note(
+      comfyUrlIsSet()
+        ? 'Not connected — test the address to see what this server can build.'
+        : NO_SERVER,
+    );
     status.setAttribute('role', 'status');
     dialog.body.append(status);
 

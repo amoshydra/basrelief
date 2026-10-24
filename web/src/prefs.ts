@@ -70,6 +70,18 @@ export const PREFS_CORRUPT_FILE = 'prefs.corrupt.json';
  */
 export const DEFAULT_BASE_URL = '/comfy';
 
+/**
+ * Whether a server has been chosen at all.
+ *
+ * `getComfyUrl()` falls back to the dev proxy so `pnpm dev` works with no
+ * configuration, but an empty `comfy_url` on a published page means "none was
+ * set" — and reporting that as a failure to reach `/comfy` would blame a server
+ * the visitor never named.
+ */
+export function comfyUrlIsSet(): boolean {
+  return current.comfyUrl !== '';
+}
+
 /** The app's three ComfyUI keys, and the whole of what that group reads or writes. */
 export const PREF_KEYS = ['comfy_url', 'comfy_model', 'comfy_model_history'] as const;
 
