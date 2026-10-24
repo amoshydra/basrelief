@@ -27,7 +27,7 @@
  */
 import assert from 'node:assert/strict';
 
-import { comfyUrlIsSet,
+import {
   MODEL_HISTORY_CAP,
   PREF_KEYS,
   SHEET_OPEN_KEY,
