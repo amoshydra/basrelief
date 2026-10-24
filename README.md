@@ -120,6 +120,15 @@ The web gallery's folder picker needs a Chromium desktop; OPFS works everywhere.
 
 GPL-3.0 — see [LICENSE](LICENSE).
 
+This is a copyleft licence: you may use, study, modify and redistribute this
+work, and a fork must stay under the same terms and publish its source. What it
+does **not** permit is turning any part of it into a closed product, which is
+the point. `server/comfy-node/` imports ComfyUI, which is itself GPL-3.0, so the
+node was never able to be permissively licensed anyway.
+
+Relicensed from MIT before any distribution; no copy was ever published under
+the earlier terms.
+
 ## Credits
 
 - [three.js](https://threejs.org) (MIT) renders the gallery's relief surface and
