@@ -734,6 +734,17 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         });
       },
     });
+    // Android's studio has no tilt switch: the sensor is simply on. Ask on open
+    // instead, which is the one moment the platform accepts a permission prompt
+    // -- it must be inside the gesture that showed the picture. A browser that
+    // refuses leaves the row off and says so, and dragging still pans.
+    if (tilt) {
+      void tilt.start().then((started) => {
+        if (closed || !started) return;
+        row.set(true);
+        row.setSub('Using the sensor. Tilt the device, or drag to pan.');
+      });
+    }
     return row;
   }
 

@@ -670,6 +670,15 @@ summary:focus-visible {
  * visibility change, nothing to pop.
  */
 
+/* Android's `dimWhileInteracting`: holding a slider drops the sheet's plate to
+   5 % (`DIM_ALPHA` in MainActivity) so the render shows through the finger that
+   is changing it. `:has()` because a pointer drag on the track is exactly an
+   `:active` state, and this must not add a second source of truth for the
+   plate -- `apply()` still owns every other value it writes. */
+.sheet:has(.bslider-track:active) {
+  background: rgba(22, 26, 32, 0.05) !important;
+}
+
 .sheet-strip {
   flex: none;
   position: relative;
