@@ -2710,8 +2710,7 @@ every library write took the app down, so any gallery tap crashed it.
   collapse fraction itself.
   **But the band was then the wrong fix, in the other direction**, and the user had to
   say so a second time: *the height did not follow the drag and then collapsed all at once; a bottom sheet's height should track the finger.*
-  My first reading of *"the shrinkage shouldn't happen until at the very end of the
-  bottom"* was "hold until the last 5%", which is a bottom sheet that ignores four fifths
+  My first reading of *the shrink should happen only at the very end of the travel* was "hold until the last 5%", which is a bottom sheet that ignores four fifths
   of your drag and then snaps shut. **So the geometry has NO band at all: the height ramps
   across the whole travel, because that is what dragging a bottom sheet down IS.** The band
   survives in exactly one place -- the content's OPACITY, asked for twice, pinned to

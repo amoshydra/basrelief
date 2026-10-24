@@ -2298,7 +2298,7 @@ final class Gallery {
      * The grid's one primary button: leaving is the reason the grid is up.
      *
      * <p>Primary, not another plate, because while picking it is also the exit
-     * from the mode — the visible answer to "how do I stop picking". It clears
+     * from the mode — the visible answer to how to stop picking. It clears
      * the set through {@link #dismissGrid}, the same exit BACK takes, so there is
      * one way out rather than two that could disagree.
      */

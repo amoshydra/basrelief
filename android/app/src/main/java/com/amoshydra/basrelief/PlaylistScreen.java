@@ -248,8 +248,8 @@ final class PlaylistScreen {
      * through — or the running row, filled and bordered in the accent.
      *
      * <p>The running state is the row's own fill rather than a badge alone,
-     * because the question "which of these is actually changing my wallpaper"
-     * is answered by scanning the list, not by reading each row. The chip and
+     * because which row is actually changing the wallpaper is answered by
+     * scanning the list, not by reading each row. The chip and
      * the status sentence then say where and when; the fill says which.
      */
     private LinearLayout option(boolean rotating) {
