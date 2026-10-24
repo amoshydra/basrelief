@@ -30,6 +30,8 @@ import assert from 'node:assert/strict';
 import {
   MODEL_HISTORY_CAP,
   PREF_KEYS,
+  SHEET_OPEN_KEY,
+  SHEET_POS_KEY,
   bindPrefsSink,
   decodeHistory,
   defaultPrefs,
@@ -37,6 +39,7 @@ import {
   getComfyUrl,
   getModelChoice,
   getModelHistory,
+  getSheetPosition,
   hydratePrefs,
   prefsNow,
   rankModels,
@@ -45,6 +48,7 @@ import {
   selectModel,
   setComfyUrl,
   setModelChoice,
+  setSheetPosition,
   writePrefs,
 } from './prefs.ts';
 
@@ -91,6 +95,7 @@ test('the three keys are read under the app’s own names', () => {
 
 test('the history is stored in the app’s newline form, not as a JSON array', () => {
   const text = writePrefs({
+    ...defaultPrefs(),
     comfyUrl: 'http://box:8188',
     comfyModel: '',
     comfyModelHistory: ['b', 'a'],
@@ -111,6 +116,7 @@ test('a default value is written nowhere, so an untouched file keeps its bytes',
 
 test('a write is what the reader reads back, history and all', () => {
   const prefs = {
+    ...defaultPrefs(),
     comfyUrl: 'http://box:8188',
     comfyModel: 'm.pt',
     comfyModelHistory: ['m.pt', 'n.pt'],
@@ -133,7 +139,7 @@ test('a key this build does not know is carried through a rewrite', () => {
 
 test('a known key parked in the extra map cannot overwrite the real one', () => {
   const text = writePrefs(
-    { comfyUrl: 'http://real:8188', comfyModel: '', comfyModelHistory: [] },
+    { ...defaultPrefs(), comfyUrl: 'http://real:8188' },
     { comfy_url: 'http://stale:1' },
   );
   const body = JSON.parse(text) as Record<string, unknown>;
@@ -213,6 +219,7 @@ test('hydrating writes nothing, because a load must not rewrite the file', () =>
   const saved: string[] = [];
   bindPrefsSink((prefs) => saved.push(JSON.stringify(prefs)));
   hydratePrefs({
+    ...defaultPrefs(),
     comfyUrl: 'http://box:8188',
     comfyModel: 'moge',
     comfyModelHistory: ['moge'],
@@ -228,7 +235,7 @@ test('a selection is the history’s signal and not the run’s', () => {
   const saved: Array<ReturnType<typeof prefsNow>> = [];
   bindPrefsSink((prefs) => saved.push(prefs));
   hydratePrefs({
-    comfyUrl: '',
+    ...defaultPrefs(),
     comfyModel: 'already-run.pt',
     comfyModelHistory: ['already-run.pt'],
   });
@@ -266,12 +273,52 @@ test('the proxy is the empty address, in one spelling', () => {
 });
 
 test('prefsNow is a copy, so a writer cannot mutate the live values', () => {
-  hydratePrefs({ comfyUrl: '', comfyModel: '', comfyModelHistory: ['a'] });
+  hydratePrefs({ ...defaultPrefs(), comfyModelHistory: ['a'] });
   const snapshot = prefsNow();
   snapshot.comfyModelHistory.push('b');
   snapshot.comfyUrl = 'http://wrong';
   assert.deepEqual(getModelHistory(), ['a']);
   assert.equal(getComfyUrl(), '/comfy');
+});
+
+// ----------------------------------------------------------- the sheet position
+
+test('the sheet’s two positions are the app’s two keys, and a default is written nowhere', () => {
+  assert.deepEqual([SHEET_POS_KEY, SHEET_OPEN_KEY], ['sheet_pos', 'sheet_open_pos']);
+  assert.equal(writePrefs({ ...defaultPrefs(), sheetPos: 0.42 }), '{"sheet_pos":0.42}');
+  // `sheet_open_pos` exists because `sheet_pos` is 1.0 while the sheet is away and
+  // cannot also be the place to return to. A collapse must not overwrite it.
+  const away = readPrefs(writePrefs({ ...defaultPrefs(), sheetPos: 1, sheetOpen: 0.42 }));
+  assert.equal(away.prefs.sheetPos, 1);
+  assert.equal(away.prefs.sheetOpen, 0.42);
+});
+
+test('a stored fraction out of range is clamped, and rubbish is no position', () => {
+  assert.equal(readPrefs(JSON.stringify({ sheet_pos: 1.4 })).prefs.sheetPos, 1);
+  for (const value of [-1, '0.4', null, true, [0.5]]) {
+    assert.equal(readPrefs(JSON.stringify({ sheet_pos: value })).prefs.sheetPos, null);
+  }
+  // The app's `-1` sentinel is "nothing stored", and so is an absent key.
+  assert.equal(readPrefs(JSON.stringify({ sheet_pos: -1 })).prefs.sheetPos, null);
+  assert.equal(readPrefs('{}').prefs.sheetPos, null);
+});
+
+test('a rest writes the fraction, and only an open sheet writes where to return', () => {
+  const saved: Array<ReturnType<typeof prefsNow>> = [];
+  bindPrefsSink((prefs) => saved.push(prefs));
+  hydratePrefs(defaultPrefs());
+  setSheetPosition(0.42, false);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].sheetPos, 0.42);
+  assert.equal(saved[0].sheetOpen, 0.42);
+  // A release that changed nothing writes nothing — the sheet's own rule.
+  setSheetPosition(0.42, false);
+  assert.equal(saved.length, 1);
+  // Collapsed: the position is 1, and the place to return to survives.
+  setSheetPosition(1, true);
+  assert.equal(saved.length, 2);
+  assert.deepEqual(getSheetPosition(), { fraction: 1, open: 0.42 });
+  bindPrefsSink(null);
 });
 
 console.log(`\nprefs: ${count} checks passed`);

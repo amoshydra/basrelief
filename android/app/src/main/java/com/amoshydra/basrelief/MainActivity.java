@@ -1339,15 +1339,19 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        // Open at the peek, but only after layout: the height is a fraction of the
-        // panel's own measured height, which is zero until the first layout pass.
+        // Open at the stored position, or at the peek on a fresh install — after
+        // layout, because the height is a fraction of the panel's own measured
+        // height, which is zero until the first layout pass.
         //
-        // A remembered position is deliberately NOT restored. It existed to avoid
-        // launching with no controls at all, which reads as a broken launch -- but
-        // the peek is a better answer to that than remembering, and restoring made
-        // the launch position depend on wherever the sheet happened to be left. The
-        // launch is now the same every time, which is what makes it learnable.
-        //
+        // **A remembered position IS restored**: `openInitial` reads `KEY_SHEET`
+        // (and `KEY_SHEET_OPEN`, via `restoreLastResting` above) so a drag is never
+        // undone by closing the app. This comment used to say the opposite — that
+        // the launch was deliberately the same every time — and had been stale
+        // since the storage went in. The earlier concern it named (a launch with no
+        // controls at all, which reads as broken) is answered by the peek being the
+        // *fallback* rather than by refusing to remember: a stored 1.0 reopens as
+        // the pill, with no entrance animation, because the user already decided
+        // the sheet was away. See `openInitial`.
         // Triggered by the panel's first LAYOUT CHANGE, not a global-layout
         // listener. A listener added to root.getViewTreeObserver() before the view
         // is attached uses that observer's pre-attach instance, which ViewRootImpl

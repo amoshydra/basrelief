@@ -27,8 +27,10 @@ import {
   PREFS_CORRUPT_FILE,
   PREFS_FILE,
   bindPrefsSink,
+  getSheetPosition,
   hydratePrefs,
   readPrefs,
+  setSheetPosition,
   writePrefs,
   type AppPrefs,
 } from './prefs.ts';
@@ -922,7 +924,13 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
    * stamps `last_used_at`, which is exactly what `Library.markUsed` means on the
    * phone. That is the one write the viewer needs from the gallery, and it makes
    * the selection in `library.json` a fact rather than a placeholder.
+   *
+   * A viewer is torn down and rebuilt when the filmstrip picks another row: one
+   * open row at a time, because the sheet's settings belong to the row that is
+   * drawn.
    */
+  let openHandle: { close(): void } | null = null;
+
   function openItem(item: GalleryItem): void {
     const { row, file } = item;
     if (file === null) return;
@@ -933,7 +941,20 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     }
 
     const openRow = item.row;
-    openViewer({
+    // The filmstrip is the library, as the studio's is: every row that can be
+    // drawn, with this one ringed. A row whose file is missing cannot be opened,
+    // so it is not a tile that leads nowhere.
+    const strip = items
+      .filter((candidate) => candidate.file !== null && isOpenable(candidate))
+      .map((candidate) => ({
+        id: candidate.id,
+        name: displayName(candidate.row),
+        url: candidate.url,
+        active: candidate.id === item.id,
+      }));
+
+    openHandle?.close();
+    openHandle = openViewer({
       name: displayName(openRow),
       file,
       url: item.url ?? '',
@@ -947,6 +968,13 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       cloud: item.cloud,
       settings: openRow.home,
       mode: openRow.render,
+      strip,
+      onPick: (id) => {
+        const next = items.find((candidate) => candidate.id === id);
+        if (next && next !== item) openItem(next);
+      },
+      sheetPos: getSheetPosition(),
+      onSheetResting: (fraction, collapsed) => setSheetPosition(fraction, collapsed),
       onSettings: (settings, mode) => {
         if (item.sessionOnly) return;
         const next: Row = {

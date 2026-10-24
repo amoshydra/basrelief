@@ -1,254 +1,777 @@
 /**
  * The studio's bottom sheet, reproduced for a page.
  *
- * The reference is `ModalSheet.java` + `SettingsSheet.java` + `BasreliefSlider.java`
- * in `android/app`, and the vocabulary is deliberately theirs rather than a web
- * designer's:
+ * The reference is `BottomSheet` + `SheetMorph` + `SheetIntent` + `SpringSettle`
+ * and the row vocabulary is `ModalSheet` + `BasreliefSlider` in `android/app` and
+ * `android/core`. The numbers are theirs rather than a web designer's:
  *
- *   - the card is `#171b21` with a 20px top corner and a single top hairline
- *     (`0x24FFFFFF`), never a four-sided border;
+ *   - the card is the studio's **glass**, `0xEB161A20` — 92 % of `rgb(22,26,32)`,
+ *     so the photograph's edge still continues underneath — with a 22px top
+ *     corner and ONE top hairline (`0x24FFFFFF`), never a four-sided border;
+ *   - the **strip** is 56dp, the grip band inside it 22dp with a 38×4 bar at
+ *     `0x6BFFFFFF` centred 11dp down, and that strip IS the collapsed pill: the
+ *     panel's height at fraction 1 is exactly it, so there is no second view and
+ *     nothing to pop;
  *   - a **caption** is 11px, upper-case, `.09em` letter-spacing, `0x57FFFFFF`,
- *     16px above and 7px below (4px for the first one, which sits under the grip);
+ *     16px above and 7px below (2px for the first one, under the strip);
  *   - the **three row roles, and no fourth**: a `switchRow` carries a state you
  *     can flip, an `actionRow` is a plate you can press, and a `readingRow` is
  *     information and cannot be pressed at all — its factory takes no listener,
  *     so a fact cannot drift into looking like a control;
- *   - the **grip** is the sheet's discoverable way out and the thing you drag:
- *     a 38×4 bar at `rgba(255,255,255,.42)` on a 30px strip;
  *   - a **slider** is one line: a fixed name column, a 34px track with the value
  *     printed on the accent fill, and a −/＋ pair — not a thumb, because "a stock
  *     bar over a painted fill reads as a different control wearing the same
  *     clothes" is exactly right.
  *
- * **Only the rows that can act are drawn.** This page has no wallpaper, no
- * library and no second surface, so the Home/Lock segment, the playlists, the
- * archive and the Renderer segment are omitted — and each omission is stated in
- * a reading row, because a missing control with no sentence is indistinguishable
- * from one that was forgotten. The viewer composes the rows; this module owns the
- * vocabulary and the geometry, exactly as `ModalSheet` does on the phone.
+ * **Two hosts, one gesture.** `snap: 'free'` is the studio sheet: a persistent
+ * panel that rests exactly where a release left it (the app's `Snap.FREE`), can be
+ * dragged down to the pill, remembers its position across launches, and carries
+ * the filmstrip, the fix line and the photo line as sheet content *outside* the
+ * scroll. `snap: 'stops'` is a transient card — the Build 3D dialog — which must
+ * land on a stop (open or dismissed), because a half-height card is an unanswered
+ * question. The difference is injected rather than branched inside the release.
  *
- * The drag's release rule is `SheetIntent`'s: a 0.20 s projection of the release
- * velocity with a 1.2-travels-per-second fling override, under the studio's
- * 0.95/0.40 thresholds. A web sheet has two resting states rather than the
- * studio's free position, so a release inside the dead band settles to the
- * nearer one instead of parking.
+ * **The morph is three functions, and they are not the same function.**
+ *
+ *   - `morphProgress` — the collapse fraction — drives the **height across the
+ *     whole travel**. That is what dragging a bottom sheet down *is*.
+ *   - `shapeProgress` — the same fraction, but flat until `SHAPE_BAND_START`
+ *     (0.95) — drives the **width, the bottom lift, the corner radius and the
+ *     fill**, in the last tenth only. A full-width panel at 40 % of its height is
+ *     still a sheet, and rounding and tinting it towards a pill while it plainly
+ *     is one reads as two objects. *the width should stay unchanged until the very end*
+ *   - `edgeFade` — the content's **opacity**, in its own band pinned to the
+ *     collapse threshold, so **no position the sheet can rest at is ever faded**.
+ *
+ * All of them, and the release rule, the tether and the spring, live in
+ * `sheetmath.ts` where they are unit-tested without a browser. This module is the
+ * DOM that calls them, and it computes no number of its own.
+ *
+ * **The gesture set is the panel's, not the grip's.** A vertical drag anywhere on
+ * the panel moves the sheet — the strip, the padding, the fix line, a row — and a
+ * scroll that has reached its top edge hands the gesture over, which is the
+ * standard nested behaviour `BottomSheet.onIntercept` states. Only a control that
+ * owns its own drag (a slider's track, a text field) is offered the gesture first.
+ *
+ * **Not a post-layout transform, either — but for a web reason, not Android's.**
+ * The panel's position and size are `height`, `bottom`, side insets and
+ * `border-radius`; the only transform is the entrance offset, which is zero at
+ * rest. b/7179570 is a `SurfaceView` transparent-region limitation and does not
+ * apply to a browser, but a layout channel is also the one that lets the height
+ * BE the drag, and the entrance is the sole exception (it is an offset in time,
+ * not a position).
+ *
+ * Deliberate departures from the phone, kept because they are better on a page:
+ * the strip is a real `<button>` with `aria-expanded`, hidden content is `inert`,
+ * every slider is keyboard-operable with `role="slider"` / `aria-valuenow`, the
+ * scroll has `overscroll-behavior: contain`, and the panel is capped at 620px wide
+ * on a desktop viewport (a 1600px sheet is not "edge to edge", it is a barn door).
+ * The switch is hand-drawn rather than a platform `Switch`: there is no platform
+ * switch to inherit, and the tint values are the app's own.
  */
+import {
+  DIALOG_POLICY,
+  PILL_BOTTOM_INSET,
+  PILL_PLATE,
+  PILL_RADIUS,
+  PILL_STROKE,
+  SHEET_GLASS,
+  SHEET_HAIRLINE,
+  SHEET_POLICY,
+  SHEET_RADIUS,
+  STRIP_GRIP,
+  STRIP_HEIGHT,
+  WARN_COLOUR,
+  blendColour,
+  clamp01,
+  cornerRadiusFor,
+  cssColour,
+  cssColourAlpha,
+  decide,
+  edgeFade,
+  heightFor,
+  insetFor,
+  peekFraction,
+  pillSideMarginFor,
+  pillWidthFor,
+  resistUp,
+  shapeProgress,
+  springCurve,
+  springDuration,
+} from './sheetmath.ts';
 
-/** `SheetIntent.PROJECTION_SECONDS`: the momentum a hand expects carried. */
-const PROJECTION_SECONDS = 0.2;
-/** `SheetIntent.FLING_TRAVEL_PER_SECOND`: a decisive throw decides by itself. */
-const FLING_TRAVEL_PER_SECOND = 1.2;
-/** `SheetIntent.SHEET`: collapse only near the bottom; expand below 0.40. */
-const COLLAPSE_THRESHOLD = 0.95;
-const EXPAND_THRESHOLD = 0.4;
+/** The vertical move, in px, past which a drag claims the sheet (8dp slop). */
+const DRAG_SLOP = 8;
 
-/** `.grip{height:22px}` plus the card's 8px of breathing room. */
-const GRIP_HEIGHT = 30;
-/** The tallest the sheet may get, as a fraction of the viewport. */
+/** The panel's own width cap: a desktop viewport gets a phone-shaped card. */
+const MAX_WIDTH = 620;
+
+/** The panel's own ceiling, as a fraction of the viewport and in px. */
 const MAX_HEIGHT_FRACTION = 0.7;
+const MAX_HEIGHT_PX = 620;
+const MAX_CARD_FRACTION = 0.85;
+
+/** The pill row's own chrome: 18+18 padding, an 8px dot and a 10px gap. */
+const PILL_CHROME = 18 + 18 + 8 + 10;
+
+/** What the pill says, and therefore how it is coloured. */
+export type PillState = 'idle' | 'attention' | 'progress';
+
+/** One tile of the filmstrip: a row of the library, and whether it is open. */
+export interface StripEntry {
+  id: string;
+  name: string;
+  /** The thumbnail's object URL, or null for a row that cannot be drawn. */
+  url: string | null;
+  active: boolean;
+}
+
+export interface SheetOptions {
+  label: string;
+  /**
+   * `'free'` for the studio's persistent panel, `'stops'` for a transient card.
+   * An argument rather than a default, exactly as `BottomSheet.Snap` is: the two
+   * hosts want opposite things and a host that has not thought about it should not
+   * silently get either.
+   */
+  snap?: 'free' | 'stops';
+  /** The pill's line, which is what a collapsed studio sheet says. */
+  pill?: string;
+  /** The library, as the filmstrip under the strip. Studio sheets only. */
+  strip?: readonly StripEntry[];
+  /** A strip tile was chosen. */
+  onPick?: (id: string) => void;
+  /** `sheet_pos`: where the sheet rested last time, or null for nothing stored. */
+  rest?: number | null;
+  /** `sheet_open_pos`: where a pill tap returns to, or null. */
+  open?: number | null;
+  /** The sheet came to rest: its fraction, and whether it has gone away. */
+  onResting?: (fraction: number, collapsed: boolean) => void;
+  /** A `stops` sheet reached fully away. The host tears it down. */
+  onDismiss?: () => void;
+}
 
 export interface Sheet {
   /** The bottom-anchored panel; the viewer appends it to the overlay. */
   element: HTMLElement;
   /** The scrolling part a screen adds rows to. */
   body: HTMLElement;
-  /** The foot, outside the scroll so its buttons are reachable at any height. */
+  /**
+   * The dashed condition box under the strip, outside the scroll — the phone's fix
+   * line. Outside on purpose: it is the one thing that must be readable at the
+   * launch peek, when the foot of the sheet is still below the fold.
+   */
+  fixLine: HTMLElement;
+  /** A card's buttons; the studio sheet has no footer and no Done. */
   footer: HTMLElement;
+  /**
+   * The phone's photo line: 12sp, 2/6 padding, one ellipsised line, the first
+   * thing in the scroll above the first caption. `:empty` hides it.
+   */
+  photoLine: HTMLElement;
   collapsed(): boolean;
-  expand(): void;
+  /** Spring open to the last position the sheet rested at while open. */
+  openLast(): void;
+  /** The back gesture's one step out: to fully away. */
   collapse(): void;
+  /** Re-place the sheet after its content changed height. No motion. */
+  reapply(): void;
+  /** What the collapsed pill says, and how it is coloured. */
+  setPill(text: string, state?: PillState): void;
+  /** Replace the filmstrip's tiles. */
+  refreshStrip(entries: readonly StripEntry[]): void;
   destroy(): void;
 }
 
-export function createSheet(options: { label: string }): Sheet {
+export function createSheet(options: SheetOptions): Sheet {
+  const studio = (options.snap ?? 'free') === 'free';
+  const policy = studio ? SHEET_POLICY : DIALOG_POLICY;
+
   const element = document.createElement('section');
-  element.className = 'sheet sheet--open';
+  element.className = 'sheet';
   element.setAttribute('aria-label', options.label);
 
-  const grip = document.createElement('button');
-  grip.type = 'button';
-  grip.className = 'sheet-grip';
-  grip.setAttribute('aria-label', 'Drag to move the panel');
-  grip.setAttribute('aria-expanded', 'true');
-  const bar = document.createElement('span');
-  bar.className = 'sheet-grip-bar';
-  grip.append(bar);
+  // ------------------------------------------------------------ the strip
+  //
+  // The panel's first child and the collapsed state itself: at fraction 1 the
+  // panel's height IS this strip, so the pill needs no second view, no visibility
+  // change and no lifecycle of its own.
+  const strip = document.createElement('button');
+  strip.type = 'button';
+  strip.className = 'sheet-strip';
+  strip.setAttribute('aria-label', 'Drag to move the panel');
+  strip.setAttribute('aria-expanded', 'true');
 
-  const body = document.createElement('div');
-  body.className = 'sheet-body';
+  const gripBand = document.createElement('span');
+  gripBand.className = 'sheet-gripband';
+  const gripBar = document.createElement('span');
+  gripBar.className = 'sheet-gripbar';
+  gripBand.append(gripBar);
+  strip.append(gripBand);
+
+  const pill = document.createElement('span');
+  pill.className = 'sheet-pill';
+  const pillDot = document.createElement('span');
+  pillDot.className = 'sheet-pill-dot';
+  const pillLabel = document.createElement('span');
+  pillLabel.className = 'sheet-pill-label';
+  pillLabel.textContent = options.pill ?? 'Controls';
+  pill.append(pillDot, pillLabel);
+  // The label's own measurement, so the pill can be as wide as its words. Hidden
+  // and nowrap: this is `TextView.measure` one platform over, and it must not be
+  // influenced by the width the panel happens to have (which is the bug the app
+  // records as "measure generously, then clamp").
+  const pillMeasure = document.createElement('span');
+  pillMeasure.className = 'sheet-pill-measure';
+  pillMeasure.setAttribute('aria-hidden', 'true');
+  pillMeasure.textContent = pillLabel.textContent;
+  if (studio) strip.append(pill);
+  strip.append(pillMeasure);
+
+  // ----------------------------------------------------------- the content
+  //
+  // Everything below the strip, in one wrapper, because the fade is ONE value
+  // applied to all of it: the strip is the pill and never fades, and the surface
+  // underneath stays a surface.
+  const content = document.createElement('div');
+  content.className = 'sheet-content';
+
+  /** The filmstrip: the library under the grip, above the fix line and the scroll. */
+  const film = document.createElement('div');
+  film.className = 'sheet-film';
+  film.hidden = true;
+
+  /** The fix line: at most one sentence and at most two actions. */
+  const fixLine = document.createElement('div');
+  fixLine.className = 'sheet-fixline';
+  fixLine.hidden = true;
+
+  /** The scroll. `body` is what a screen appends rows to; this is its clip. */
+  const scroller = document.createElement('div');
+  scroller.className = 'sheet-body';
+  const inner = document.createElement('div');
+  inner.className = 'sheet-body-inner';
+  /** The phone's photo line: what this page is showing, above the first caption. */
+  const photoLine = document.createElement('div');
+  photoLine.className = 'sheet-photo';
+  inner.append(photoLine);
+  scroller.append(inner);
 
   const footer = document.createElement('div');
   footer.className = 'sheet-footer';
 
-  element.append(grip, body, footer);
+  content.append(film, fixLine, scroller, footer);
+  element.append(strip, content);
 
-  let isCollapsed = false;
+  /** How far the pill floats off the foot: `env(safe-area-inset-bottom)`. */
+  const safeProbe = document.createElement('div');
+  safeProbe.className = 'sheet-safe-probe';
+  safeProbe.setAttribute('aria-hidden', 'true');
+  document.body.append(safeProbe);
+
+  // ----------------------------------------------------------------- state
   let destroyed = false;
+  let opened = false;
+  let fraction = 0;
+  let below = 0;
+  let collapsed = false;
+  let natural = 0;
+  /** Where a pill tap returns to; the app's `lastResting`. */
+  let lastResting: number | null = options.open ?? null;
+  let pillState: PillState = 'idle';
+  let frame = 0;
+  let inertApplied = false;
 
-  /** The natural height: grip, the content's own height, and the foot. */
-  function expandedHeight(): number {
-    const cap = Math.min(
-      window.innerHeight * MAX_HEIGHT_FRACTION,
-      // A wide desktop phone-shaped card still should not become a column.
-      620,
+  function reducedMotion(): boolean {
+    return (
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
     );
-    const content = GRIP_HEIGHT + body.scrollHeight + footer.offsetHeight;
-    return Math.max(GRIP_HEIGHT + footer.offsetHeight, Math.min(content, cap));
   }
 
-  function setHeight(px: number): void {
-    element.style.height = `${Math.max(GRIP_HEIGHT, Math.round(px))}px`;
+  /** The navigation-bar inset, in px: the pill's 26dp is measured off THAT edge. */
+  function safeBottom(): number {
+    return safeProbe.offsetHeight || 0;
   }
 
-  function expand(): void {
-    if (destroyed) return;
-    isCollapsed = false;
-    element.classList.remove('sheet--collapsed');
-    element.classList.add('sheet--open');
-    grip.setAttribute('aria-expanded', 'true');
-    body.inert = false;
-    footer.inert = false;
-    setHeight(expandedHeight());
+  /** The width the sheet spans while open: the panel's container, capped. */
+  function openWidth(): number {
+    const parent = element.parentElement;
+    const width = parent ? parent.clientWidth : window.innerWidth;
+    return Math.max(0, Math.min(MAX_WIDTH, width));
   }
 
-  function collapse(): void {
-    if (destroyed) return;
-    isCollapsed = true;
-    element.classList.add('sheet--collapsed');
-    element.classList.remove('sheet--open');
-    grip.setAttribute('aria-expanded', 'false');
-    // Clipped, not merely short: a hidden row that a keyboard can still reach is
-    // a control the user cannot see and can still operate.
-    body.inert = true;
-    footer.inert = true;
-    setHeight(GRIP_HEIGHT);
+  /** The pill's width: what its label needs, capped by the inset and floored. */
+  function pillWidth(): number {
+    return pillWidthFor(pillMeasure.offsetWidth || 0, PILL_CHROME, openWidth());
   }
 
-  // ------------------------------------------------------------------- the drag
+  /**
+   * The panel's natural height: the strip plus everything under it, capped.
+   *
+   * A capped natural is this page's own decision (a desktop viewport would
+   * otherwise get a 1400px sheet, and the phone's is the whole screen because it
+   * is a phone); the fraction is still the fraction of the travel, so nothing
+   * downstream knows the difference.
+   */
+  function measureNatural(): number {
+    const cap =
+      window.innerHeight * (studio ? MAX_HEIGHT_FRACTION : MAX_CARD_FRACTION);
+    const ceiling = studio ? Math.min(cap, MAX_HEIGHT_PX) : cap;
+    const contentHeight =
+      film.offsetHeight +
+      (fixLine.hidden ? 0 : fixLine.offsetHeight) +
+      inner.offsetHeight +
+      footer.offsetHeight;
+    return Math.max(STRIP_HEIGHT, Math.min(STRIP_HEIGHT + contentHeight, ceiling));
+  }
+
+  function span(): number {
+    return Math.max(1, natural - STRIP_HEIGHT);
+  }
+
+  /** Mark the content operable or not. A hidden row a keyboard can reach is a lie. */
+  function setInert(away: boolean): void {
+    if (inertApplied === away) return;
+    inertApplied = away;
+    content.inert = away;
+  }
+
+  /**
+   * Place the panel. Every number is a `sheetmath` answer; this is the one place
+   * they become styles, and it is idempotent so a drag, a settle, a resize and a
+   * content change all land here.
+   */
+  function apply(): void {
+    if (natural <= 0) return;
+    const height = Math.max(STRIP_HEIGHT, Math.round(heightFor(fraction, natural, STRIP_HEIGHT)));
+    element.style.height = `${height}px`;
+    element.style.transform = below === 0 ? '' : `translateY(${Math.round(below)}px)`;
+    element.style.bottom = `${Math.round(insetFor(fraction, PILL_BOTTOM_INSET + safeBottom()))}px`;
+    element.style.setProperty(
+      '--sheet-inset',
+      `${Math.round(pillSideMarginFor(fraction, openWidth(), pillWidth()))}px`,
+    );
+
+    const shape = shapeProgress(fraction);
+    // The corner radius, all four corners, from the same function asked twice —
+    // the top pair from the sheet's 22, the bottom pair from square — so the
+    // collapsed shape is a capsule rather than a bar with two soft ends.
+    const top = cornerRadiusFor(fraction, height, SHEET_RADIUS, PILL_RADIUS);
+    const foot = cornerRadiusFor(fraction, height, 0, PILL_RADIUS);
+    element.style.borderRadius = `${top}px ${top}px ${foot}px ${foot}px`;
+
+    // The panel paints the glass BELOW the strip only. The strip is the panel's
+    // top edge and paints its own fill, so a panel that painted the same plate
+    // underneath would compose two coats of one colour and be visibly darker
+    // across the top 56px. Both halves end at the same colour, so the seam is
+    // invisible; what IS visible mid-morph is the strip's plate separating from
+    // the sheet below it, which is the top edge becoming the pill.
+    const glassAlpha = (((SHEET_GLASS >>> 24) & 0xff) / 255) * (1 - shape);
+    element.style.backgroundImage =
+      `linear-gradient(to bottom, rgba(0,0,0,0) 0 ${STRIP_HEIGHT}px, ` +
+      `${cssColourAlpha(SHEET_GLASS, glassAlpha)} ${STRIP_HEIGHT}px)`;
+    element.style.borderTopColor = cssColourAlpha(
+      SHEET_HAIRLINE,
+      ((((SHEET_HAIRLINE >>> 24) & 0xff) / 255) * (1 - shape)),
+    );
+
+    strip.style.background = cssColour(blendColour(SHEET_GLASS, PILL_PLATE, fraction));
+    // The pill's outline is the strip's, and it is absent — not transparent —
+    // while the sheet is open: the open sheet already draws its own hairline.
+    const stroke = pillState === 'attention' ? WARN_COLOUR : PILL_STROKE;
+    strip.style.boxShadow = `inset 0 0 0 1px ${cssColourAlpha(stroke, 0.2 * shape)}`;
+
+    // The grip band retires by GEOMETRY and alpha together, so the pill's row is
+    // the strip's leftover and the bar keeps the pill's vertical centre. An
+    // invisible view that still occupies space is how the label ended up 32px
+    // below the pill's centre on the phone.
+    gripBand.style.height = `${Math.round(STRIP_GRIP * (1 - shape))}px`;
+    gripBand.style.opacity = String(1 - shape);
+    pill.style.opacity = String(shape);
+
+    content.style.opacity = String(edgeFade(fraction));
+  }
+
+  function cancelMotion(): void {
+    if (frame !== 0) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
+  }
+
+  /** The resting state is decided; the host presents it and may store it. */
+  function rest(): void {
+    below = 0;
+    collapsed = fraction >= 1;
+    if (!collapsed) lastResting = fraction;
+    apply();
+    setInert(collapsed);
+    strip.setAttribute('aria-expanded', String(!collapsed));
+    options.onResting?.(fraction, collapsed);
+    if (collapsed && !studio) options.onDismiss?.();
+  }
+
+  /** Animate to a fraction with the host's spring, starting from the release speed. */
+  function settleTo(target: number, velocityPxPerS: number): void {
+    cancelMotion();
+    const to = clamp01(target);
+    const from = fraction;
+    if (Math.abs(to - from) < 1e-4 || reducedMotion() || natural <= 0) {
+      fraction = to;
+      rest();
+      return;
+    }
+    const duration = springDuration(to - from, velocityPxPerS / span());
+    const started = performance.now();
+    const step = (now: number): void => {
+      const t = Math.min(1, (now - started) / duration);
+      fraction = from + (to - from) * springCurve(t);
+      apply();
+      if (t < 1) {
+        frame = requestAnimationFrame(step);
+      } else {
+        frame = 0;
+        fraction = to;
+        rest();
+      }
+    };
+    frame = requestAnimationFrame(step);
+  }
+
+  /** The entrance: the whole resting surface slides up from below the window. */
+  function animateBelowToZero(): void {
+    const startBelow = below;
+    if (startBelow <= 0 || reducedMotion()) {
+      below = 0;
+      apply();
+      return;
+    }
+    const duration = springDuration(startBelow / Math.max(1, natural), 0);
+    const started = performance.now();
+    const step = (now: number): void => {
+      const t = Math.min(1, (now - started) / duration);
+      below = startBelow * (1 - springCurve(t));
+      apply();
+      if (t < 1) {
+        frame = requestAnimationFrame(step);
+      } else {
+        frame = 0;
+        below = 0;
+        apply();
+      }
+    };
+    frame = requestAnimationFrame(step);
+  }
+
+  /** Spring open to `at`, from below, and rest there. */
+  function openAt(at: number): void {
+    cancelMotion();
+    fraction = clamp01(at);
+    below = 0;
+    collapsed = false;
+    lastResting = fraction;
+    natural = measureNatural();
+    apply();
+    setInert(false);
+    strip.setAttribute('aria-expanded', 'true');
+    options.onResting?.(fraction, false);
+    below = heightFor(fraction, natural, STRIP_HEIGHT);
+    apply();
+    animateBelowToZero();
+  }
+
+  /** Place the sheet at rest with no motion: a launch restoring a stored state. */
+  function restAt(at: number, away: boolean): void {
+    cancelMotion();
+    fraction = clamp01(at);
+    below = 0;
+    collapsed = away;
+    natural = measureNatural();
+    if (!away) lastResting = fraction;
+    apply();
+    setInert(away);
+    strip.setAttribute('aria-expanded', String(!away));
+    options.onResting?.(fraction, away);
+  }
+
+  function openLast(): void {
+    openAt(lastResting ?? 0);
+  }
+
+  function setFraction(next: number): void {
+    fraction = next;
+    apply();
+  }
+
+  // ------------------------------------------------------------- the gesture
   //
-  // The grip is a layout-height drag, not a transform: the sheet is a real
-  // element in the page, and moving it by `height` is also what keeps its foot
-  // pinned to the viewport's.
-  let dragging = false;
+  // One gesture for the whole panel. Android arbitrates between the scroll and the
+  // sheet in `BottomSheet.onIntercept`; the same rule applies here, with the
+  // browser's own scrolling as the scroll: a downward drag inside the content is
+  // the scroll's while it has somewhere to go, and the sheet's at the top edge.
+  interface Gesture {
+    id: number;
+    startY: number;
+    startX: number;
+    startFraction: number;
+    lastY: number;
+    lastAt: number;
+    velocity: number;
+    claimed: boolean;
+    insideScroll: boolean;
+  }
+  let gesture: Gesture | null = null;
+  /** A claimed drag happened; the click the browser sends after it is not a tap. */
   let moved = false;
-  let pointerId = -1;
-  let startY = 0;
-  let startHeight = 0;
-  let fullHeight = 0;
-  let lastY = 0;
-  let lastAt = 0;
-  let velocity = 0;
+
+  /** Whether the scrolling content can still use this drag in its own direction. */
+  function scrollCanTake(dy: number): boolean {
+    if (dy > 0) return scroller.scrollTop > 0;
+    return scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1;
+  }
+
+  function claim(g: Gesture, event: PointerEvent): void {
+    // The anchor is rebased to this event, so a scroll that has just reached its
+    // end does not make the panel jump by the distance the scroll travelled, and
+    // the touch slop does not make it jump either.
+    cancelMotion();
+    g.claimed = true;
+    g.startY = event.clientY;
+    g.startFraction = fraction;
+    g.lastY = event.clientY;
+    element.classList.add('sheet--dragging');
+    // The rest of this gesture is the sheet's, so the browser must not also scroll
+    // the content with it (touch only; a mouse never scrolls by dragging).
+    scroller.style.touchAction = 'none';
+    try {
+      element.setPointerCapture(event.pointerId);
+    } catch {
+      // A synthetic pointer cannot be captured; the moves still arrive.
+    }
+    event.preventDefault();
+  }
 
   const onPointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0) return;
-    dragging = true;
-    moved = false;
-    pointerId = event.pointerId;
-    startY = event.clientY;
-    lastY = event.clientY;
-    lastAt = event.timeStamp;
-    velocity = 0;
-    startHeight = element.getBoundingClientRect().height;
-    fullHeight = Math.max(startHeight, expandedHeight());
-    element.classList.add('sheet--dragging');
-    try {
-      grip.setPointerCapture(event.pointerId);
-    } catch {
-      // A synthetic pointer cannot be captured; the drag still works from the
-      // move events this element receives directly.
+    if (event.button !== 0 || gesture !== null) return;
+    // A control that owns its own drag is offered the gesture first — the app's
+    // `requestDisallowInterceptTouchEvent(true)` on a slider's track.
+    if (
+      event.target instanceof Element &&
+      event.target.closest('.bslider-track, .sheet-input') !== null
+    ) {
+      return;
     }
+    gesture = {
+      id: event.pointerId,
+      startY: event.clientY,
+      startX: event.clientX,
+      startFraction: fraction,
+      lastY: event.clientY,
+      lastAt: event.timeStamp,
+      velocity: 0,
+      claimed: false,
+      insideScroll: event.target instanceof Node && scroller.contains(event.target),
+    };
   };
 
   const onPointerMove = (event: PointerEvent): void => {
-    if (!dragging || event.pointerId !== pointerId) return;
-    const dy = event.clientY - startY;
-    if (Math.abs(dy) > 3) moved = true;
-    const dt = Math.max(1, event.timeStamp - lastAt) / 1000;
-    velocity = (event.clientY - lastY) / dt;
-    lastY = event.clientY;
-    lastAt = event.timeStamp;
-    setHeight(startHeight - dy);
+    const g = gesture;
+    if (g === null || event.pointerId !== g.id) return;
+    const dt = Math.max(1, event.timeStamp - g.lastAt) / 1000;
+    g.velocity = (event.clientY - g.lastY) / dt;
+    g.lastY = event.clientY;
+    g.lastAt = event.timeStamp;
+    const dy = event.clientY - g.startY;
+    const dx = event.clientX - g.startX;
+    if (!g.claimed) {
+      if (Math.abs(dy) <= DRAG_SLOP) return;
+      // A drag that is not clearly vertical belongs to the filmstrip's horizontal
+      // scroll, exactly as `BottomSheet.mostlyVertical` decides.
+      if (Math.abs(dy) <= Math.abs(dx)) return;
+      // The scroll is offered the direction first, and keeps the gesture while it
+      // can still move. At its top edge a downward drag is the sheet's.
+      if (g.insideScroll && scrollCanTake(dy)) return;
+      claim(g, event);
+    }
+    const travel = span();
+    const raw = g.startFraction + (event.clientY - g.startY) / travel;
+    // Tethered above fully open, hard-clamped at fully away: past open there is a
+    // little glass to give, past closed there is nothing.
+    setFraction(raw < 0 ? resistUp(raw * travel, travel) / travel : Math.min(1, raw));
   };
 
-  const finishDrag = (event: PointerEvent): void => {
-    if (!dragging || event.pointerId !== pointerId) return;
-    dragging = false;
-    // The transition comes back before the settle, so a release animates to its
-    // target while a drag followed the finger.
+  const finishGesture = (event: PointerEvent, cancelled: boolean): void => {
+    const g = gesture;
+    if (g === null || event.pointerId !== g.id) return;
+    gesture = null;
+    if (!g.claimed) return;
     element.classList.remove('sheet--dragging');
-    if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
-
-    const travel = Math.max(1, fullHeight - GRIP_HEIGHT);
-    const height = element.getBoundingClientRect().height;
-    const position = Math.max(0, Math.min(1, (fullHeight - height) / travel));
-    // Velocity is in full travels per second, downward positive — the app's unit,
-    // so the projection is the same rule at any height.
-    const perSecond = velocity / travel;
-    const projected = Math.max(
-      0,
-      Math.min(1, position + perSecond * PROJECTION_SECONDS),
-    );
-
-    let collapseIt: boolean;
-    if (perSecond >= FLING_TRAVEL_PER_SECOND) collapseIt = true;
-    else if (perSecond <= -FLING_TRAVEL_PER_SECOND) collapseIt = false;
-    else if (projected > COLLAPSE_THRESHOLD) collapseIt = true;
-    else if (projected < EXPAND_THRESHOLD) collapseIt = false;
-    else collapseIt = position > 0.5; // the dead band: settle to the nearer state
-
-    if (collapseIt) collapse();
-    else expand();
-
-    // The browser dispatches the click that ends a tap AFTER this handler. Reset
-    // the movement flag on the next task, so a drag that produced no click cannot
-    // leave the flag set and swallow the next genuine tap.
+    scroller.style.touchAction = '';
+    if (element.hasPointerCapture(event.pointerId)) {
+      element.releasePointerCapture(event.pointerId);
+    }
+    if (cancelled) {
+      // A cancelled drag stays where it is: the picture on screen is what was
+      // already stored, and inventing a decision from a broken gesture is worse.
+      rest();
+      return;
+    }
+    const decision = decide(fraction, g.velocity / span(), policy);
+    if (decision === 'collapse') {
+      settleTo(1, g.velocity);
+    } else if (!studio || fraction < 0) {
+      // A card's EXPAND and its dead band both mean "back up" — there is no free
+      // position for a transient card to stay in. A studio sheet keeps exactly
+      // where the finger left it (`Snap.FREE`), with one exception: a **negative**
+      // fraction is the over-open tether and there is no rest position above fully
+      // open, so it falls back. That is what the tether is for.
+      settleTo(0, g.velocity);
+    } else {
+      rest();
+    }
+    // The browser dispatches the click that ends a tap AFTER this handler. The
+    // flag is cleared on the next task, so a drag cannot leave it set and swallow
+    // the next genuine tap.
+    moved = true;
     window.setTimeout(() => {
       moved = false;
     }, 0);
   };
 
-  grip.addEventListener('pointerdown', onPointerDown);
-  grip.addEventListener('pointermove', onPointerMove);
-  grip.addEventListener('pointerup', finishDrag);
-  grip.addEventListener('pointercancel', finishDrag);
-  // A tap on the grip toggles, which is also its accessibility action; a drag
-  // that moved must not also count as a tap.
-  const onClick = (): void => {
-    if (moved) {
-      moved = false;
-      return;
-    }
-    if (isCollapsed) expand();
-    else collapse();
+  const onPointerUp = (event: PointerEvent): void => finishGesture(event, false);
+  const onPointerCancel = (event: PointerEvent): void => finishGesture(event, true);
+
+  // A drag is not a press: the click the browser sends at the end of one is
+  // swallowed here, before a row's own handler can see it. Android consumes the
+  // whole gesture in `onTouch`, which is the same rule by another mechanism.
+  const onClickCapture = (event: MouseEvent): void => {
+    if (!moved) return;
+    event.preventDefault();
+    event.stopPropagation();
   };
-  grip.addEventListener('click', onClick);
+
+  const onStripClick = (): void => {
+    if (collapsed) openLast();
+    else settleTo(1, 0);
+  };
+
+  element.addEventListener('pointerdown', onPointerDown);
+  element.addEventListener('pointermove', onPointerMove);
+  element.addEventListener('pointerup', onPointerUp);
+  element.addEventListener('pointercancel', onPointerCancel);
+  element.addEventListener('click', onClickCapture, true);
+  strip.addEventListener('click', onStripClick);
+
+  // --------------------------------------------------------------- the content
+
+  const observer = new ResizeObserver(() => {
+    if (destroyed || !opened) return;
+    const next = measureNatural();
+    if (Math.abs(next - natural) < 0.5) return;
+    natural = next;
+    apply();
+  });
+  for (const node of [film, fixLine, inner, footer]) observer.observe(node);
 
   const onResize = (): void => {
-    setHeight(isCollapsed ? GRIP_HEIGHT : expandedHeight());
+    if (destroyed || !opened) return;
+    natural = measureNatural();
+    apply();
   };
   window.addEventListener('resize', onResize);
 
-  // Start open, laid out against the content it actually got: a sheet sized
-  // before its rows exist would open at the grip and grow a frame later.
+  function setPill(text: string, state: PillState = 'idle'): void {
+    pillState = state;
+    pillLabel.textContent = text;
+    pillMeasure.textContent = text;
+    pillDot.classList.toggle('is-ring', state === 'progress');
+    // The dot, the label and the outline are one state: the phone recolours all
+    // three from `StripState`, because the pill is the only thing on screen when
+    // the sheet is away.
+    strip.classList.toggle('is-attention', state === 'attention');
+    // The pill's width is its label's, so a new line is a new width.
+    if (opened) apply();
+  }
+
+  function refreshStrip(entries: readonly StripEntry[]): void {
+    film.replaceChildren();
+    film.hidden = entries.length === 0;
+    for (const entry of entries) {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'sheet-film-tile';
+      tile.classList.toggle('is-active', entry.active);
+      if (entry.active) tile.setAttribute('aria-current', 'true');
+      tile.setAttribute('aria-label', `Show ${entry.name}`);
+      if (entry.url !== null) {
+        const image = document.createElement('img');
+        image.src = entry.url;
+        image.alt = '';
+        image.draggable = false;
+        tile.append(image);
+      }
+      tile.addEventListener('click', () => options.onPick?.(entry.id));
+      film.append(tile);
+    }
+  }
+
+  if (options.strip !== undefined) refreshStrip(options.strip);
+  if (options.pill !== undefined) setPill(options.pill);
+  // A card has no pill: its strip is the handle and nothing else.
+  if (!studio) strip.classList.add('sheet-strip--plain');
+
+  // Open at the stored position, laid out against the content it actually got: a
+  // sheet sized before its rows exist would open at the strip and grow a frame
+  // later, and the first frame is the one the entrance starts from.
   requestAnimationFrame(() => {
-    if (!destroyed) setHeight(expandedHeight());
+    if (destroyed) return;
+    natural = measureNatural();
+    opened = true;
+    if (options.rest !== null && options.rest !== undefined && options.rest >= 1) {
+      restAt(1, true);
+      return;
+    }
+    // A studio sheet opens at the peek on a fresh install; a transient card has no
+    // peek — it opens at its own height, because a dialog shown at a third of the
+    // screen would be a dialog with its buttons below the fold.
+    const at =
+      options.rest !== null && options.rest !== undefined && options.rest >= 0
+        ? options.rest
+        : studio
+          ? peekFraction(window.innerHeight, natural)
+          : 0;
+    openAt(at);
   });
 
   return {
     element,
-    body,
+    body: inner,
+    fixLine,
     footer,
-    collapsed: () => isCollapsed,
-    expand,
-    collapse,
+    photoLine,
+    collapsed: () => collapsed,
+    openLast,
+    collapse: () => settleTo(1, 0),
+    reapply(): void {
+      if (destroyed) return;
+      natural = measureNatural();
+      apply();
+    },
+    setPill,
+    refreshStrip,
     destroy(): void {
       destroyed = true;
+      cancelMotion();
+      observer.disconnect();
       window.removeEventListener('resize', onResize);
-      grip.removeEventListener('pointerdown', onPointerDown);
-      grip.removeEventListener('pointermove', onPointerMove);
-      grip.removeEventListener('pointerup', finishDrag);
-      grip.removeEventListener('pointercancel', finishDrag);
-      grip.removeEventListener('click', onClick);
+      element.removeEventListener('pointerdown', onPointerDown);
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerup', onPointerUp);
+      element.removeEventListener('pointercancel', onPointerCancel);
+      element.removeEventListener('click', onClickCapture, true);
+      strip.removeEventListener('click', onStripClick);
+      safeProbe.remove();
       element.remove();
     },
   };

@@ -74,7 +74,9 @@ import {
   sheetButton,
   sliderRow,
   switchRow,
+  type PillState,
   type Sheet,
+  type StripEntry,
 } from './sheet.ts';
 import { NO_LENS_FOVY_DEG, cloudFovy, sourceFovy } from './splat.ts';
 import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
@@ -166,6 +168,29 @@ export interface OpenableItem {
   onGenerated?: (file: File, depth: DephSuccess, width: number, height: number) => void;
   /** Called when a cloud is built or deleted; null means deleted. */
   onCloud?: (cloud: CloudAsset | null) => void;
+  /**
+   * The library, as the sheet's filmstrip.
+   *
+   * Studio sheet content, directly under the grip and above the fix line and the
+   * scroll — the app's `Gallery.installStrip(panel, 1)`, and it fades with the
+   * sheet because it IS the sheet. Absent or empty hides it (a lone `.splat` this
+   * session is not in the library, so there is nothing to strip).
+   */
+  strip?: readonly StripEntry[];
+  /** A strip tile was chosen: the gallery opens that row instead of this one. */
+  onPick?: (id: string) => void;
+  /**
+   * `sheet_pos` / `sheet_open_pos`: where the studio sheet last rested, as the app
+   * stores it. `null` is a fresh install, which opens at the peek.
+   */
+  sheetPos?: { fraction: number | null; open: number | null };
+  /** The sheet came to rest: the app's `onSheetResting`, written to `prefs.json`. */
+  onSheetResting?: (fraction: number, collapsed: boolean) => void;
+}
+
+/** What an open viewer hands back, so a strip tile can swap one row for another. */
+export interface ViewerHandle {
+  close(): void;
 }
 
 type Medium = 'relief' | 'cloud' | 'photo';
@@ -198,7 +223,7 @@ interface BuildState {
   failed: string | null;
 }
 
-export function openViewer(item: OpenableItem): void {
+export function openViewer(item: OpenableItem): ViewerHandle {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   const overlay = document.createElement('div');
@@ -224,24 +249,18 @@ export function openViewer(item: OpenableItem): void {
   back.textContent = '← Gallery';
   back.setAttribute('aria-label', 'Back to the gallery');
 
-  const heading = document.createElement('div');
-  heading.className = 'viewer-heading';
-  const nameEl = document.createElement('div');
-  nameEl.className = 'viewer-name';
-  nameEl.textContent = item.name;
-  const meta = document.createElement('div');
-  meta.className = 'viewer-meta';
+  // The top bar is the close affordance and nothing else. The name and the file's
+  // facts are sheet content on the phone — one quiet line above the first caption,
+  // under the strip — and that is where they live here too (`.sheet-photo`).
+  bar.append(back);
+  overlay.append(stage, crosshair, bar);
+  document.body.append(overlay);
+  document.body.classList.add('viewer-open');
+
   const describe = (state: MediaState): string =>
     [describeMedia(state), formatDimensions(item.width, item.height), formatBytes(item.size)]
       .filter(Boolean)
       .join(' · ');
-  meta.textContent = describe(item.state);
-
-  heading.append(nameEl, meta);
-  bar.append(back, heading);
-  overlay.append(stage, crosshair, bar);
-  document.body.append(overlay);
-  document.body.classList.add('viewer-open');
 
   const teardown: Array<() => void> = [];
   let relief: ReliefView | null = null;
@@ -268,6 +287,17 @@ export function openViewer(item: OpenableItem): void {
   /** A generated cloud this session, until the gallery has it. */
   let cardCloud: CloudAsset | null = item.cloud;
   let build: BuildState | null = null;
+
+  /**
+   * The studio sheet's remembered position, as the app keeps it.
+   *
+   * A mode switch, a map and a cloud rebuild every panel, and the position has to
+   * survive that: the sheet does not jump because the content under it was
+   * replaced. `sheet_pos` is what a launch reads back; `sheetOpen` is where a pill
+   * tap returns to, which a collapse must not overwrite with 1.0.
+   */
+  let sheetRest: number | null = item.sheetPos?.fraction ?? null;
+  let sheetOpen: number | null = item.sheetPos?.open ?? null;
 
   /**
    * Hand the committed values to the gallery, once per gesture.
@@ -407,6 +437,11 @@ export function openViewer(item: OpenableItem): void {
     return colourState.kind !== 'cloud';
   }
 
+  /** Whether anything on this card is three-dimensional — `Scene3D`, one over. */
+  function has3D(): boolean {
+    return depth !== null || currentCloud() !== null;
+  }
+
   /** Which medium the selected mode draws from the assets this card has. */
   function mediumFor(): Medium {
     if (mode === 'splat') {
@@ -443,6 +478,62 @@ export function openViewer(item: OpenableItem): void {
   function setSheet(next: Sheet): void {
     sheet = next;
     overlay.append(next.element);
+    // The pill's line and the photo line are derived once the panel exists: both
+    // are the card's own facts, and a panel is rebuilt on every mount.
+    syncPill();
+    next.photoLine.textContent = photoLineText();
+    next.photoLine.title = next.photoLine.textContent;
+  }
+
+  /**
+   * The phone's photo line: one quiet line naming the item and what it is.
+   *
+   * The phone's three states are "a playlist is rotating it", "not on a screen
+   * yet" and the surface it is on — all about a wallpaper this page cannot set, so
+   * the line states the item and its media instead. It is sheet content, above the
+   * first caption, not chrome in the top bar: the bar is the close affordance.
+   */
+  function photoLineText(): string {
+    return `${item.name} · ${describe(colourState)}`;
+  }
+
+  /** What the collapsed pill says, in the phone's three states. */
+  function pillNow(): { text: string; state: PillState } {
+    if (build?.phase) return { text: 'Generating…', state: 'progress' };
+    if (!has3D()) return { text: 'No 3D', state: 'attention' };
+    // A failed run with an asset still on screen: the phone says "No 3D" here, and
+    // that would be false — the picture below the pill is three-dimensional.
+    if (build?.failed) return { text: 'Build failed', state: 'attention' };
+    return { text: 'Controls', state: 'idle' };
+  }
+
+  function syncPill(): void {
+    if (!sheet) return;
+    const next = pillNow();
+    sheet.setPill(next.text, next.state);
+  }
+
+  /**
+   * The studio sheet, as the app composes it: a free-position panel with the
+   * filmstrip under the grip, the fix line outside the scroll and the photo line
+   * at the top of it.
+   */
+  function newPanel(label: string): Sheet {
+    const panel = createSheet({
+      label,
+      snap: 'free',
+      pill: pillNow().text,
+      strip: item.strip,
+      onPick: item.onPick,
+      rest: sheetRest,
+      open: sheetOpen,
+      onResting: (fraction, collapsed) => {
+        sheetRest = fraction;
+        if (!collapsed) sheetOpen = fraction;
+        item.onSheetResting?.(fraction, collapsed);
+      },
+    });
+    return panel;
   }
 
   function switchMode(next: Mode): void {
@@ -495,19 +586,6 @@ export function openViewer(item: OpenableItem): void {
       }),
     );
     panel.body.append(readingRow('Renderer', sentence));
-  }
-
-  /** The file's own facts, as one line of the studio sheet's reading rows. */
-  function appendFileFacts(panel: Sheet): void {
-    panel.body.append(caption('This file'));
-    panel.body.append(
-      readingRow(
-        item.name,
-        [describe(colourState), formatDimensions(item.width, item.height), formatBytes(item.size)]
-          .filter(Boolean)
-          .join(' · '),
-      ),
-    );
   }
 
   /**
@@ -683,13 +761,25 @@ export function openViewer(item: OpenableItem): void {
     );
   }
 
-  function appendFooter(panel: Sheet, reset: (() => void) | null): void {
-    const resetButton = sheetButton('Reset view', false, () => reset?.());
-    if (!reset) {
-      resetButton.disabled = true;
-      resetButton.title = 'Nothing on this page has a view to reset.';
-    }
-    panel.footer.append(resetButton, sheetButton('Done', false, () => panel.collapse()));
+  /**
+   * The studio sheet has **no footer and no Done**: it is put away by dragging and
+   * by the pill, and a Done button beside a gesture that does the same thing is the
+   * control the app already deleted once. The phone's foot is a hairline and a row
+   * *inside the scroll*; this is that row, and it is the last thing in the sheet.
+   */
+  function appendReset(panel: Sheet, reset: (() => void) | null): void {
+    const rule = document.createElement('div');
+    rule.className = 'sheet-rule';
+    panel.body.append(rule);
+    const row = actionRow({
+      label: 'Reset view',
+      sub: reset
+        ? 'Every render value back to the studio’s defaults'
+        : 'Nothing on this page has a view to reset',
+      onClick: () => reset?.(),
+    });
+    row.disabled = reset === null;
+    panel.body.append(row);
   }
 
   // -------------------------------------------------------------- the asset row
@@ -700,19 +790,33 @@ export function openViewer(item: OpenableItem): void {
   }
 
   /**
-   * The studio's asset row: the selected mode's state sentence, then the
-   * buttons that mode offers. A state with no button is still drawn (a run owns
-   * the row), because a sentence is not a control.
+   * The studio's fix line: the selected mode's state and the up-to-two actions it
+   * offers, outside the scroll, in a dashed box. A state with no button is still
+   * drawn (a run owns the row), because a sentence is not a control.
+   *
+   * It is the phone's `buildFixLine` — 14px side margins, 11px corners, an
+   * 11/11/11/12 pad — and it lives outside the scroll for the phone's reason: it is
+   * the one thing that must be readable at the launch peek, when the foot of the
+   * sheet is still below the fold. Inside the scroll it would be the first thing to
+   * scroll away, which is exactly when a condition needs reading.
    *
    * The ranking is `BuildTab`'s: a run in flight offers nothing, and a failure
-   * outranks the asset it left behind. A Relief row never carries a run — the
-   * build dialog's status line is its signal — while a cloud build has no fix
-   * line, so its phase and failure live here.
+   * outranks the asset it left behind. A Relief row never carries a run — the build
+   * dialog's status line is its signal — while a cloud build has no second line, so
+   * its phase and failure live here.
    */
-  function appendAssetRow(panel: Sheet): void {
+  function appendFixLine(panel: Sheet): void {
     const row = document.createElement('div');
     row.className = 'sheet-asset-row';
-    panel.body.append(row);
+    panel.fixLine.hidden = false;
+    panel.fixLine.append(row);
+
+    // A status line for a chosen map's own progress, inside the box so it cannot
+    // stack a second one and so it is readable at any height.
+    const statusEl = note('');
+    statusEl.hidden = true;
+    statusEl.setAttribute('role', 'status');
+    panel.fixLine.append(statusEl);
 
     const render = (): void => {
       row.replaceChildren();
@@ -737,8 +841,8 @@ export function openViewer(item: OpenableItem): void {
           // generated here. The app refuses to replace an EMBEDDED map because
           // it has no separate depth FILE to write; this page has no file at
           // all, so replacing it is the same in-memory re-pack Save packed PNG
-          // already performs. The brief's row is therefore "Has a depth map"
-          // with both actions, not the app's BUILT-with-no-action.
+          // already performs. The row is therefore "Has a depth map" with both
+          // actions, not the app's BUILT-with-no-action.
           stateEl.textContent = 'Has a depth map';
           actions.push(
             { label: 'Choose a map', onClick: () => void chooseDepthMap(statusEl) },
@@ -784,14 +888,15 @@ export function openViewer(item: OpenableItem): void {
         button.addEventListener('click', action.onClick);
         row.append(button);
       }
+      // The dashed edge recolours for a condition that needs the user, because the
+      // border is what the eye lands on: a dashed line saying "failed" in white
+      // reads as an informational line.
+      panel.fixLine.classList.toggle(
+        'is-attention',
+        build?.failed ? true : !has3D(),
+      );
+      syncPill();
     };
-
-    // A status line for a chosen map's own progress, outside the row so a
-    // repaint of the row cannot stack a second one.
-    const statusEl = note('');
-    statusEl.hidden = true;
-    statusEl.setAttribute('role', 'status');
-    panel.body.append(statusEl);
 
     render();
     assetRowRender = render;
@@ -874,12 +979,12 @@ export function openViewer(item: OpenableItem): void {
     view.onDraw(syncCrosshair);
     installGestures(stage, teardown, view);
 
-    const panel = createSheet({ label: 'Picture settings' });
+    const panel = newPanel('Picture settings');
 
     appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, mediumFor());
-    appendAssetRow(panel);
+    appendFixLine(panel);
 
     const depthRow = sliderRow({
       label: 'Depth',
@@ -987,7 +1092,6 @@ export function openViewer(item: OpenableItem): void {
     );
 
     appendFraming(panel, view);
-    appendFileFacts(panel);
 
     panel.body.append(caption('Save'));
     const packNote = note('');
@@ -1046,7 +1150,7 @@ export function openViewer(item: OpenableItem): void {
       }
     }
 
-    appendFooter(panel, () => {
+    appendReset(panel, () => {
       const d = defaultSettings();
       Object.assign(settings, d);
       depthRow.set(d.depth);
@@ -1108,12 +1212,12 @@ export function openViewer(item: OpenableItem): void {
     image.alt = item.name;
     stage.append(image);
 
-    const panel = createSheet({ label: 'Photo settings' });
+    const panel = newPanel('Photo settings');
 
     appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, mediumFor());
-    appendAssetRow(panel);
+    appendFixLine(panel);
 
     const why = mode === 'splat'
       ? 'Nothing is displaced until a cloud exists for this photo.'
@@ -1151,9 +1255,8 @@ export function openViewer(item: OpenableItem): void {
     disabledSlider(panel, 'Pan Z', 100, PAN_Z_MIN * 100, PAN_Z_MAX * 100, (v) => (v / 100).toFixed(2),
       'The camera distance belongs to a drawn surface; there is nothing here to dolly.');
 
-    appendFileFacts(panel);
     appendNotOnThisPage(panel);
-    appendFooter(panel, null);
+    appendReset(panel, null);
 
     setSheet(panel);
   }
@@ -1186,7 +1289,6 @@ export function openViewer(item: OpenableItem): void {
       if (closed) return;
       if (generatedUrl) URL.revokeObjectURL(generatedUrl);
       generatedUrl = URL.createObjectURL(new Blob([new Uint8Array(packed.png)], { type: 'image/png' }));
-      meta.textContent = describe({ kind: 'relief', form: 'raw' });
       const packedFile = new File(
         [new Uint8Array(packed.png)],
         packedFileName(item.file.name),
@@ -1261,12 +1363,12 @@ export function openViewer(item: OpenableItem): void {
     view.onDraw(syncCrosshair);
     installGestures(stage, teardown, view);
 
-    const panel = createSheet({ label: 'Cloud settings' });
+    const panel = newPanel('Cloud settings');
 
     appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, 'cloud');
-    appendAssetRow(panel);
+    appendFixLine(panel);
 
     // The four look knobs, wired. Their ranges are `contract/settings/`'s.
     const depthRow = sliderRow({
@@ -1401,7 +1503,7 @@ export function openViewer(item: OpenableItem): void {
     }
     appendNotOnThisPage(panel);
 
-    appendFooter(panel, () => {
+    appendReset(panel, () => {
       const d = defaultSettings();
       Object.assign(settings, d);
       depthRow.set(Math.round(d.splatDepth * 100));
@@ -1651,7 +1753,14 @@ export function openViewer(item: OpenableItem): void {
     buildScrim.className = 'sheet-scrim';
     overlay.append(buildScrim);
 
-    const dialog = createSheet({ label: 'Build 3D' });
+    const dialog = createSheet({
+      label: 'Build 3D',
+      // A transient card is `Snap.TO_STOPS`: every release lands on open or gone,
+      // because a half-height dialog is an unanswered question. Its Drag-to-dismiss
+      // reaches this, which tears the card and its scrim down.
+      snap: 'stops',
+      onDismiss: closeBuild,
+    });
     dialog.element.classList.add('sheet--dialog');
     buildSheet = dialog;
     overlay.append(dialog.element);
@@ -1728,7 +1837,7 @@ export function openViewer(item: OpenableItem): void {
       if (tab === 'relief') renderReliefTab();
       else renderSplatTab();
       updatePrimary();
-      dialog.expand();
+      dialog.reapply();
     }
 
     function renderReliefTab(): void {
@@ -1905,7 +2014,6 @@ export function openViewer(item: OpenableItem): void {
           generatedUrl = URL.createObjectURL(
             new Blob([new Uint8Array(packed.png)], { type: 'image/png' }),
           );
-          meta.textContent = describe({ kind: 'relief', form: 'raw' });
           item.onGenerated?.(
             new File([new Uint8Array(packed.png)], packedFileName(item.file.name), { type: 'image/png' }),
             packed.depth,
@@ -1943,7 +2051,6 @@ export function openViewer(item: OpenableItem): void {
           build = null;
           cardCloud = asset;
           item.onCloud?.(asset);
-          meta.textContent = describe(colourState);
           closeBuild();
           mode = 'splat';
           mount();
@@ -2100,6 +2207,8 @@ export function openViewer(item: OpenableItem): void {
     card.append(headingEl, body);
     stage.append(card);
   }
+
+  return { close };
 }
 
 /** A signed offset, bare: "+40"/"-10" already reads as an offset on this range. */

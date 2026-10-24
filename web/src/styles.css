@@ -621,119 +621,326 @@ summary:focus-visible {
   border-color: var(--line-strong);
 }
 
-.viewer-heading {
-  min-width: 0;
-  padding-top: 3px;
-}
-
-.viewer-name {
-  font-size: 14px;
-  font-weight: 650;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.viewer-meta {
-  margin-top: 1px;
-  font-size: 11.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* ------------------------------------------------------------------ sheet */
 /*
- * The studio's card, from `ModalSheet.java`'s own tokens: `#171b21`, a 20px top
- * corner, ONE top hairline (a four-sided border drew a bright line down the
- * sides and along a foot that is flush with the screen), 16px sides and a grip
- * above the scroll. The sheet floats over the picture; collapsed it is the grip
- * alone, so the photograph is not covered by a panel nobody is using.
+ * The studio's card, from `MainActivity`'s own tokens: `0xEB161A20` (the sheet's
+ * glass, 92 % of rgb(22,26,32) — NOT `ModalSheet.CARD`'s opaque `#171b21`, which
+ * is the modal plate and loses 8 % of the render), a 22px top corner and ONE top
+ * hairline. There is no drop shadow: the app sets a background and a hairline and
+ * nothing more, and a shadow over a live render reads as a floating panel rather
+ * than as the surface the picture continues under.
+ *
+ * The geometry is written by `sheet.ts` from `sheetmath.ts` — height, `bottom`,
+ * the side insets, the radius and the fill are all one morph — so what lives here
+ * is the static part: the layout roles, the type, and the harness the numbers are
+ * applied to.
  */
 
 .sheet {
   position: absolute;
-  left: 0;
-  right: 0;
+  /* The side insets are the morph's: zero while open, the pill's margin in the
+     last tenth. `left`/`right` + `margin:auto` + `max-width` centres a box whose
+     width is otherwise whatever is between them, which is how one rule serves an
+     edge-to-edge phone and a 620px cap on a desktop. */
+  left: var(--sheet-inset, 0px);
+  right: var(--sheet-inset, 0px);
   bottom: 0;
   z-index: 3;
-  width: min(620px, 100%);
+  max-width: 620px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #171b21;
+  /* The panel paints its glass only BELOW the strip (a hard-stop gradient written
+     by `apply`), because the strip paints the same glass over the top 56px and
+     two coats of one colour compose to a darker band. */
+  background-color: transparent;
   border-top: 1px solid rgba(255, 255, 255, 0.141);
-  border-radius: 20px 20px 0 0;
-  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.32);
-  transition: height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-/* During a drag the height IS the finger; a transition would fight it. */
-.sheet--dragging {
+  /* No transition: the height IS the finger during a drag, and a settle is driven
+     frame by frame by the app's own critically damped curve. A CSS easing here
+     would be a second, disagreeing timeline. */
   transition: none;
+  touch-action: pan-y;
 }
 
+/* ------------------------------------------------------------------- the strip */
 /*
- * Collapsed to the grip, and the card is gone rather than a dark 30px bar over
- * the picture: the only thing left on screen is the handle itself.
+ * 56dp: the collapsed sheet's whole height, and the grip band's home at every
+ * fraction. It is the panel's first child and it IS the pill — no second view, no
+ * visibility change, nothing to pop.
  */
-.sheet--collapsed {
-  background: transparent;
-  border-top-color: transparent;
-  border-radius: 0;
-  box-shadow: none;
-}
 
-.sheet-grip {
+.sheet-strip {
   flex: none;
-  display: grid;
-  place-items: center;
+  position: relative;
+  display: block;
   width: 100%;
-  height: 30px;
+  height: 56px;
   padding: 0;
   border: 0;
+  /* The background and the outline are the morph's (see `apply`). */
   background: none;
+  font: inherit;
+  color: #fff;
+  text-align: center;
   cursor: grab;
   touch-action: none;
+  border-radius: 0;
 }
 
-.sheet-grip:active {
+.sheet-strip:active {
   cursor: grabbing;
 }
 
-.sheet-grip-bar {
+/* The grip band: the design's 38x4 bar and nothing else, in a 22dp band. */
+.sheet-gripband {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 22px;
+  overflow: hidden;
+}
+
+.sheet-gripbar {
   display: block;
   width: 38px;
   height: 4px;
   border-radius: 2px;
-  /* The design's rgba(255,255,255,.42); collapsed it needs to read over a
-     photograph, so it brightens slightly when it is the only thing left. */
+  /* `0x6BFFFFFF` is ARGB — alpha 0x6B on white — so it is rgba(255,255,255,.42)
+     here. It does NOT brighten when the sheet collapses: the phone fades the
+     whole band out as the pill arrives. */
   background: rgba(255, 255, 255, 0.42);
 }
 
-.sheet--collapsed .sheet-grip-bar {
-  background: rgba(255, 255, 255, 0.62);
+/* The pill's row: the status dot and the label, centred in the strip. */
+.sheet-pill {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* The row's own padding is the pill's inset, so the two sides are equal and the
+     content is centred by construction. */
+  padding: 0 18px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sheet-pill-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  /* `STRIP_DIM` = 0x8CFFFFFF: ARGB, so 55 % white — not the 8-digit hex that
+     would be a cyan dot. */
+  background: rgba(255, 255, 255, 0.55);
+}
+
+/* A generation in progress: the phone's ProgressRing, as a ring. */
+.sheet-pill-dot.is-ring {
+  width: 11px;
+  height: 11px;
+  margin: 0 -1.5px;
+  background: none;
+  border: 2px solid #ffffff;
+  border-right-color: rgba(255, 255, 255, 0.28);
+  animation: sheet-spin 900ms linear infinite;
+}
+
+@keyframes sheet-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sheet-pill-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #fff;
+}
+
+/* The attention state recolours the dot, the label AND the outline together: the
+   pill is the only thing on screen when the sheet is away, so one state must not
+   arrive in three pieces. `WARN_COLOUR` is 0xFFE8B04B. */
+.sheet-strip.is-attention .sheet-pill-label {
+  color: #e8b04b;
+}
+
+.sheet-strip.is-attention .sheet-pill-dot {
+  background: #e8b04b;
+}
+
+/* The label's own measurement. Off-screen rather than hidden, because the pill's
+   width is what the TEXT needs — which is the whole reason it wraps its content —
+   and a hidden-but-laid-out sibling cannot disturb the row it measures for. */
+.sheet-pill-measure {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* A card's strip is a handle and nothing else: no pill, no dot, no label. */
+.sheet-strip--plain .sheet-pill {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- the content */
+/*
+ * Everything below the strip fades together in the edge band — the filmstrip, the
+ * fix line, the scroll and the foot — because the strip is the pill and the pill
+ * never fades. The opacity is written by `edgeFade`, and it is 1 at every position
+ * the sheet can rest at.
+ */
+
+.sheet-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  opacity: 1;
+}
+
+/* The filmstrip: the library under the grip, above the fix line and the scroll.
+   46dp tiles, 6dp vertical padding, 14dp of side padding, 11dp corners — and it
+   is SHEET CONTENT, so it fades with the sheet. (Three agents shipped it floating
+   outside the sheet by copying `.design/prototype/final.html`; see AGENTS.md.) */
+.sheet-film {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 17px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.sheet-film[hidden] {
+  display: none;
+}
+
+.sheet-film::-webkit-scrollbar {
+  display: none;
+}
+
+.sheet-film-tile {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.sheet-film-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The active tile's ring: `PhotoTile`'s 2dp white border, which is what answers
+   "what is on screen" in the strip. */
+.sheet-film-tile.is-active {
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+/* The fix line: at most one sentence and at most two actions, dashed, outside the
+   scroll so the one condition worth reading cannot scroll away. */
+.sheet-fixline {
+  flex: none;
+  margin: 0 14px 10px;
+  padding: 11px 11px 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 11px;
+  font-size: 13px;
+  line-height: 1.42;
+  color: #fff;
+}
+
+.sheet-fixline[hidden] {
+  display: none;
+}
+
+.sheet-fixline.is-attention {
+  border-color: #e2725b;
+}
+
+/* The phone's photo line: 12sp, 2/6 padding, one line, above the first caption. */
+.sheet-photo {
+  padding: 2px 0 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.549);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet-photo:empty {
+  display: none;
 }
 
 .sheet-body {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 0 16px 6px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+/* The row inset is the app's 14dp (`sheetScroll.setPadding(dp(14), ...)`), and it
+   sits on the CONTENT rather than on the scroll, so the scroll's own bounds — the
+   thing a vertical gesture is arbitrated against — are the panel's. */
+.sheet-body-inner {
+  padding: 0 14px 14px;
 }
 
 .sheet-footer {
   flex: none;
   display: flex;
   gap: 8px;
-  padding: 14px 16px calc(env(safe-area-inset-bottom) + 20px);
+  padding: 14px 14px calc(env(safe-area-inset-bottom) + 20px);
 }
 
 .sheet-footer:empty {
   display: none;
 }
+
+/* The pill floats 26dp above the safe edge; a probe element carries `env()` into
+   script, which cannot read a CSS environment variable. */
+.sheet-safe-probe {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: env(safe-area-inset-bottom);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+/* The foot rule the phone draws before its last rows. */
+.sheet-rule {
+  height: 1px;
+  margin: 14px 0 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 
 /* `.caption` — 11px, caps, .09em, --dimmer, 16 above and 7 below. */
 .sheet-caption {
@@ -745,8 +952,11 @@ summary:focus-visible {
   color: rgba(255, 255, 255, 0.341);
 }
 
+/* `MainActivity.layOutCaption(first)`: 2dp above the first caption, 16 above the
+   rest. No side padding — a caption is a label for the rows under it and has to
+   share their column. */
 .sheet-caption--first {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 /* `.note` — 11px, --dimmer, centred. */
@@ -828,7 +1038,8 @@ summary:focus-visible {
   display: flex;
   gap: 2px;
   padding: 3px;
-  margin: 0 0 8px;
+  /* `MainActivity.java:5773`: outer.bottomMargin = dp(10). */
+  margin: 0 0 10px;
   border: 1px solid rgba(255, 255, 255, 0.141);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.078);
@@ -858,12 +1069,19 @@ summary:focus-visible {
   opacity: 0.72;
 }
 
-/* The asset row: the selected mode's sentence, then its compact buttons. */
+/* The selected mode's state and its actions, inside the fix line. The state is
+   the fix line's sentence and the buttons are its actions — the phone's shape,
+   where a condition worth reading lives outside the scroll. */
 .sheet-asset-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 6px 0 8px;
+}
+
+/* A run's phase, a failure's own words: a second line inside the dashed box. */
+.sheet-fixline .sheet-note {
+  margin: 7px 0 0;
+  text-align: left;
 }
 
 .sheet-asset-state {
@@ -1105,10 +1323,13 @@ summary:focus-visible {
 
 .bslider-label {
   flex: none;
-  /* The app's column is 66dp, which is where "Brightness" fits in Roboto at
-     13sp. This page's system font is wider at the same size and "Brightness"
-     clips, so the fixed column is 72px — the invariant is that every track
-     starts at the same x, not the number itself. */
+  /* The app's column is 66dp (`BasreliefSlider.LABEL_DP`), which is where
+     "Brightness" fits in Roboto at 13sp. This page's system font is not Roboto:
+     measured at 13px it needs **69.25px** for that word, so at 66 it ellipsised
+     the busiest row ("Brightnes…") — a deliberate departure, not drift, and the
+     one number in the sheet's geometry that is not the app's. The invariant that
+     matters is that every track starts at the same x, and `check-parity` holds
+     this number to the app's or to this note. */
   width: 72px;
   font-size: 13px;
   color: rgba(255, 255, 255, 0.549);
@@ -1292,7 +1513,4 @@ summary:focus-visible {
     padding: 9px 10px 11px;
   }
 
-  .viewer-name {
-    font-size: 13px;
-  }
 }

@@ -302,14 +302,50 @@ unaffected.
     **Delete**, a run in flight offering nothing and a failure outranking the
     asset (Regenerate). A dropped `.splat` card has no photograph, so it offers
     Delete and says why Rebuild needs the photo.
-  - the grip drags the sheet by **layout height** between open and collapsed, and
-    collapsed leaves the grip bar alone over the picture. The release is
-    `SheetIntent.SHEET`'s projection (0.20 s, 1.2 travels/s, 0.95/0.40); a web
-    sheet has two rest states rather than the studio's free position, so a release
-    inside the dead band settles to the nearer one.
+  - the sheet is the studio's **morph**, not a two-state panel: a release projects
+    through `SheetIntent.SHEET` (0.20 s, 1.2 travels/s, 0.95 / 0.40) and the sheet
+    **rests wherever the projection lands** — the app's `Snap.FREE`, and the
+    position is stored in `prefs.json` as the app's own `sheet_pos` /
+    `sheet_open_pos`, so a drag survives a refresh and a pill tap returns to the
+    place it was dragged to rather than to full. **Height and shape are two
+    ramps**: the height follows the hand across the whole travel (`morphProgress`,
+    no plateau and no cliff) while the width, the bottom lift, the corner radius
+    and the fill wait for `SHAPE_BAND_START` (0.95), and the content's opacity is
+    a third band pinned to the same line, so **no position the sheet can rest at
+    is ever faded**. Collapsed it is the **pill**: a 56dp capsule, plate
+    `0x8C1C2026`, a 1px `0x33FFFFFF` outline, an 8dp status dot and a 13.5px
+    label, 26dp plus the safe-area inset off the foot, as wide as its label up to
+    a 56dp inset and no narrower than 96dp. The settle is `SpringSettle.SHEET`'s —
+    duration from distance over release speed, clamped 250-500 ms, critically
+    damped — with `prefers-reduced-motion` cutting the settle and never the
+    tether, and a drag past full is tethered at a fifth of the span.
+  - **the panel is one gesture, and the scroll gets first refusal**: a vertical
+    drag anywhere on it moves the sheet — the strip, the padding, the fix line,
+    the filmstrip, a row — and the scrolling content keeps a drag it can still use
+    and hands it over at its top edge, which is `BottomSheet.onIntercept`. Only a
+    control that owns its own drag (a slider's track, a text field) is offered the
+    gesture first.
+  - **the filmstrip, the fix line and the photo line are sheet content, and the
+    sheet has no footer.** `createSheet` puts the library strip under the grip,
+    the dashed condition box under that, the photo line at the top of the scroll
+    and nothing at the foot but a hairline and a **Reset view** row *inside* the
+    scroll — the app deleted its Done button because it duplicated a gesture, and
+    the strip **fades with the sheet** (see the drift note above; this was shipped
+    wrong three times by copying `.design/prototype/final.html`). The selected
+    mode's asset state and its at-most-two actions live in the **fix line**,
+    outside the scroll, because a condition that has scrolled away is a condition
+    nobody read; the report it replaces had them inside the scroll.
+  - the pill says what the phone's says — `Controls`, `No 3D`, or a generation's
+    own word — with one honest departure: a **failed** run that still leaves a
+    drawn asset says `Build failed` rather than the phone's `No 3D`, which would be
+    false about the picture below it.
   - one deliberate departure: the slider's name column is **72px**, not the app's
-    66dp, because this page's system font is wider at 13px and "Brightness"
-    clipped. The invariant is that every track starts at the same x.
+    66dp, because "Brightness" measures **69.25px** in this page's 13px system
+    font. The app's policy is to ellipsise and it does not clip there (Roboto is
+    narrower); here it did, so the number is 72 and the reason is written beside
+    it in `styles.css`. `check-parity` holds that column to the app's number *or*
+    to that recorded note, so the drift cannot be silent. The invariant is that
+    every track starts at the same x.
 - **The gallery is the library, and the store has a shape you can explain on
   disk.** It is one OPFS directory, `basrelief`: `library.json` (the app's
   `Library` v5 blob), `prefs.json` (the app's app/device prefs — see below),
@@ -473,10 +509,11 @@ fixture still holds its four hard records).
   no browser API, so it loads in Node unmodified. The gallery's third copy is
   `web/src/deph.test.ts`, run as
   `pnpm test` in `web/` (plain Node type stripping, no browser, no install of a
-  test framework) — which is now ten files: the `dePH` reader and writer, the
+  test framework) — which is now eleven files: the `dePH` reader and writer, the
   media states, the splat record/camera and its Depth mapping, the relief camera
-  (`camera.test.ts`), the settings body, the library index, the app's prefs and
-  `ModelRanking`'s history rule (`prefs.test.ts`), the picture/light
+  (`camera.test.ts`), the studio sheet's arithmetic (`sheetmath.test.ts`), the
+  settings body, the library index, the app's prefs and `ModelRanking`'s history
+  rule (`prefs.test.ts`), the picture/light
   mappings, and the ComfyUI still/cloud graph and history reader.
 
 ## Build and test
@@ -514,8 +551,12 @@ worked, because the build still succeeds. Override the location with
 CI (`.github/workflows/build.yml`) runs `build-image`, `test`, `build-apk` on
 every push, plus a pnpm/vite build of the reference port, a `web-app` job
 (`pnpm test`, `pnpm typecheck`, `pnpm build` for the gallery — the `dePH` fixture
-test is its gate) and a `guards` job: AGENTS.md's paths, the port parity and the
-settings ranges `contract/settings/` shares between Java and TypeScript,
+test is its gate) and a `guards` job: AGENTS.md's paths, the port parity, the
+settings ranges `contract/settings/` shares between Java and TypeScript, and the
+studio sheet's constants held to `MainActivity`/`SheetMorph`/`SheetIntent`/
+`SpringSettle` — the peek, the strip, the pill's geometry, the release policy and
+the spring profile — because a sheet that copies the wrong Java constant looks
+plausible and feels wrong,
 `scripts/check-shaders.mjs`, which compiles every GLSL
 shader the app keeps in Java, and `scripts/check-json-puts.mjs`, which refuses a
 float handed to `JSONObject.put`. It invokes the scripts from the repo
@@ -528,7 +569,8 @@ then `pnpm run build` (or `pnpm dev` to serve it over HTTPS for the gyro). See
 Web gallery (a product): in `web/`, `pnpm install`, then `pnpm dev` (HTTPS on
 :5173, so a phone on the LAN can use the gyro) or `pnpm build` + `pnpm preview`.
 `pnpm test` runs the `contract/deph/` fixture test, the writer's round trip, the
-media-state test, the splat test, the settings, library and prefs contracts, and
+media-state test, the splat test, the studio sheet's arithmetic, the settings,
+library and prefs contracts, and
 the picture/light mappings;
 `pnpm typecheck` is `tsc --noEmit`. See `web/README.md`.
 

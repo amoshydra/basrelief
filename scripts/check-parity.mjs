@@ -608,6 +608,265 @@ function checkTiltSmoothing() {
   }
 }
 
+// ------------------------------------------------------- the sheet's numbers
+
+/**
+ * Read `NAME = <literal>` out of a source file and resolve it to a number.
+ *
+ * `readNumber` above refuses a derived value, and half of the sheet's constants
+ * are derived on purpose (`SHAPE_BAND_START` IS the collapse threshold on both
+ * sides; `PILL_RADIUS` is half the strip). This follows ONE level of indirection
+ * and reads hex, decimal and a-b-over-c, so a number is compared as a number and
+ * a derivation is still compared — a copy that hard-coded 0.95 where the app
+ * derives it would agree today and drift the day the app's policy moved.
+ */
+function readConstant(file, name, depth = 0) {
+  const text = readFileSync(join(root, file), 'utf8');
+  const m = text.match(new RegExp(`\\b${name}\\s*=\\s*([^;\\n]+)`));
+  if (!m) return null;
+  const token = m[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/, '').trim();
+  if (/^-?0x[0-9a-f]+$/i.test(token)) return parseInt(token, 16);
+  if (/^-?\d+(\.\d+)?[fLd]?$/.test(token)) return Number(token.replace(/[fLd]$/, ''));
+  const fraction = token.match(/^(\d+(?:\.\d+)?)[fLd]?\s*\/\s*(\d+(?:\.\d+)?)[fLd]?$/);
+  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
+  // A derived constant: follow it once (or twice) rather than give up.
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(token) && depth < 2) {
+    return readConstant(file, token, depth + 1);
+  }
+  return null;
+}
+
+/** A stored string constant, e.g. `KEY_SHEET = "sheet_pos"`. */
+function readStringConstant(file, name) {
+  const text = readFileSync(join(root, file), 'utf8');
+  const m = text.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`));
+  return m ? m[1] : null;
+}
+
+/** `new Policy(a, b)` / `new Profile(a, b, c, d, e, f)`: its numbers, in order. */
+function readConstructed(file, name, className) {
+  const text = readFileSync(join(root, file), 'utf8');
+  const m = text.match(new RegExp(`\\b${name}\\s*=\\s*new\\s+${className}\\s*\\(([^)]*)\\)`));
+  if (!m) return null;
+  return m[1]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split(',')
+    .map((part) => part.replace(/[fLd]/g, '').trim())
+    .filter((part) => part.length > 0)
+    .map(Number);
+}
+
+/** One `prop: Npx` out of a CSS rule, so a layout constant is not "compared by eye". */
+function readCssPx(selector, property) {
+  const text = readFileSync(join(root, 'web/src/styles.css'), 'utf8');
+  const block = text.match(new RegExp(`(?:^|\\n)${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`));
+  if (!block) return null;
+  const m = block[1].match(new RegExp(`${property}\\s*:\\s*(-?[\\d.]+)px`));
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * The studio sheet, held across the Java that owns it and the page that mirrors it.
+ *
+ * This is the guard the audit of the web sheet exists for: every one of these
+ * numbers was either missing from the page or read from the wrong Java constant
+ * (the plate was `ModalSheet.CARD`'s opaque `#171b21`, two states instead of a
+ * free rest, a 30px strip, a 180ms `cubic-bezier` where the app derives its
+ * duration). None of those failures crashes anything — each one is a sheet that
+ * looks plausible and feels wrong — which is exactly the class of drift
+ * `contract/` and this script exist to refuse.
+ *
+ * The two SIDES cannot share code: this checks the numbers, not the pixels. The
+ * behaviours those numbers compose are `web/src/sheetmath.test.ts`'s.
+ */
+function checkSheetParity() {
+  const INTENT = 'android/core/src/main/java/com/amoshydra/basrelief/core/gesture/SheetIntent.java';
+  const MORPH = 'android/core/src/main/java/com/amoshydra/basrelief/core/gesture/SheetMorph.java';
+  const SPRING = 'android/app/src/main/java/com/amoshydra/basrelief/SpringSettle.java';
+  const MAIN = 'android/app/src/main/java/com/amoshydra/basrelief/MainActivity.java';
+  const GALLERY = 'android/app/src/main/java/com/amoshydra/basrelief/Gallery.java';
+  const SLIDER = 'android/app/src/main/java/com/amoshydra/basrelief/BasreliefSlider.java';
+  const WEB = 'web/src/sheetmath.ts';
+  const before = failures.length;
+
+  /** name -> [javaFile, javaName, webName]. */
+  const numbers = [
+    ['PROJECTION_SECONDS', INTENT, 'PROJECTION_SECONDS', 'PROJECTION_SECONDS'],
+    ['FLING_TRAVEL_PER_SECOND', INTENT, 'FLING_TRAVEL_PER_SECOND', 'FLING_TRAVEL_PER_SECOND'],
+    ['EDGE_BAND_START', MORPH, 'EDGE_BAND_START', 'EDGE_BAND_START'],
+    ['stride height', MAIN, 'STRIP_HEIGHT_DP', 'STRIP_HEIGHT'],
+    ['grip band', MAIN, 'STRIP_GRIP_DP', 'STRIP_GRIP'],
+    ['pill max inset', MAIN, 'PILL_MAX_INSET_DP', 'PILL_MAX_INSET'],
+    ['pill min width', MAIN, 'PILL_MIN_WIDTH_DP', 'PILL_MIN_WIDTH'],
+    ['pill bottom inset', MAIN, 'PILL_BOTTOM_INSET_DP', 'PILL_BOTTOM_INSET'],
+    ['peek fraction', MAIN, 'SHEET_PEEK_FRACTION', 'SHEET_PEEK_FRACTION'],
+    ['sheet glass', MAIN, 'SHEET_GLASS', 'SHEET_GLASS'],
+    ['pill plate', MAIN, 'PILL_PLATE', 'PILL_PLATE'],
+    ['pill dot', MAIN, 'STRIP_DIM', 'PILL_DOT'],
+    ['pill outline', MORPH, null, 'PILL_STROKE'],
+    ['warn colour', MAIN, 'WARN_COLOUR', 'WARN_COLOUR'],
+    ['tether', SPRING, 'RESISTANCE_FRACTION', 'RESISTANCE_FRACTION'],
+    ['strip tile', GALLERY, 'THUMB_DP', null],
+    ['strip tile radius', GALLERY, 'TILE_RADIUS_DP', null],
+  ];
+
+  for (const [what, javaFile, javaName, webName] of numbers) {
+    if (javaName === null) continue; // a web-only literal, listed for the record
+    const java = readConstant(javaFile, javaName);
+    if (java === null) {
+      failures.push(`could not read ${javaName} from ${javaFile} — update this script`);
+      continue;
+    }
+    if (webName === null) continue; // checked against the CSS below
+    const web = readConstant(WEB, webName);
+    if (web === null) {
+      failures.push(`could not read ${webName} from ${WEB} — update this script`);
+      continue;
+    }
+    if (Math.abs(web - java) > 1e-9) {
+      failures.push(
+        `the sheet's ${what} differs: ${javaFile} has ${java}, ${WEB} has ${web} — ` +
+          'a sheet whose numbers are not the studio’s is a different sheet that looks plausible',
+      );
+    }
+  }
+
+  // The pill's outline is a Java literal in `MainActivity` and a web constant. It
+  // is the stroke that makes the collapsed glass read as a surface, so a drift is
+  // a pill that stops floating.
+  const javaStroke = /setStripStroke\(0x33FFFFFF\)/.test(readFileSync(join(root, MAIN), 'utf8'))
+    || readConstant(MAIN, 'PILL_STROKE') !== null;
+  const webStroke = readConstant(WEB, 'PILL_STROKE');
+  if (!javaStroke || webStroke !== 0x33ffffff) {
+    failures.push(
+      'the pill outline is not 0x33FFFFFF on both sides — the stroke is what keeps a ' +
+        '55%-transparent pill readable over a busy render',
+    );
+  }
+
+  // The two implemented rules that ARE a derivation rather than a literal.
+  const morphText = readFileSync(join(root, MORPH), 'utf8');
+  const webText = readFileSync(join(root, WEB), 'utf8');
+  if (!/SHAPE_BAND_START\s*=\s*SheetIntent\.SHEET\.collapseThreshold/.test(morphText)) {
+    failures.push('SheetMorph.SHAPE_BAND_START is no longer derived from SheetIntent.SHEET');
+  }
+  if (!/SHAPE_BAND_START\s*=\s*COLLAPSE_THRESHOLD/.test(webText)) {
+    failures.push(
+      `${WEB} hard-codes SHAPE_BAND_START instead of deriving it from COLLAPSE_THRESHOLD — ` +
+        'the shape must start exactly where a release commits to collapsing',
+    );
+  }
+  if (!/PILL_RADIUS\s*=\s*STRIP_HEIGHT\s*\/\s*2/.test(webText)) {
+    failures.push(`${WEB} does not derive PILL_RADIUS from half the strip`);
+  }
+  if (!/dp\(STRIP_HEIGHT_DP\)\s*\*\s*0\.5f/.test(readFileSync(join(root, MAIN), 'utf8'))) {
+    failures.push('MainActivity no longer targets half the strip as the pill’s radius');
+  }
+
+  // The release policy: `SheetIntent.SHEET` / `DIALOG` against the web's two.
+  const sheetPolicy = readConstructed(INTENT, 'SHEET', 'Policy');
+  const dialogPolicy = readConstructed(INTENT, 'DIALOG', 'Policy');
+  for (const [what, java] of [
+    ['SHEET', sheetPolicy],
+    ['DIALOG', dialogPolicy],
+  ]) {
+    if (java === null || java.length !== 2 || java.some((n) => !Number.isFinite(n))) {
+      failures.push(`could not read SheetIntent.${what} — update this script`);
+      continue;
+    }
+    const collapse = readConstant(WEB, what === 'SHEET' ? 'COLLAPSE_THRESHOLD' : 'DIALOG_COLLAPSE_THRESHOLD');
+    const expand = readConstant(WEB, what === 'SHEET' ? 'EXPAND_THRESHOLD' : 'DIALOG_EXPAND_THRESHOLD');
+    if (collapse !== java[0] || expand !== java[1]) {
+      failures.push(
+        `SheetIntent.${what} is ${java[0]}/${java[1]} but ${WEB} says ${collapse}/${expand} — ` +
+          'the release rule is the number a hand feels, and it is the app’s',
+      );
+    }
+  }
+
+  // The spring: damping, omega, duration factor, settle-speed floor, min and max.
+  const spring = readConstructed(SPRING, 'SHEET', 'Profile');
+  const springWeb = readFileSync(join(root, WEB), 'utf8').match(/SPRING\s*=\s*\{([^}]*)\}/);
+  if (spring === null || spring.length !== 6 || springWeb === null) {
+    failures.push('could not read SpringSettle.SHEET / the web SPRING block — update this script');
+  } else {
+    const values = [...springWeb[1].matchAll(/:\s*(-?[\d.]+)/g)].map((m) => Number(m[1]));
+    if (values.length !== spring.length || values.some((v, i) => Math.abs(v - spring[i]) > 1e-9)) {
+      failures.push(
+        `SpringSettle.SHEET is [${spring.join(', ')}] but ${WEB}'s SPRING is ` +
+          `[${values.join(', ')}] — the curve and the duration are one profile, and ` +
+          'damping below 1 overshoots by construction',
+      );
+    }
+  }
+
+  // The two prefs keys the position is stored under.
+  const keys = [
+    ['KEY_SHEET', 'SHEET_POS_KEY', 'sheet_pos'],
+    ['KEY_SHEET_OPEN', 'SHEET_OPEN_KEY', 'sheet_open_pos'],
+  ];
+  for (const [javaName, webName, expected] of keys) {
+    const java = readStringConstant(MAIN, javaName);
+    const web = readStringConstant('web/src/prefs.ts', webName);
+    if (java !== expected || web !== expected) {
+      failures.push(
+        `the sheet's stored position is "${expected}" on the phone but ${java} / ${web} — ` +
+          'a copied prefs file would forget where the sheet was',
+      );
+    }
+  }
+
+  // The filmstrip's tile, from Gallery's dp() into the CSS that draws it.
+  const thumb = readConstant(GALLERY, 'THUMB_DP');
+  const thumbCss = readCssPx('.sheet-film-tile', 'width');
+  if (thumb !== thumbCss) {
+    failures.push(
+      `the filmstrip's tile is ${thumb}dp in Gallery.java and ${thumbCss}px in styles.css — ` +
+        'the strip is sheet content on both sides and its size is the library’s',
+    );
+  }
+  const radius = readConstant(GALLERY, 'TILE_RADIUS_DP');
+  const radiusCss = readCssPx('.sheet-film-tile', 'border-radius');
+  if (radius !== radiusCss) {
+    failures.push(
+      `the filmstrip's tile radius is ${radius}dp in Gallery.java and ${radiusCss}px in styles.css`,
+    );
+  }
+
+  // The row inset and the segment's margin: `dp(14)` and `dp(10)` in MainActivity.
+  const mainText = readFileSync(join(root, MAIN), 'utf8');
+  if (!/sheetPadLeft\s*=\s*dp\(14\)/.test(mainText)) {
+    failures.push('MainActivity no longer insets the scrolling content by dp(14)');
+  }
+  const rowInset = readCssPx('.sheet-body-inner', 'padding');
+  if (rowInset !== null && Math.abs(rowInset - 14) > 1e-9) {
+    failures.push(`the web's row inset is ${rowInset}px, the app's is 14dp`);
+  }
+  if (!/outer\.bottomMargin\s*=\s*dp\(10\)/.test(mainText)) {
+    failures.push('MainActivity no longer gives the segment a dp(10) bottom margin');
+  }
+
+  // The slider's name column. The app's is 66dp; the web's is `LABEL_COLUMN_PX`
+  // in styles.css, and it may differ ONLY as the recorded departure below.
+  const javaLabel = readConstant(SLIDER, 'LABEL_DP');
+  const webLabel = readCssPx('.bslider-label', 'width');
+  const webSliderComment = readFileSync(join(root, 'web/src/styles.css'), 'utf8');
+  const departure = /deliberate departure[^]*?72px/.test(webSliderComment);
+  if (javaLabel !== webLabel && !departure) {
+    failures.push(
+      `the slider's name column is ${javaLabel}dp in BasreliefSlider and ${webLabel}px here — ` +
+        'either match it or record the departure in styles.css beside the number',
+    );
+  }
+
+  if (failures.length === before) {
+    console.log(
+      `parity: the studio sheet — ${numbers.length} constants, both release policies, the ` +
+        'spring profile, the two stored keys and the filmstrip tile agree with Android',
+    );
+  }
+}
+
 /**
  * The four defects this guards are one defect: the same visual built more than
  * once, so a fix lands in one copy and not the others. Habits cannot enforce
@@ -736,6 +995,8 @@ function checkSharedRules() {
     'web/src/camera.test.ts',
     'web/vite.config.ts',
     'web/src/sheet.ts',
+    'web/src/sheetmath.ts',
+    'web/src/sheetmath.test.ts',
     'web/README.md',
     'web/package.json',
     'web/pnpm-lock.yaml',
@@ -823,6 +1084,7 @@ checkParity();
 checkSettingsParity();
 checkLibraryParity();
 checkComfyPrefsParity();
+checkSheetParity();
 checkModalInvariants();
 checkTiltSmoothing();
 checkSharedRules();

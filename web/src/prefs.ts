@@ -1,12 +1,12 @@
 /**
  * The app's prefs beside its library: the ComfyUI server, and the model choices.
  *
- * `library.json` is the app's `Library` blob — rows, render values, selection.
- * This is the app's **prefs**, which is a different store for a reason: a server
- * address and a model choice are not about a photograph, so neither has a row to
- * live on. The app keeps them under `comfy_url`, `comfy_model` and
- * `comfy_model_history` in `SharedPreferences depthwall`; this module reads and
- * writes those same keys in one `prefs.json`, so a file copied between the two
+ * The app's prefs, not its library: a server address, a model choice and the
+ * studio sheet's remembered position are app/device settings with no photograph to
+ * live on, so the phone keeps them under `comfy_url`, `comfy_model`,
+ * `comfy_model_history`, `sheet_pos` and `sheet_open_pos` in `SharedPreferences
+ * depthwall` while the rows go in the `library` blob. This module writes those
+ * keys in one `prefs.json` beside `library.json`, so a file copied between the two
  * means the same thing on both sides.
  *
  * The shape is the app's, not a new schema:
@@ -14,7 +14,9 @@
  *     {
  *       "comfy_url": "http://box:8188",
  *       "comfy_model": "moge_3_vitg_fp16.safetensors",
- *       "comfy_model_history": "moge_3_vitg_fp16.safetensors\nDepthAnythingV2"
+ *       "comfy_model_history": "moge_3_vitg_fp16.safetensors\nDepthAnythingV2",
+ *       "sheet_pos": 0.4213,
+ *       "sheet_open_pos": 0.4213
  *     }
  *
  * A key equal to its default is **not written**, the `Library` writer's rule, so
@@ -68,8 +70,23 @@ export const PREFS_CORRUPT_FILE = 'prefs.corrupt.json';
  */
 export const DEFAULT_BASE_URL = '/comfy';
 
-/** The app's three keys, and the whole of what this file reads or writes. */
+/** The app's three ComfyUI keys, and the whole of what that group reads or writes. */
 export const PREF_KEYS = ['comfy_url', 'comfy_model', 'comfy_model_history'] as const;
+
+/**
+ * The studio sheet's remembered position: `MainActivity.KEY_SHEET` and
+ * `KEY_SHEET_OPEN`.
+ *
+ * Two keys, not one, for the app's own reason: `sheet_pos` is 1.0 while the sheet
+ * is away, so it cannot also answer "how far was it open" — one key holding both
+ * the current state and the place to return to is how a pill tap ends up snapping
+ * the sheet fully open and discarding the position the user chose. They are
+ * **numbers in 0..1**, absent when nothing has been stored (the app's `-1`
+ * sentinel is a float storage detail; a missing JSON key says the same thing).
+ */
+export const SHEET_POS_KEY = 'sheet_pos';
+export const SHEET_OPEN_KEY = 'sheet_open_pos';
+
 
 /**
  * `ModelRanking.HISTORY_CAP`, which `scripts/check-parity.mjs` holds to this one.
@@ -87,6 +104,10 @@ export interface AppPrefs {
   comfyModel: string;
   /** Recent selections, most recent first, at most `MODEL_HISTORY_CAP`. */
   comfyModelHistory: string[];
+  /** `sheet_pos`: the sheet's collapse fraction, or null for nothing stored. */
+  sheetPos: number | null;
+  /** `sheet_open_pos`: where a pill tap returns to, or null for nothing stored. */
+  sheetOpen: number | null;
 }
 
 export type PrefsStatus = 'ok' | 'empty' | 'corrupt';
@@ -100,9 +121,15 @@ export interface PrefsRead {
   message: string | null;
 }
 
-/** The app's defaults: no address, no run's model, no history. */
+/** The app's defaults: no address, no run's model, no history, no sheet position. */
 export function defaultPrefs(): AppPrefs {
-  return { comfyUrl: '', comfyModel: '', comfyModelHistory: [] };
+  return {
+    comfyUrl: '',
+    comfyModel: '',
+    comfyModelHistory: [],
+    sheetPos: null,
+    sheetOpen: null,
+  };
 }
 
 // ------------------------------------------------------------------- the blob
@@ -141,11 +168,28 @@ export function readPrefs(raw: string | null): PrefsRead {
       prefs.comfyModel = typeof value === 'string' ? value : '';
     } else if (key === 'comfy_model_history') {
       prefs.comfyModelHistory = decodeHistory(value);
+    } else if (key === SHEET_POS_KEY) {
+      prefs.sheetPos = decodeFraction(value);
+    } else if (key === SHEET_OPEN_KEY) {
+      prefs.sheetOpen = decodeFraction(value);
     } else {
       extra[key] = value;
     }
   }
   return { prefs, extra, status: 'ok', message: null };
+}
+
+/**
+ * A stored collapse fraction, or null for "nothing stored".
+ *
+ * The app's sentinel is the float `-1`; here a missing key is the same fact, so a
+ * negative number — which is only ever a drag's over-open tether, never a rest
+ * position — is no position at all. A value outside 0..1 is clamped rather than
+ * refused: a hand-edited 1.4 can only mean "fully away".
+ */
+function decodeFraction(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return value > 1 ? 1 : value;
 }
 
 function corrupt(detail: string): PrefsRead {
@@ -172,12 +216,21 @@ export function writePrefs(prefs: AppPrefs, extra: Record<string, unknown> = {})
   if (prefs.comfyModel !== '') out.comfy_model = prefs.comfyModel;
   const history = encodeHistory(prefs.comfyModelHistory);
   if (history !== '') out.comfy_model_history = history;
+  if (prefs.sheetPos !== null) out[SHEET_POS_KEY] = prefs.sheetPos;
+  if (prefs.sheetOpen !== null) out[SHEET_OPEN_KEY] = prefs.sheetOpen;
   for (const [key, value] of Object.entries(extra)) {
-    if ((PREF_KEYS as readonly string[]).includes(key)) continue;
+    if (KNOWN_KEYS.includes(key)) continue;
     out[key] = value;
   }
   return JSON.stringify(out);
 }
+
+/** Every key this build owns, so a stale `extra` copy can never overwrite one. */
+const KNOWN_KEYS: readonly string[] = [
+  ...PREF_KEYS,
+  SHEET_POS_KEY,
+  SHEET_OPEN_KEY,
+];
 
 // ------------------------------------------------------------- model history
 
@@ -286,12 +339,17 @@ export function hydratePrefs(prefs: AppPrefs): void {
     comfyUrl: prefs.comfyUrl,
     comfyModel: prefs.comfyModel,
     comfyModelHistory: [...prefs.comfyModelHistory],
+    sheetPos: prefs.sheetPos,
+    sheetOpen: prefs.sheetOpen,
   };
 }
 
 /** A copy, so a sink cannot hold and mutate the live values. */
 export function prefsNow(): AppPrefs {
-  return { ...current, comfyModelHistory: [...current.comfyModelHistory] };
+  return {
+    ...current,
+    comfyModelHistory: [...current.comfyModelHistory],
+  };
 }
 
 function publish(): void {
@@ -353,6 +411,35 @@ export function selectModel(model: string): void {
   const history = rememberSelected(current.comfyModelHistory, model);
   if (sameList(history, current.comfyModelHistory)) return;
   current = { ...current, comfyModelHistory: history };
+  publish();
+}
+
+// ------------------------------------------------------------------ the sheet
+
+/**
+ * Where the studio sheet last came to rest, as the app stores it.
+ *
+ * `fraction` is `sheet_pos` — 1.0 means the sheet was put away — and `open` is
+ * `sheet_open_pos`, the place a pill tap returns to. Either is null when nothing
+ * has been stored, which is a fresh install; the sheet then opens at its peek.
+ */
+export function getSheetPosition(): { fraction: number | null; open: number | null } {
+  return { fraction: current.sheetPos, open: current.sheetOpen };
+}
+
+/**
+ * Record where the sheet came to rest, exactly as `onSheetResting` does.
+ *
+ * Two writes, one event, and the second is conditional for the app's own reason:
+ * a collapse must not overwrite the place to return to with 1.0, which is the bug
+ * a single key would have. A release that changed nothing writes nothing — the
+ * sheet's own rule, applied to its position.
+ */
+export function setSheetPosition(fraction: number, collapsed: boolean): void {
+  const next = { ...current, sheetPos: fraction };
+  if (!collapsed) next.sheetOpen = fraction;
+  if (next.sheetPos === current.sheetPos && next.sheetOpen === current.sheetOpen) return;
+  current = next;
   publish();
 }
 

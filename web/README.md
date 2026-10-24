@@ -181,10 +181,37 @@ render; a row it cannot is still drawn, disabled, with one sentence saying why.
   factory takes no listener, so a fact cannot drift into looking like a control.
   Captions, the 11/12/13/14px type scale, the 11px-radius plates, the grip and the
   one-line slider are the app's own constants from `ModalSheet`/`BasreliefSlider`.
-- **The grip drags.** Pull it down and the sheet follows by height; release and it
-  settles by `SheetIntent`'s rule (a 0.20 s velocity projection with a fling
-  override, at the studio's 0.95/0.40 thresholds). A tap on the grip toggles.
-  Collapsed, only the grip bar is left over the picture.
+- **The sheet is the studio's morph.** It is one panel, not two states: a release
+  projects through `SheetIntent.SHEET` (a 0.20 s velocity projection with a fling
+  override, at the studio's 0.95/0.40 thresholds) and the sheet **rests wherever
+  the projection lands** — `Snap.FREE`. The position is remembered across a
+  refresh in `prefs.json`, as the app's own `sheet_pos` and `sheet_open_pos`, so a
+  reload reopens where you left it and a tap on the pill returns to the fraction it
+  was dragged to, not to full. The arithmetic is `src/sheetmath.ts` (unit-tested,
+  no browser); `src/sheet.ts` is the DOM that calls it.
+- **Height and shape are two ramps, and the content fade is a third.** The height
+  follows the hand across the whole travel — no plateau, no cliff — while the
+  width, the bottom lift, the corner radius and the fill wait for the last tenth
+  (`SHAPE_BAND_START`, the collapse threshold, so a full-width 40 %-tall panel is
+  still a sheet). The content's opacity is pinned to the same line, which means
+  **no position the sheet can rest at is ever faded**; it dissolves only inside the
+  band where it can no longer come to rest.
+- **Collapsed, it is the pill**: a 56dp capsule, 26dp plus the safe-area inset off
+  the foot, as wide as its label up to a 56dp inset and no narrower than 96dp, with
+  an 8dp status dot (`Controls`, `No 3D`, `Build failed`, or a run's own word) and
+  a 1px outline. Tapping it springs the sheet back to the remembered fraction.
+- **The whole panel drags, and the scroll has first refusal.** A vertical drag
+  anywhere moves the sheet; a scroll that can still use the direction keeps it and
+  hands over at its top edge. A drag past full is tethered at a fifth of the span;
+  the settle is critically damped, its duration derived from the release speed and
+  clamped to 250-500 ms, and `prefers-reduced-motion` cuts the settle rather than
+  the tether.
+- **The filmstrip, the fix line and the photo line are sheet content.** The
+  filmstrip is the library under the grip and it fades with the sheet; the fix line
+  is the dashed condition box under it, outside the scroll, so the one sentence
+  worth reading cannot scroll away; the photo line is the quiet 12px line at the
+  top of the scroll. **There is no footer and no Done** — the sheet is put away by
+  dragging and by the pill, and Reset view is a row inside the scroll.
 - **The row inventory is the studio's.** The Home/Lock segment, the Renderer
   segment and its asset row, the four cloud look knobs, Depth, Motion, FOV, Speed,
   Brightness, Shadow, Azimuth, Elevation, Origin X/Y, Pan X/Y/Pan Z, the actions
@@ -366,9 +393,11 @@ no server-side requirement.
   graph, polls the returned prompt id, fetches the depth map, packs it and shows
   the relief. **Choose a map** does the same with a depth image you already have.
   The dialog's **Splat** tab builds a SHARP cloud when the server has the node.
-- **Grip**: drag it down to collapse the sheet to the handle, tap it to toggle.
-  **Done** collapses it; **← Gallery** or **Escape** closes the viewer (Escape
-  closes the Build dialog first, then collapses the sheet).
+- **The strip**: drag it (or anywhere on the panel) to move the sheet; tap it to
+  toggle — collapsed it is the pill, and tapping the pill springs back to where
+  the sheet last rested. **← Gallery** or **Escape** closes the viewer (Escape
+  closes the Build dialog first, then collapses the sheet). There is no Done
+  button: the gesture beside it is the dismissal.
 - **Not on this page**, drawn disabled with a sentence rather than left as an
   absence: the Home/Lock surfaces, playlists, archive, Set as wallpaper, Settings
   and Speed. A page cannot set a wallpaper, it rotates no playlists, it hides no
@@ -515,7 +544,8 @@ web/
   src/prefs.ts        the app's prefs: comfy_url/model/history + ModelRanking's rule (pure, tested)
   src/picture.ts      brightness, shadow and the light vector (pure, tested)
   src/comfy.ts        the ComfyUI client: the depth and SHARP graphs, the poll, the fetch
-  src/sheet.ts        the studio's bottom sheet: rows, grip, captions, the slider
+  src/sheetmath.ts    the sheet's arithmetic: the morph, the release, the spring (pure, tested)
+  src/sheet.ts        the studio's sheet: the morph, the pill, the strip, the rows
   src/cloud.ts        WebGL2 splat renderer (ported projection, integer texels)
   src/viewer.ts       one dispatch point: relief | photo | cloud | message, the rows and gestures
   src/relief.ts       three.js relief renderer (CameraModel camera + the app's tone/light)
@@ -524,6 +554,7 @@ web/
   src/pack.test.ts    the writer's fixture, chunk/CRC and both round trips
   src/media.test.ts   the three states, without a browser
   src/splat.test.ts   contract/splat + the camera, lens, sort, tap and floor
+  src/sheetmath.test.ts  the sheet: two ramps, the free rest, the tether, the spring
   src/camera.test.ts  the relief camera: at-rest, turntable, Pan and the tap round trip
   src/settings.test.ts  contract/settings: ranges, bodies, clamps and junk
   src/library.test.ts   contract/library: the populated blob, defaults, flat and junk
