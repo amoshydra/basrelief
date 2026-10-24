@@ -298,6 +298,7 @@ function memoryStore(): MediaStore {
       return [...files.keys()].sort();
     },
     async read(name) {
+      if (name.includes('/')) return readBundled(name);
       return files.get(name) ?? (await readBundled(name));
     },
     async write(name, data) {

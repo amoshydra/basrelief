@@ -559,7 +559,19 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     // directly; a row loaded from the index has to be resolved from the store. The
     // alternative — always reading the store — inspected an import BEFORE it was
     // written and reported its own file as missing, which is how this was found.
-    const file = provided ?? (await store.read(row.image));
+    // A read that throws must become a card that says so, not one that reads
+    // forever: `inspect` is the only thing that calls `finish`, so an escaping
+    // rejection leaves the tile spinning for the life of the page.
+    let file: File | null = null;
+    try {
+      file = provided ?? (await store.read(row.image));
+    } catch (err) {
+      finish(item, {
+        kind: 'unreadable',
+        reason: `${row.image} could not be read: ${String(err)}`,
+      });
+      return;
+    }
     if (file === null) {
       finish(item, {
         kind: 'unreadable',
