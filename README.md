@@ -1,207 +1,130 @@
 # Basrelief
 
-Turn a photo + its depth map into a real 3D **relief** that tilts with your phone.
-Three surfaces share one effect and one camera model:
+Turn a single photograph into something you can move around: a displaced relief
+surface, or a Gaussian-splat cloud, that shifts with the phone in your hand.
 
-- **Android live wallpaper** (`android/`, plain Java + OpenGL ES 2) — a gyro-driven
-  live wallpaper plus a full editing "studio" screen. No AndroidX, no Maven
-  dependencies. **This is the product.**
-- **Web gallery** (`web/`, Vite + TypeScript) — a static page where you drop a
-  packed PNG and see its relief. The distribution half: no app can rebind its own
-  wallpaper, so a file you can send someone is how it travels.
-- **Reference WebGL port** (`reference/webgl-port/`, Vite + three.js) — an older
-  browser implementation kept for the original camera model and the
-  embedded-depth reader. Not maintained in sync with the app; see its README.
+It ships as an **Android live wallpaper** with a built-in studio, plus a **web
+gallery** that shows the same pictures in a browser. Depth maps come from MoGe
+and cloud reconstructions from SHARP, both through a ComfyUI node in this repo.
 
-## How it works
+## What it does
 
-The photo is mapped onto a displaced triangle mesh: each grid vertex is pushed
-along Z by the depth map (`z = depth/255 − 0.5`, scaled by an intensity
-parameter), and **per-vertex normals are averaged from the surrounding faces** so a
-directional light actually shades the relief. Tilt the device and the camera
-swings around a selectable **orbit centre** — true perspective parallax, real
-silhouette, and real shading. This is genuine geometry, not a parallax shader.
+- **Relief** — the photo becomes a mesh, each vertex displaced by the depth map.
+  Tilt the phone and the camera swings around a pivot you choose.
+- **Splat** — a `.splat` cloud is drawn as one card per Gaussian, sorted
+  back-to-front, with its own lens read from a sidecar file.
+- **Depth and clouds on demand** — the studio and the gallery can both ask a
+  ComfyUI server for a depth map (MoGe) or an entirely new cloud (SHARP).
+- **A library** — photos, their per-surface settings, the selection and the
+  playlists live in one versioned blob, so a tuned look survives a restart.
 
-Because the depth map is 8-bit, its quantisation terraces are smoothed by a
-**separable float box blur** (radius `width/78`) applied before tessellation —
-without it, grazing light turns those terraces into visible contour lines.
+## The three surfaces
 
-## Web gallery
+| | |
+|---|---|
+| **`android/`** | The product. Java + OpenGL ES, no AndroidX and no Maven dependencies. A live wallpaper and a studio screen that share one camera model and one settings index. |
+| **`web/`** | A Vite + TypeScript gallery. Drop a packed PNG or a `.splat`, and it opens. The library lives in the browser (OPFS), with a picked folder as an optional backup — no account, no server, no upload. |
+| **`reference/webgl-port/`** | An older three.js implementation, kept only for the original camera model and the embedded-depth reader. **Not maintained, not kept in sync.** |
 
-A static gallery and viewer, and the only way one of these photos travels: drop a
-packed PNG and it opens as a relief that moves with a drag or the device's tilt.
-Drop a `.splat` cloud and it is listed and counted (its renderer is the next
-change). Files never leave the tab, and there is no server or persistence.
+A file travels between them because the format is the same one the app writes:
+a PNG carrying its depth in a `dePH` chunk. The web gallery can read it, write
+it, and the phone can open it.
 
+## How the relief works
+
+The photo is mapped onto a grid: each vertex is pushed along Z by
+`depth/255 - 0.5`, scaled by an intensity value, and **per-vertex normals are
+averaged from the surrounding faces** so a directional light shades it properly.
+This is real geometry, not a parallax shader.
+
+Because depth is 8-bit, its terraces are smoothed by a **separable float box
+blur** (radius `width/78`) before tessellation — without it, grazing light turns
+quantisation into visible contour lines.
+
+The camera is a turntable about the surface under the orbit centre, with a fixed
+rest eye: at rest the picture is exactly the photograph, and Origin names only
+the axis the tilt rotates about. Depth is a per-photo value, so the same
+photograph can stand further out of the plane on the lock screen than on home.
+
+## How the splat renderer works
+
+One card per sample, generated from `gl_InstanceID` — no vertex buffer, so the
+whole grid resolution is a uniform. The full 3D covariance is projected to a 2D
+conic, floored so a sub-pixel splat still covers a pixel, and clipped to the
+radius its own alpha survives.
+
+The colour path is **integer**: the 32-byte record goes up as two `RGBA32UI`
+texels and is unpacked with shifts. It must not be a float texture — a bright
+opaque colour is a NaN as float32, and a driver that canonicalises NaNs renders
+those splats flat white.
+
+Sorting is a counting sort into 262,144 depth buckets, re-derived only when the
+tilt moves more than a sub-pixel bound, because alpha blending is not
+commutative.
+
+## Building
+
+Android is built with Gradle inside a Podman container; the host needs only
+`podman` (and `adb` to install).
+
+```bash
+cd android
+./podman-build.sh build-image    # once: SDK image (Ubuntu + JDK + SDK 36)
+./podman-build.sh test           # JVM unit tests in :core — no device
+./podman-build.sh build-apk      # debug APK
+./podman-build.sh install        # release build + adb install + AOT compile
 ```
+
+`install` builds and **AOT-compiles** the release APK: this ROM disables JIT, so
+a debug build runs interpreter-only and is roughly 40× slower. The debug APK is
+for behaviour testing only.
+
+Release signing reads `android/keystore.properties` (gitignored). Building a
+release with the committed debug key is **refused** — distribution is F-Droid
+and Obtainium, which ship the APK this project signs, so the release key is the
+whole of the update trust chain.
+
+Web:
+
+```bash
 cd web
 pnpm install
-pnpm dev        # HTTPS on :5173 — needed for the gyro on a phone
-pnpm build      # typecheck + static bundle in web/dist
-pnpm test       # contract/deph fixtures + media-state checks
+pnpm dev        # HTTPS on :5173 — the gyro needs a secure context
+pnpm build      # typecheck + static bundle
+pnpm test       # contract fixtures, media states, renderers
 ```
 
-`file://` will not work (ES modules and fetch both refuse it). See
-`web/README.md` for the media states, the format, and what it does not do yet.
+ComfyUI generation needs a server; `pnpm dev` proxies `/comfy` to
+`http://127.0.0.1:8188`, and a static build needs the server's own CORS flag.
 
-## Reference WebGL port
+## Shared contracts
 
-Reference only — not the product, and not kept in sync with the Android app.
-The source of truth for behaviour is `android/`.
+Some rules are implemented more than once because the copies cannot share code:
+the depth chunk, the splat record and sidecar, the tag rule, the settings body,
+the library index. They share **bytes** instead — one golden fixture per rule in
+`contract/`, each implementation tested against it in Java, TypeScript and
+Python. `scripts/check-parity.mjs` holds the constants and the fixture paths
+together so a drift is a build failure rather than a review note.
 
-```
-cd reference/webgl-port
-pnpm install
-pnpm dev               # HTTPS on :5173 — required for gyro in browsers
-pnpm run build         # static bundle in reference/webgl-port/dist
-pnpm run gen:assets    # regenerate the synthetic demo image+depth pair
-```
+## Status
 
-Controls (touch-first): tap = set orbit centre, two-finger drag = pan,
-two-finger pinch / slider = zoom, sliders = depth intensity / motion / edge
-smoothing, single-finger drag = tilt fallback, fullscreen + hide-controls.
+Working: the wallpaper and studio, relief and splat rendering, the web gallery
+with its library and backup folder, packed-PNG read and write, depth and cloud
+generation against ComfyUI, playlists, archive and clip playback.
 
-## Android app
+Not yet: accounts, a server, cloud sync, LoRA or model training.
 
-### Build (Gradle in a container — no Android Studio, no SDK on the host)
+The web gallery's folder picker needs a Chromium desktop; OPFS works everywhere.
 
-```
-cd android
-./podman-build.sh build-image    # once: builds the SDK image
-./podman-build.sh build-apk      # -> app/build/outputs/apk/debug/app-debug.apk
-./podman-build.sh install        # build + install on the attached device over adb
-```
-
-The host needs only **podman** (and `adb` for `install`): `gradlew` and the
-wrapper are committed and run inside the container (Ubuntu 22.04, JDK 17,
-Android SDK 36). No Android Studio required.
-
-Install the APK and set it via **Basrelief → "Set as wallpaper"** (or long-press
-home → Wallpapers → Basrelief).
-
-Notes:
-- Plain Java, framework APIs only — no AndroidX/Maven dependencies.
-- Regenerate the launcher icon: `node scripts/generate-icon.mjs`.
-
-### Studio → wallpaper
-
-The studio screen edits everything: image/depth pickers, depth intensity, motion,
-zoom, orbit centre (tap), pan (two-finger), reset. All settings are
-persisted to `SharedPreferences`; the live wallpaper **mirrors them** live. The
-wallpaper itself is read-only — it only tilts with the gyro. The gyro pauses
-(not visible, low battery unless charging, or after 5 s of idle) apply to the
-**wallpaper**; the studio preview runs the gyro regardless of battery.
-
-### Depth AI (generate depth from a LAN ComfyUI)
-
-The studio's **Depth AI** button opens a page that talks directly to a ComfyUI
-instance on your network (no PC browser needed):
-
-- Enter your ComfyUI URL and **Test connection** — the app queries `/object_info`
-  and lists the depth nodes the instance *actually* has (Depth Anything V1/V2,
-  MiDaS, Zoe… anything installed, e.g. via `comfyui_controlnet_aux`).
-- Pick an image, choose a model + resolution, **Generate** — live progress via a
-  dependency-free WebSocket (`/ws`), result fetched via `/history` and `/view`.
-- The app then packs the image + depth into one self-contained PNG (raw `dEPt`
-  chunk, same as your `depthmap.html` tool) and loads it straight into the studio
-  and wallpaper.
-
-Implementation: `ComfyApi.java` (HTTP), `ComfyWs.java` (RFC6455), `DepthPngPacker.java`.
-
-### Gyro
-
-`TYPE_ROTATION_VECTOR`, calibrated to the neutral pose each time the wallpaper
-becomes visible (screen on / back home), with a stale-reading skip + settle
-average. Tilt is exponentially smoothed with a **time-based constant** (0.2 s) so
-it feels identical on 60/90/120 Hz displays. Rotation maps roll→x, pitch→y.
-
-**Idle sleep:** after ~5 s of stillness the rotation-vector listener is
-unregistered and rendering stops (only the last frame stays). A low-power
-accelerometer takes over, and a shake — or the wallpaper becoming visible
-again — wakes it, re-calibrating to the current pose.
-
-## Embedded depth PNG format
-
-A color PNG may carry its depth map in a custom **ancillary chunk** — invisible to
-normal viewers, so the file stays a plain viewable image. The parser (`png-depth.js`
-web, `web/src/deph.ts` gallery, `DepthPng.java` Android) accepts both chunk names:
-
-| Name   | Meaning |
-|--------|---------|
-| `dePH` | spec-compliant (ancillary, private, reserved-bit uppercase, unsafe-to-copy) |
-| `dEPt` | used by some tools (matched case-insensitively) |
-
-Two payload forms are accepted:
-
-1. **A complete PNG** — the chunk data is a whole grayscale depth PNG
-   (self-describing; `photo-with-depth.png` in the repo is an example).
-2. **Raw 8-bit gray** — exactly `width × height` bytes, row-major, dimensions from
-   the file's IHDR (this is the format your ComfyUI/Depth Anything V2 export uses).
-
-The generator (`reference/webgl-port/scripts/generate-assets.mjs`) embeds a PNG
-payload as `dePH`.
-
-## Project layout
-
-```
-web/                    static gallery + relief viewer (Vite + TypeScript)
-  src/
-    deph.ts             dePH/dEPt reader (the contract's third copy)
-    media.ts            one classifier for what a dropped file is
-    gallery.ts          cards, counts, per-file inspection
-    viewer.ts           one dispatch point per media kind
-    relief.ts           relief renderer (camera model from the port)
-    tilt.ts             deviceorientation → tilt target
-reference/webgl-port/   reference web app (Vite + three.js), not maintained
-  src/
-    scene.js            camera model, relief geometry, pan/zoom/orbit
-    tilt.js             deviceorientation handling
-    png-depth.js        embedded-depth chunk parser (dePH/dEPt)
-    main.js             UI wiring
-  scripts/              web asset generator
-  public/assets/        the port's own (old) demo trio
-scripts/                repo guards (parity, shaders, JSON puts)
-android/
-  podman-build.sh   canonical build (containerised Gradle)
-  Dockerfile        Ubuntu 22.04 + JDK 17 + Android SDK 36
-  app/src/main/java/com/amoshydra/basrelief/
-    DepthWallpaperService.java  live wallpaper (getHolder()→wallpaper surface)
-    ReliefRenderer.java         GLES2 renderer shell; delegates the maths to :core
-    TiltController.java         rotation-vector tilt + calibration + idle sleep
-    SensorPolicy.java           gyro pauses: not visible / battery ≤ 20%
-    DepthPng.java               embedded-depth chunk parser
-    DepthPngPacker.java         packs image+depth into a dEPt PNG
-    ImageUtil.java              downscales huge images before use
-    ComfyApi.java, ComfyWs.java ComfyUI REST + progress websocket
-    DepthGenDialog.java         Depth AI page
-    MainActivity.java           studio: pickers, sliders, gestures, share
-  core/src/main/java/com/amoshydra/basrelief/core/render/   pure JVM, no Android imports
-    ReliefMesh.java             depth → geometry + the float depth blur
-    CameraModel.java            projection, z-clamp, tap → orbit
-    Mat4.java                   vendored subset of android.opengl.Matrix
-```
-
-## Tests
-
-The rendering core is a plain JVM module, so the maths that is easy to get
-subtly wrong is covered by ordinary unit tests — no device, no emulator:
-
-```
-cd android
-./podman-build.sh test        # or: just ./podman-build.sh build-apk
-```
-
-`ReliefMeshGoldenTest` pins the exact vertex output for a fixed depth map, which
-is what keeps the depth-banding fix (contour lines caused by 8-bit depth
-quantisation) from silently regressing. `CameraModelTest` checks that tapping to
-re-centre the relief round-trips through the projection.
-
-JUnit is a test-only dependency and is not packaged into the APK.
-
-The web gallery's tests run under plain Node, with no browser and no test
-framework: `cd web && pnpm test` walks the shared `contract/deph/` fixtures with
-its TypeScript reader and checks the gallery's media states.
-
-## License
+## Licence
 
 GPL-3.0 — see [LICENSE](LICENSE).
+
+## Credits
+
+- [three.js](https://threejs.org) (MIT) renders the gallery's relief surface and
+  the reference port's scene.
+- Depth and cloud inference run in [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+  via the node in `server/comfy-node/`; MoGe and SHARP are separate upstream
+  projects and are not bundled here.
+- The bundled demo imagery is AI-generated and carries no third-party rights.
