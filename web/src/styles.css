@@ -901,7 +901,14 @@ summary:focus-visible {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  /* `none`, and the scroll driven by `sheet.ts` by hand — not `pan-y`. A native
+     scroller claims a touch at `pointerdown` and sends `pointercancel` the moment
+     it starts scrolling, so a drag that reaches the top of the list and keeps
+     pulling can never become the sheet's: the pointer is already gone. Owning the
+     gesture is the web's `BottomSheet.onIntercept`, and a continuous handoff from
+     a native scroller is the one thing it cannot do. Wheel and the desktop
+     scrollbar still scroll, because neither is a touch. */
+  touch-action: none;
 }
 
 /* The row inset is the app's 14dp (`sheetScroll.setPadding(dp(14), ...)`), and it

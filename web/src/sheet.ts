@@ -439,6 +439,36 @@ export function createSheet(options: SheetOptions): Sheet {
     frame = requestAnimationFrame(step);
   }
 
+  /**
+   * A flick of the content, with the scroller's own decay and clamped at both ends.
+   * It is the content's fling and not the sheet's: a list that coasts into its top
+   * edge stops there, as a native scroller and `BottomSheet`'s own do.
+   */
+  function flingScroll(velocity: number): void {
+    cancelMotion();
+    const max = maxScroll();
+    if (max <= 0 || Math.abs(velocity) < 80 || reducedMotion()) return;
+    let v = velocity;
+    let last = performance.now();
+    const step = (now: number): void => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const next = scroller.scrollTop + v * dt;
+      v *= Math.exp(-dt / 0.35);
+      if (next <= 0) {
+        scroller.scrollTop = 0;
+        v = 0;
+      } else if (next >= max) {
+        scroller.scrollTop = max;
+        v = 0;
+      } else {
+        scroller.scrollTop = next;
+      }
+      frame = v !== 0 && Math.abs(v) > 30 ? requestAnimationFrame(step) : 0;
+    };
+    frame = requestAnimationFrame(step);
+  }
+
   /** The entrance: the whole resting surface slides up from below the window. */
   function animateBelowToZero(): void {
     const startBelow = below;
@@ -520,15 +550,44 @@ export function createSheet(options: SheetOptions): Sheet {
     velocity: number;
     claimed: boolean;
     insideScroll: boolean;
+    /** The content's `scrollTop` when the gesture began. */
+    startScroll: number;
+    /** The content's own velocity, px/s of `scrollTop` — the fling's seed. */
+    scrollVelocity: number;
+    /** The content used part of this gesture, so a release may fling it. */
+    scrolled: boolean;
   }
   let gesture: Gesture | null = null;
   /** A claimed drag happened; the click the browser sends after it is not a tap. */
   let moved = false;
 
-  /** Whether the scrolling content can still use this drag in its own direction. */
-  function scrollCanTake(dy: number): boolean {
-    if (dy > 0) return scroller.scrollTop > 0;
-    return scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1;
+  /** The furthest the content can scroll. */
+  function maxScroll(): number {
+    return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  }
+
+  /**
+   * Offer the drag to the content, and answer whether it took it.
+   *
+   * The scroll is driven here rather than by the browser, because with
+   * `touch-action: pan-y` the scroller claims the touch at `pointerdown` and the
+   * browser cancels the pointer as soon as it scrolls — so the one gesture Android
+   * arbitrates in `BottomSheet.onIntercept`, a list dragged to its top and then
+   * pulled further, could not exist. The rule is `scrollCanTake`'s and it is asked
+   * on every move, which is what lets the handoff happen mid-gesture.
+   */
+  function scrollTo(g: Gesture, dy: number): boolean {
+    const max = maxScroll();
+    if (max <= 0) return false;
+    // A finger moving down scrolls the content up, which DECREASES `scrollTop`.
+    const want = g.startScroll - dy;
+    // Past either end in that direction there is nothing left to scroll: the sheet
+    // takes the rest of the gesture.
+    if (want <= 0 && dy > 0) return false;
+    if (want >= max && dy < 0) return false;
+    scroller.scrollTop = Math.min(max, Math.max(0, want));
+    g.scrolled = true;
+    return true;
   }
 
   function claim(g: Gesture, event: PointerEvent): void {
@@ -541,9 +600,6 @@ export function createSheet(options: SheetOptions): Sheet {
     g.startFraction = fraction;
     g.lastY = event.clientY;
     element.classList.add('sheet--dragging');
-    // The rest of this gesture is the sheet's, so the browser must not also scroll
-    // the content with it (touch only; a mouse never scrolls by dragging).
-    scroller.style.touchAction = 'none';
     try {
       element.setPointerCapture(event.pointerId);
     } catch {
@@ -562,6 +618,9 @@ export function createSheet(options: SheetOptions): Sheet {
     ) {
       return;
     }
+    // A new touch stops a fling: the content should answer the finger, not coast
+    // under it.
+    cancelMotion();
     gesture = {
       id: event.pointerId,
       startY: event.clientY,
@@ -572,6 +631,9 @@ export function createSheet(options: SheetOptions): Sheet {
       velocity: 0,
       claimed: false,
       insideScroll: event.target instanceof Node && scroller.contains(event.target),
+      startScroll: scroller.scrollTop,
+      scrollVelocity: 0,
+      scrolled: false,
     };
   };
 
@@ -580,6 +642,7 @@ export function createSheet(options: SheetOptions): Sheet {
     if (g === null || event.pointerId !== g.id) return;
     const dt = Math.max(1, event.timeStamp - g.lastAt) / 1000;
     g.velocity = (event.clientY - g.lastY) / dt;
+    g.scrollVelocity = -g.velocity;
     g.lastY = event.clientY;
     g.lastAt = event.timeStamp;
     const dy = event.clientY - g.startY;
@@ -589,9 +652,10 @@ export function createSheet(options: SheetOptions): Sheet {
       // A drag that is not clearly vertical belongs to the filmstrip's horizontal
       // scroll, exactly as `BottomSheet.mostlyVertical` decides.
       if (Math.abs(dy) <= Math.abs(dx)) return;
-      // The scroll is offered the direction first, and keeps the gesture while it
-      // can still move. At its top edge a downward drag is the sheet's.
-      if (g.insideScroll && scrollCanTake(dy)) return;
+      // The scroll is offered the direction first and keeps the gesture while it
+      // can still move. At either edge — or once it has been dragged there — the
+      // sheet takes the rest, which is the handoff a native scroller cannot do.
+      if (g.insideScroll && scrollTo(g, dy)) return;
       claim(g, event);
     }
     const travel = span();
@@ -605,9 +669,13 @@ export function createSheet(options: SheetOptions): Sheet {
     const g = gesture;
     if (g === null || event.pointerId !== g.id) return;
     gesture = null;
-    if (!g.claimed) return;
+    if (!g.claimed) {
+      // The content's own flick, with the content's own decay. A cancel is not a
+      // flick: nothing is invented from a gesture the system took away.
+      if (!cancelled && g.scrolled) flingScroll(g.scrollVelocity);
+      return;
+    }
     element.classList.remove('sheet--dragging');
-    scroller.style.touchAction = '';
     if (element.hasPointerCapture(event.pointerId)) {
       element.releasePointerCapture(event.pointerId);
     }

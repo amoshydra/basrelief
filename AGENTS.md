@@ -324,7 +324,16 @@ unaffected.
     the filmstrip, a row — and the scrolling content keeps a drag it can still use
     and hands it over at its top edge, which is `BottomSheet.onIntercept`. Only a
     control that owns its own drag (a slider's track, a text field) is offered the
-    gesture first.
+    gesture first. **The content's scroll is driven BY HAND (`touch-action: none`
+    on `.sheet-body`), and that is not a preference:** with `pan-y` the native
+    scroller claims the touch at `pointerdown` and sends `pointercancel` the
+    moment it starts scrolling, so a drag that reaches the top of the list and
+    keeps pulling can never become the sheet's — the pointer is already gone, and
+    no JS can get it back. The handoff is therefore a decision made on every
+    `pointermove` (`scrollTo`), and the flick that follows is the app's own decay
+    (`flingScroll`, clamped at both ends, because a list that coasts into its top
+    edge stops there). Wheel and the desktop scrollbar still scroll, because
+    neither is a touch.
   - **the filmstrip, the fix line and the photo line are sheet content, and the
     sheet has no footer.** `createSheet` puts the library strip under the grip,
     the dashed condition box under that, the photo line at the top of the scroll
