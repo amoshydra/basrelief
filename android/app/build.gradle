@@ -78,6 +78,19 @@ android {
         buildConfigField "boolean", "RENDERER_GLES3", "${rendererGles3()}"
     }
 
+    // A release signed with the debug key is not "less secure", it is
+    // unauthenticated: the key is in every Android SDK, so anyone could publish
+    // an update every user installs. That matters more here than it would on
+    // Play, where Google holds the real signing key underneath.
+    if (hasReleaseKeystore &&
+            keystoreProperties['storeFile'] != null &&
+            rootProject.file(keystoreProperties['storeFile']).name == 'debug.keystore' &&
+            gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }) {
+        throw new GradleException(
+            "Refusing to sign a release with debug.keystore. Set storeFile in " +
+            "android/keystore.properties to a private release key.")
+    }
+
     signingConfigs {
         release {
             if (hasReleaseKeystore) {

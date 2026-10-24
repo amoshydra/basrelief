@@ -57,7 +57,25 @@ APK output: $SCRIPT_DIR/app/build/outputs/apk/
 EOF
 }
 
+
+# The debug key lives on the HOST and is never committed. The Dockerfile copies
+# it into the image, so it must exist before `podman build`; generating it per
+# image build would change the signature on every rebuild and make
+# `adb install -r` fail. Generating it per MACHINE is the point: your debug
+# builds should not be installable over anyone else's.
+ensure_keystore() {
+    local ks="$SCRIPT_DIR/debug.keystore"
+    [ -f "$ks" ] && return 0
+    echo "No debug keystore; generating $ks (password \`android\`, not a secret)"
+    keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
+        -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+        -storepass android -keypass android \
+        -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1 \
+        || { echo "keytool failed; install a JDK or copy a debug.keystore here." >&2; return 1; }
+}
+
 build_image() {
+    ensure_keystore || return 1
     echo "Building Android SDK image..."
     podman build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
     echo "Image ready: $IMAGE_NAME"
@@ -118,19 +136,8 @@ build_release() {
     echo "=== Build complete ==="
     if [ -f "$SCRIPT_DIR/keystore.properties" ]; then
         echo "Signed APK: $APK_RELEASE"
-        # `debug.keystore` is COMMITTED, because the image copies it and a
-        # generated one would change signature on every rebuild. It is a
-        # published throwaway (password `android`), so signing a release with it
-        # means anyone holding this repository can produce an APK that Android
-        # treats as an update. That is fine for side-loading your own builds and
-        # not fine for anything you distribute -- the Dockerfile says the same
-        # thing above the COPY. Say it out loud rather than letting the APK look
-        # properly signed.
-        if grep -qE '^[[:space:]]*storeFile[[:space:]]*=[[:space:]]*debug\.keystore' "$SCRIPT_DIR/keystore.properties"; then
-            echo "WARNING: release signed with the COMMITTED DEBUG KEY."
-            echo "         Anyone with this repo can sign an update Android accepts."
-            echo "         Use Play App Signing, or point storeFile at a key you keep private."
-        fi
+        # A release signed with the debug key is refused by app/build.gradle:
+        # F-Droid and Obtainium distribute this APK, so the key is the identity.
     else
         echo "UNSIGNED APK (no keystore.properties): $APK_RELEASE_UNSIGNED"
     fi

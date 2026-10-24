@@ -40,9 +40,11 @@ RUN sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 # rebuilt, and the very first rebuild (the SDK 36 bump) reproduced the original
 # failure exactly. Committing the key makes rebuilds a no-op.
 #
-# It is a well-known throwaway key with the published password `android`, not a
-# secret. It must never be used for release signing; that uses the gitignored
-# keystore.properties.
+# The key is generated on the host by `podman-build.sh` (see `ensure_keystore`),
+# not committed and not generated per image build. It is a well-known throwaway
+# with the published password `android`, not a secret, and it must never be used
+# for release signing: F-Droid and Obtainium distribute the APK you sign, so the
+# release key is the only thing standing between a user and a forged update.
 COPY debug.keystore /root/.android/debug.keystore
 RUN chmod 644 /root/.android/debug.keystore
 

@@ -1719,10 +1719,16 @@ already cost real time.
 - The container bakes its own debug keystore. Without it AGP mints a fresh key
   in ephemeral storage every build, every APK gets a different signature, and
   `adb install -r` always fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —
-  whose only recovery is an uninstall, which wipes the user's settings. (The
-  repo's `keystore.properties` points release signing at that same throwaway
-  `android/debug.keystore`, which is why a release build installs over a debug
-  one with `-r`.)
+  whose only recovery is an uninstall, which wipes the user's settings.
+  **The key is not committed.** `podman-build.sh`'s `ensure_keystore` generates
+  it on the host when missing and the Dockerfile copies it in, so the signature
+  is stable per machine with no key material in the repository — a contributor's
+  debug builds get their own identity, which is what you want, because theirs
+  must never install over yours. **Signing a release with it is refused, not
+  warned about** (`app/build.gradle`): distribution is F-Droid and Obtainium,
+  which ship the APK YOU sign, so the release key is the only thing between a
+  user and a forged update and there is no store key underneath to fall back on.
+  The previously committed copy was removed and its history rewritten.
 - **An APK that is *installed* is always `build-release`, and the install is
   followed by the AOT compile — never the debug APK, and never an install on its
   own.** This ROM has `dalvik.vm.usejit=false` and ART refuses to AOT a
