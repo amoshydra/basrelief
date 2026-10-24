@@ -588,19 +588,22 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     // the viewer gets the same asset whether the row was just imported or loaded.
     let cloudNote: string | null = null;
     if (row.splat !== null) {
-      const cloudFile = await store.read(row.splat);
-      if (cloudFile === null) {
+      // The LENGTH, not the bytes: a count is `size / 32`, and reading a 13 MB
+      // cloud to divide its size is the difference between a page that opens on
+      // a slow link and one that does not. The bytes move on the first open.
+      const cloudSize = await store.size(row.splat);
+      if (cloudSize === null) {
         cloudNote =
           `library.json names ${row.splat}, but the store has no such file — ` +
           'this row draws its relief until the cloud is rebuilt.';
-      } else if (cloudFile.size > 0 && cloudFile.size % 32 === 0) {
+      } else if (cloudSize > 0 && cloudSize % 32 === 0) {
         item.cloud = {
-          file: cloudFile,
+          file: null,
           bytes: null,
           name: row.splat,
           lens: row.splatLens,
           lensFrom: null,
-          splats: Math.floor(cloudFile.size / 32),
+          splats: Math.floor(cloudSize / 32),
         };
       } else {
         cloudNote = `${row.splat} is not a whole number of 32-byte records, so it is not a cloud.`;
@@ -1008,6 +1011,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       url: item.url ?? '',
       state: item.state,
       depth: item.depth,
+      // The count came from the file's length, so the first open is when the
+      // bytes move. The viewer does not know the store; this is the way in.
+      loadCloudFile: openRow.splat
+        ? async () => await store.read(openRow.splat as string)
+        : undefined,
       size: file.size,
       width: item.width,
       height: item.height,

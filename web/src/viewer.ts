@@ -142,6 +142,11 @@ export interface OpenableItem {
   /** A cloud built on this page for this card, if one was. */
   cloud: CloudAsset | null;
   /**
+   * The cloud's bytes, fetched on first open: a card states its count from the
+   * file's length, so nothing reads the records until the viewer needs them.
+   */
+  loadCloudFile?: () => Promise<File | null>;
+  /**
    * The row's own render values for this surface, from `library.json`.
    *
    * The studio's values belong to a photograph and a screen, not to the tab, so
@@ -1331,7 +1336,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   // ------------------------------------------------------------------- cloud
 
   async function mountCloud(): Promise<void> {
-    const asset = currentCloud();
+    let asset = currentCloud();
     if (!asset) return;
     clearMount();
 
@@ -1342,9 +1347,19 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     teardown.push(() => loader.remove());
 
     let bytes = asset.bytes;
+    if (!bytes && asset.file === null && item.loadCloudFile) {
+      try {
+        const fetched = await item.loadCloudFile();
+        if (fetched !== null) asset = { ...asset, file: fetched };
+      } catch {
+        // Falls through to the sentence the read failure below produces.
+      }
+    }
     if (!bytes) {
       try {
-        bytes = new Uint8Array(await (asset.file as File).arrayBuffer());
+        const source = asset.file;
+        if (source === null) throw new Error('the cloud\'s bytes are not here');
+        bytes = new Uint8Array(await source.arrayBuffer());
       } catch (err) {
         loader.remove();
         if (closed) return;

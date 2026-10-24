@@ -51,6 +51,13 @@ export interface MediaStore {
   readonly kind: 'opfs' | 'memory';
   list(): Promise<string[]>;
   read(name: string): Promise<File | null>;
+  /**
+   * The file's length, without its bytes.
+   *
+   * A splat cloud's count is `bytes / 32`, so the card can state it from a HEAD
+   * request instead of downloading a 13 MB file to divide its size by 32.
+   */
+  size(name: string): Promise<number | null>;
   write(name: string, data: FileData): Promise<void>;
   remove(name: string): Promise<void>;
   readText(name: string): Promise<string | null>;
@@ -169,6 +176,18 @@ export async function writeInto(
  */
 const BUNDLED_PREFIX = 'demo/';
 
+async function bundledSize(name: string): Promise<number | null> {
+  if (!name.startsWith(BUNDLED_PREFIX)) return null;
+  try {
+    const response = await fetch(new URL(name, document.baseURI), { method: 'HEAD' });
+    if (!response.ok) return null;
+    const length = response.headers.get('content-length');
+    return length === null ? null : Number(length);
+  } catch {
+    return null;
+  }
+}
+
 async function readBundled(name: string): Promise<File | null> {
   if (!name.startsWith(BUNDLED_PREFIX)) return null;
   try {
@@ -266,10 +285,16 @@ function opfsStore(dir: FileSystemDirectoryHandle): MediaStore {
     if (name.includes('/')) return readBundled(name);
     return (await readFrom(dir, name)) ?? (await readBundled(name));
   };
+  const size = async (name: string): Promise<number | null> => {
+    if (name.includes('/')) return bundledSize(name);
+    const file = await readFrom(dir, name);
+    return file?.size ?? (await bundledSize(name));
+  };
   return {
     kind: 'opfs',
     list: () => listIn(dir),
     read,
+    size,
     write: (name, data) => writeInto(dir, name, data),
     remove: (name) => removeFrom(dir, name),
     async readText(name) {
@@ -306,6 +331,10 @@ function memoryStore(): MediaStore {
     async read(name) {
       if (name.includes('/')) return readBundled(name);
       return files.get(name) ?? (await readBundled(name));
+    },
+    async size(name) {
+      if (name.includes('/')) return bundledSize(name);
+      return files.get(name)?.size ?? (await bundledSize(name));
     },
     async write(name, data) {
       const bytes = asBlob(data);
