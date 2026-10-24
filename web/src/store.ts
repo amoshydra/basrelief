@@ -159,6 +159,29 @@ export async function writeInto(
   }
 }
 
+/**
+ * Bundled assets that ship with the page and are never written by it.
+ *
+ * The marbled bust is the app's own preload, and the gallery starts from the
+ * same picture rather than an empty shelf. These are fetchable URLs, not OPFS
+ * entries: the store stays the truth for anything the user imported, and the
+ * bundle is only consulted when the store does not have the file.
+ */
+const BUNDLED_PREFIX = 'demo/';
+
+async function readBundled(name: string): Promise<File | null> {
+  if (!name.startsWith(BUNDLED_PREFIX)) return null;
+  try {
+    const url = new URL(name, document.baseURI);
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return new File([blob], name.slice(BUNDLED_PREFIX.length), { type: blob.type });
+  } catch {
+    return null;
+  }
+}
+
 /** Read one file from a directory handle, or null when it is not there. */
 export async function readFrom(
   dir: FileSystemDirectoryHandle,
@@ -275,7 +298,7 @@ function memoryStore(): MediaStore {
       return [...files.keys()].sort();
     },
     async read(name) {
-      return files.get(name) ?? null;
+      return files.get(name) ?? (await readBundled(name));
     },
     async write(name, data) {
       const bytes = asBlob(data);
