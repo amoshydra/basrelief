@@ -1381,7 +1381,7 @@ already cost real time.
   `proj * view` in that same order; `view * proj` is a real bug.
 - **`apply()` refuses an instant paint of a frame already on screen, and the guard
   lives there -- not at the call sites -- with the two legitimate escapes named.**
-  The rule: *nothing may be painted instantly; a frame can only be reached by gliding towards it* `ReliefRenderer.apply(Framing, Apply)` no-ops a
+  The rule: *nothing may be painted instantly; a frame can only be reached by gliding towards it.* `ReliefRenderer.apply(Framing, Apply)` no-ops a
   `RESOLVE` whose framing `sameAs` the snapshot, and lets only `GESTURE` (a slider
   must lead the finger) and `PAIR_CHANGE` (a different photo; gliding it would smear)
   through. The default overload is `RESOLVE`, the safe one, so a future caller cannot
@@ -2703,7 +2703,7 @@ every library write took the app down, so any gallery tap crashed it.
   was real and is fixed: all five properties read `SheetMorph.morphProgress`, which is the
   collapse fraction itself.
   **But the band was then the wrong fix, in the other direction**, and the user had to
-  say so a second time: *the height did not follow the drag and then collapsed all at once; a bottom sheet's height should track the finger*
+  say so a second time: *the height did not follow the drag and then collapsed all at once; a bottom sheet's height should track the finger.*
   My first reading of *"the shrinkage shouldn't happen until at the very end of the
   bottom"* was "hold until the last 5%", which is a bottom sheet that ignores four fifths
   of your drag and then snaps shut. **So the geometry has NO band at all: the height ramps
@@ -2723,7 +2723,7 @@ every library write took the app down, so any gallery tap crashed it.
   the answer: `morphProgress` is the collapse fraction and drives the **height** the whole
   way, because *a bottom sheet's height should not always be full*; `shapeProgress`
   holds the sheet's own shape and drives the **width, insets, radius and fill** only in
-  the last tenth, because *the width should stay unchanged until the very end* A full-width
+  the last tenth, because *the width should stay unchanged until the very end.* A full-width
   panel at 40% of its height is still a sheet, and rounding and tinting it towards a pill
   while it is plainly a sheet reads as two objects. **This file got this wrong in BOTH
   directions** — banded height and ramped shape ("illogical"), then banded height left in
