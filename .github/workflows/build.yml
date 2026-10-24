@@ -159,3 +159,12 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
+      # The build emits the notices for what the bundle actually contains. A
+      # licence file nobody checks is indistinguishable from one that silently
+      # stopped listing a dependency, so hold it to the one dependency that must
+      # be in there, and to a non-empty file.
+      - name: Third-party notices shipped
+        run: |
+          test -s dist/THIRD-PARTY.txt
+          grep -q '^Name: three' dist/THIRD-PARTY.txt
+          grep -q 'The MIT License' dist/THIRD-PARTY.txt

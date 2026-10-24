@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv, type HttpProxy } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+import license from 'rollup-plugin-license';
 
 // HTTPS is not decoration here. Browsers expose `deviceorientation` only in a
 // secure context, and `pnpm dev` on localhost is one — but a phone opening the
@@ -37,6 +38,24 @@ export default defineConfig(({ mode }) => {
     plugins: [basicSsl()],
     server: { host: true, proxy },
     preview: { host: true, proxy },
-    build: { target: 'es2022' },
+    build: {
+      target: 'es2022',
+      rollupOptions: {
+        // What the page ships decides what it owes. A bundle is a distribution,
+        // so every dependency inside it must carry its notice with it — and the
+        // project's own licence rides along for the same reason. Listing the
+        // bundle's graph rather than package.json means this file cannot go
+        // stale as dependencies are added or dropped; a dev-only package is
+        // absent because it never reached the output.
+        plugins: [
+          license({
+            thirdParty: {
+              output: 'dist/THIRD-PARTY.txt',
+              includePrivate: true,
+            },
+          }),
+        ],
+      },
+    },
   };
 });
