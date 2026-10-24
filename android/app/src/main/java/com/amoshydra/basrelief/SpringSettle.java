@@ -12,7 +12,8 @@ import android.view.VelocityTracker;
  * resistance, it dismissed the moment the finger crossed a threshold <i>while the
  * finger was still down</i>, and it settled with the platform's default
  * interpolator, which is a fade-shaped ease with no velocity in it. The user's
- * words described a sheet dismissed when dragged only part way, with motion that was not springy. The
+ * words described a sheet dismissed when dragged only part way, with motion that was not
+ * springy. The
  * studio sheet then got its own drag with its own constants, which is two chances
  * for one of them to keep the old behaviour — the drift this class removes.
  *

@@ -118,6 +118,19 @@ build_release() {
     echo "=== Build complete ==="
     if [ -f "$SCRIPT_DIR/keystore.properties" ]; then
         echo "Signed APK: $APK_RELEASE"
+        # `debug.keystore` is COMMITTED, because the image copies it and a
+        # generated one would change signature on every rebuild. It is a
+        # published throwaway (password `android`), so signing a release with it
+        # means anyone holding this repository can produce an APK that Android
+        # treats as an update. That is fine for side-loading your own builds and
+        # not fine for anything you distribute -- the Dockerfile says the same
+        # thing above the COPY. Say it out loud rather than letting the APK look
+        # properly signed.
+        if grep -qE '^[[:space:]]*storeFile[[:space:]]*=[[:space:]]*debug\.keystore' "$SCRIPT_DIR/keystore.properties"; then
+            echo "WARNING: release signed with the COMMITTED DEBUG KEY."
+            echo "         Anyone with this repo can sign an update Android accepts."
+            echo "         Use Play App Signing, or point storeFile at a key you keep private."
+        fi
     else
         echo "UNSIGNED APK (no keystore.properties): $APK_RELEASE_UNSIGNED"
     fi

@@ -5115,7 +5115,8 @@ public class MainActivity extends Activity {
         if (scene.has3d()) {
             // The row has a relief or a splat, so the no-depth affordance must not
             // appear AT ALL — not reworded, not greyed, not a smaller box. This is the
-            // user's rule: the no-depth affordance must be removed while a relief or a splat is present. It is what stops a row that has a cloud from being told it has no
+            // user's rule: the no-depth affordance must be removed while a relief or a splat is
+            // present. It is what stops a row that has a cloud from being told it has no
             // depth.
             //
             // Shading is the separate question, and it is about a RELIEF drawn from a

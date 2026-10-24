@@ -2648,7 +2648,8 @@ every library write took the app down, so any gallery tap crashed it.
   is also why the pill could not be a drag handle. **The height mapping is piecewise
   -- hold, then fall -- and that is a decision, not an accident.** Every fraction below
   `HEIGHT_BAND_START` returns the natural height *exactly*; only the last stretch
-  falls to the pill. The brief: the shrink should happen only at the very end of the travel. A plain lerp spends the whole gesture giving up
+  falls to the pill. The brief: the shrink should happen only at the very end of the travel.
+  A plain lerp spends the whole gesture giving up
   height, so every centimetre of travel costs the sheet some of the screen and
   dragging down reads as shrinking a card rather than putting something away.
   `HEIGHT_BAND_START` **is** `EDGE_BAND_START` -- the same line as the fade -- because
@@ -2915,8 +2916,7 @@ every library write took the app down, so any gallery tap crashed it.
   still see) while the medium is `POSTER`, so the status line says the clip is not
   playing rather than claiming the row is a photograph.
 - `SheetIntentTest` — what letting go of a sheet drag means, which is the rule
-  a drag to 98 % that reverses stays open, while down-up-down closes. The rule asked
-  for. The trap is reading a *position* when the user changed *direction*: the
+  that a drag to 98 % which reverses stays open, while down-up-down closes. The trap is reading a *position* when the user changed *direction*: the
   tests pin that the projection carries the last direction past the collapse
   line, that the two thresholds leave a dead band where nothing changes, that a
   decisive flick decides from either end by itself, and — honestly — that a
