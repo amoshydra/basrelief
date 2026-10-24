@@ -259,7 +259,13 @@ export function isRefused(err: unknown): boolean {
 // ------------------------------------------------------------- the two stores
 
 function opfsStore(dir: FileSystemDirectoryHandle): MediaStore {
-  const read = (name: string): Promise<File | null> => readFrom(dir, name);
+  // A name with a separator is bundle-only: OPFS has no directories here, and
+  // `getFileHandle('demo/image.png')` throws TypeError("Name is not allowed")
+  // rather than answering "missing", so it would escape every fallback.
+  const read = async (name: string): Promise<File | null> => {
+    if (name.includes('/')) return readBundled(name);
+    return (await readFrom(dir, name)) ?? (await readBundled(name));
+  };
   return {
     kind: 'opfs',
     list: () => listIn(dir),
