@@ -35,6 +35,10 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    // Served from `/` locally and from `/basrelief/` on GitHub Pages. A wrong
+    // base does not fail the build -- it 404s every script, which reads like a
+    // broken deploy rather than a wrong path.
+    base: process.env.PAGES_BASE || '/',
     plugins: [basicSsl()],
     server: { host: true, proxy },
     preview: { host: true, proxy },

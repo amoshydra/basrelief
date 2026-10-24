@@ -1,0 +1,58 @@
+name: pages
+
+# The gallery is the half of the product that needs no install: drop a packed
+# PNG, tune it, keep a library. Publishing it is a deploy of `web/dist`, and it
+# is gated on the same tests the build job runs, because a site that renders
+# nothing is worse than no site.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - name: Build for the subpath
+        run: pnpm build
+        env:
+          # The page lives at /basrelief/, so every asset URL must carry it.
+          PAGES_BASE: /basrelief/
+      - name: Notices survived the build
+        run: test -s dist/THIRD-PARTY.txt
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+      - id: deploy
+        uses: actions/deploy-pages@v4
