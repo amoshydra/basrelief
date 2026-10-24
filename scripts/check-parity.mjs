@@ -51,6 +51,14 @@ function checkDocLinks() {
   // someone cloned AOSP.
   const AOSP_ROOTS = /^(core|frameworks|services|packages|libs|cmds|apex|art|base|tests)\//;
 
+  // Artefacts the build makes and `.gitignore` excludes. A fresh clone does not
+  // have them — `podman-build.sh build-image` generates the debug keystore on the
+  // host — so requiring them here fails CI while passing on the machine that
+  // built the image. That is the worst shape a guard can take: green where it is
+  // developed, red where it matters.
+  const GENERATED = new Set(['android/debug.keystore', 'debug.keystore']);
+  let generated = 0;
+
   for (const span of pathish) {
     // Not repo paths: absolute host/device locations (/tmp, /usr/bin/env),
     // ~ and $VAR expansions, and shebangs. Their absence here says nothing.
@@ -60,6 +68,10 @@ function checkDocLinks() {
     }
     if (AOSP_ROOTS.test(span)) {
       platform++;
+      continue;
+    }
+    if (GENERATED.has(span)) {
+      generated++;
       continue;
     }
     // API family shorthand: `setTranslationX/Y`, `width/height`. Two bare
@@ -93,7 +105,8 @@ function checkDocLinks() {
   }
   console.log(
     `doc links: ${seen.size} repo paths checked, ` +
-      `${hostPaths} host paths skipped, ${platform} platform references skipped`
+      `${hostPaths} host paths skipped, ${platform} platform references skipped, ` +
+      `${generated} generated artefacts tolerated`
   );
 }
 

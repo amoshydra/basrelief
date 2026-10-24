@@ -97,6 +97,29 @@ pnpm test       # contract fixtures, media states, renderers
 ComfyUI generation needs a server; `pnpm dev` proxies `/comfy` to
 `http://127.0.0.1:8188`, and a static build needs the server's own CORS flag.
 
+## Verifying a release
+
+Releases are tagged (`v0.1.0`, `v0.1.1`, …) and built by the `release` workflow,
+which attaches the APK to a GitHub Release — that is what
+[Obtainium](https://github.com/ImranR98/Obtainium) tracks for updates.
+
+The APK is signed with this certificate:
+
+```
+SHA-256  b8b42c4024a7f7e1a7b09f15765207413135194c02b0c5425d310977119bea7d
+CN       amoshydra, O=Basrelief, C=MY
+```
+
+Check it before trusting an update:
+
+```bash
+apksigner verify --print-certs app-release.apk | grep SHA-256
+```
+
+A different digest means it is not this project's build. The signing key is not
+in this repository, and it is the only thing standing between a user and an APK
+that Android would accept as an update.
+
 ## Shared contracts
 
 Some rules are implemented more than once because the copies cannot share code:
