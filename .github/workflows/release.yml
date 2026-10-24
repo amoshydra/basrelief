@@ -1,0 +1,118 @@
+name: release
+
+# Tagging is the release. A push to main proves the tree builds; a tag ships it.
+# Obtainium watches this repository's RELEASES for an APK asset, so an update is
+# visible to users the moment the asset is attached here -- which is why this is
+# a separate workflow from `build`, and why it cannot run by accident.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)release, e.g. v0.1.0'
+        required: true
+
+# softprops/action-gh-release needs to create the Release; everything else is
+# read. Declaring it here rather than relying on the repository default means a
+# narrower default setting cannot silently break publishing.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: signed APK -> GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # A tag that does not match the APK's own version ships a file whose name
+      # and metadata disagree, and Obtainium shows the tag. Fail before building.
+      - name: Tag matches versionName
+        run: |
+          name=$(grep -oP 'versionName\s+"\K[^"]+' android/app/build.gradle | head -1)
+          code=$(grep -oP 'versionCode\s+\K[0-9]+' android/app/build.gradle | head -1)
+          echo "versionName=$name versionCode=$code tag=$TAG"
+          if [ "v$name" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match versionName $name (expected v$name)"
+            exit 1
+          fi
+
+      # The release key exists only in repository secrets and, for the length of
+      # this job, in the runner. It is written here, used, and deleted in `always`.
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 is not set; see README's signing section"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > android/basrelief-release.jks
+          cat > android/keystore.properties <<EOF
+          storeFile=basrelief-release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          echo "keystore written ($(stat -c%s android/basrelief-release.jks) bytes)"
+
+      # Built through the same script a person runs, so the release is the one the
+      # project documents: release variant, verified by :core's tests first.
+      - name: Build the Android SDK image
+        run: ./android/podman-build.sh build-image
+
+      - name: Build release APK
+        run: ./android/podman-build.sh build-release
+
+      # The certificate fingerprint is the only thing a side-loaded user can check,
+      # so it goes in the release body where Obtainium and a human both see it.
+      - name: Read the signing certificate
+        id: cert
+        run: |
+          apk=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          # apksigner lives in the SDK image; reach it through the same container
+          # the build used, so the verification is of the artefact just built.
+          digest=$(podman run --rm -v "$PWD/android:/workspace:Z" -w /workspace \
+            "$(grep -oP 'IMAGE_NAME="\K[^"]+' android/podman-build.sh)" \
+            /opt/android-sdk/build-tools/36.0.0/apksigner verify --print-certs \
+            "app/build/outputs/apk/release/$(basename "$apk")" \
+            | grep -m1 'SHA-256 digest' | sed 's/.*: //')
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          echo "signing certificate SHA-256: $digest"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          generate_release_notes: true
+          files: ${{ steps.cert.outputs.apk }}
+          body: |
+            Basrelief ${{ env.TAG }}
+
+            Android live wallpaper + studio. Requires Android 8.0 (API 26) or later.
+
+            Signing certificate SHA-256: `${{ steps.cert.outputs.sha256 }}`
+
+            Install, or let Obtainium track this repository for updates.
+            F-Droid is not used; the APK above is the one to install.
+
+      # A key left in the runner's filesystem is a key leaked to anything that can
+      # read the workspace later, including a cached artefact.
+      - name: Remove the signing key
+        if: always()
+        run: rm -f android/basrelief-release.jks android/keystore.properties
