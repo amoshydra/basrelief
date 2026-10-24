@@ -260,6 +260,34 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     cards.clear();
   }
 
+
+  /**
+   * The app's own preload: the marble bust, as a photograph, a relief and a
+   * cloud. The names carry the `demo/` prefix the store resolves against the
+   * bundle, so nothing is copied into OPFS until the row is opened.
+   */
+  function bundledRow(): Row {
+    return {
+      id: BUNDLED_ID,
+      image: 'demo/image.png',
+      depth: 'demo/depth.png',
+      normal: 'demo/normal.png',
+      video: null,
+      focal: 0,
+      // The cloud ships without a sidecar, so it draws at the app's documented
+      // fallback lens rather than pretending to a measured one.
+      splat: 'demo/demo.splat',
+      splatLens: 0,
+      render: 'relief',
+      label: 'Marble bust',
+      addedAt: Date.now(),
+      lastUsedAt: 0,
+      archived: false,
+      home: defaultSettings(),
+      lock: null,
+    };
+  }
+
   async function load(): Promise<void> {
     clearCards();
     sidecarLenses.clear();
@@ -269,6 +297,14 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     const read = readLibrary(raw);
     library = read.library;
     readOnly = read.readOnly;
+
+    // Seeded only when the index is ABSENT, never when it is empty. An emptied
+    // gallery means the user deleted the demo, and the app's own rule is that a
+    // delete has to stick -- which is why this is `raw === null` and not
+    // `library.items.length === 0`.
+    if (raw === null && !readOnly) {
+      library = { ...library, items: [bundledRow(), ...library.items] };
+    }
 
     if (read.message !== null) notice(read.message, read.status !== 'empty');
     if (read.status === 'corrupt' && raw !== null) {
