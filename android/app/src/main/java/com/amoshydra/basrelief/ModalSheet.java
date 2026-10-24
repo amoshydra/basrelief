@@ -1051,7 +1051,7 @@ final class ModalSheet {
      * {@code min(content, ceiling, open + scrollY)}: scrolling resized the card,
      * resizing the card changed the scroll range, the new range changed where the
      * content actually was, and that fed straight back into the height. The user
-     * saw the loop as *scrolling inside the sheet made the content jitter up and down* and diagnosed it exactly: <i>the scroll is also trying to expand the
+     * saw the loop as *scrolling inside the sheet made the content jitter up and down* and diagnosed it exactly: <i>the scroll was competing with the drag to expand the
      * sheet; it shouldn't</i>.
      *
      * <p>So the height is a function of <b>how big the card currently is</b>, and
@@ -1932,7 +1932,7 @@ final class ModalSheet {
      * range; the new range changed where the content actually ended up; and
      * {@code scrollY} is the input, so that fed straight back into the height. Each
      * correction overshot the last and the content visibly oscillated — the user's
-     * report was <i>scrolling inside the sheet made the content jitter up and down</i>, and their diagnosis was exact: <i>the scroll is also trying to expand
+     * report was <i>scrolling inside the sheet made the content jitter up and down</i>, and their diagnosis was exact: <i>the scroll was competing with the drag to expand
      * the sheet; it shouldn't</i>. It survived review because every <i>resting</i>
      * bound was correct, and a settled state is the one thing a screenshot cannot
      * check.

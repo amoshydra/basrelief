@@ -7,8 +7,8 @@
  * one of them invisible in a screenshot taken at rest:
  *
  *   - a height band that held the sheet at full until the last 5 % of travel and
- *     then snapped ("it doesn't reduce in height, when i go further, it suddenly
- *     collapses");
+ *     then snapped: the height did not follow the drag and then collapsed all at
+ *     once;
  *   - the opposite, a shape that ramped while the height was banded (the sheet moved as three unrelated timelines);
  *   - a free panel that rounded a 40 %-released drag up to the nearer of two
  *     states instead of resting where the finger left it;

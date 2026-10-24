@@ -40,13 +40,13 @@ Two nodes, one wire. `image` is `["1", 0]` — `LoadImage`'s first output.
 ```json
 {
   "1": {"class_type": "LoadImage",
-        "inputs": {"image": test_still_00001_.png}},
+        "inputs": {"image": "test_still_00001_.png"}},
   "2": {"class_type": "SharpStill",
         "inputs": {
           "image": ["1", 0],
           "internal_size": 1536,
           "budget": 150000,
-          "tag": item-teststill,
+          "tag": "item-teststill",
           "focal_px": 0.0,
           "checkpoint": "",
           "keep_loaded": false

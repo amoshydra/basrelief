@@ -157,7 +157,7 @@ resolution control for the depth pass and must not imply the still default: the
     having an opinion about the user's choice, or telling them what they already
     know. **Do not replace them with another version of the same advice.**
   - **No "anyway".** `Start anyway` was `Start` with a judgement bolted on — it
-    says *this was advised against* The user chose; the button is the action.
+    says *this was advised against.* The user chose; the button is the action.
     It is **`Start`**.
   - **The estimate is a fact, not a warning.** A long duration is stated plainly;
     it is not coloured amber, not louder than it needs to be to be read, and not

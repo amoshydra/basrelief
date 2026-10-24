@@ -9,8 +9,8 @@
  * one of them is invisible in a screenshot taken at rest:
  *
  *   - **the height ramps across the whole travel** (no plateau, no cliff), because
- *     a banded height was reported twice — once as "it doesn't reduce in height,
- *     when i go further, it suddenly collapses" and once as "illogical";
+ *     a banded height was reported twice — as a height that did not follow the drag
+ *     and then collapsed, and as three timelines running at once;
  *   - **the shape waits for the last tenth**, because a full-width panel that is
  *     40 % of its height is still a sheet, and rounding it towards a pill while it
  *     plainly is one reads as two objects;

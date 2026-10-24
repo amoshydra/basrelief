@@ -274,7 +274,7 @@ at the render site.
 ## Playlist naming was the bug, and it hid a status that matters (2026-10-03)
 
 **The user's words:** *'Rotate through this list' turned out to be the activation button rather than a rotation mode, and the
-    result was judged a failure of visual design*
+  result was judged a failure of visual design*
 
 **The reading was correct and the design caused it.** `Rotate through this list` sat **directly above
 `Shuffle`, in the same group** — my own brief said "Rotation (Rotate, Shuffle)". Two controls
@@ -544,7 +544,7 @@ which is a fair failure and not something to repeat.
 
 ## "No depth" on a photo whose depth is EMBEDDED in its PNG (2026-10-04)
 
-**The user, verified on the Pixel:** *a dePH file showed its depth playing while the app reported no depth* And: **replace and regenerate depth were not needed yet** (for that
+**The user, verified on the Pixel:** *a dePH file showed its depth playing while the app reported no depth.* And: **replace and regenerate depth were not needed yet** (for that
 case).
 
 **The bug.** `initialItemHasMap` (`MainActivity.java`) is `item == null || item.depthName !=

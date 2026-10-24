@@ -252,7 +252,7 @@ public class DepthWallpaperService extends WallpaperService {
          * which on a one-engine setup bound to both surfaces (flags=0x3,
          * surface=HOME, coversLock) is a surface that never rendered anything, so
          * every wake animated from a config no screen had been showing. Reported as
-         * "it now always glides from lock to home", on turning the screen on, on
+         * a glide from lock to home on every transition, on turning the screen on, on
          * unlocking, and on returning to the launcher. The truth is knowable: ask
          * whichever engine was visible.
          */
@@ -860,8 +860,8 @@ public class DepthWallpaperService extends WallpaperService {
             // matter which screen was showing. On unlock that was the LOCK engine: the
             // log shows which=LOCK then which=HOME 1.7s apart for the same photograph,
             // and because per-surface settings now genuinely differ, home then GLIDED
-            // from lock's framing back to its own. The user's words: a glimpse of the home config appeared stable, then the lock config rendered again
-            // when animated glide back to home config before stable."
+            // from lock's framing back to its own. The report: a glimpse of the home config appeared stable, then the lock config rendered again
+            // when animated glide back to home config before stable.
             //
             // This is the same failure the phantom-home guard above fixes in the other
             // direction, and it only became visible when per-surface settings started

@@ -59,9 +59,8 @@ public class SheetIntentTest {
     }
 
     /**
-     * The studio's correction, pinned: "always allow free position even at the
-     * lower end of the screen, collapse it only when it is almost nearing the
-     * end". Against the same rule with {@link SheetIntent#SHEET}'s numbers, 0.94
+     * The studio's correction, pinned: a free position is allowed even low on the
+     * screen, and collapse happens only near the end. Against the same rule with {@link SheetIntent#SHEET}'s numbers, 0.94
      * projected stays and 0.96 collapses, so the free range covers the whole
      * screen except the last twentieth.
      */

@@ -409,7 +409,7 @@ should not have to be rediscovered.
 ### The requirement
 
 On unlock: **hold exactly what was on screen** (the lock screen's framing) and
-**glide to home's**. No frame painted at home's framing first. The user's words:
+**glide to home's**. No frame painted at home's framing first. The brief:
 *on unlock nothing should change, only a glide to 1x*
 
 ### What works
@@ -442,7 +442,7 @@ no longer has to be armed late.
 
 ### The rule that kept being violated
 
-*"Don't paint anything instantly — a frame is reached by gliding towards it."*
+*Nothing may be painted instantly; a frame is reached by gliding towards it.*
 An instant `apply` is legitimate only for a live gesture (a slider must lead
 the finger) or a genuine pair change. Every intermediate attempt failed by
 painting something and correcting it afterwards.

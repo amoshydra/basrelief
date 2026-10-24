@@ -3210,7 +3210,7 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
     /**
      * Why an {@code apply} is allowed to paint the framing instantly.
      *
-     * <p><b>The rule the caller must state.</b> "Don't paint anything instantly. frame
+     * <p><b>The rule the caller must state.</b> <b>Nothing may be painted instantly. A frame
      * can only be rendered by gliding towards not immediately painting." An instant paint
      * is legitimate for exactly two reasons, and a caller has to name which one it is:
      */

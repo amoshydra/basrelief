@@ -133,7 +133,7 @@ public final class CameraModel {
      *
      * <p><b>Why the camera wants it.</b> {@link #frame} places the pivot — the
      * orbit centre — at this height, so a tilt turns the camera about the SURFACE
-     * under the origin rather than about the plane behind it: the user's it orbited around the background becomes "it orbits around the subject". With
+     * under the origin rather than about the plane behind it: the reading that it orbited around the background becomes "it orbits around the subject". With
      * the height at 0 the pivot is on the reference plane and the plane point
      * under the origin holds instead.
      *

@@ -203,7 +203,7 @@ public class MainActivity extends Activity {
      * sheet exists to show would be invisible on it.
      *
      * <p><b>It is deliberately MORE transparent than the design's {@code .72}.</b> The
-     * user: <i>the pill should be less visible, with a glass effect and an outline</i> The design gets its glass from
+     * user: <i>the pill should be less visible, with a glass effect and an outline.</i> The design gets its glass from
      * {@code backdrop-filter:blur(18px) saturate(150%)}, and blur behind a window is not
      * available to this app at all — measured, and it is why a Dialog cannot have it.
      * Without the blur, the same 72% fill reads as a solid dark plate rather than as

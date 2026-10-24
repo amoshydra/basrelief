@@ -9,7 +9,7 @@ package com.amoshydra.basrelief.core.store;
  * action (<i>Make one</i> / <i>Rebuild</i> / <i>Regenerate</i>) beside a
  * <b>Delete</b>; all the way at the bottom a "This photo's map" section offered
  * <b>Regenerate</b> and <b>Replace</b>. The user's report was exactly that: <i>the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
-    regenerate/replace, and the two were expected to be combined</i> The two rows became one, and the one row now states the
+ * regenerate/replace, and the two were expected to be combined</i> The two rows became one, and the one row now states the
  * selected mode's asset and offers its primary build as well — see {@link AssetRow},
  * which composes this answer with {@link BuildTab}'s. This class stays the gate for
  * the <b>second</b> button: it decides the actions that are not the mode's build.

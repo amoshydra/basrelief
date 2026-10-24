@@ -68,7 +68,7 @@ public final class SheetMorph {
      *
      * <p><b>The shape is not a lerp, and it used to be one.</b> Every fraction below
      * {@link #HEIGHT_BAND_START} returns {@code naturalPx} <b>exactly</b>; only the
-     * last stretch falls. The user: <i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse</i> A plain {@code lerp(natural, pill, f)} spends
+     * last stretch falls. The user: <i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse.</i> A plain {@code lerp(natural, pill, f)} spends
      * the whole gesture giving up height, so every centimetre of travel costs the
      * sheet some of the screen and dragging down reads as shrinking a card rather
      * than putting something away.
@@ -117,7 +117,7 @@ public final class SheetMorph {
      * and this function is where they meet:
      *
      * <ul>
-     * <li><i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse</i> Read as *hold until the last 5%*, which made the height snap: dragged
+     * <li><i>the shrink should happen only at the very end of the travel, when the sheet is dragged on to collapse.</i> Read as *hold until the last 5%*, which made the height snap: dragged
      * through four fifths of the travel with no change at all and then a sudden
      * collapse. <b>This was a misreading</b>, and the correction came as
      * <i>the height did not follow the drag and then collapsed all at once; a bottom sheet's height should track the finger</i>
@@ -165,7 +165,7 @@ public final class SheetMorph {
      * <li><b>The height follows your hand the whole way</b>, because it is a bottom
      * sheet — *a bottom sheet's height should not always be full*
      * <li><b>The shape stays the sheet's own until the very end</b> and then becomes
-     * the capsule — *the width should stay unchanged until the very end* A full-width panel
+     * the capsule — *the width should stay unchanged until the very end.* A full-width panel
      * that is 40% of its height is still a sheet, and rounding its corners and tinting
      * it towards the pill while it is plainly a sheet reads as two objects.
      * </ul>
@@ -173,8 +173,7 @@ public final class SheetMorph {
      * <p><b>"The very end" is not a number I picked — it is the sheet's own
      * threshold.</b> {@code SheetIntent.SHEET.collapseThreshold} is the line past which
      * a release commits to collapsing, so deriving from it means the pill's shape
-     * begins exactly where the sheet has stopped being able to rest: *"I want the width
-     * to start reducing only when we scroll past the threshold."* A sheet that is still
+     * begins exactly where the sheet has stopped being able to rest: *the width should start reducing only past the threshold.* A sheet that is still
      * coming to rest is still a sheet, and it must still look like one — which is also
      * why this cannot be a smaller number than the threshold without reintroducing the
      * two-timelines bug in its mildest form: a shape that starts moving on a sheet that
@@ -304,7 +303,7 @@ public final class SheetMorph {
      * bottom radius on the TOP-RIGHT corner and the top radius on the BOTTOM-LEFT:
      * the sheet's top-right corner was square while its top-left was rounded, at
      * every fraction and on the first frame as much as the last. The user:
-     * <i>the right side's rounding was wrong</i> One function, one order, and a
+     * <i>the right side's rounding was wrong.</i> One function, one order, and a
      * test that reads the array back corner by corner, so a hand-written array
      * cannot put a corner in the wrong slot again.
      *
@@ -369,7 +368,7 @@ public final class SheetMorph {
      * a margin — 28dp a side, recovered from the pre-morph pill's holder — and that
      * was never going to read as a capsule, because a margin is a rounding of the
      * screen's own size: on a 483dp-wide phone it left the pill 88% of the width,
-     * which is a bar. The user: <i>the capsule's width should be smaller too</i> A total width is the thing the eye reads as a shape.
+     * which is a bar. The user: <i>the capsule's width should be smaller too.</i> A total width is the thing the eye reads as a shape.
      *
      * <p><b>Expressed as a fraction of the screen, not as dp, and that is the
      * argument.</b> The sheet is edge-to-edge on every phone the app supports, so a

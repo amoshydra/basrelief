@@ -2854,7 +2854,7 @@ every library write took the app down, so any gallery tap crashed it.
 - `AssetActionsTest` — the **secondary** gate on the sheet's asset row: the actions
   that are not the mode's build. The user's report is the whole reason the two
   duplicated rows became one: *the rebuild/delete row sat right below the tabs while the photo-map row at the bottom offered
-    regenerate/replace, and the two were expected to be combined* This class reads `BuildTab`'s own two
+    regenerate/replace, and the two were expected to be combined.* This class reads `BuildTab`'s own two
   answers rather than a second copy of its ranking, so "a run in flight offers
   nothing" and "a failure outranks the asset it left behind" hold here exactly as in
   the tabs. The traps are the gates: **Delete** belongs to a cloud that is here and
