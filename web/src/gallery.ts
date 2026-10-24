@@ -591,14 +591,24 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       // The LENGTH, not the bytes: a count is `size / 32`, and reading a 13 MB
       // cloud to divide its size is the difference between a page that opens on
       // a slow link and one that does not. The bytes move on the first open.
-      const cloudSize = await store.size(row.splat);
+      let cloudSize = await store.size(row.splat);
+      let cloudFile: File | null = null;
+      if (cloudSize === null || cloudSize % 32 !== 0) {
+        // The length is an OPTIMISATION. A cached response, a proxy that strips
+        // `content-length`, or a CDN that answers 0 must not turn a real cloud
+        // into "not a cloud" -- so when it cannot be trusted, read the file.
+        cloudFile = await store.read(row.splat);
+        cloudSize = cloudFile?.size ?? null;
+      }
       if (cloudSize === null) {
         cloudNote =
           `library.json names ${row.splat}, but the store has no such file — ` +
           'this row draws its relief until the cloud is rebuilt.';
       } else if (cloudSize > 0 && cloudSize % 32 === 0) {
         item.cloud = {
-          file: null,
+          // Null only when the length was trustworthy; otherwise the bytes are
+          // already in hand and the first open costs nothing.
+          file: cloudFile,
           bytes: null,
           name: row.splat,
           lens: row.splatLens,

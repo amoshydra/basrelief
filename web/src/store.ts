@@ -176,13 +176,44 @@ export async function writeInto(
  */
 const BUNDLED_PREFIX = 'demo/';
 
+const BUNDLED_CACHE = 'basrelief-bundled';
+
+/**
+ * The bundle's own cache, because GitHub Pages sends `max-age=600` and no
+ * validator: without one, every reload older than ten minutes re-downloads the
+ * 2.5 MB photograph on a link where that is a minute of staring at "reading…".
+ * The Cache API is the tool for exactly this and needs no naming scheme.
+ */
+async function cachedResponse(url: URL): Promise<Response | null> {
+  try {
+    const cache = await caches.open(BUNDLED_CACHE);
+    return (await cache.match(url)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function rememberResponse(url: URL, response: Response): Promise<void> {
+  try {
+    const cache = await caches.open(BUNDLED_CACHE);
+    await cache.put(url, response.clone());
+  } catch {
+    // A browser without the Cache API keeps plain fetches; it still works.
+  }
+}
+
 async function bundledSize(name: string): Promise<number | null> {
   if (!name.startsWith(BUNDLED_PREFIX)) return null;
   try {
-    const response = await fetch(new URL(name, document.baseURI), { method: 'HEAD' });
+    const url = new URL(name, document.baseURI);
+    const cached = await cachedResponse(url);
+    if (cached !== null) return (await cached.blob()).size;
+    const response = await fetch(url, { method: 'HEAD' });
     if (!response.ok) return null;
     const length = response.headers.get('content-length');
-    return length === null ? null : Number(length);
+    if (length === null || length === '') return null;
+    const value = Number(length);
+    return Number.isFinite(value) && value > 0 ? value : null;
   } catch {
     return null;
   }
@@ -192,8 +223,14 @@ async function readBundled(name: string): Promise<File | null> {
   if (!name.startsWith(BUNDLED_PREFIX)) return null;
   try {
     const url = new URL(name, document.baseURI);
+    const cached = await cachedResponse(url);
+    if (cached !== null) {
+      const blob = await cached.blob();
+      return new File([blob], name.slice(BUNDLED_PREFIX.length), { type: blob.type });
+    }
     const response = await fetch(url);
     if (!response.ok) return null;
+    await rememberResponse(url, response);
     const blob = await response.blob();
     return new File([blob], name.slice(BUNDLED_PREFIX.length), { type: blob.type });
   } catch {
