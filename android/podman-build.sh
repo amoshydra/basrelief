@@ -1,5 +1,5 @@
 #!/bin/bash
-# Containerised Android build for Depth Tilt.
+# Containerised Android build for Basrelief.
 # The host needs only podman (+ adb for the install command). No Android SDK,
 # no Gradle, no Android Studio on the host.
 #
@@ -9,7 +9,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_NAME="depthtilt-android-sdk:36"
+IMAGE_NAME="basrelief-android-sdk:36"
 APP_ID="com.amoshydra.basrelief"
 APK_DEBUG="$SCRIPT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 APK_RELEASE_UNSIGNED="$SCRIPT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
@@ -24,7 +24,7 @@ ADB=(adb)
 # Gradle cache, bind-mounted out of the throwaway container so dependencies are
 # downloaded once instead of on every single build. Override with
 # GRADLE_CACHE_DIR, or set GRADLE_NO_CACHE=1 to opt out entirely.
-GRADLE_CACHE_DIR="${GRADLE_CACHE_DIR:-$HOME/.cache/depthtilt-gradle}"
+GRADLE_CACHE_DIR="${GRADLE_CACHE_DIR:-$HOME/.cache/basrelief-gradle}"
 GRADLE_USER_HOME="/cache/gradle"
 if [ -z "${GRADLE_NO_CACHE:-}" ] && mkdir -p "$GRADLE_CACHE_DIR" 2>/dev/null; then
     GRADLE_CACHE_MOUNT="-v $GRADLE_CACHE_DIR:/cache:Z"

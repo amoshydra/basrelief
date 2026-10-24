@@ -71,7 +71,7 @@ import java.util.concurrent.Callable;
  * Live studio: the relief preview fills the screen and the image/depth
  * pickers plus intensity/layer-split sliders are overlaid on top, updating
  * the preview in real time (mirrors the web demo's single-screen UI).
- * Everything is written to SharedPreferences, so an active Depth Tilt
+ * Everything is written to SharedPreferences, so an active Basrelief
  * wallpaper applies the same settings live.
  */
 public class MainActivity extends Activity {
@@ -1422,7 +1422,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * A "Share → Depth Tilt" image arrives here. Copy it into private storage
+     * A "Share → Basrelief" image arrives here. Copy it into private storage
      * (so it survives and the wallpaper can read it by path), set it as the
      * current image, then open the Depth AI dialog so the user can generate a
      * depth map for it if it doesn't already carry one.
