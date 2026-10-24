@@ -269,14 +269,14 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
   function bundledRow(): Row {
     return {
       id: BUNDLED_ID,
-      image: 'demo/image.png',
-      depth: 'demo/depth.png',
-      normal: 'demo/normal.png',
+      image: 'demo-image.png',
+      depth: 'demo-depth.png',
+      normal: 'demo-normal.png',
       video: null,
       focal: 0,
       // The cloud ships without a sidecar, so it draws at the app's documented
       // fallback lens rather than pretending to a measured one.
-      splat: 'demo/demo.splat',
+      splat: 'demo-cloud.splat',
       splatLens: 0,
       render: 'relief',
       label: 'Marble bust',
@@ -304,6 +304,25 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     // `library.items.length === 0`.
     if (raw === null && !readOnly) {
       library = { ...library, items: [bundledRow(), ...library.items] };
+    } else {
+      // A row written by the build that stored `demo/...` lost its prefix on the
+      // way back in, because the schema keeps bare filenames. Re-point it here
+      // rather than writing: the parse is the wrong place to repair a blob, and
+      // an older build must not rewrite one it does not own.
+      library = {
+        ...library,
+        items: library.items.map((r) =>
+          r.id === BUNDLED_ID
+            ? {
+                ...r,
+                image: 'demo-image.png',
+                depth: r.depth === null ? null : 'demo-depth.png',
+                normal: r.normal === null ? null : 'demo-normal.png',
+                splat: r.splat === null ? null : 'demo-cloud.splat',
+              }
+            : r,
+        ),
+      };
     }
 
     if (read.message !== null) notice(read.message, read.status !== 'empty');

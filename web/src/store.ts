@@ -174,7 +174,17 @@ export async function writeInto(
  * entries: the store stays the truth for anything the user imported, and the
  * bundle is only consulted when the store does not have the file.
  */
-const BUNDLED_PREFIX = 'demo/';
+// Flat, because a row stores a BARE filename: `library.ts` normalises
+// `demo/image.png` to `image.png` on parse, which is why the first attempt lost
+// the prefix and the card could not resolve its own photograph. The mapping from
+// `demo-foo` to the shipped `demo/foo` lives here, one place.
+const BUNDLED_PREFIX = 'demo-';
+const BUNDLED_DIR = 'demo/';
+
+function bundlePath(name: string): string | null {
+  if (!name.startsWith(BUNDLED_PREFIX)) return null;
+  return BUNDLED_DIR + name.slice(BUNDLED_PREFIX.length);
+}
 
 const BUNDLED_CACHE = 'basrelief-bundled';
 
@@ -203,9 +213,10 @@ async function rememberResponse(url: URL, response: Response): Promise<void> {
 }
 
 async function bundledSize(name: string): Promise<number | null> {
-  if (!name.startsWith(BUNDLED_PREFIX)) return null;
+  const path = bundlePath(name);
+  if (path === null) return null;
   try {
-    const url = new URL(name, document.baseURI);
+    const url = new URL(path, document.baseURI);
     const cached = await cachedResponse(url);
     if (cached !== null) return (await cached.blob()).size;
     const response = await fetch(url, { method: 'HEAD' });
@@ -220,19 +231,20 @@ async function bundledSize(name: string): Promise<number | null> {
 }
 
 async function readBundled(name: string): Promise<File | null> {
-  if (!name.startsWith(BUNDLED_PREFIX)) return null;
+  const path = bundlePath(name);
+  if (path === null) return null;
   try {
-    const url = new URL(name, document.baseURI);
+    const url = new URL(path, document.baseURI);
     const cached = await cachedResponse(url);
     if (cached !== null) {
       const blob = await cached.blob();
-      return new File([blob], name.slice(BUNDLED_PREFIX.length), { type: blob.type });
+      return new File([blob], name, { type: blob.type });
     }
     const response = await fetch(url);
     if (!response.ok) return null;
     await rememberResponse(url, response);
     const blob = await response.blob();
-    return new File([blob], name.slice(BUNDLED_PREFIX.length), { type: blob.type });
+    return new File([blob], name, { type: blob.type });
   } catch {
     return null;
   }
