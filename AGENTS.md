@@ -1,5 +1,9 @@
 # AGENTS.md — Basrelief
 
+> **Design notes, plans and measurement logs are kept in `.design/` and are not
+> published.** They are working material, not documentation of the shipped
+> product; the facts that matter are in this file and in the code.
+
 Gyro-driven "3D photo": an image plus a depth map become a displaced relief
 surface that moves as you tilt the device. Ships as an Android live wallpaper
 with a built-in studio screen.
@@ -39,7 +43,7 @@ structural.** Every prototype page now carries a drift banner saying so.
 
 `web/` is the second JS project and the only one that is a product: a Vite +
 TypeScript app where a file dropped on the page is shown, and a packed PNG is
-shown as a relief. It is `TODO.md`'s ideation item 3, and **it is not an edit of
+shown as a relief. It is the project's third ideation item, and **it is not an edit of
 `reference/webgl-port/`**. The product shape is "someone sends you a PNG and you
 drop it on a page": no account, no server, no cloud library. **The library lives
 in the browser**, not in the tab: the truth is OPFS
@@ -47,7 +51,7 @@ in the browser**, not in the tab: the truth is OPFS
 `library.json` that is the Android app's own `Library` v5 blob, so a tuned look,
 the Renderer choice and the rows themselves survive a refresh — and a folder
 written here can be read by the phone and vice versa. **The mirror is the app's
-storage decision, not a new one** (`TODO.md`, "mirror, not external-as-truth"):
+storage decision, not a new one** (recorded as "mirror, not external-as-truth"):
 OPFS is internal truth and a picked folder is a write-through copy with an
 explicit **Back up now** / **Restore**, because a folder is a *permission* — it is
 revoked, an SD card unmounts, a cloud drive goes offline — and with the folder as
@@ -742,7 +746,7 @@ already cost real time.
   same six per-surface settings, the same `settings(Surface)` read, and `hasDepth()`
   still asks about the **still** files, because the real question has one answer and
   `DepthSource` is where it lives.
-  - **The poster frame stays `imageName`.** §3 step 8 of `docs/VIDEO-PLAN.md` makes
+  - **The poster frame stays `imageName`.** §3 step 8 of the video plan makes
     the poster "the still shown in the gallery, and the fallback if the video cannot
     decode", so keeping it on the photograph is what lets a clip degrade to a
     photograph on the spot rather than becoming a row with no image — which
@@ -2013,7 +2017,7 @@ every library write took the app down, so any gallery tap crashed it.
   measurement forgot:** `SurfaceSettings.motionScale` is `motion` divided by 100 and
   multiplied by 3, so Motion
   33 (the default) is scale 1.0 and Motion 100 is 3.0, and
-  `docs/SORT-MEASUREMENTS.md`'s `183 px/tilt` is at scale 1 — which is why the
+  the sort measurements' `183 px/tilt` is at scale 1 — which is why the
   device's live bound read as three times wrong. The derived gate beats the constant
   only below a Motion that depends on the framing (2.66 → Motion ~89 % at the
   device's, ~1.03 → Motion ~34 % at the worst reachable). Its seventh is the
@@ -2776,7 +2780,7 @@ every library write took the app down, so any gallery tap crashed it.
   clip's depth, and it is a fourth kind rather than an `EMBEDDED` special case because
   which file the map is in is the whole difference: an embedded map is a chunk of the image
   being drawn, a track is a second video that must stay frame-locked to the first
-  (`docs/VIDEO-PLAN.md` §2, §4). It offers neither action for two separate reasons —
+  (the video plan's §2 and §4). It offers neither action for two separate reasons —
   regenerating is §3's offline pass over every frame, and replacing a depth clip alone
   would leave it locked to a colour clip it no longer matches (§3 step 7). A clip opens a
   **second window of the same shape**, and it is the wider one: before the decoder reports,
