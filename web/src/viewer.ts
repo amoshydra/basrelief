@@ -831,15 +831,17 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   function appendFixLine(panel: Sheet): void {
     const row = document.createElement('div');
     row.className = 'sheet-asset-row';
-    panel.fixLine.hidden = false;
-    panel.fixLine.append(row);
+    // The asset state and its actions live in the scroll, below the Renderer
+    // segment, as asked: map creation and regeneration belong to the mode that
+    // will use the map. The fix line is left hidden.
+    panel.body.append(row);
 
     // A status line for a chosen map's own progress, inside the box so it cannot
     // stack a second one and so it is readable at any height.
     const statusEl = note('');
     statusEl.hidden = true;
     statusEl.setAttribute('role', 'status');
-    panel.fixLine.append(statusEl);
+    panel.body.append(statusEl);
 
     const render = (): void => {
       row.replaceChildren();
@@ -859,13 +861,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           if (hasColour()) {
             actions.push({ label: 'Regenerate', onClick: () => openBuild('relief') });
           }
-        } else if (depth) {
-          // A depth map this card has — packed inside it, chosen here or
-          // generated here. The app refuses to replace an EMBEDDED map because
-          // it has no separate depth FILE to write; this page has no file at
-          // all, so replacing it is the same in-memory re-pack Save packed PNG
-          // already performs. The row is therefore "Has a depth map" with both
-          // actions, not the app's BUILT-with-no-action.
+        } else if (depth || colourState.kind === 'relief') {
+          // A depth map this card has -- separate file or embedded in the PNG.
+          // The earlier test asked only `depth`, which is null for an embedded
+          // map, so a packed PNG read "No depth map yet" while the renderer drew
+          // it: the sheet contradicted the picture.
           stateEl.textContent = 'Has a depth map';
           actions.push(
             { label: 'Choose a map', onClick: () => void chooseDepthMap(statusEl) },
