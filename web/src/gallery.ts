@@ -100,6 +100,8 @@ interface CardParts {
   meta: HTMLElement;
   badge: HTMLElement;
   modeBadge: HTMLElement;
+  depthDot: HTMLElement;
+  is3D: HTMLElement;
   reason: HTMLElement;
 }
 
@@ -980,7 +982,6 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     reason.className = 'card-reason';
     reason.hidden = true;
 
-    body.append(name, meta);
     const badgeRow = document.createElement('div');
     badgeRow.className = 'card-badges';
     badgeRow.append(badge, modeBadge);
@@ -1009,8 +1010,21 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       activate();
     });
 
+    // Android's tile is the photograph. The name and the facts live in the content
+    // description and the viewer, not in a caption body under every cell -- that
+    // body is what made the shelf read as a file list.
+    const depthDot = document.createElement('span');
+    depthDot.className = 'cell-dot';
+    depthDot.hidden = true;
+
+    const is3D = document.createElement('span');
+    is3D.className = 'cell-3d';
+    is3D.textContent = '3D';
+    is3D.hidden = true;
+
+    open.append(thumb, depthDot, is3D);
     element.append(open, removeButton);
-    return { element, open, thumb, name, meta, badge, modeBadge, reason };
+    return { element, open, thumb, name, meta, badge, modeBadge, depthDot, is3D, reason };
   }
 
   /**
@@ -1159,18 +1173,18 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
     switch (state.kind) {
       case 'relief':
-        setBadge(
-          parts.badge,
-          '',
-          'badge--depth',
-          `embedded depth map (dePH, ${state.form === 'raw' ? 'raw grey' : 'whole PNG'})`,
-        );
+        // The phone draws a 10dp dot for a row that can stand out, and a `3D`
+        // tag for one that is three-dimensional. Both overlay the photograph.
+        setBadge(parts.badge, '', 'badge--depth', 'has a depth map');
+        parts.depthDot.hidden = false;
+        parts.is3D.hidden = false;
         break;
       case 'photo':
         setBadge(parts.badge, 'no depth', 'badge--none', state.detail);
         break;
       case 'cloud':
-        setBadge(parts.badge, 'cloud', 'badge--cloud', 'Gaussian splat cloud');
+        setBadge(parts.badge, '', 'badge--cloud', 'Gaussian splat cloud');
+        parts.is3D.hidden = false;
         break;
       case 'unreadable':
         setBadge(parts.badge, 'unreadable', 'badge--warn', state.reason);
