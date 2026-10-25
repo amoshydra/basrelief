@@ -631,7 +631,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   function appendFraming(panel: Sheet, view: ReliefView | CloudView): void {
     const panLimit = Math.max(item.width, item.height, window.innerWidth, window.innerHeight, 1);
 
-    panel.body.append(caption('Where it sits'));
+    panel.body.append(caption('Origin (fraction)'));
     const originXRow = sliderRow({
       label: 'Origin X',
       value: Math.round(settings.originX * 1000),
@@ -660,6 +660,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     panel.body.append(originXRow.element, originYRow.element);
 
+    panel.body.append(caption('Pan (pixels)'));
 
     const panXRow = sliderRow({
       label: 'Pan X',
