@@ -275,6 +275,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   let relief: ReliefView | null = null;
   let cloud: CloudView | null = null;
   let tilt: DeviceTilt | null = null;
+  let tiltLive = false;
   let sheet: Sheet | null = null;
   let abort: AbortController | null = null;
   let closed = false;
@@ -700,7 +701,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     panel.body.append(panXRow.element, panYRow.element, panZRow.element);
     panel.body.append(
-      note('Tap the picture to set the orbit centre. Drag to pan; two fingers pan and pinch the camera distance.'),
+      note('Tap the picture to set the orbit centre. Drag tilts when the sensor is off; two fingers pan and pinch the camera distance.'),
     );
 
     // The gesture handlers push these rows, because a gesture changes the
@@ -724,18 +725,19 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       onToggle: (on) => {
         if (!tilt) return;
         if (!on) {
-          tilt.stop();
-          row.setSub('Tilt the device to swing the camera. Dragging pans.');
+          tilt.stop(); tiltLive = false;
+          row.setSub('Tilt the device to swing the camera. Dragging tilts when the sensor is off.');
           return;
         }
         void tilt.start().then((started) => {
           if (closed) return;
           if (!started) {
-            row.set(false);
-            row.setSub('This browser exposes no orientation sensor — drag pans, the rows below frame.');
+            row.set(false); tiltLive = false;
+            row.setSub('This browser exposes no orientation sensor — drag tilts, the rows below frame.');
             return;
           }
-          row.setSub('Using the sensor. Tilt the device, or drag to pan.');
+          tiltLive = true;
+          row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
         });
       },
     });
@@ -746,8 +748,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     if (tilt) {
       void tilt.start().then((started) => {
         if (closed || !started) return;
+        tiltLive = true;
         row.set(true);
-        row.setSub('Using the sensor. Tilt the device, or drag to pan.');
+        row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
       });
     }
     return row;
@@ -1704,7 +1707,20 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         if (Math.hypot(p.x - downX, p.y - downY) <= SLOP) return;
         moved = true;
       }
-      panBy(p.x - known.x, p.y - known.y);
+      // One-finger drag = manual tilt, mirroring Android: `renderer.setTilt(
+      // clamp(x/width*2-1), clamp(y/height*2-1))` is an ABSOLUTE position, not a
+      // delta, and it only runs without a live sensor -- with the gyro on, tilt
+      // comes from the device and a drag would fight it. Pan belongs to two
+      // fingers, as the user asked.
+      if (!tiltLive) {
+        const rect = target.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const tx = Math.max(-1, Math.min(1, (p.x / rect.width) * 2 - 1));
+          const ty = Math.max(-1, Math.min(1, (p.y / rect.height) * 2 - 1));
+          view.setTilt(tx, ty);
+          syncCrosshair();
+        }
+      }
     };
 
     const finish = (event: PointerEvent, cancelled: boolean): void => {
