@@ -1781,3 +1781,84 @@ body:not(.has-library) #add-tile {
 .card-badges {
   display: none;
 }
+
+/* The phone's gallery header: a small word, the sort as text, and one line of
+   instruction under it. No count, no bulk clear. */
+.gallery-title {
+  margin: 0 0 2px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.gallery-sub {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gallery-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 0;
+}
+
+.sort {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* `Sort by · Recent` is text, not a form control: the border and the arrow are
+   the only things a select adds, and they are what made the row look like a
+   settings page. */
+.sort select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  padding: 0 0 0 4px;
+}
+
+/* The archive disclosure, `Gallery.java:1436`: quiet, full width, 12sp dim ink,
+   48dp tall, no rule and no accent. It is the only route to archived photos, so
+   it keeps a touch target even though it is not prominent. */
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 48px;
+  margin: 10px 0 0;
+  padding: 9px 2px;
+  border: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.archive-chev {
+  font-size: 10px;
+}
+
+/* The tile's archive action, beside the remove; both sit over the photograph. */
+.card-archive {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(9, 12, 18, 0.72);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}

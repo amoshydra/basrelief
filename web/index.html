@@ -46,16 +46,25 @@
       </section>
 
       <div class="gallery-head">
-        <h2 id="count">No files yet</h2>
-        <label class="sort" for="sort">Sort
+        <h2 class="gallery-title">Gallery</h2>
+        <label class="sort" for="sort"><span>Sort by ·</span>
           <select id="sort">
-            <option value="added_desc">Newest</option>
+            <option value="added_desc">Recent</option>
             <option value="name_asc">Name</option>
-            <option value="recently_used">Recently used</option>
+            <option value="recently_used">Last used</option>
           </select>
         </label>
-        <button type="button" class="quiet" id="clear" disabled>Clear all</button>
       </div>
+      <p class="gallery-sub">Tap a photo to use it · hold to select several</p>
+      <!-- The count and the bulk clear are web-only; the phone counts nothing and
+           deletes per tile. Kept in the DOM because the reader writes to them. -->
+      <h2 id="count" hidden></h2>
+      <button type="button" id="clear" hidden disabled>Clear all</button>
+
+      <button type="button" class="archive-row" id="archive-toggle" hidden>
+        <span id="archive-label">Archived</span><span class="archive-chev" aria-hidden="true">▸</span>
+      </button>
+      <ul class="grid" id="archived-grid" aria-label="Archived photos" hidden></ul>
 
       <ul class="grid" id="grid" aria-label="Your files">
         <li class="card card--add" id="add-tile">

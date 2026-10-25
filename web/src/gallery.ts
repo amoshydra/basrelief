@@ -205,6 +205,44 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     }
   }
 
+  // The archive is a disclosure row under the grid, as `Gallery.java:1436` draws
+  // it: quiet, 48dp, a count and a chevron, only when something is archived.
+  const archivedGrid = document.getElementById('archived-grid') as HTMLElement;
+  const archiveToggle = document.getElementById('archive-toggle') as HTMLButtonElement;
+  const archiveLabel = document.getElementById('archive-label') as HTMLElement;
+  const archiveChev = archiveToggle.querySelector('.archive-chev') as HTMLElement;
+  archiveToggle.addEventListener('click', () => {
+    archivedGrid.hidden = !archivedGrid.hidden;
+    archiveChev.textContent = archivedGrid.hidden ? '▸' : '▾';
+  });
+
+  /** Archive or restore one row. The selection is untouched: archive hides. */
+  async function setArchived(item: GalleryItem, next: boolean): Promise<void> {
+    if (readOnly) return;
+    library = {
+      ...library,
+      items: library.items.map((r) => (r.id === item.id ? { ...r, archived: next } : r)),
+    };
+    await persist();
+    paint();
+  }
+
+  /**
+   * Paint the shelf: live rows in the grid, archived ones under the disclosure.
+   * One function, because a card cannot belong to both and two render paths would
+   * let a row appear twice.
+   */
+  function paint(): void {
+    clearCards();
+    const rows = sortedRows(library);
+    for (const row of rows) if (!row.archived) addCard(row, options.grid);
+    const archived = rows.filter((row) => row.archived);
+    for (const row of archived) addCard(row, archivedGrid);
+    archiveToggle.hidden = archived.length === 0;
+    archiveLabel.textContent = `Archived (${archived.length})`;
+    for (const it of items) void inspect(it);
+  }
+
   /** One chain, so two keystrokes cannot interleave two blobs. */
   let prefsChain: Promise<void> = Promise.resolve();
   bindPrefsSink((prefs: AppPrefs) => {
@@ -358,7 +396,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     // build erases a newer one's fields); a missing or corrupt one is written by
     // the first edit instead.
 
-    for (const row of sortedRows(library)) addCard(row);
+    paint();
     renderCounts();
     refreshStorage();
     for (const item of items) void inspect(item);
@@ -366,7 +404,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
   // -------------------------------------------------------------------- cards
 
-  function addCard(row: Row): GalleryItem {
+  function addCard(row: Row, target: HTMLElement = options.grid): GalleryItem {
     const item: GalleryItem = {
       id: row.id,
       row,
@@ -385,7 +423,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     items.push(item);
     const parts = createCard(item);
     cards.set(item.id, parts);
-    options.grid.append(parts.element);
+    target.append(parts.element);
     renderCard(item);
     return item;
   }
@@ -1023,7 +1061,20 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     is3D.hidden = true;
 
     open.append(thumb, depthDot, is3D);
-    element.append(open, removeButton);
+
+    // `Gallery.java` keeps archiving next to deleting on the tile; archive keeps
+    // the selection, delete clears it, and the row keeps its place when restored.
+    const archiveButton = document.createElement('button');
+    archiveButton.type = 'button';
+    archiveButton.className = 'card-archive';
+    archiveButton.textContent = item.row.archived ? '↩' : '⌄';
+    archiveButton.setAttribute('aria-label', item.row.archived ? 'Restore' : 'Archive');
+    archiveButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void setArchived(item, !item.row.archived);
+    });
+
+    element.append(open, removeButton, archiveButton);
     return { element, open, thumb, name, meta, badge, modeBadge, depthDot, is3D, reason };
   }
 
