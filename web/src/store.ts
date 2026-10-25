@@ -178,12 +178,19 @@ export async function writeInto(
 // `demo/image.png` to `image.png` on parse, which is why the first attempt lost
 // the prefix and the card could not resolve its own photograph. The mapping from
 // `demo-foo` to the shipped `demo/foo` lives here, one place.
+// Flat names: a row stores a BARE filename (the schema's rule), and the bundle
+// serves them from `public/demo/`. `demo-foo` maps to `demo-foo` -- there is no
+// directory, because OPFS has none and the previous `demo/foo` form was
+// normalised to `foo` on parse, which is how the first attempt lost its own
+// photograph.
 const BUNDLED_PREFIX = 'demo-';
 const BUNDLED_DIR = 'demo/';
 
 function bundlePath(name: string): string | null {
   if (!name.startsWith(BUNDLED_PREFIX)) return null;
-  return BUNDLED_DIR + name.slice(BUNDLED_PREFIX.length);
+  // The row carries a bare filename (`demo-image.png`); the shipped file lives
+  // at `demo/demo-image.png`, because the bundle is a directory.
+  return BUNDLED_DIR + name;
 }
 
 const BUNDLED_CACHE = 'basrelief-bundled-v2';

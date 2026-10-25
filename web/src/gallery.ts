@@ -610,24 +610,19 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       // The LENGTH, not the bytes: a count is `size / 32`, and reading a 13 MB
       // cloud to divide its size is the difference between a page that opens on
       // a slow link and one that does not. The bytes move on the first open.
-      let cloudSize = await store.size(row.splat);
-      let cloudFile: File | null = null;
-      if (cloudSize === null || cloudSize % 32 !== 0) {
-        // The length is an OPTIMISATION. A cached response, a proxy that strips
-        // `content-length`, or a CDN that answers 0 must not turn a real cloud
-        // into "not a cloud" -- so when it cannot be trusted, read the file.
-        cloudFile = await store.read(row.splat);
-        cloudSize = cloudFile?.size ?? null;
-      }
+      // The length, not the bytes. A count is `size / 32`, and downloading a 13 MB
+      // cloud to divide its size is what makes a page take a minute on a slow
+      // link. When the length cannot be trusted -- a cached response, a proxy
+      // that strips `content-length`, a CDN that answers 0 -- the card says
+      // "cloud" without a count and the viewer fills it in on the first open.
+      const cloudSize = await store.size(row.splat);
       if (cloudSize === null) {
-        cloudNote =
-          `library.json names ${row.splat}, but the store has no such file — ` +
-          'this row draws its relief until the cloud is rebuilt.';
+        // The length could not be trusted (no header, a cache, a proxy). The
+        // card says "cloud" without a count; the viewer fills it in on the first
+        // open, which is when the bytes move anyway.
       } else if (cloudSize > 0 && cloudSize % 32 === 0) {
         item.cloud = {
-          // Null only when the length was trustworthy; otherwise the bytes are
-          // already in hand and the first open costs nothing.
-          file: cloudFile,
+          file: null,
           bytes: null,
           name: row.splat,
           lens: row.splatLens,
@@ -635,6 +630,8 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
           splats: Math.floor(cloudSize / 32),
         };
       } else {
+        // A successful response with a length that is not a multiple of the record
+        // size: that is a real verdict, not a network artefact.
         cloudNote = `${row.splat} is not a whole number of 32-byte records, so it is not a cloud.`;
       }
     }
