@@ -755,7 +755,25 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
       });
     }
-    return row;
+    // A re-centre beside the switch, on the same row: the app's Calibrate, which
+    // neutralises the reading the tilt is measured from. Without it a phone held
+    // at an angle reads as a permanent tilt until the sensor is recalibrated.
+    const wrap = document.createElement('div');
+    wrap.className = 'sheet-switch-row';
+    const recentre = document.createElement('button');
+    recentre.type = 'button';
+    recentre.className = 'sheet-icon-btn';
+    recentre.title = 'Re-centre the tilt';
+    recentre.setAttribute('aria-label', 'Re-centre the tilt');
+    recentre.textContent = '⌖';
+    recentre.addEventListener('click', () => {
+      tilt?.calibrate();
+      row.setSub('Re-centred. Tilt from how the device is held now.');
+    });
+    wrap.append(row.element, recentre);
+    // The row's own `element` is the wrap now, so the caller appends one thing and
+    // the switch keeps its methods.
+    return { ...row, element: wrap };
   }
 
   /** The studio's Speed row: a clip's playback rate, and this page draws no clips. */

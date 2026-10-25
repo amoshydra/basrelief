@@ -1574,3 +1574,32 @@ summary:focus-visible {
   }
 
 }
+
+/* The tilt switch and its re-centre, on one line: the app's Calibrate sits beside
+   the control it neutralises, not in another group. */
+.sheet-switch-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.sheet-switch-row > .sheet-switch {
+  flex: 1;
+  min-width: 0;
+}
+
+.sheet-icon-btn {
+  flex: none;
+  width: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.141);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet-icon-btn:active {
+  background: rgba(255, 255, 255, 0.12);
+}
