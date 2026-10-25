@@ -675,13 +675,12 @@ summary:focus-visible {
    is changing it. `:has()` because a pointer drag on the track is exactly an
    `:active` state, and this must not add a second source of truth for the
    plate -- `apply()` still owns every other value it writes. */
-.sheet--dimmed {
-  /* Android's dimWhileInteracting: DIM_ALPHA 0.05. Driven by a pointer counter
-     in sheet.ts so it follows the finger rather than the element, which is what a
-     CSS `:active` rule could not do -- a finger that leaves the track loses
-     `:active` and the plate snaps back to opaque mid-drag. */
-  background: rgba(22, 26, 32, 0.05) !important;
-}
+/* The strip paints its OWN glass in `sheet.ts` (`strip.style.background`), so
+   dimming the panel alone leaves a 56px opaque band across the top of a sheet
+   that is otherwise see-through -- which is exactly what the phone screenshot
+   showed. Both surfaces have to dim, or neither reads as glass. */
+
+
 
 .sheet-strip {
   flex: none;
@@ -1092,10 +1091,23 @@ summary:focus-visible {
 /* The selected mode's state and its actions, inside the fix line. The state is
    the fix line's sentence and the buttons are its actions — the phone's shape,
    where a condition worth reading lives outside the scroll. */
+/* The app's condition box, which used to be `.sheet-fixline`'s: a 1px dashed
+   edge at 0.3 white, an 11px radius, an 11/11/11/12 pad (`MainActivity`'s own
+   numbers). The asset row lives in the scroll now, so the box travels with it --
+   and the attention colour travels with the box, or the "something needs you"
+   border is drawn on an element nobody sees. */
 .sheet-asset-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 11px;
+  padding: 11px 11px 11px 12px;
+  margin-bottom: 10px;
+}
+
+.sheet-asset-row.is-attention {
+  border-color: #e2725b;
 }
 
 /* A run's phase, a failure's own words: a second line inside the dashed box. */

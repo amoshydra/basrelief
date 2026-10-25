@@ -142,6 +142,14 @@ export interface OpenableItem {
   /** A cloud built on this page for this card, if one was. */
   cloud: CloudAsset | null;
   /**
+   * Whether the ROW names a cloud, whether or not its bytes have been read.
+   *
+   * The bytes are loaded on first open now, so `cloud` can be null for a row that
+   * plainly has one; `Scene3D`'s question is about the row, not about what this
+   * session has fetched.
+   */
+  hasCloud?: boolean;
+  /**
    * The cloud's bytes, fetched on first open: a card states its count from the
    * file's length, so nothing reads the records until the viewer needs them.
    */
@@ -449,13 +457,18 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   /** Whether anything on this card is three-dimensional — `Scene3D`, one over. */
   function has3D(): boolean {
-    return depth !== null || currentCloud() !== null;
+    // `item.row.splat`, not `currentCloud()`: the bytes are now loaded on open, so
+    // a cloud whose LENGTH could not be read has no `item.cloud` yet and would
+    // otherwise report "No 3D" for a row that plainly has one. Unknown is not
+    // absent -- the same rule that made the gzipped length stop meaning "not a
+    // cloud".
+    return depth !== null || item.cloud !== null || item.hasCloud === true;
   }
 
   /** Which medium the selected mode draws from the assets this card has. */
   function mediumFor(): Medium {
     if (mode === 'splat') {
-      if (currentCloud()) return 'cloud';
+      if (currentCloud() || item.hasCloud === true) return 'cloud';
       // The app draws its relief when Splat is selected and no cloud exists
       // (`useSplat()` requires a cloud file); the picture does not vanish.
       return depth ? 'relief' : 'photo';
@@ -595,7 +608,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         onSelect: (index) => switchMode(index === 1 ? 'splat' : 'relief'),
       }),
     );
-    panel.body.append(readingRow('Renderer', sentence));
+    panel.body.append(note(sentence));
   }
 
   /**
@@ -630,7 +643,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   function appendFraming(panel: Sheet, view: ReliefView | CloudView): void {
     const panLimit = Math.max(item.width, item.height, window.innerWidth, window.innerHeight, 1);
 
-    panel.body.append(caption('Origin (fraction)'));
+    panel.body.append(caption('Where it sits'));
     const originXRow = sliderRow({
       label: 'Origin X',
       value: Math.round(settings.originX * 1000),
@@ -659,7 +672,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     panel.body.append(originXRow.element, originYRow.element);
 
-    panel.body.append(caption('Pan (pixels)'));
+
     const panXRow = sliderRow({
       label: 'Pan X',
       value: Math.round(settings.panX),
@@ -914,10 +927,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       // The dashed edge recolours for a condition that needs the user, because the
       // border is what the eye lands on: a dashed line saying "failed" in white
       // reads as an informational line.
-      panel.fixLine.classList.toggle(
-        'is-attention',
-        build?.failed ? true : !has3D(),
-      );
+      // The fix line is hidden now that the row lives in the scroll, so the
+      // attention state has to live where the row does -- otherwise the dashed
+      // border that says "something needs you" is drawn on an element nobody
+      // sees, which is dead code that looks alive.
+      row.classList.toggle('is-attention', build?.failed ? true : !has3D());
       syncPill();
     };
 

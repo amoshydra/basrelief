@@ -1048,6 +1048,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       lens: item.lens,
       lensFrom: item.lensFrom,
       cloud: item.cloud,
+      hasCloud: openRow.splat !== null,
       settings: openRow.home,
       mode: openRow.render,
       strip,
