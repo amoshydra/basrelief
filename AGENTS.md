@@ -470,10 +470,11 @@ that must not drift:
   cannot act is not drawn; a dead enabled control is the lie, and a disabled row
   is only justified when the disabled option is inside a control that is
   otherwise live and it explains itself.
-- **The library lives in the browser.** OPFS is the truth (`library.json`,
-  `prefs.json`, one file per row); a picked folder is a write-through copy with
-  Back up now / Restore, never a second truth. A folder is a permission and can be
-  revoked, unmounted or offline; nothing renders from it.
+- **The library lives in the browser, and OPFS is its only store.**
+  `library.json`, `prefs.json` and one file per row. There is no folder mirror or
+  phone sync yet: `showDirectoryPicker` is not dependable on Android Chrome and
+  the phone cannot read a `library.json` back, so the format is shared but the
+  workflow is not. A real sync is a feature to design, not a button to keep.
 - **The gallery is media-typed** — relief, photo, cloud, unreadable — and one
   classifier (`web/src/media.ts`) answers for the card, the count and the viewer.
   A file still being read is not "no depth".

@@ -5,12 +5,10 @@ a packed depth PNG on the page and it becomes a relief you can move; drop a
 `.splat` cloud and it becomes a point cloud you can move; a photo can have a depth
 map generated on your own ComfyUI server; a relief can be saved back out as a
 packed PNG. **Nothing is uploaded, and the library is saved in this browser** —
-the rows, their per-photo look and the Renderer choice survive a refresh, and a
-folder you pick can hold a **write-through copy** of the whole library (Back up
-now / Restore) in the Android app's own schema. The ComfyUI address and the chosen
-model are saved too — `prefs.json` beside `library.json`, under the app's own
-`comfy_url`, `comfy_model` and `comfy_model_history` keys — so a reload does not
-make you retype them.
+the rows, their per-photo look and the Renderer choice survive a refresh. The
+ComfyUI address and the chosen model are saved too — `prefs.json` beside
+`library.json`, under the app's own `comfy_url`, `comfy_model` and
+`comfy_model_history` keys — so a reload does not make you retype them.
 
 The product shape is *"someone sends you a PNG and you drop it on a page."* There
 is no account, no server and no cloud library, which is also why this exists: no
@@ -403,10 +401,10 @@ no server-side requirement.
   the sheet last rested. **← Gallery** or **Escape** closes the viewer (Escape
   closes the Build dialog first, then collapses the sheet). There is no Done
   button: the gesture beside it is the dismissal.
-- **Not on this page**, drawn disabled with a sentence rather than left as an
-  absence: the Home/Lock surfaces, playlists, archive, Set as wallpaper, Settings
-  and Speed. A page cannot set a wallpaper, it rotates no playlists, it hides no
-  row in an archive, and it draws no clips.
+- **Not on this page** — phone-only screens are not drawn: the Home/Lock
+  surfaces, playlists, archive, Set as wallpaper, Settings and Speed. A page
+  cannot set a wallpaper, it rotates no playlists, it hides no row in an archive,
+  and it draws no clips.
 
 The picture fills the viewport (cover, with the reference port's 8 % crop) at FOV
 45°, as the wallpaper does. Pan moves the picture at every depth; FOV scales the
@@ -438,12 +436,13 @@ frame-rate-dependent smoothing (`lerp 0.08` per frame).
 `src/camera.ts` is `CameraModel`: the fixed rest eye, the turntable about the
 surface under the origin (so the subject holds and the background swings), the
 clip-space Pan, the zoom crop, and tap → unproject → a new orbit centre. A tap,
-a one-finger drag (pan), two fingers (pan plus pinch → Pan Z) and the crosshair
-are the studio's set; `src/camera.test.ts` pins the at-rest invariant and the
-tap round trip through the real matrices. Smoothing uses the app's time constant
-(`tau = 0.2 s`) so the feel is the same at 60/90/120 Hz. The gallery's media
-vocabulary, the reader's return shape (raw grey + dimensions, or whole PNG + its
-own dimensions, as Java does) and the viewer seam are this app's own.
+a one-finger drag (tilt when the sensor is off), two fingers (pan plus pinch →
+Pan Z) and the crosshair are the studio's set; `src/camera.test.ts` pins the
+at-rest invariant and the tap round trip through the real matrices. Smoothing uses
+the app's time constant (`tau = 0.2 s`) so the feel is the same at 60/90/120 Hz.
+The gallery's media vocabulary, the reader's return shape (raw grey + dimensions,
+or whole PNG + its own dimensions, as Java does) and the viewer seam are this
+app's own.
 
 The cloud renderer is a port of the **Android app**, not of the reference port and
 not of `.design/prototype/ab/3d/splatline/`. The prototype's projection is the same
@@ -460,20 +459,20 @@ permission, works on a phone, and holds:
 basrelief/
   library.json              the Android app's Library v5 blob
   prefs.json                the app's prefs: comfy_url, comfy_model, comfy_model_history
-  playlists.json            optional, opaque — copied, never read here
+  playlists.json            optional, opaque — carried through, never read here
   item-<id>.<ext>           one colour image per row, original bytes
   item-<id>.splat           a Gaussian cloud, when a row has one
 ```
 
 `library.json` is `Library`'s schema — `surfaces.home`/`lock` of the same
 seventeen values, `render`, `archived`, `focal`, `splat`, `splat_lens`, the opaque
-`video`, the sort and the selection — so a folder written here can be opened on
-the phone and a folder the phone wrote can be opened here. The parser never
-throws: a corrupt blob is an empty gallery with a sentence and the original kept
-as `library.corrupt.json`, and a blob from a *newer* build is read-only (no
-import, edit, delete or Clear can overwrite it). `contract/library/cases.json` is
-the shared statement of that schema. Filenames are bare, never paths, which is
-what makes a backup portable.
+`video`, the sort and the selection — so a copy of these files can be opened on
+the phone and one the phone wrote can be opened here. The parser never throws: a
+corrupt blob is an empty gallery with a sentence and the original kept as
+`library.corrupt.json`, and a blob from a *newer* build is read-only (no import,
+edit, delete or Clear can overwrite it). `contract/library/cases.json` is the
+shared statement of that schema. Filenames are bare, never paths, which is what
+makes a copy portable.
 
 `prefs.json` is the app's **prefs**, not more of its library: a ComfyUI address and
 a model choice are device/app settings, so the phone keeps them under
@@ -488,35 +487,20 @@ recorded on the **selection** rather than a finished run. A corrupt blob is the
 defaults with a sentence and the original kept as `prefs.corrupt.json`; one
 wrong-typed key falls back to that key's default; unknown keys survive a rewrite.
 
-**A picked folder is a write-through copy, never a second truth.** This is the
-app's decision (`TODO.md`): a folder is a *permission* — revoked, unmounted,
-offline — and with a folder as truth every render path needs an "unavailable"
-state and a missing folder becomes an empty gallery. So:
+**There is no folder mirror or phone sync yet.** The page once had Back up now /
+Restore against a picked folder, and it was removed: `showDirectoryPicker` is not
+dependable on Android Chrome, and the phone cannot read a `library.json` back, so
+"shared with Android" was true of the format and false of the workflow. A real
+sync, on both sides, is a feature to design rather than a button to keep. Nothing
+in the page draws from a folder; OPFS is the store.
 
-- **Choose backup folder…** stores the `FileSystemHandle` in IndexedDB (it is
-  structured-cloneable, so it survives a reload). The *permission* does not
-  survive: `queryPermission` answers `prompt`, which is the **Allow the folder**
-  button, not a failure.
-- **Back up now** writes every stored file, then `library.json` **last**, so an
-  interrupted backup never names a file it did not copy. `prefs.json` is copied
-  like any other store file; **Restore** is library-driven and does not write
-  device settings back over the running browser's.
-- **Restore** reads the folder's `library.json`, validates it, copies the files it
-  names plus an optional `playlists.json`, then writes the index last. A file the
-  folder is missing is named in the sentence and the row is kept, with the card
-  saying what it wanted — never a silently shorter gallery.
-- **Unavailable** is a visible state with its own sentence: the folder is gone
-  (`NotFoundError`) or the browser refuses writes (`NotAllowedError`). The gallery
-  is untouched either way, because nothing renders from the folder.
-
-Unsupported browsers (no folder picker) get that sentence too, and a browser
-without OPFS gets a memory store, the line **Not saved — this tab only**, and a
-page that otherwise works.
+A browser without OPFS gets a memory store, the line **Not saved — this tab
+only**, and a page that otherwise works.
 
 ## What it does not do yet
 
-- **Clips and the video graph** — a `.mp4` pair is not read, and the Speed row is
-  drawn disabled because a page draws no clips.
+- **Clips and the video graph** — a `.mp4` pair is not read, and there is no Speed
+  row because a page draws no clips.
 - **A cloud's colour is not colour-managed.** The baked bytes go to the framebuffer
   exactly as the app's shader writes them, so the picture matches the app rather
   than an `sRGB`-converted one.
@@ -526,9 +510,8 @@ page that otherwise works.
 - **A lone `.splat` is not persisted** — the app's schema gives every row a
   photograph as its poster, so a cloud dropped without a picture is kept for the
   session and the card says so. A cloud built from a photo persists.
-- **The folder picker is Chromium desktop only** — OPFS, the part that is the
-  truth, works everywhere. A browser without OPFS says that nothing will be saved
-  and keeps working for the session.
+- **Folder backup / phone sync** — removed until it can be a real sync; see above.
+  OPFS works everywhere and is the store.
 
 ## Layout
 
@@ -539,7 +522,6 @@ web/
   src/gallery.ts      the library: cards, inspection, imports and per-row writes
   src/library.ts      the Library v5 blob: reader, writer, names, sort (pure, tested)
   src/store.ts        OPFS (and the memory fallback): the files and the two blobs
-  src/mirror.ts       a picked folder: the handle in IndexedDB, Back up / Restore
   src/media.ts        the one media classifier + formatting (pure, tested)
   src/deph.ts         the dePH/dEPt reader (contract/deph third copy)
   src/pack.ts         the dePH writer + the browser colour re-encode (pure half tested)

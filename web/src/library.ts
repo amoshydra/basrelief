@@ -5,7 +5,7 @@
  * `library` key of `SharedPreferences depthwall`, holding the photographs, each
  * one's per-surface render values, the selection and the list order. This module
  * is that schema's second reader and writer, so `library.json` in this page's
- * storage (and in a backup folder) is a blob the phone can read, and a blob the
+ * storage (and in a copied directory) is a blob the phone can read, and a blob the
  * phone wrote is one this page can read. `contract/library/cases.json` is the
  * only shared statement of the bodies the two must agree on; the app's own tests
  * cannot see TypeScript, and `scripts/check-parity.mjs` holds the schema number
@@ -26,16 +26,16 @@
  * **What round-trips, and what is inert here.** Everything the app stores is
  * preserved: `SurfacesSettings` per surface (including a lock override this page
  * cannot render), `render`, `archived`, `focal`, `splat`, `splat_lens`, `video`
- * (this page draws no clips, but the bytes — and the filenames the mirror has to
- * copy — survive), the sort order, the applied surfaces and the selection. What
+ * (this page draws no clips, but the bytes — and the filenames a copy must
+ * carry — survive), the sort order, the applied surfaces and the selection. What
  * is *inert* is exactly the behaviour: nothing rotates, nothing is archived and
  * nothing plays. That is the difference between a schema the app owns and a
  * feature this page has.
  *
  * **Playlists are a different blob.** The app keeps them under its own
  * `playlists` key (`Playlists.KEY`), not inside this one, so there is nothing
- * here to round-trip; a backup folder's `playlists.json`, if it has one, is
- * copied through untouched by the mirror rather than interpreted.
+ * here to round-trip; a copied store's `playlists.json`, if it has one, is
+ * carried through untouched rather than interpreted.
  */
 import {
   defaultSettings,
@@ -434,9 +434,8 @@ export function displayName(item: LibraryItem): string {
 /**
  * Every file this row names, in one list.
  *
- * The mirror copies exactly these, and the gallery resolves the first two. A name
- * is never a path: the store and the folder are both flat, which is what makes a
- * backup portable.
+ * A copy carries exactly these, and the gallery resolves the first two. A name
+ * is never a path: the store is flat, which is what makes a copy portable.
  */
 export function fileNamesOf(item: LibraryItem): string[] {
   const names: string[] = [];

@@ -5,7 +5,7 @@
  *   node --experimental-strip-types src/library.test.ts
  *
  * `Library` is the app's gallery index, and this page has a second reader and
- * writer for it (`web/src/library.ts`) because the mirror's whole point is that a
+ * writer for it (`web/src/library.ts`) because a copy's whole point is that a
  * folder written here opens on the phone and a folder the phone wrote opens here.
  * Nothing in either build can see the other copy, so the shared statement is
  * `contract/library/cases.json`, and `scripts/check-parity.mjs` holds the schema
@@ -14,7 +14,7 @@
  * What a wrong answer looks like, case by case:
  *
  *   - a row whose `image` is dropped is a photograph the phone loses; a row whose
- *     `video` is dropped is a video the mirror copies no files for.
+ *     `video` is dropped is a video a copy would carry no files for.
  *   - a reader that throws on a corrupt or newer blob is a dead page, and one that
  *     treats a newer blob as writable erases a future version's gallery.
  *   - a writer that emits `focal: 0` or the five default-valued optional settings
@@ -211,7 +211,7 @@ assert.deepEqual(
     fixture.populated.expected.labels,
   );
 
-  // Every file the rows name, and nothing else: the mirror copies exactly this
+  // Every file the rows name, and nothing else: a copy carries exactly this
   // list, so a row that named a file the reader dropped would be a photograph the
   // backup silently leaves behind.
   const files = new Set<string>();

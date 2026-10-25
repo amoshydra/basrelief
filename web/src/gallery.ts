@@ -120,7 +120,7 @@ export interface Gallery {
   /** True when a newer build's blob is in place and must not be overwritten. */
   readonly readOnly: boolean;
   addFiles(files: Iterable<File>): Promise<void>;
-  /** Re-read `library.json` from the store; used after a Restore. */
+  /** Re-read `library.json` from the store. */
   reload(): Promise<void>;
 }
 
@@ -596,7 +596,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
         kind: 'unreadable',
         reason:
           `library.json names ${row.image}, but the store has no such file. ` +
-          'The row is kept so the selection still resolves; Restore or import the file again.',
+          'The row is kept so the selection still resolves; import the file again.',
       });
       return;
     }

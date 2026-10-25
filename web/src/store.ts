@@ -1,23 +1,21 @@
 /**
  * Where the library actually lives: the browser's origin-private file system.
  * **OPFS is the truth, and that is the same decision the app made one platform
- * over.** The app's `filesDir` is the single source of truth and a user-chosen
- * folder is a write-through mirror with an explicit Back up now / Restore — never
- * external-as-truth, because a folder is a *permission*: it is revoked, an SD card
- * unmounts, a cloud drive goes offline, and with the folder as truth every render
- * path needs an "unavailable" state and a missing folder becomes an empty
- * library. `TODO.md` records that decision; this module is its web half.
+ * over.** The app's `filesDir` is the single source of truth; this module is its
+ * web half. A user-chosen folder was once a write-through mirror with Back up now /
+ * Restore, but that mirror was removed until it can be a real sync — it is not a
+ * second truth and nothing reads from it.
  *
- * OPFS rather than the picker for the truth because it needs no gesture, no
+ * OPFS rather than a picker for the truth because it needs no gesture, no
  * permission and no user decision: `navigator.storage.getDirectory()` works on a
- * phone, in a private window, and on the first paint. The folder API does not.
+ * phone, in a private window, and on the first paint.
  *
  * The layout is flat and unremarkable on purpose:
  *
  *     basrelief/
  *       library.json        the app's Library v5 blob (see library.ts)
  *       prefs.json          the app's app prefs — comfy_url/model/history (see prefs.ts)
- *       playlists.json      optional, opaque — the app's own blob, copied not read
+ *       playlists.json      optional, opaque — the app's own blob, carried not read
  *       item-<id>.<ext>     one colour image per row, original bytes
  *       item-<id>.splat     a Gaussian cloud, when a row has one
  *
@@ -33,8 +31,8 @@
 /**
  * The app's Library blob, as one file.
  *
- * The phone keeps this JSON under the `library` pref key; a folder needs a name,
- * and `library.json` says what it is without a lookup table.
+ * The phone keeps this JSON under the `library` pref key; the web store needs a
+ * name, and `library.json` says what it is without a lookup table.
  */
 export const LIBRARY_FILE = 'library.json';
 
@@ -42,8 +40,7 @@ export const LIBRARY_FILE = 'library.json';
  * What a store is, so OPFS and the in-memory fallback are one type.
  *
  * Deliberately small: read, write, remove, list, and the library as text. Nothing
- * here knows about photographs, rows or the mirror — those are the callers' — so
- * the mirror can drive the same interface over a *picked folder* and there is one
+ * here knows about photographs or rows — those are the callers' — so there is one
  * implementation of "a write" rather than two.
  */
 export interface MediaStore {
@@ -69,8 +66,8 @@ export interface MediaStore {
 /**
  * The app's second blob: playlists, carrying its own version and its own shape.
  *
- * This page does not read it — playlists do not rotate here — but a backup folder
- * that has one must not lose it on a Restore, so it is copied through untouched.
+ * This page does not read it — playlists do not rotate here — but a copied store
+ * must not lose it, so it is carried through untouched.
  */
 export const PLAYLISTS_FILE = 'playlists.json';
 
@@ -114,7 +111,7 @@ export async function openStore(): Promise<StoreInfo> {
   }
 }
 
-/** The bytes a caller can hand to a store or a folder. */
+/** The bytes a caller can hand to the store. */
 export type FileData = Blob | ArrayBuffer | ArrayBufferView | string;
 
 /** A directory that can be walked; `values()` is not in every lib.dom build. */
@@ -146,7 +143,7 @@ function asBlob(data: FileData): Blob {
 /**
  * Write one file into a directory handle.
  *
- * Shared by the store and the mirror so there is one implementation of "a write",
+ * Shared by every directory handle so there is one implementation of "a write",
  * and therefore one place a quota or revocation error can come from. A
  * `createWritable` truncates by default, which is what an overwrite means here.
  */
@@ -315,9 +312,8 @@ export async function listIn(dir: FileSystemDirectoryHandle): Promise<string[]> 
  * One sentence for a storage failure.
  *
  * The two that matter are named rather than passed through: a quota error is a
- * full disk with a user action behind it, and a revoked folder is a permission
- * that can come back — `NotAllowedError` on a mirror write is not "broken", it is
- * "ask again".
+ * full disk with a user action behind it, and a revoked permission is one that can
+ * come back — `NotAllowedError` is not "broken", it is "ask again".
  */
 export function describeStoreError(err: unknown): string {
   const name = err instanceof DOMException ? err.name : '';
@@ -329,9 +325,9 @@ export function describeStoreError(err: unknown): string {
         'Delete a photo or clear this site’s data, then try again.'
       );
     case 'NotAllowedError':
-      return 'The browser refused permission to write to that folder.';
+      return 'The browser refused permission to write to its storage.';
     case 'NotFoundError':
-      return 'That folder or file is no longer there.';
+      return 'That file is no longer there.';
     case 'SecurityError':
       return 'The browser blocked storage access on this page.';
     default:
