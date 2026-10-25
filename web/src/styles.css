@@ -1609,3 +1609,41 @@ summary:focus-visible {
 body.has-library .intake {
   display: none;
 }
+
+/* The grid is the page. 212px gave one column on a 412px phone, which is what
+   made the shelf read as a list of forms; the photo itself now sets the tile's
+   shape, so a narrower minimum fits two across and still fills the row. */
+.grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+/* The × is a hover affordance on a device that has hover; on a touch screen it
+   stays visible, because there is no way to reveal it. */
+@media (hover: hover) {
+  .card-remove {
+    opacity: 0;
+  }
+  .card:hover .card-remove,
+  .card:focus-within .card-remove {
+    opacity: 1;
+  }
+}
+
+/* Sort sits in the header beside the count, because it re-orders the same list. */
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sort select {
+  font: inherit;
+  color: #fff;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 6px;
+}

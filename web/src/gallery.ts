@@ -108,6 +108,8 @@ export interface GalleryOptions {
   empty: HTMLElement;
   count: HTMLElement;
   clear: HTMLButtonElement;
+  /** The index's own `sort`; the phone reads the same value. */
+  sort: HTMLSelectElement;
   /** The store's own line: where the library lives and how much it uses. */
   storage: HTMLElement;
   /** Messages that need reading once: a corrupt blob, a full disk. */
@@ -288,6 +290,16 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     };
   }
 
+  options.sort.addEventListener('change', () => {
+    const next = options.sort.value;
+    if (next === library.sort) return;
+    library = { ...library, sort: next as WebLibrary['sort'] };
+    void persist();
+    clearCards();
+    for (const row of sortedRows(library)) addCard(row);
+    for (const item of items) void inspect(item);
+  });
+
   async function load(): Promise<void> {
     clearCards();
     sidecarLenses.clear();
@@ -325,6 +337,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       };
     }
 
+    options.sort.value = library.sort;
     if (read.message !== null) notice(read.message, read.status !== 'empty');
     if (read.status === 'corrupt' && raw !== null) {
       // Keep one copy of the unreadable blob. Overwriting it would destroy the only
@@ -939,6 +952,9 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
     const thumb = document.createElement('div');
     thumb.className = 'card-thumb';
+    // The photo's own shape, so the picture fills its card instead of sitting
+    // letterboxed inside a fixed height. 3:4 until the dimensions are known.
+    thumb.style.aspectRatio = item.width > 0 && item.height > 0 ? `${item.width} / ${item.height}` : '3 / 4';
 
     const body = document.createElement('div');
     body.className = 'card-body';
@@ -1130,6 +1146,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       // CARD: a stale count would read as "nothing happened".
       facts.push(`${formatSplatCount(item.cloud.splats)} cloud`);
     }
+    // The dimensions are known HERE, not when the card was built: the image is
+    // decoded after `addCard`, so the aspect set at creation is always the 3:4
+    // fallback. This is the pass that can actually shape the tile.
+    parts.thumb.style.aspectRatio =
+      item.width > 0 && item.height > 0 ? `${item.width} / ${item.height}` : '3 / 4';
     const dims = formatDimensions(item.width, item.height);
     if (dims) facts.push(dims);
     if (item.file !== null) facts.push(formatBytes(item.file.size));

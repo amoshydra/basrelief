@@ -12,6 +12,7 @@ const gallery = await createGallery({
   empty: element('empty'),
   count: element('count'),
   clear: element<HTMLButtonElement>('clear'),
+  sort: element<HTMLSelectElement>('sort'),
   storage: element('storage-state'),
   notice: element('library-notice'),
 });
