@@ -812,6 +812,31 @@ export function createSheet(options: SheetOptions): Sheet {
     openAt(at);
   });
 
+  // Android dims the sheet's plate while a control is held (`dimWhileInteracting`,
+  // DIM_ALPHA = 0.05) so the render shows through the finger. The `:active`-based
+  // rule that preceded this failed exactly as the user reported: a finger that
+  // leaves the track loses `:active` and the plate snaps back to opaque mid-drag,
+  // and it never fired for switches, segments or nudges at all. A pointer counter
+  // is the honest version: it follows the pointer, not the element, and it covers
+  // every control that owns its own gesture.
+  const dimmed = new Set<number>();
+  function syncDim() { element.classList.toggle('sheet--dimmed', dimmed.size > 0); }
+  const isControl = (target: EventTarget | null): boolean =>
+    target instanceof Element &&
+    target.closest('.bslider, .sheet-switch, .sheet-segment, .sheet-action, .sheet-fixline, .sheet-strip') !== null;
+  element.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (!isControl(event.target)) return;
+    dimmed.add(event.pointerId);
+    syncDim();
+  }, true);
+  const release = (event: PointerEvent) => {
+    dimmed.delete(event.pointerId);
+    syncDim();
+  };
+  element.addEventListener('pointerup', release, true);
+  element.addEventListener('pointercancel', release, true);
+
   return {
     element,
     body: inner,
