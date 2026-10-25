@@ -1,6 +1,5 @@
 import './styles.css';
 import { createGallery } from './gallery.ts';
-import { createMirror, type MirrorState } from './mirror.ts';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -20,54 +19,6 @@ const gallery = await createGallery({
 const pick = element<HTMLButtonElement>('pick');
 const dropzone = element('dropzone');
 const input = element<HTMLInputElement>('file-input');
-
-// --------------------------------------------------------------- the mirror
-//
-// The folder is a write-through copy, never a second truth: the library lives in
-// OPFS, and every control here either writes it through or reads it back. Nothing
-// on the page renders from the folder, so a revoked permission cannot blank the
-// gallery — the mirror's own line says what happened and the photographs stay.
-
-const mirror = createMirror();
-const mirrorState = element('mirror-state');
-const mirrorPick = element<HTMLButtonElement>('mirror-pick');
-const mirrorGrant = element<HTMLButtonElement>('mirror-grant');
-const mirrorBackup = element<HTMLButtonElement>('mirror-backup');
-const mirrorRestore = element<HTMLButtonElement>('mirror-restore');
-const mirrorForget = element<HTMLButtonElement>('mirror-forget');
-
-function renderMirror(state: MirrorState): void {
-  mirrorState.textContent = state.message;
-  mirrorState.dataset.status = state.status;
-  mirrorPick.hidden = state.status === 'unsupported';
-  mirrorPick.textContent =
-    state.status === 'none' || state.status === 'unsupported'
-      ? 'Choose backup folder…'
-      : 'Choose another folder…';
-  mirrorGrant.hidden = state.status !== 'needs-permission';
-  mirrorBackup.disabled = state.status !== 'ready';
-  mirrorRestore.disabled = state.status !== 'ready';
-  mirrorForget.hidden = state.status === 'none' || state.status === 'unsupported';
-}
-
-mirror.onChange(renderMirror);
-
-mirrorPick.addEventListener('click', () => void mirror.choose());
-mirrorGrant.addEventListener('click', () => void mirror.grant());
-mirrorBackup.addEventListener('click', () => void mirror.backup(gallery.store));
-mirrorForget.addEventListener('click', () => void mirror.forget());
-mirrorRestore.addEventListener('click', async () => {
-  mirrorRestore.disabled = true;
-  const result = await mirror.restore(gallery.store);
-  if (result.ok) {
-    // A restore replaces the index, so the gallery is re-read rather than patched:
-    // rows that came back, and rows that did not, are the blob's answer.
-    await gallery.reload();
-  }
-  mirrorRestore.disabled = mirror.state().status !== 'ready';
-});
-
-void mirror.refresh();
 
 // ---------------------------------------------------------------- the intake
 

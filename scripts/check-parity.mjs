@@ -1011,7 +1011,6 @@ function checkSharedRules() {
     'web/src/prefs.ts',
     'web/src/prefs.test.ts',
     'web/src/store.ts',
-    'web/src/mirror.ts',
     'web/src/picture.ts',
     'web/src/picture.test.ts',
     'web/src/comfy.ts',
