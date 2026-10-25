@@ -567,3 +567,25 @@ CI's `web-app` job runs `pnpm test`, `pnpm typecheck` and `pnpm build`; the
 `guards` job's `scripts/check-shaders.mjs` compiles the two GLSL shaders in
 `src/cloud.ts` too, so a shader error is a red build rather than a viewer that
 draws nothing.
+
+## The bundled demo
+
+A fresh page starts with the app's own preload — the marble bust, as a
+photograph, a relief and a cloud. It is seeded only when `library.json` is
+absent, never when it is empty, because an empty gallery means the demo was
+deleted and a delete has to stick.
+
+The cloud's count comes from the file's length, not its bytes: a one-byte
+`Range` request reads `content-range` (GitHub Pages gzips the file, so `HEAD`
+reports the compressed length), and the records themselves move only when
+**Splat** is selected. Bundled files are kept in the Cache API, so a reload
+costs about 300 bytes rather than 2.7 MB.
+
+## Gestures
+
+| gesture | what it does |
+|---|---|
+| tap | set the orbit centre |
+| one-finger drag | tilt the camera — only when the sensor is off, because the gyro owns the tilt |
+| two fingers | pan by their midpoint, pinch for the camera distance |
+| ⌖ beside *Device tilt* | re-centre the sensor's neutral pose |
