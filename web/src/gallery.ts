@@ -1158,20 +1158,16 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
         break;
     }
 
-    // The Renderer choice is per row now, so the card says which asset this row
-    // asks for — otherwise a row set to Splat with no cloud is indistinguishable
-    // from one that has not chosen.
-    const asksSplat = item.row.render === 'splat';
     // A cloud card IS the cloud; a mode badge there would be a second badge saying
     // the same thing.
-    parts.modeBadge.hidden = !asksSplat || state.kind === 'cloud';
-    if (asksSplat) {
-      parts.modeBadge.textContent = item.cloud ? 'splat' : 'splat requested';
-      parts.modeBadge.classList.toggle('badge--warn', !item.cloud);
-      parts.modeBadge.title = item.cloud
-        ? 'This row draws its Gaussian cloud. The Renderer segment switches it.'
-        : 'This row asks for a cloud it does not have, so it draws its relief.';
-    }
+    // No mode badge. Android's corner marks are three specific states -- an import
+    // ring, a clip's play mark, a failed run -- and this page has none of them, so
+    // a mark here said nothing a reader could act on. The Renderer segment already
+    // names the mode, on the screen where it can be changed.
+    // Inline, not `hidden`: `.badge` sets `display: inline-block`, and a class's
+    // display beats the UA's `[hidden]` rule. This is the third time a `hidden`
+    // assignment has been silently outranked in this page.
+    parts.modeBadge.style.display = 'none';
 
     const reason = state.kind === 'unreadable' ? state.reason : item.note;
     const warn = state.kind === 'unreadable';
@@ -1182,6 +1178,10 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
   }
 
   function renderCounts(): void {
+    // The intake is a first-visit explanation, not a permanent ceiling. Android's
+    // gallery has no hero because the app opens onto a library; once there is
+    // something here, the grid is the page and "Add files" is an action.
+    document.body.classList.toggle('has-library', items.length > 0);
     const counts = { depth: 0, clouds: 0, unreadable: 0, reading: 0 };
     for (const item of items) {
       if (item.cloud && item.state.kind !== 'cloud') counts.clouds++;
@@ -1203,10 +1203,13 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       }
     }
 
-    const total = items.length + sidecarFiles;
+    // "photo", not "file": the storage's word is for the storage line, and Android's
+    // gallery counts photos. A sidecar is not a photo and is not counted as one.
+    const total = items.length;
     const parts: string[] = [
-      `${total} ${total === 1 ? 'file' : 'files'}`,
+      `${total} ${total === 1 ? 'photo' : 'photos'}`,
     ];
+    if (sidecarFiles > 0) parts.push(`${sidecarFiles} sidecar${sidecarFiles === 1 ? '' : 's'}`);
     if (counts.depth > 0) parts.push(`${counts.depth} with depth`);
     if (counts.clouds > 0) {
       parts.push(`${counts.clouds} splat ${counts.clouds === 1 ? 'cloud' : 'clouds'}`);

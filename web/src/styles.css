@@ -1603,3 +1603,9 @@ summary:focus-visible {
 .sheet-icon-btn:active {
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* Once there is a library, the hero retires and the grid is the page. The drop
+   target stays: the whole document still accepts a file. */
+body.has-library .intake {
+  display: none;
+}
