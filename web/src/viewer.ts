@@ -48,8 +48,6 @@ import {
   ORIGIN_LIMIT,
   PAN_Z_MAX,
   PAN_Z_MIN,
-  SPEED_MAX,
-  SPEED_MIN,
   SPLAT_BLUR_MAX,
   SPLAT_BLUR_MIN,
   SPLAT_DEPTH_MAX,
@@ -67,7 +65,6 @@ import {
   actionRow,
   caption,
   createSheet,
-  disabledActionRow,
   inputRow,
   note,
   readingRow,
@@ -571,15 +568,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   // ------------------------------------------------------------- shared rows
 
-  function appendSurfaces(panel: Sheet): void {
-    panel.body.append(segmentRow({ labels: ['Home', 'Lock'], active: -1, disabled: true }));
-    panel.body.append(
-      readingRow(
-        'Home and Lock',
-        'A page cannot set a wallpaper, so there is no second surface to adjust.',
-      ),
-    );
-  }
 
   /**
    * The Renderer segment, LIVE: it picks which asset this card draws.
@@ -770,32 +758,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   }
 
   /** The studio's Speed row: a clip's playback rate, and this page draws no clips. */
-  function appendSpeed(panel: Sheet): void {
-    disabledSlider(panel, 'Speed', settings.speed, SPEED_MIN, SPEED_MAX, (v) => `${(v / 100).toFixed(2)}×`,
-      'A page draws stills and clouds, not clips, so there is no playback rate to set.');
-  }
 
-  function appendNotOnThisPage(panel: Sheet): void {
-    panel.body.append(caption('Not on this page'));
-    panel.body.append(
-      disabledActionRow(
-        'Playlists',
-        'Nothing here is stored or kept, so there is nothing to rotate.',
-      ),
-      disabledActionRow(
-        'Archive',
-        'The gallery is the files in this tab; there is nowhere to hide one from.',
-      ),
-      disabledActionRow(
-        'Set as wallpaper',
-        'A web page cannot set a live wallpaper. Save the packed PNG and open it on the phone.',
-      ),
-      disabledActionRow(
-        'Settings',
-        'There are no device settings on this page — no battery saver, gyro or app version.',
-      ),
-    );
-  }
 
   /**
    * The studio sheet has **no footer and no Done**: it is put away by dragging and
@@ -1018,7 +981,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
     const panel = newPanel('Picture settings');
 
-    appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, mediumFor());
     appendFixLine(panel);
@@ -1066,7 +1028,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     const tiltControl = tiltRow();
     panel.body.append(motionRow.element, zoomRow.element, tiltControl.element);
-    appendSpeed(panel);
 
     panel.body.append(caption('Picture'));
     const applyAdjust = (): void => view.setAdjust(settings.brightness, settings.shadow);
@@ -1140,7 +1101,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       onClick: () => void savePacked(),
     });
     panel.body.append(save, packNote);
-    appendNotOnThisPage(panel);
 
     async function savePacked(): Promise<void> {
       save.disabled = true;
@@ -1251,7 +1211,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
     const panel = newPanel('Photo settings');
 
-    appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, mediumFor());
     appendFixLine(panel);
@@ -1264,7 +1223,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     disabledSlider(panel, 'Motion', settings.motion, MOTION_MIN, MOTION_MAX, (v) => `${v}%`, why);
     disabledSlider(panel, 'FOV', settings.zoom, ZOOM_MIN, ZOOM_MAX,
       (v) => `${Math.round(45 / (v / 100))}°`, why);
-    appendSpeed(panel);
 
     panel.body.append(caption('Picture'));
     disabledSlider(panel, 'Brightness', 0, ADJUST_MIN, ADJUST_MAX, signed,
@@ -1292,7 +1250,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     disabledSlider(panel, 'Pan Z', 100, PAN_Z_MIN * 100, PAN_Z_MAX * 100, (v) => (v / 100).toFixed(2),
       'The camera distance belongs to a drawn surface; there is nothing here to dolly.');
 
-    appendNotOnThisPage(panel);
     appendReset(panel, null);
 
     setSheet(panel);
@@ -1412,7 +1369,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
     const panel = newPanel('Cloud settings');
 
-    appendSurfaces(panel);
     panel.body.append(caption('Standing out of the plane', true));
     appendRenderer(panel, 'cloud');
     appendFixLine(panel);
@@ -1500,7 +1456,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     const tiltControl = tiltRow();
     panel.body.append(motionRow.element, zoomRow.element, tiltControl.element);
-    appendSpeed(panel);
 
     panel.body.append(caption('Picture'));
     const applyAdjust = (): void => view.setAdjust(settings.brightness, settings.shadow);
@@ -1548,7 +1503,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         ),
       );
     }
-    appendNotOnThisPage(panel);
 
     appendReset(panel, () => {
       const d = defaultSettings();
