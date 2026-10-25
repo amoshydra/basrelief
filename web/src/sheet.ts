@@ -107,8 +107,6 @@ const DRAG_SLOP = 8;
 const MAX_WIDTH = 620;
 
 /** The panel's own ceiling, as a fraction of the viewport and in px. */
-const MAX_HEIGHT_FRACTION = 0.7;
-const MAX_HEIGHT_PX = 620;
 const MAX_CARD_FRACTION = 0.85;
 
 /** The pill row's own chrome: 18+18 padding, an 8px dot and a 10px gap. */
@@ -315,9 +313,13 @@ export function createSheet(options: SheetOptions): Sheet {
    * downstream knows the difference.
    */
   function measureNatural(): number {
-    const cap =
-      window.innerHeight * (studio ? MAX_HEIGHT_FRACTION : MAX_CARD_FRACTION);
-    const ceiling = studio ? Math.min(cap, MAX_HEIGHT_PX) : cap;
+    // Android's natural is the panel's own `wrap_content` height, bounded only by
+    // the screen it lives in: `panelNaturalHeight = panel.getHeight()` read while
+    // unconstrained. There is no fraction and no pixel ceiling anywhere in
+    // `MainActivity`, so the studio sheet now uses the viewport and nothing else.
+    // A transient CARD keeps its own cap: modal sheets are a different component
+    // with a different job.
+    const ceiling = studio ? window.innerHeight : window.innerHeight * MAX_CARD_FRACTION;
     const contentHeight =
       film.offsetHeight +
       (fixLine.hidden ? 0 : fixLine.offsetHeight) +
