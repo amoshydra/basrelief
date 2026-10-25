@@ -186,7 +186,7 @@ function bundlePath(name: string): string | null {
   return BUNDLED_DIR + name.slice(BUNDLED_PREFIX.length);
 }
 
-const BUNDLED_CACHE = 'basrelief-bundled';
+const BUNDLED_CACHE = 'basrelief-bundled-v2';
 
 /**
  * The bundle's own cache, because GitHub Pages sends `max-age=600` and no
@@ -197,13 +197,25 @@ const BUNDLED_CACHE = 'basrelief-bundled';
 async function cachedResponse(url: URL): Promise<Response | null> {
   try {
     const cache = await caches.open(BUNDLED_CACHE);
-    return (await cache.match(url)) ?? null;
+    const hit = await cache.match(url);
+    if (!hit) return null;
+    // Only a complete 200 is the file. A cached 206 -- the one-byte range the
+    // count is read from -- is a FRAGMENT, and handing it back made the viewer
+    // try to draw a 1-byte cloud. Delete it and fetch properly.
+    if (hit.status !== 200 || hit.headers.get('content-range') !== null) {
+      await cache.delete(url);
+      return null;
+    }
+    return hit;
   } catch {
     return null;
   }
 }
 
 async function rememberResponse(url: URL, response: Response): Promise<void> {
+  // A partial response is not a cache entry: `cache.put` refuses 206 in some
+  // browsers and accepts it in others, and the accepting ones are the bug.
+  if (response.status !== 200 || response.headers.get('content-range') !== null) return;
   try {
     const cache = await caches.open(BUNDLED_CACHE);
     await cache.put(url, response.clone());
