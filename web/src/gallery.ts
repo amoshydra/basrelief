@@ -948,13 +948,16 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     open.className = 'card-open';
     open.tabIndex = 0;
     open.setAttribute('role', 'button');
-    open.setAttribute('aria-label', `Open ${displayName(item.row)}`);
+    // `stateDescription`: the facts a screen reader needs, not just the name.
+    const facts = [`Open ${displayName(item.row)}`];
+    if (item.row.render === 'splat') facts.push('drawn as a cloud');
+    if (item.state.kind === 'relief') facts.push('has a depth map');
+    if (item.row.archived) facts.push('archived');
+    if (item.id === library.active) facts.push('shown on the phone');
+    open.setAttribute('aria-label', facts.join(', '));
 
     const thumb = document.createElement('div');
     thumb.className = 'card-thumb';
-    // The photo's own shape, so the picture fills its card instead of sitting
-    // letterboxed inside a fixed height. 3:4 until the dimensions are known.
-    thumb.style.aspectRatio = item.width > 0 && item.height > 0 ? `${item.width} / ${item.height}` : '3 / 4';
 
     const body = document.createElement('div');
     body.className = 'card-body';
@@ -1149,11 +1152,6 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       // CARD: a stale count would read as "nothing happened".
       facts.push(`${formatSplatCount(item.cloud.splats)} cloud`);
     }
-    // The dimensions are known HERE, not when the card was built: the image is
-    // decoded after `addCard`, so the aspect set at creation is always the 3:4
-    // fallback. This is the pass that can actually shape the tile.
-    parts.thumb.style.aspectRatio =
-      item.width > 0 && item.height > 0 ? `${item.width} / ${item.height}` : '3 / 4';
     const dims = formatDimensions(item.width, item.height);
     if (dims) facts.push(dims);
     if (item.file !== null) facts.push(formatBytes(item.file.size));
@@ -1163,7 +1161,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       case 'relief':
         setBadge(
           parts.badge,
-          'depth',
+          '',
           'badge--depth',
           `embedded depth map (dePH, ${state.form === 'raw' ? 'raw grey' : 'whole PNG'})`,
         );

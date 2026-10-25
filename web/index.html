@@ -47,7 +47,6 @@
 
       <div class="gallery-head">
         <h2 id="count">No files yet</h2>
-        <button type="button" class="primary" id="add">Add files</button>
         <label class="sort" for="sort">Sort
           <select id="sort">
             <option value="added_desc">Newest</option>
@@ -58,7 +57,13 @@
         <button type="button" class="quiet" id="clear" disabled>Clear all</button>
       </div>
 
-      <ul class="grid" id="grid" aria-label="Your files"></ul>
+      <ul class="grid" id="grid" aria-label="Your files">
+        <li class="card card--add" id="add-tile">
+          <button type="button" id="add" aria-label="Add photos">
+            <span aria-hidden="true">＋</span>
+          </button>
+        </li>
+      </ul>
 
       <div class="empty" id="empty">
         <p class="empty-title">Nothing to look at yet.</p>
