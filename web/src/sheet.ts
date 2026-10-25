@@ -821,22 +821,43 @@ export function createSheet(options: SheetOptions): Sheet {
   // every control that owns its own gesture.
   const dimmed = new Set<number>();
   function syncDim() { element.classList.toggle('sheet--dimmed', dimmed.size > 0); }
-  const isControl = (target: EventTarget | null): boolean =>
-    target instanceof Element &&
-    target.closest('.bslider, .sheet-switch, .sheet-segment, .sheet-action, .sheet-fixline, .sheet-strip') !== null;
+  // Sliders only. `dimWhileInteracting` is called with a `BasreliefSlider` in the
+  // app -- a switch or a button does not own a drag, so there is nothing for the
+  // render to show through and dimming would just flash the sheet on every tap.
+  const heldTrack = (target: EventTarget | null): HTMLElement | null =>
+    target instanceof Element ? (target.closest('.bslider-track') as HTMLElement | null) : null;
+  /** The row being dragged: the one thing that stays legible (`HELD_ALPHA`). */
+  let heldRow: HTMLElement | null = null;
   element.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
-    if (!isControl(event.target)) return;
+    const track = heldTrack(event.target);
+    if (track === null) return;
+    if (dimmed.size === 0) {
+      heldRow = track.closest('.bslider') as HTMLElement | null;
+      heldRow?.classList.add('is-held');
+    }
     dimmed.add(event.pointerId);
     syncDim();
   }, true);
   const release = (event: PointerEvent) => {
     dimmed.delete(event.pointerId);
+    if (dimmed.size === 0) {
+      heldRow?.classList.remove('is-held');
+      heldRow = null;
+    }
     syncDim();
   };
-  element.addEventListener('pointerup', release, true);
-  element.addEventListener('pointercancel', release, true);
+  // On WINDOW, not the panel: a pointer that lifts outside the sheet (dragging a
+  // slider to the screen edge, or off the panel entirely) never bubbles a
+  // `pointerup` through the element, so the dim would stick until the next
+  // interaction. The pointer is the subject, so the window is the listener.
+  window.addEventListener('pointerup', release, true);
+  window.addEventListener('pointercancel', release, true);
 
+  const removeDim = (): void => {
+    window.removeEventListener('pointerup', release, true);
+    window.removeEventListener('pointercancel', release, true);
+  };
   return {
     element,
     body: inner,
@@ -862,6 +883,7 @@ export function createSheet(options: SheetOptions): Sheet {
       element.removeEventListener('pointermove', onPointerMove);
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('pointercancel', onPointerCancel);
+      removeDim();
       element.removeEventListener('click', onClickCapture, true);
       strip.removeEventListener('click', onStripClick);
       safeProbe.remove();

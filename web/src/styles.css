@@ -679,8 +679,36 @@ summary:focus-visible {
    dimming the panel alone leaves a 56px opaque band across the top of a sheet
    that is otherwise see-through -- which is exactly what the phone screenshot
    showed. Both surfaces have to dim, or neither reads as glass. */
+/* `dimOffPath`: everything off the held control's branch goes to `DIM_ALPHA`,
+   and the branch's containers stay at full alpha so the held row is not
+   multiplied down. In one flat DOM that is "every row dims, the held row does
+   not" -- `HELD_ALPHA` is 0.60, the one thing you are still reading.
+   The plate dims too, or the glass behind the faded rows is still opaque.
+   ONLY LEAVES ARE DIMMED. `.sheet-content` and `.sheet-body` are containers of
+   the held row, and opacity multiplies down the tree -- dimming a container put
+   the held row at 0.6 x 0.05 = 0.03, which is invisible. That is the same hazard
+   `dimOffPath`'s javadoc names: "a parent's alpha would multiply the held row's
+   60% down to nothing". */
+.sheet--dimmed .sheet-strip,
+.sheet--dimmed .sheet-film,
+.sheet--dimmed .sheet-photo,
+.sheet--dimmed .sheet-body-inner > * {
+  opacity: 0.05;
+}
 
+.sheet--dimmed .sheet-strip,
+.sheet--dimmed {
+  /* Android's dimWhileInteracting: DIM_ALPHA 0.05. Driven by a pointer counter
+     in sheet.ts so it follows the finger rather than the element, which is what a
+     CSS `:active` rule could not do -- a finger that leaves the track loses
+     `:active` and the plate snaps back to opaque mid-drag. */
+  background: rgba(22, 26, 32, 0.05) !important;
+}
 
+.sheet--dimmed .bslider.is-held {
+  /* `HELD_ALPHA`: the row under the finger stays at 60 %, not 5 %. */
+  opacity: 0.6;
+}
 
 .sheet-strip {
   flex: none;
