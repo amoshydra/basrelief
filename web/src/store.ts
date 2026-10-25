@@ -219,12 +219,18 @@ async function bundledSize(name: string): Promise<number | null> {
     const url = new URL(path, document.baseURI);
     const cached = await cachedResponse(url);
     if (cached !== null) return (await cached.blob()).size;
-    const response = await fetch(url, { method: 'HEAD' });
-    if (!response.ok) return null;
-    const length = response.headers.get('content-length');
-    if (length === null || length === '') return null;
-    const value = Number(length);
-    return Number.isFinite(value) && value > 0 ? value : null;
+    // A RANGE, not HEAD. GitHub Pages gzips this file, so `content-length` on a
+    // HEAD is the COMPRESSED length (4,223,960 for a 4,784,128-byte cloud) and a
+    // count of `size / 32` is wrong by exactly the ratio. `content-range` states
+    // the true total, and asking for one byte costs one byte.
+    const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    const range = response.headers.get('content-range');
+    await response.body?.cancel();
+    if (response.status === 206 && range !== null) {
+      const total = Number(range.split('/')[1]);
+      if (Number.isFinite(total) && total > 0) return total;
+    }
+    return null;
   } catch {
     return null;
   }
