@@ -599,8 +599,6 @@ public class MainActivity extends Activity {
 ;
     private TextView hintView;
     private BuildDialog buildDialog;
-    /** The one horizontal slider control, keyed as the settings are. */
-    private BasreliefSlider zoomSlider;
 
     /**
      * Which surface the sheet is editing.
@@ -3525,7 +3523,7 @@ public class MainActivity extends Activity {
                     }
                     // Live, and cheap: four setValue calls that paint and return. This
                     // is what the gesture path owes the sheet -- the rows following the
-                    // finger -- and it is the same thing setZoomSlider does above.
+                    // finger.
                     pushFramingRows();
                     glView.requestRender();
                 } else if (pointers.size() == 1 && !tilt.isSupported()) {
@@ -3588,11 +3586,13 @@ public class MainActivity extends Activity {
      *
      * <p>The save and the sheet push then hop back to the UI thread, which is where the
      * threading table puts prefs writes. Measured on a Pixel 7 Pro: {@code
-     * screenToOrbit} costs 51-169 us and {@code LibraryStore.editItem} costs
-     * <b>153-213 ms</b> of synchronous {@code commit()}. Doing both inside the queued
-     * runnable therefore held the GL thread for a sixth of a second after every tap --
-     * the frame the tap asked for could not be drawn until the disk write finished,
-     * which is why *"orbit via tapping lag so much"*.
+     * screenToOrbit} costs 51-169 us, and the write used to cost <b>153-213 ms</b> of
+     * blocked UI because {@code LibraryStore.editItem} waited on a {@code commit()}.
+     * That write is queued on the index-writer now, but the save still belongs on the
+     * UI thread with the row push, not inside the queued GL runnable. Doing both there
+     * used to hold the GL thread for a sixth of a second after every tap -- the frame
+     * the tap asked for could not be drawn until the disk write finished, which is why
+     * *"orbit via tapping lag so much"*.
      *
      * <p>{@link #endFramingGesture} runs on the far side of that hop, so the rows are
      * pushed from the renderer and the store is written once, in that order. It is
@@ -4124,7 +4124,6 @@ public class MainActivity extends Activity {
         // control cannot be dimmed on one path and not the other.
         dimWhileInteracting(slider);
         sliders.put(key, slider);
-        if ("zoom".equals(key)) zoomSlider = slider;
         return slider.view();
     }
 
@@ -5924,12 +5923,6 @@ public class MainActivity extends Activity {
         if (slider == null) return;
         slider.setEnabled(enabled);
         slider.setValue(value);
-    }
-
-    /** Update the zoom slider to match the current renderer zoom. */
-    private void setZoomSlider(int percent) {
-        if (zoomSlider == null) return;
-        zoomSlider.setValue(percent);
     }
 
     /**

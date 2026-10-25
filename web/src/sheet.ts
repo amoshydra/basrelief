@@ -1396,11 +1396,3 @@ export function inputRow(options: {
   element.append(label, input);
   return { element, input };
 }
-
-/** A plate that is drawn but cannot be pressed, with the sentence that says why. */
-export function disabledActionRow(label: string, sub: string): HTMLButtonElement {
-  const row = actionRow({ label, sub, onClick: () => undefined });
-  row.disabled = true;
-  row.classList.add('is-disabled');
-  return row;
-}

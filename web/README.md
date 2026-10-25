@@ -171,9 +171,11 @@ the count, and says so when a cloud is dense enough for that to matter.
 
 The viewer's controls are the Android studio's bottom sheet, reproduced rather
 than reinvented: `src/sheet.ts` is the vocabulary, and `src/viewer.ts` composes it.
-**Every group and row the studio's sheet shows is present**, in the studio's order
-and with the studio's look. A row this page can honour is wired to the real
-render; a row it cannot is still drawn, disabled, with one sentence saying why.
+**The sheet draws the controls the page can act on**, in the studio's order and
+with the studio's look. A row this page can honour is wired to the real render.
+A phone-only screen is not drawn; the one disabled option is the Renderer's
+Relief choice on a cloud-only card, because that segment is otherwise live and
+the option explains itself.
 
 - **Three row roles, and no fourth.** A switch row carries a state you can flip
   (Device tilt), an action row is a plate you can press (Save packed PNG, Test
@@ -207,20 +209,20 @@ render; a row it cannot is still drawn, disabled, with one sentence saying why.
   clamped to 250-500 ms, and `prefers-reduced-motion` cuts the settle rather than
   the tether.
 - **The filmstrip, the fix line and the photo line are sheet content.** The
-  filmstrip is the library under the grip and it fades with the sheet; the fix line
-  is the dashed condition box under it, outside the scroll, so the one sentence
-  worth reading cannot scroll away; the photo line is the quiet 12px line at the
-  top of the scroll. **There is no footer and no Done** — the sheet is put away by
-  dragging and by the pill, and Reset view is a row inside the scroll.
-- **The row inventory is the studio's.** The Home/Lock segment, the Renderer
-  segment and its asset row, the four cloud look knobs, Depth, Motion, FOV, Speed,
-  Brightness, Shadow, Azimuth, Elevation, Origin X/Y, Pan X/Y/Pan Z, the actions
-  and the foot. The rows that act:
+  filmstrip is the library under the grip and it fades with the sheet; the photo
+  line is the quiet 12px line at the top of the scroll. The fix line is the dashed
+  condition box under the strip, but the asset row now lives in the scroll below
+  the Renderer segment, so the fix line is left hidden. **There is no footer and
+  no Done** — the sheet is put away by dragging and by the pill, and Reset view is
+  a row inside the scroll.
+- **The row inventory is what the page can do.** The Renderer segment and its
+  asset row, the selected mode's look rows, Motion, Picture, Light, Origin X/Y,
+  Pan X/Y/Pan Z, the actions and the foot. The rows that act:
   - a **relief** gets Depth, Motion, FOV, Brightness, Shadow, Azimuth, Elevation,
     Origin X/Y and Pan X/Y/Pan Z. Its camera is `src/camera.ts` (a port of
     `CameraModel`): tap sets the orbit centre by unprojecting through the camera,
-    one-finger drag pans, two fingers pan and pinch Pan Z, and the crosshair marks
-    the pivot of the frame that was drawn;
+    one-finger drag tilts when the sensor is off, two fingers pan by their midpoint
+    and pinch Pan Z, and the crosshair marks the pivot of the frame that was drawn;
   - a **cloud** gets Depth, Size, Blur, Resolution, Motion, Brightness, Shadow,
     Origin X/Y and Pan X/Y/Pan Z; Light is disabled with a sentence because a
     cloud carries baked colour and no surface normal;
@@ -230,7 +232,8 @@ render; a row it cannot is still drawn, disabled, with one sentence saying why.
   PNG and a cloud built from it. Selecting Relief or Splat changes what is drawn.
   A dropped `.splat` has no photograph, so its Relief option is the one disabled
   option in the segment. The Home/Lock segment, Speed, Playlists, Archive, Set as
-  wallpaper and Settings are still drawn disabled, each with its sentence.
+  wallpaper and Settings are **not drawn**: they are phone-only screens with no
+  action this page can honour.
 - **The values and ranges are the app's schema**, not this page's taste:
   `src/settings.ts` reads and writes the `SurfaceSettings` body and
   `contract/settings/` pins it — see below.
@@ -352,7 +355,7 @@ pnpm install
 pnpm dev        # HTTPS on :5173
 pnpm build      # typecheck + static bundle in web/dist
 pnpm preview    # serve the built bundle
-pnpm test       # all ten contract/state tests, under plain Node
+pnpm test       # all eleven contract/state tests, under plain Node
 pnpm typecheck  # tsc --noEmit
 ```
 
@@ -368,12 +371,13 @@ no server-side requirement.
 
 ### Using the viewer
 
-- **Drag** on the picture to pan it. A cloud and a relief share this: the camera
-  slides at every depth, which is the studio's Pan, and the rows follow the
-  finger. **Device tilt** (a switch row on the sheet) is what swings the camera —
-  it asks for orientation permission where the browser requires it (iOS). If the
-  browser exposes the API but emits no events, the switch turns itself back off
-  and says so; the rows and pan still work.
+- **Drag** on the picture with two fingers to pan it. A cloud and a relief share
+  this: the camera slides at every depth, which is the studio's Pan, and the rows
+  follow the finger. A one-finger drag tilts when the sensor is off; **Device
+  tilt** (a switch row on the sheet) is what swings the camera — it asks for
+  orientation permission where the browser requires it (iOS). If the browser
+  exposes the API but emits no events, the switch turns itself back off and says
+  so; the rows and pan still work.
 - **The sheet** holds the render values. On a relief: **Depth**, **Motion**,
   **FOV**, **Brightness**, **Shadow**, the light's **Azimuth**/**Elevation**,
   **Origin X/Y** and **Pan X/Y/Pan Z**. On a cloud: **Depth**, **Size**, **Blur**,
@@ -382,8 +386,9 @@ no server-side requirement.
   a fill with the value printed on it and a −/＋ pair; the track is draggable and
   the arrow keys step it. **Reset view** returns every value, the tilt and the
   neutral pose.
-- **Tap** the picture to set the orbit centre; **drag** pans; **two fingers** pan
-  and pinch Pan Z. The crosshair marks the centre of the frame that was drawn.
+- **Tap** the picture to set the orbit centre; a one-finger drag tilts when the
+  sensor is off; **two fingers** pan by their midpoint and pinch Pan Z. The
+  crosshair marks the centre of the frame that was drawn.
 - **Save packed PNG** (a relief only, an action row on the sheet) writes the colour
   and the depth map it read into one PNG and downloads it as `<name>.packed.png`.
   A photo says why there is nothing to pack, and a cloud says a `.splat` is not a

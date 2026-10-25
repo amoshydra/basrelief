@@ -501,36 +501,6 @@ public class DepthWallpaperService extends WallpaperService {
         }
     }
 
-    /** Whether the keyguard exists at all; unlike {@code isDeviceLocked}, it never changes here.
-     *
-     * @deprecated Removed. This was {@code KeyguardManager.isKeyguardLocked()}, and the
-     *     pre-hold guard was the only caller. It asked a <b>capability</b> question —
-     * "does this device have a lock screen" — and used the answer as if it were
-     * <b>state</b>, "has the keyguard taken over". On a Pixel 7 Pro it read true on every
-     * sample of every cycle, so {@code !keyguardWasUp()} was a constant false and the
-     * conjunction containing it could never be true. The state question is
-     * {@link #isDeviceLockedNow()}, which does move. Kept here as a comment rather than
-     * deleted outright because the measurement is the point: see
-     * {@link #holdLockFrameForUnlock}.
-     */
-    private boolean keyguardWasUp() {
-        android.app.KeyguardManager km =
-                (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
-        if (km == null) return false;
-        try {
-            return km.isKeyguardLocked();
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /**
-     * Which branch of the pre-hold guard ran, and on what readings.
-     *
-     * <p>Kept as prose rather than a helper because both call sites log different things:
-     * the entry line reports every gate, the decision line reports only the answer.
-     */
-
     /**
      * Whether this engine is the surface the user is currently looking at.
      *
@@ -640,7 +610,7 @@ public class DepthWallpaperService extends WallpaperService {
      *
      * <pre>{@code if (isInteractive() && !isDeviceLockedNow() && !keyguardWasUp()) return;}</pre>
      *
-     * and the guard could never fire. {@link #keyguardWasUp()} is
+     * and the guard could never fire. The old {@code keyguardWasUp()} read
      * {@code KeyguardManager.isKeyguardLocked()}, measured on a Pixel 7 Pro as
      * {@code true} on every sample of every cycle including after two full unlocks — so
      * {@code !keyguardWasUp()} was a constant {@code false}, the whole conjunction was
@@ -658,7 +628,7 @@ public class DepthWallpaperService extends WallpaperService {
      * Asking one question twice, once with a reading that works, is how a conjunction
      * ends up with a term that can never be true.
      *
-     * <p>So the term is gone rather than repaired. {@link #keyguardWasUp()} had no other
+     * <p>So the term is gone rather than repaired. {@code keyguardWasUp()} had no other
      * caller, and a private method left reading a value nothing consults is the same
      * dead state {@code AGENTS.md} tells us not to keep "for a future use". A device with
      * no keyguard needs no handling here: {@code isDeviceLocked()} is then permanently
@@ -685,8 +655,7 @@ public class DepthWallpaperService extends WallpaperService {
                 + " which=" + surface.surface()
                 + " perSurfaceLock=" + surface.supportsPerSurfaceLock()
                 + " interactive=" + interactive
-                + " locked=" + locked
-                + " keyguard=" + keyguardWasUp());
+                + " locked=" + locked);
         if (glView == null || renderer == null || prefs == null) return;
         if (surface.surface() != Surface.HOME) return;
         if (!surface.supportsPerSurfaceLock()) return;

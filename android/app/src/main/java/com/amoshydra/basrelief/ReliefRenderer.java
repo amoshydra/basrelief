@@ -2216,9 +2216,10 @@ public final class ReliefRenderer implements GLSurfaceView.Renderer {
      * GL: the four values are volatiles, and the write is the threading table's UI
      * row. The tap's <i>orbit maths</i> does need the GL matrices and stays queued
      * through {@code glView.queueEvent}; the save that follows it does not, and
-     * running it there cost the studio 153–213 ms of frozen rendering per tap because
-     * {@link LibraryStore#editItem} is a synchronous {@code commit()} of the whole
-     * index.
+     * running it there used to cost the studio 153–213 ms of frozen rendering per tap
+     * because {@link LibraryStore#editItem} blocked on a synchronous {@code commit()}.
+     * The write is queued on the index-writer now, so the hop is about keeping the
+     * store write with the row push rather than about the fsync.
      *
      * <p>The id is resolved here rather than captured by the caller, so a gesture
      * that outlives a selection change is written to whatever is on screen when the

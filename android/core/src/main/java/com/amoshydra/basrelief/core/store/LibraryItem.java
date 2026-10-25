@@ -792,8 +792,8 @@ public final class LibraryItem {
        * values rather than null - so every reader treats both surfaces
        * identically and a missing override is never a special case at a call
        * site. This is the only way a render value is read, and (with
-       * {@link #withSettings}) the only way one is written, which is why the six
-       * fields above are private.
+       * {@link #withSettings}) the only way one is written, which is why the two
+       * settings bodies and the archive flag above are private.
        */
     public SurfaceSettings settings(Surface surface) {
         return (surface == Surface.LOCK && lock != null) ? lock : home;

@@ -352,16 +352,18 @@ test framework, no install beyond the app's own dependencies):
 cd web && pnpm test
 ```
 
-That one command runs nine files: `src/deph.test.ts` (the packed PNG),
+That one command runs eleven files: `src/deph.test.ts` (the packed PNG),
 `src/pack.test.ts` (the writer, its fixture and the round trip through the
 reference port), `src/media.test.ts` (the media vocabulary), `src/splat.test.ts`
 (the record, the camera, the lens and the sort), `src/settings.test.ts` (the
 settings body and its clamps), `src/library.test.ts` (the index the gallery
 persists and mirrors), `src/picture.test.ts` (the brightness, shadow and light
-mappings), `src/camera.test.ts` (the relief camera) and `src/comfy.test.ts` (the
-ComfyUI graphs and the tag rule).
+mappings), `src/camera.test.ts` (the relief camera), `src/comfy.test.ts` (the
+ComfyUI graphs and the tag rule), `src/prefs.test.ts` (the app's prefs and
+ModelRanking's history) and `src/sheetmath.test.ts` (the sheet's morph, release
+and spring).
 
-CI runs all nine: the JS check and the TypeScript check (in the `web-app` job),
+CI runs all eleven: the JS check and the TypeScript check (in the `web-app` job),
 the Java check inside the `android` job's `test` step, and the Python one in its
 own `python-contract` job (there was no Python job at all before this directory
 existed).
