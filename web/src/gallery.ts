@@ -1102,6 +1102,9 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
   }
 
   function renderCard(item: GalleryItem): void {
+    // The index owns the selection; the shelf marks it. Nothing else on the page
+    // says which row the phone is showing.
+    cards.get(item.id)?.element.classList.toggle('is-active', item.id === library.active);
     const parts = cards.get(item.id);
     if (!parts) return;
 

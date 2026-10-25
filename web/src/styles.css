@@ -1647,3 +1647,30 @@ body.has-library .intake {
   border-radius: 8px;
   padding: 4px 6px;
 }
+
+/* The phone's gallery is header, tiles, archive. The tagline and the storage card
+   are web-only: an advert and an implementation detail, both above the shelf. They
+   stay for the empty state, where a stranger needs them, and retire with the hero. */
+body.has-library .tagline,
+body.has-library .library {
+  display: none;
+}
+
+/* Which photograph the phone is showing. The index already stores `active`; the
+   ring is the phone's own mark (`Gallery`), and it is the only thing on the shelf
+   that says "this one is the wallpaper". */
+.card.is-active {
+  outline: 2px solid rgba(127, 209, 193, 0.9);
+  outline-offset: 2px;
+}
+
+.gallery-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gallery-head h2 {
+  flex: 1;
+  margin: 0;
+}

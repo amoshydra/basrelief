@@ -32,6 +32,8 @@ pick.addEventListener('click', (event) => {
   choose();
 });
 
+element<HTMLButtonElement>('add').addEventListener('click', () => input.click());
+
 dropzone.addEventListener('click', (event) => {
   if ((event.target as Element).closest('button')) return;
   choose();
