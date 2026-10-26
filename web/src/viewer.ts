@@ -1351,6 +1351,22 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   async function mountCloud(): Promise<void> {
     let asset = currentCloud();
+    if (!asset && item.loadCloudFile) {
+      // The bytes are lazy now, so a Splat row has no `cloud` until they arrive.
+      // Returning here is what left the viewer with a stage and no sheet at all.
+      const fetched = await item.loadCloudFile();
+      if (fetched !== null) {
+        item.cloud = {
+          file: fetched,
+          bytes: null,
+          name: item.name,
+          lens: item.lens,
+          lensFrom: item.lensFrom,
+          splats: Math.floor(fetched.size / 32),
+        };
+        asset = currentCloud();
+      }
+    }
     if (!asset) return;
     clearMount();
 

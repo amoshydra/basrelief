@@ -750,8 +750,13 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
         // card says "cloud" without a count; the viewer fills it in on the first
         // open, which is when the bytes move anyway.
       } else if (cloudSize > 0 && cloudSize % 32 === 0) {
+        // EAGER for now: the lazy path left `mountCloud` without an asset when the
+        // viewer opened, so a Splat row built a stage and no sheet. The count still
+        // comes from the length; the bytes are read here until the lazy mount has
+        // been fixed and seen on a device.
+        const cloudFile = await store.read(row.splat);
         item.cloud = {
-          file: null,
+          file: cloudFile,
           bytes: null,
           name: row.splat,
           lens: row.splatLens,
