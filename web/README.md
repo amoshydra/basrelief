@@ -576,6 +576,18 @@ reports the compressed length), and the records themselves move only when
 **Splat** is selected. Bundled files are kept in the Cache API, so a reload
 costs about 300 bytes rather than 2.7 MB.
 
+### Motion demo
+
+`demo.html` is a controller-free loop of that bundled cloud. The camera pans Z
+and tilts through a closed 10 s cycle, so the last frame is the first frame.
+`?capture` starts it paused at t=0; the recording harness seeks, settles the
+cloud, resumes for one period, and pauses again, which is what makes the MP4
+seamless. The page is a Vite input, so `pnpm build` ships it beside the gallery.
+
+The README's clickable still is `docs/screens/basrelief-demo.jpg`. The recorded
+video is attached to the README as a GitHub user-attachment rather than stored
+in this page: 720×1280, 30 fps and ten seconds.
+
 ## Gestures
 
 | gesture | what it does |

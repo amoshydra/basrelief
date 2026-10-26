@@ -232,3 +232,30 @@ the sidecar `basrelief_<tag>.progress.json`, all fetched through `/view`.
 
 Prototype only: dumps a `MOGE_GEOMETRY` packet to `basrelief_<tag>.npz`. Not part
 of the import path.
+
+---
+
+## Licences and credits
+
+The node is GPL-3.0, like the rest of the repository (see `LICENSE`). It does not
+bundle the models it calls:
+
+- **Apple SHARP** — the code is under Apple's software licence, and the
+  checkpoint is under the Apple Machine Learning Research Model License. That
+  model licence is limited to non-commercial research use. Read
+  [LICENSE](https://github.com/apple-aiml-research/ml-sharp/blob/main/LICENSE)
+  and
+  [LICENSE_MODEL](https://github.com/apple-aiml-research/ml-sharp/blob/main/LICENSE_MODEL)
+  before using `SharpStill`.
+- **MoGe** — MIT, except for its DINOv2 code, which is Apache-2.0. It is
+  installed separately in ComfyUI.
+- **ComfyUI** — GPL-3.0; the node imports its runtime and reproduces the MoGe
+  render maths used by `MoGeVideoStream`.
+- **Splatline** — MIT. `_predict_sharp` reproduces its
+  `predict_sharp_image`. The required notice travels with this package in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- The 32-byte `.splat` container follows the layout used by
+  [antimatter15/splat](https://github.com/antimatter15/splat).
+
+The repository-wide credits, including the 3D Gaussian Splatting paper and
+gsplat, are in [README.md#credits](../../../README.md#credits).
