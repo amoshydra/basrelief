@@ -2098,6 +2098,13 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       testRow.disabled = true;
       status.classList.remove('sheet-note--warn');
       setBuild({ phase: tab === 'splat' ? 'Reading the server’s node list…' : PHASE_TEXT.connecting, failed: null });
+      // A run needs a deadline of its own. Without one, a server that accepts the
+      // connection and never replies leaves this dialog with Test connection
+      // greyed and no sentence -- the state the user reported.
+      const runSignal =
+        typeof AbortSignal.any === 'function'
+          ? AbortSignal.any([dialogAbort.signal, AbortSignal.timeout(180000)])
+          : dialogAbort.signal;
       renderAsset();
 
       try {
@@ -2107,7 +2114,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           const result = await runDepth({
             file: item.file,
             model: chosen,
-            signal: dialogAbort.signal,
+            signal: runSignal,
             onPhase: (phase) => {
               status.textContent = PHASE_TEXT[phase];
             },
@@ -2139,7 +2146,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           const result = await runSplat({
             file: item.file,
             budget: sharpBudget,
-            signal: dialogAbort.signal,
+            signal: runSignal,
             onPhase: (phase) => {
               status.textContent = SPLAT_PHASE_TEXT[phase];
               setBuild({ phase: SPLAT_PHASE_TEXT[phase], failed: null });
