@@ -1052,10 +1052,23 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     menuButton.setAttribute('aria-label', `Actions for ${displayName(item.row)}`);
     menuButton.setAttribute('aria-haspopup', 'menu');
 
+    // The Popover API: top layer, light dismiss, Escape, and no z-index war. The
+    // button is the invoker, so opening and closing are the platform's job.
     const menu = document.createElement('div');
     menu.className = 'card-menu';
     menu.setAttribute('role', 'menu');
-    menu.hidden = true;
+    menu.popover = 'auto';
+    menu.id = `menu-${item.id}`;
+    menuButton.setAttribute('popovertarget', menu.id);
+    // A popover is positioned against the viewport, so it is placed from the
+    // button's rect when it opens; without this it lands in the middle of the
+    // screen, which is the one thing a menu must not do.
+    menu.addEventListener('toggle', (event) => {
+      if ((event as ToggleEvent).newState !== 'open') return;
+      const r = menuButton.getBoundingClientRect();
+      menu.style.left = `${Math.round(Math.min(r.left, window.innerWidth - 140))}px`;
+      menu.style.top = `${Math.round(r.bottom + 4)}px`;
+    });
 
     const action = (label: string, run: () => void): HTMLButtonElement => {
       const b = document.createElement('button');
@@ -1065,7 +1078,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       b.textContent = label;
       b.addEventListener('click', (event) => {
         event.stopPropagation();
-        menu.hidden = true;
+        menu.hidePopover();
         run();
       });
       return b;
@@ -1075,11 +1088,6 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       action(item.row.archived ? 'Restore' : 'Archive', () => void setArchived(item, !item.row.archived)),
       action('Delete', () => void removeItem(item)),
     );
-
-    menuButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      menu.hidden = !menu.hidden;
-    });
 
     element.append(open, menuButton, menu);
     return { element, open, thumb, name, meta, badge, modeBadge, depthDot, is3D, reason };

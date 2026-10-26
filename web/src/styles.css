@@ -1910,3 +1910,19 @@ body:not(.has-library) #add-tile {
 .card-menu-item:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+
+/* A popover is centred by the UA and sized to its content; a tile menu is anchored
+   to its button instead, so it is `fixed` and placed from the button's rect on
+   open. The UA border is replaced by the card's own. */
+.card-menu[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px;
+  background: #171b21;
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  overflow: visible;
+}
