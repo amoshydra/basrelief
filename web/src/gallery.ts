@@ -1112,6 +1112,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
     open.append(thumb, depthDot, is3D);
 
+    // The browser's own long-press menu ("Save image", "Open in new tab") fires on
+    // the same gesture as the pick, and it wins: the pick never starts. Suppress it
+    // on the tile; the `⋯` menu is the one the page offers.
+    element.addEventListener('contextmenu', (event) => event.preventDefault());
+
     let holdTimer = 0;
     open.addEventListener('pointerdown', () => {
       if (selecting) return;

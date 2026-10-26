@@ -2029,3 +2029,16 @@ body:not(.has-library) #add-tile {
   outline: 2px solid #7fd1c1;
   outline-offset: 2px;
 }
+
+/* A held tile starts the pick, so the platform's own long-press affordances have
+   to stay out of the way: no callout, no text selection, no image drag. */
+.card-open {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.card-open img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
