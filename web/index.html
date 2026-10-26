@@ -55,7 +55,16 @@
           </select>
         </label>
       </div>
-      <p class="gallery-sub">Tap a photo to open it</p>
+      <p class="gallery-sub">Tap a photo to open it · hold to select</p>
+
+      <!-- The phone's selection line: it appears above the cells the moment one is
+           held, and it is the only route to a bulk action. -->
+      <div class="selection-bar" id="selection-bar" hidden>
+        <span id="selection-count">0 selected</span>
+        <button type="button" class="quiet" id="selection-archive">Archive</button>
+        <button type="button" class="quiet" id="selection-delete">Delete</button>
+        <button type="button" class="quiet" id="selection-cancel">Cancel</button>
+      </div>
       <!-- The count and the bulk clear are web-only; the phone counts nothing and
            deletes per tile. Kept in the DOM because the reader writes to them. -->
       <h2 id="count" hidden></h2>

@@ -2006,3 +2006,26 @@ body:not(.has-library) #add-tile {
     border-top-color: rgba(255, 255, 255, 0.92);
   }
 }
+
+/* The selection line: the phone's band above the cells, and the only route to a
+   bulk action. */
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.selection-bar span {
+  flex: 1;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* A picked tile, as the phone marks it: the accent, not the active white ring --
+   "chosen for an action" and "on the wallpaper" are different facts. */
+.card.is-picked {
+  outline: 2px solid #7fd1c1;
+  outline-offset: 2px;
+}

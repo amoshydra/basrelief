@@ -234,6 +234,64 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     renderCounts();
   }
 
+  // ------------------------------------------------------------------ selecting
+  //
+  // `Gallery.java` starts a pick on a long press and shows a selection line; a tap
+  // then toggles instead of opening. One set, one mode, and the line is the only
+  // place a bulk action can be reached.
+  const picked = new Set<string>();
+  let selecting = false;
+  const selectionBar = document.getElementById('selection-bar') as HTMLElement;
+  const selectionCount = document.getElementById('selection-count') as HTMLElement;
+
+  function syncSelection(): void {
+    selectionBar.hidden = !selecting;
+    selectionCount.textContent = `${picked.size} selected`;
+    for (const [id, parts] of cards) {
+      parts.element.classList.toggle('is-picked', picked.has(id));
+    }
+  }
+
+  function startSelecting(id: string): void {
+    selecting = true;
+    picked.add(id);
+    syncSelection();
+  }
+
+  function stopSelecting(): void {
+    selecting = false;
+    picked.clear();
+    syncSelection();
+  }
+
+  (document.getElementById('selection-cancel') as HTMLButtonElement).addEventListener('click', () => stopSelecting());
+  (document.getElementById('selection-archive') as HTMLButtonElement).addEventListener('click', () => {
+    void bulk(true);
+  });
+  (document.getElementById('selection-delete') as HTMLButtonElement).addEventListener('click', () => {
+    void bulk(false);
+  });
+
+  async function bulk(archive: boolean): Promise<void> {
+    if (readOnly) return;
+    const ids = new Set(picked);
+    if (ids.size === 0) return;
+    if (archive) {
+      library = {
+        ...library,
+        items: library.items.map((r) => (ids.has(r.id) ? { ...r, archived: true } : r)),
+      };
+      await persist();
+      stopSelecting();
+      paint();
+      return;
+    }
+    // Delete goes through the same removal as the menu, one row at a time, so the
+    // selection is cleared and the files are dropped in one derivation.
+    for (const item of [...items]) if (ids.has(item.id)) await removeItem(item);
+    stopSelecting();
+  }
+
   /** Archive or restore one row. The selection is untouched: archive hides. */
   async function setArchived(item: GalleryItem, next: boolean): Promise<void> {
     if (readOnly) return;
@@ -1054,7 +1112,25 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
     open.append(thumb, depthDot, is3D);
 
-    open.addEventListener('click', () => openItem(item));
+    let holdTimer = 0;
+    open.addEventListener('pointerdown', () => {
+      if (selecting) return;
+      holdTimer = window.setTimeout(() => startSelecting(item.id), 500);
+    });
+    for (const end of ['pointerup', 'pointerleave', 'pointercancel']) {
+      open.addEventListener(end, () => window.clearTimeout(holdTimer));
+    }
+
+    open.addEventListener('click', () => {
+      if (!selecting) {
+        openItem(item);
+        return;
+      }
+      if (picked.has(item.id)) picked.delete(item.id);
+      else picked.add(item.id);
+      if (picked.size === 0) stopSelecting();
+      else syncSelection();
+    });
     open.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
