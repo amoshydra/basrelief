@@ -2306,6 +2306,10 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       stopBtn.hidden = !running;
       backgroundBtn.hidden = !running;
       dialog.element.setAttribute('aria-busy', String(running));
+      // A run owns the screen, as it does on the phone: the model rows and the
+      // budget are choices for the NEXT run, and leaving them live under a job
+      // that already has its model baked in is a control that cannot act.
+      tabBody.hidden = running;
 
       if (!running) {
         if (failed) {
