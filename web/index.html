@@ -61,11 +61,6 @@
       <h2 id="count" hidden></h2>
       <button type="button" id="clear" hidden disabled>Clear all</button>
 
-      <button type="button" class="archive-row" id="archive-toggle" hidden>
-        <span id="archive-label">Archived</span><span class="archive-chev" aria-hidden="true">▸</span>
-      </button>
-      <ul class="grid" id="archived-grid" aria-label="Archived photos" hidden></ul>
-
       <ul class="grid" id="grid" aria-label="Your files">
         <li class="card card--add" id="add-tile">
           <button type="button" id="add" aria-label="Add photos">
@@ -73,6 +68,11 @@
           </button>
         </li>
       </ul>
+
+      <button type="button" class="archive-row" id="archive-toggle" hidden>
+        <span id="archive-label">Archived</span><span class="archive-chev" aria-hidden="true">▸</span>
+      </button>
+      <ul class="grid" id="archived-grid" aria-label="Archived photos" hidden></ul>
 
       <div class="empty" id="empty">
         <p class="empty-title">Nothing to look at yet.</p>
