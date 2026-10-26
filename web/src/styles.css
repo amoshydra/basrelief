@@ -1864,21 +1864,39 @@ body:not(.has-library) #add-tile {
 }
 
 /* One `⋯` per tile, as the phone draws it; the actions live behind it. */
+/* `MENU_TARGET_DP = 48`: the TARGET is the platform minimum, the plate is not.
+   A 26px button was both, so the only way to reach the menu was to hit a dot. */
 .card-menu-btn {
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: -4px;
+  right: -4px;
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 48px;
+  height: 48px;
+  padding: 0;
   border: 0;
   border-radius: 50%;
-  background: rgba(9, 12, 18, 0.72);
+  background: transparent;
   color: #fff;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
+}
+
+/* The plate, inside the target: the visual size is unchanged, the hit area is
+   the 48dp the platform asks for. */
+.card-menu-btn::before {
+  content: '';
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(9, 12, 18, 0.72);
+}
+
+.card-menu-btn > * {
+  position: relative;
 }
 
 .card-menu {
@@ -1925,4 +1943,22 @@ body:not(.has-library) #add-tile {
   color: #fff;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
   overflow: visible;
+}
+
+/* `HEADER_MIN_HEIGHT_DP = 48`: a fixed band, so the sort keeps a comfortable
+   target and showing or hiding the name cannot move it. */
+.gallery-head {
+  min-height: 48px;
+  align-items: center;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+}
+
+.sort select {
+  min-height: 44px;
+  padding: 0 0 0 4px;
 }
