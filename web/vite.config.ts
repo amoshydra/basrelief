@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig, loadEnv, type HttpProxy } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import license from 'rollup-plugin-license';
@@ -45,6 +46,12 @@ export default defineConfig(({ mode }) => {
     build: {
       target: 'es2022',
       rollupOptions: {
+        // The gallery is the product; the motion demo is the README's looping
+        // capture page and shares the same cloud renderer.
+        input: {
+          main: resolve(process.cwd(), 'index.html'),
+          demo: resolve(process.cwd(), 'demo.html'),
+        },
         // What the page ships decides what it owes. A bundle is a distribution,
         // so every dependency inside it must carry its notice with it — and the
         // project's own licence rides along for the same reason. Listing the

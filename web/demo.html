@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0b0c" />
+    <title>Basrelief — motion loop</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #0b0b0c;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        background: #0b0b0c;
+        touch-action: none;
+      }
+      #stage canvas {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        background: #0b0b0c;
+      }
+      #wordmark {
+        position: fixed;
+        top: max(22px, env(safe-area-inset-top));
+        left: max(22px, env(safe-area-inset-left));
+        z-index: 2;
+        color: #e8dfd1;
+        font: 600 12px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.24em;
+        opacity: 0.58;
+        pointer-events: none;
+        user-select: none;
+      }
+      #loading, #error {
+        position: fixed;
+        inset: 0;
+        z-index: 3;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: #cfc7b9;
+        font: 500 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.02em;
+        text-align: center;
+        background: #0b0b0c;
+      }
+      #loading[hidden], #error[hidden] { display: none; }
+      #error { color: #f0b7ae; }
+    </style>
+  </head>
+  <body>
+    <div id="stage" aria-label="The marble bust moving in splat mode"></div>
+    <div id="wordmark">BASRELIEF</div>
+    <div id="loading" role="status">loading the cloud…</div>
+    <div id="error" role="alert" hidden></div>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>
