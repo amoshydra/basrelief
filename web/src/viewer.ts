@@ -306,9 +306,25 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   /** A generated cloud this session, until the gallery has it. */
   let cardCloud: CloudAsset | null = item.cloud;
   let build: BuildState | null = null;
+  /** When the current run started, for the row's own clock. */
+  let buildStarted = 0;
+  /** The row's repaint while a phase is running; null when nothing is. */
+  let buildClock: number | null = null;
   /** The only place `build` is written, so the tile cannot be told a stale state. */
   function setBuildState(next: BuildState | null): void {
     build = next;
+    if (next !== null && next.phase !== null) {
+      if (buildClock === null) {
+        buildStarted = performance.now();
+        // The panel is not the only place a run is stated. After it is dismissed
+        // the row is, and a sentence that never moves is indistinguishable from a
+        // row that died with the panel.
+        buildClock = window.setInterval(() => assetRowRender?.(), 1000);
+      }
+    } else if (buildClock !== null) {
+      window.clearInterval(buildClock);
+      buildClock = null;
+    }
     item.onBuild?.(next === null ? null : { phase: next.phase, failed: next.failed });
   }
 
@@ -859,8 +875,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       if (mode === 'relief') {
         if (build?.phase) {
           // A run owns the row: asking for a second one over the first is the
-          // control `BuildTab` refuses to offer.
-          stateEl.textContent = build.phase;
+          // control `BuildTab` refuses to offer. The clock is the row's, so it
+          // keeps moving after the dialog is dismissed.
+          stateEl.textContent = withClock(build.phase);
         } else if (build?.failed) {
           // A failure outranks the asset it left behind, and keeps the server's
           // own words until the user acts on it.
@@ -889,7 +906,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         const cloudNow = currentCloud();
         const building = build?.phase ?? null;
         if (building) {
-          stateEl.textContent = building;
+          stateEl.textContent = withClock(building);
         } else if (build?.failed) {
           stateEl.textContent = `Build failed — ${build.failed}`;
           if (hasColour()) {
@@ -935,6 +952,14 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   function renderAsset(): void {
     assetRowRender?.();
+  }
+
+  /** `Fetching the cloud… · 2:31` — the row's own proof that something is moving. */
+  function withClock(phase: string): string {
+    if (buildStarted === 0) return phase;
+    const seconds = Math.max(0, Math.round((performance.now() - buildStarted) / 1000));
+    const clock = seconds >= 60 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : `${seconds} s`;
+    return `${phase} · ${clock}`;
   }
 
   /**
@@ -2329,7 +2354,10 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       runPhase = 'connecting';
       runStarted = performance.now();
       runAbort = new AbortController();
-      const runSignal = withDeadline(dialogAbort.signal, 180_000, runAbort.signal);
+      // Fifteen minutes: the poll's own deadline is ten, and a dense cloud on a
+      // bad link can take minutes to fetch AFTER the server has finished. The
+      // elapsed clock is the feedback; a short fuse only throws away work.
+      const runSignal = withDeadline(dialogAbort.signal, 15 * 60_000, runAbort.signal);
       setBuildState({ phase: phaseText('connecting', runTab), failed: null });
       startClock();
       paintRun();
@@ -2350,7 +2378,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             },
           });
           const packed = await packDepthPng(result.depthPng);
-          if (closed || buildSheet !== dialog) return;
+          // The card owns the result, not the panel: a run that outlived its
+          // dialog used to be thrown away here, leaving the row on its last
+          // phase ("Fetching the cloud…") for ever. Only a closed VIEWER has no
+          // card to update.
+          if (closed) return;
           setBuildState(null);
           dismiss();
           if (generatedUrl) URL.revokeObjectURL(generatedUrl);
@@ -2382,7 +2414,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
               renderAsset();
             },
           });
-          if (closed || buildSheet !== dialog) return;
+          if (closed) return;
           const asset: CloudAsset = {
             file: null,
             bytes: result.bytes,
@@ -2416,10 +2448,15 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           }
           return;
         }
-        const sentence =
-          err instanceof DOMException && err.name === 'TimeoutError'
-            ? 'The server did not answer in three minutes. Check that ComfyUI is running, then try again.'
-            : describeComfyError(err);
+        const timedOut = err instanceof DOMException && err.name === 'TimeoutError';
+        // Typed, not inferred: the phase is written from the run's callbacks,
+        // which control-flow analysis here cannot see.
+        const phaseNow: string | null = runPhase;
+        const sentence = timedOut
+          ? phaseNow === 'fetching'
+            ? 'The cloud is taking too long to download. Check the connection, then try again.'
+            : 'The run did not finish within fifteen minutes. The server may still be working — try again when it is free.'
+          : describeComfyError(err);
         runFailed = sentence;
         runPhase = null;
         runStarted = 0;
