@@ -153,7 +153,25 @@ export interface OpenableItem {
    * keeps going. The tile is then the only place its progress can be seen, so the
    * state has to leave this closure.
    */
-  onBuild?: (state: { phase: string | null; failed: string | null } | null) => void;
+  onBuild?: (state: BuildState | null) => void;
+  /**
+   * The gallery's copy of the build state.
+   *
+   * A run outlives EVERY viewer, not just its own panel: switching media closes
+   * this overlay while the server job continues. The gallery is the one place
+   * that state survives, so a later viewer for the same card OBSERVES it rather
+   * than inventing a second copy.
+   */
+  readBuild?: () => BuildState | null;
+  /** The gallery's build state at open, for a card that was already building. */
+  build?: BuildState | null;
+  /**
+   * Reopen this card from the gallery's live row.
+   *
+   * The way a viewer that observed someone else's run reads the asset it wrote:
+   * the packed photo, the cloud, or the failure. One source of truth, reopened.
+   */
+  reopen?: () => void;
   /**
    * The cloud's bytes, fetched on first open: a card states its count from the
    * file's length, so nothing reads the records until the viewer needs them.
@@ -184,9 +202,9 @@ export interface OpenableItem {
    * the generated relief is still there when the viewer is reopened, without any
    * storage and without a second copy of the classifier.
    */
-  onGenerated?: (file: File, depth: DephSuccess, width: number, height: number) => void;
+  onGenerated?: (file: File, depth: DephSuccess, width: number, height: number) => Promise<void> | void;
   /** Called when a cloud is built or deleted; null means deleted. */
-  onCloud?: (cloud: CloudAsset | null) => void;
+  onCloud?: (cloud: CloudAsset | null) => Promise<void> | void;
   /**
    * The library, as the sheet's filmstrip.
    *
@@ -219,11 +237,19 @@ type Mode = 'relief' | 'splat';
 type BuildKind = 'relief' | 'splat';
 
 /** What a build on this page last did, for the asset row's own states. */
-interface BuildState {
+export interface BuildState {
   /** The running phase's sentence, or null. */
   phase: string | null;
   /** The last failure's own words, or null. */
   failed: string | null;
+  /**
+   * `performance.now()` when the run started.
+   *
+   * It travels with the state so a viewer opened while a run is in flight shows
+   * the same elapsed clock. Time belongs to the run, not to the panel that
+   * happened to start it.
+   */
+  started: number;
 }
 
 /**
@@ -292,7 +318,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   /** The Generate-depth / Build-cloud dialog, its scrim, and the run it owns. */
   let buildSheet: Sheet | null = null;
   let buildScrim: HTMLElement | null = null;
-  let buildAbort: AbortController | null = null;
 
   /** A generated (or chosen) packed PNG, and the object URL showing it. */
   let generatedUrl: string | null = null;
@@ -305,28 +330,86 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   let mode: Mode = item.mode;
   /** A generated cloud this session, until the gallery has it. */
   let cardCloud: CloudAsset | null = item.cloud;
-  let build: BuildState | null = null;
+  let build: BuildState | null = item.build ?? null;
   /** When the current run started, for the row's own clock. */
-  let buildStarted = 0;
+  let buildStarted = build?.started ?? 0;
   /** The row's repaint while a phase is running; null when nothing is. */
   let buildClock: number | null = null;
-  /** The only place `build` is written, so the tile cannot be told a stale state. */
-  function setBuildState(next: BuildState | null): void {
-    build = next;
-    if (next !== null && next.phase !== null) {
-      if (buildClock === null) {
-        buildStarted = performance.now();
-        // The panel is not the only place a run is stated. After it is dismissed
-        // the row is, and a sentence that never moves is indistinguishable from a
-        // row that died with the panel.
-        buildClock = window.setInterval(() => assetRowRender?.(), 1000);
-      }
-    } else if (buildClock !== null) {
-      window.clearInterval(buildClock);
-      buildClock = null;
-    }
-    item.onBuild?.(next === null ? null : { phase: next.phase, failed: next.failed });
+  /** True when THIS viewer started the run, so its own mount owns the result. */
+  let startedHere = false;
+
+  function stopBuildClock(): void {
+    if (buildClock === null) return;
+    window.clearInterval(buildClock);
+    buildClock = null;
   }
+
+  /**
+   * Follow the gallery's build state while a phase is running.
+   *
+   * The panel's clock dies with the panel; the run does not. The gallery is the
+   * one place its state survives a viewer switch, so this viewer polls that copy.
+   * It is how a card reopened during a run keeps following it, and how a result
+   * written by a viewer that is already gone reaches this one.
+   */
+  function startBuildClock(): void {
+    if (buildClock !== null || closed) return;
+    buildClock = window.setInterval(() => {
+      if (closed) {
+        stopBuildClock();
+        return;
+      }
+      const published = item.readBuild?.();
+      if (published === undefined) {
+        assetRowRender?.();
+        return;
+      }
+      const changed =
+        published === null
+          ? build !== null
+          : build === null || published.phase !== build.phase || published.failed !== build.failed;
+      if (!changed) {
+        assetRowRender?.();
+        return;
+      }
+      const wasPhase = build?.phase ?? null;
+      build = published;
+      buildStarted = published?.started ?? 0;
+      if (published === null || published.phase === null) {
+        stopBuildClock();
+        // A successful run that belonged to another viewer: every asset it wrote
+        // lives in the gallery now. Reopening the card is the way to read them
+        // without a second source of truth in this closure. A FAILURE is different
+        // — it is state this row can draw where it stands.
+        if (!startedHere && wasPhase !== null && published === null) {
+          item.reopen?.();
+          return;
+        }
+      }
+      assetRowRender?.();
+    }, 1000);
+  }
+
+  /** The only place `build` is written, so the tile cannot be told a stale state. */
+  function setBuildState(next: { phase: string | null; failed: string | null } | null): void {
+    if (next === null) {
+      build = null;
+      stopBuildClock();
+    } else {
+      build = { phase: next.phase, failed: next.failed, started: buildStarted };
+      if (next.phase !== null && !closed) {
+        if (buildStarted === 0) buildStarted = performance.now();
+        build.started = buildStarted;
+        startBuildClock();
+      } else {
+        stopBuildClock();
+      }
+    }
+    item.onBuild?.(build);
+  }
+
+  // A card reopened while its run is still going: follow it from the first frame.
+  if (build !== null && build.phase !== null) startBuildClock();
 
   /**
    * The studio sheet's remembered position, as the app keeps it.
@@ -428,12 +511,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   function close(): void {
     if (closed) return;
     closed = true;
-    // The viewer is going away, so a run that lands now has no card to update.
-    buildAbort?.abort();
-    // Nothing is running after that abort, and the tile must not spin for a job
-    // whose panel and subject are gone.
-    setBuildState(null);
-    buildAbort = null;
+    // A run is a server job that belongs to the CARD. The gallery's onBuild /
+    // onGenerated / onCloud callbacks outlive this overlay, so switching media or
+    // leaving the viewer must not throw the work away. Only the deadline — or Stop
+    // while the panel is open — ends it.
+    stopBuildClock();
     closeBuild();
     clearMount();
     if (generatedUrl) {
@@ -1822,7 +1904,6 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     if (buildSheet) return;
 
     const dialogAbort = new AbortController();
-    buildAbort = dialogAbort;
     /**
      * A run's own abort.
      *
@@ -2323,7 +2404,15 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
     function startClock(): void {
       stopClock();
-      runTicker = window.setInterval(() => paintRun(), 500);
+      runTicker = window.setInterval(() => {
+        // The panel can be destroyed with the viewer while the job continues; a
+        // clock painting detached nodes is a timer nobody reads.
+        if (closed) {
+          stopClock();
+          return;
+        }
+        paintRun();
+      }, 500);
     }
 
     function stopClock(): void {
@@ -2349,10 +2438,12 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
       busy = true;
       stopped = false;
+      startedHere = true;
       runFailed = null;
       runTab = tab;
       runPhase = 'connecting';
       runStarted = performance.now();
+      buildStarted = runStarted;
       runAbort = new AbortController();
       // Fifteen minutes: the poll's own deadline is ten, and a dense cloud on a
       // bad link can take minutes to fetch AFTER the server has finished. The
@@ -2372,29 +2463,33 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             signal: runSignal,
             onPhase: (phase) => {
               runPhase = phase;
-              paintRun();
               setBuildState({ phase: phaseText(phase, runTab), failed: null });
+              if (closed) return;
+              paintRun();
               renderAsset();
             },
           });
           const packed = await packDepthPng(result.depthPng);
-          // The card owns the result, not the panel: a run that outlived its
-          // dialog used to be thrown away here, leaving the row on its last
-          // phase ("Fetching the cloud…") for ever. Only a closed VIEWER has no
-          // card to update.
-          if (closed) return;
-          setBuildState(null);
-          dismiss();
-          if (generatedUrl) URL.revokeObjectURL(generatedUrl);
-          generatedUrl = URL.createObjectURL(
-            new Blob([new Uint8Array(packed.png)], { type: 'image/png' }),
+          const file = new File(
+            [new Uint8Array(packed.png)],
+            packedFileName(item.file.name),
+            { type: 'image/png' },
           );
-          item.onGenerated?.(
-            new File([new Uint8Array(packed.png)], packedFileName(item.file.name), { type: 'image/png' }),
+          // The CARD owns the result: a run that outlived its panel — or its
+          // whole viewer — still writes the packed photo. Awaiting it means the
+          // gallery's row is live before the state is cleared, so a viewer that
+          // reopens (or observes) reads the result rather than the row it had.
+          await item.onGenerated?.(
+            file,
             packed.depth,
             packed.depth.depthWidth,
             packed.depth.depthHeight,
           );
+          setBuildState(null);
+          if (closed) return;
+          dismiss();
+          if (generatedUrl) URL.revokeObjectURL(generatedUrl);
+          generatedUrl = URL.createObjectURL(file);
           thisCardDepth(packed.depth, packed.reencoded, packed.png);
           mode = 'relief';
           await mountRelief(packed.depth, {
@@ -2409,12 +2504,12 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             signal: runSignal,
             onPhase: (phase) => {
               runPhase = phase;
-              paintRun();
               setBuildState({ phase: phaseText(phase, runTab), failed: null });
+              if (closed) return;
+              paintRun();
               renderAsset();
             },
           });
-          if (closed) return;
           const asset: CloudAsset = {
             file: null,
             bytes: result.bytes,
@@ -2423,23 +2518,23 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             lensFrom: result.sidecarName,
             splats: Math.floor(result.bytes.length / 32),
           };
+          // Written before the state clears, for the same reason the depth map
+          // is: the gallery's row must be the truth when the ring stops.
+          await item.onCloud?.(asset);
           setBuildState(null);
+          if (closed) return;
           cardCloud = asset;
-          item.onCloud?.(asset);
           dismiss();
           mode = 'splat';
           mount();
         }
       } catch (err) {
-        if (closed) return;
-        // An abort is either Stop or the viewer going away. Neither is a failure:
-        // Stop returns the panel to its setup state (nothing was built, nothing is
-        // wrong), and a teardown must not paint a failure on a card nobody is
-        // looking at. Amber means "a build failed", not "a person changed their
-        // mind".
+        // An abort is either Stop or a deadline. Stop is not a failure: it returns
+        // the panel to its setup state (nothing was built, nothing is wrong).
         if (err instanceof DOMException && err.name === 'AbortError') {
           if (stopped) {
             setBuildState(null);
+            if (closed) return;
             // The dialog is the only thing that was repainting the row while the
             // run was in flight. Closing it with the phase still on the row is how
             // "Uploading the photo…" outlived the run it described.
@@ -2461,7 +2556,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         runPhase = null;
         runStarted = 0;
         setBuildState({ phase: null, failed: sentence });
-        renderAsset();
+        if (!closed) renderAsset();
       } finally {
         busy = false;
         runAbort = null;

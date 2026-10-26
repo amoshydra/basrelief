@@ -91,11 +91,13 @@ export interface GalleryItem {
   /** True for a card the schema cannot describe (a cloud with no photograph). */
   sessionOnly: boolean;
   /**
-   * The build the viewer has in flight, or its failure, for the tile's corner
-   * mark. A run outlives its dialog, so after the sheet closes this is the only
-   * place it is visible.
+   * The build in flight, or its failure.
+   *
+   * This is the GALLERY's copy, not a viewer's: a run outlives its dialog and its
+   * whole viewer, so this is the one place its state survives a media switch. The
+   * tile draws its corner mark from it, and a viewer opened mid-run observes it.
    */
-  build: { phase: string | null; failed: string | null } | null;
+  build: { phase: string | null; failed: string | null; started: number } | null;
 }
 
 interface CardParts {
@@ -1273,6 +1275,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       },
       sheetPos: getSheetPosition(),
       onSheetResting: (fraction, collapsed) => setSheetPosition(fraction, collapsed),
+      // The run's state lives HERE, not in the viewer that started it. Switching
+      // media closes that viewer; the server job and the card do not close.
+      build: item.build,
+      readBuild: () => item.build,
+      reopen: () => openItem(item),
       onBuild: (state) => {
         item.build = state;
         renderCard(item);
@@ -1287,9 +1294,11 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
         persist();
         renderCard(item);
       },
+      // Returned, not fired and forgotten: the viewer awaits the row before it
+      // clears the build state, so the ring stops on a card that is already true.
       onGenerated: (packed, _depth, _width, _height) => {
         if (item.sessionOnly) return;
-        void replaceImage(item, packed);
+        return replaceImage(item, packed);
       },
       onCloud: (cloud) => {
         if (item.sessionOnly) {
@@ -1299,7 +1308,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
           renderCounts();
           return;
         }
-        void saveCloud(item, cloud).then(() => renderCounts());
+        return saveCloud(item, cloud).then(() => renderCounts());
       },
     });
   }
