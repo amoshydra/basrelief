@@ -55,7 +55,7 @@
           </select>
         </label>
       </div>
-      <p class="gallery-sub">Tap a photo to use it · hold to select several</p>
+      <p class="gallery-sub">Tap a photo to open it</p>
       <!-- The count and the bulk clear are web-only; the phone counts nothing and
            deletes per tile. Kept in the DOM because the reader writes to them. -->
       <h2 id="count" hidden></h2>
@@ -83,53 +83,6 @@
           A packed PNG you open can be saved back out from its viewer.
         </p>
       </div>
-
-      <details class="about">
-        <summary>What is a packed PNG?</summary>
-        <div class="about-body">
-          <p>
-            A packed PNG is an ordinary, viewable photograph with one extra ancillary chunk
-            — <code>dePH</code> or <code>dEPt</code>, matched case-insensitively — holding
-            the depth map. The colour image stays readable in any PNG viewer; this page
-            reads the chunk and displaces the photograph with it.
-          </p>
-          <p>The payload is either:</p>
-          <ul>
-            <li>
-              a complete grayscale PNG, self-describing and returned byte-for-byte; or
-            </li>
-            <li>
-              exactly <code>width × height</code> bytes of raw 8-bit grey, taking its
-              dimensions from the file's own <code>IHDR</code>.
-            </li>
-          </ul>
-          <p>
-            A file is one of three things here, and the distinction is deliberate: a
-            <strong>relief</strong> (a depth map was read), a <strong>photo</strong> (a
-            readable image with no depth), or <strong>unreadable</strong>. A file that is
-            still being read, or whose depth chunk is malformed, is never shown as “no
-            depth” — a half-read file has not answered yet.
-          </p>
-          <p>
-            A depth map whose dimensions disagree with the photo is refused rather than
-            stretched: a pair that does not line up cannot be made correct by scaling it.
-          </p>
-          <p>
-            <strong>Saving one:</strong> a relief can be written back out as a packed PNG
-            from the viewer — the colour image's own bytes with a single <code>dePH</code>
-            chunk, placed before the image data. A photo has no depth map to pack and a
-            <code>.splat</code> is not a PNG, so neither offers the action; the viewer says
-            which.
-          </p>
-          <p class="about-limits">
-            <strong>Not here yet:</strong> generating a depth map inside the page (that is the
-            ComfyUI node's job, driven from the viewer), accounts, a server, clips and the
-            video graph, and playlists that rotate. The library itself — the rows, their
-            per-photo look and the Renderer choice — is saved in this browser, in the
-            Android app's own schema.
-          </p>
-        </div>
-      </details>
     </div>
 
     <input id="file-input" type="file" accept=".png,.splat,image/*" multiple hidden />

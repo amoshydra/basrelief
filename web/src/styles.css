@@ -1862,3 +1862,51 @@ body:not(.has-library) #add-tile {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* One `⋯` per tile, as the phone draws it; the actions live behind it. */
+.card-menu-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(9, 12, 18, 0.72);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.card-menu {
+  position: absolute;
+  top: 36px;
+  right: 7px;
+  z-index: 5;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #171b21;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+.card-menu-item {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: #fff;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}

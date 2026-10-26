@@ -1024,33 +1024,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     badgeRow.className = 'card-badges';
     badgeRow.append(badge, modeBadge);
     body.append(badgeRow, reason);
-    open.append(thumb, body);
-
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'card-remove';
-    removeButton.textContent = '×';
-    removeButton.setAttribute('aria-label', `Remove ${displayName(item.row)}`);
-    removeButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      void removeItem(item);
-    });
-
-    const activate = (): void => {
-      if (!isOpenable(item)) return;
-      openItem(item);
-    };
-
-    open.addEventListener('click', activate);
-    open.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
-
-    // Android's tile is the photograph. The name and the facts live in the content
-    // description and the viewer, not in a caption body under every cell -- that
-    // body is what made the shelf read as a file list.
+    // The tile is the photograph plus two overlays; the caption body is not drawn.
     const depthDot = document.createElement('span');
     depthDot.className = 'cell-dot';
     depthDot.hidden = true;
@@ -1062,19 +1036,52 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
 
     open.append(thumb, depthDot, is3D);
 
-    // `Gallery.java` keeps archiving next to deleting on the tile; archive keeps
-    // the selection, delete clears it, and the row keeps its place when restored.
-    const archiveButton = document.createElement('button');
-    archiveButton.type = 'button';
-    archiveButton.className = 'card-archive';
-    archiveButton.textContent = item.row.archived ? '↩' : '⌄';
-    archiveButton.setAttribute('aria-label', item.row.archived ? 'Restore' : 'Archive');
-    archiveButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      void setArchived(item, !item.row.archived);
+    open.addEventListener('click', () => openItem(item));
+    open.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openItem(item);
+      }
     });
 
-    element.append(open, removeButton, archiveButton);
+    // `Gallery.java` puts every per-photo action behind one `⋯` on the tile.
+    const menuButton = document.createElement('button');
+    menuButton.type = 'button';
+    menuButton.className = 'card-menu-btn';
+    menuButton.textContent = '⋯';
+    menuButton.setAttribute('aria-label', `Actions for ${displayName(item.row)}`);
+    menuButton.setAttribute('aria-haspopup', 'menu');
+
+    const menu = document.createElement('div');
+    menu.className = 'card-menu';
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+
+    const action = (label: string, run: () => void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'card-menu-item';
+      b.setAttribute('role', 'menuitem');
+      b.textContent = label;
+      b.addEventListener('click', (event) => {
+        event.stopPropagation();
+        menu.hidden = true;
+        run();
+      });
+      return b;
+    };
+
+    menu.append(
+      action(item.row.archived ? 'Restore' : 'Archive', () => void setArchived(item, !item.row.archived)),
+      action('Delete', () => void removeItem(item)),
+    );
+
+    menuButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      menu.hidden = !menu.hidden;
+    });
+
+    element.append(open, menuButton, menu);
     return { element, open, thumb, name, meta, badge, modeBadge, depthDot, is3D, reason };
   }
 
