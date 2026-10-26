@@ -1906,6 +1906,7 @@ body:not(.has-library) #add-tile {
   position: fixed;
   inset: auto;
   margin: 0;
+  min-width: 132px;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 4px;
@@ -1931,4 +1932,26 @@ body:not(.has-library) #add-tile {
 .sort select {
   min-height: 44px;
   padding: 0 0 0 4px;
+}
+
+/* The menu's rows. This rule was lost when the target-size edit rewrote the block
+   above it, so the items were unstyled buttons -- the broken menu. */
+.card-menu-item {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-menu-item:hover,
+.card-menu-item:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
 }
