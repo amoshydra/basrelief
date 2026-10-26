@@ -147,6 +147,14 @@ export interface OpenableItem {
    */
   hasCloud?: boolean;
   /**
+   * A build's state, reported to the gallery.
+   *
+   * A run outlives this viewer: the sheet can be dismissed and the generation
+   * keeps going. The tile is then the only place its progress can be seen, so the
+   * state has to leave this closure.
+   */
+  onBuild?: (state: { phase: string | null; failed: string | null } | null) => void;
+  /**
    * The cloud's bytes, fetched on first open: a card states its count from the
    * file's length, so nothing reads the records until the viewer needs them.
    */
@@ -302,6 +310,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   /** A generated cloud this session, until the gallery has it. */
   let cardCloud: CloudAsset | null = item.cloud;
   let build: BuildState | null = null;
+  /** The only place `build` is written, so the tile cannot be told a stale state. */
+  function setBuild(next: BuildState | null): void {
+    setBuild(next);
+    item.onBuild?.(next === null ? null : { phase: next.phase, failed: next.failed });
+  }
 
   /**
    * The studio sheet's remembered position, as the app keeps it.
@@ -954,7 +967,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   /** Delete the cloud off this card. A dropped cloud IS the card, so it goes too. */
   function deleteCloud(): void {
-    build = null;
+    setBuild(null);
     cardCloud = null;
     item.onCloud?.(null);
     if (!hasColour()) {
@@ -2060,7 +2073,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       updatePrimary();
       testRow.disabled = true;
       status.classList.remove('sheet-note--warn');
-      build = { phase: tab === 'splat' ? 'Reading the server’s node list…' : PHASE_TEXT.connecting, failed: null };
+      setBuild({ phase: tab === 'splat' ? 'Reading the server’s node list…' : PHASE_TEXT.connecting, failed: null });
       renderAsset();
 
       try {
@@ -2078,7 +2091,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           status.textContent = 'Packing the depth map…';
           const packed = await packDepthPng(result.depthPng);
           if (closed || buildSheet !== dialog) return;
-          build = null;
+          setBuild(null);
           closeBuild();
           if (generatedUrl) URL.revokeObjectURL(generatedUrl);
           generatedUrl = URL.createObjectURL(
@@ -2105,7 +2118,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             signal: dialogAbort.signal,
             onPhase: (phase) => {
               status.textContent = SPLAT_PHASE_TEXT[phase];
-              build = { phase: SPLAT_PHASE_TEXT[phase], failed: null };
+              setBuild({ phase: SPLAT_PHASE_TEXT[phase], failed: null });
               renderAsset();
             },
           });
@@ -2118,7 +2131,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             lensFrom: result.sidecarName,
             splats: Math.floor(result.bytes.length / 32),
           };
-          build = null;
+          setBuild(null);
           cardCloud = asset;
           item.onCloud?.(asset);
           closeBuild();
@@ -2131,7 +2144,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         const sentence = describeComfyError(err);
         status.classList.add('sheet-note--warn');
         status.textContent = sentence;
-        build = { phase: null, failed: sentence };
+        setBuild({ phase: null, failed: sentence });
         renderAsset();
       } finally {
         busy = false;
@@ -2140,7 +2153,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         // phase behind: the asset row must not keep announcing a build nobody is
         // doing. A FAILURE is kept — it is the row's own state until acted on.
         if (build && build.phase !== null) {
-          build = null;
+          setBuild(null);
           renderAsset();
         }
         if (buildSheet === dialog) updatePrimary();

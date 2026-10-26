@@ -216,6 +216,24 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     archiveChev.textContent = archivedGrid.hidden ? '▸' : '▾';
   });
 
+  /**
+   * Rename a row. `label` is the schema's own field for a user-visible name -- the
+   * storage keeps the UUID filename, so a rename never moves bytes.
+   */
+  async function renameItem(item: GalleryItem, next: string): Promise<void> {
+    if (readOnly) return;
+    const label = next.trim();
+    if (label === '' || label === displayName(item.row)) return;
+    library = {
+      ...library,
+      items: library.items.map((r) => (r.id === item.id ? { ...r, label } : r)),
+    };
+    item.row = library.items.find((r) => r.id === item.id) ?? item.row;
+    await persist();
+    renderCard(item);
+    renderCounts();
+  }
+
   /** Archive or restore one row. The selection is untouched: archive hides. */
   async function setArchived(item: GalleryItem, next: boolean): Promise<void> {
     if (readOnly) return;
@@ -1085,6 +1103,10 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     };
 
     menu.append(
+      action('Rename', () => {
+        const next = window.prompt('Name', displayName(item.row));
+        if (next !== null) void renameItem(item, next);
+      }),
       action(item.row.archived ? 'Restore' : 'Archive', () => void setArchived(item, !item.row.archived)),
       action('Delete', () => void removeItem(item)),
     );

@@ -1955,3 +1955,54 @@ body:not(.has-library) #add-tile {
   background: rgba(255, 255, 255, 0.08);
   outline: none;
 }
+
+/* Android's cells ripple; the page at least acknowledges the press, or a tap on a
+   photograph feels like nothing happened until the viewer opens. */
+.card-open:active {
+  opacity: 0.82;
+}
+
+/* `cornerState`: a ring while work is in flight, amber when it failed. It matters
+   more now that a run survives its sheet -- after dismissal the tile is the only
+   place its progress is visible. Drawn where the phone's corner mark sits. */
+.card.is-running::after {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-top-color: rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  animation: card-ring 900ms linear infinite;
+}
+
+.card.is-failed::after {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e2725b;
+  box-shadow: 0 0 0 2px rgba(9, 12, 18, 0.55);
+}
+
+.card.is-failed .cell-dot {
+  display: none;
+}
+
+@keyframes card-ring {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card.is-running::after {
+    animation: none;
+    border-top-color: rgba(255, 255, 255, 0.92);
+  }
+}
