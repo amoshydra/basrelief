@@ -20,6 +20,61 @@ the alphabet is ASCII rather than Python's `isalnum()`.
 
 ---
 
+## Install
+
+The first step is all that is needed to register the package. Steps 2–3 are
+optional and independent; choose the path you need:
+
+| what you want | what to install |
+|---|---|
+| Make 3D (a `.splat`) | step 1 + step 2 (SHARP) |
+| clip import | step 1 + step 3 (MoGe nodes) |
+| a still depth map | neither this package nor these steps; use a depth node already in ComfyUI (MoGe, Depth Anything) |
+
+1. Copy or symlink this directory into ComfyUI's custom-node directory, then
+   restart ComfyUI:
+
+   ```bash
+   ln -s "$PWD/server/comfy-node/basrelief_depth" \
+     /path/to/ComfyUI/custom_nodes/basrelief_depth
+   ```
+
+   The base nodes only import ComfyUI's own Python environment (`torch`, `numpy`,
+   `comfy` and `folder_paths`); no separate package is required to register
+   them.
+
+2. **Optional — `SharpStill` (the app's “Make 3D”).** In ComfyUI's own Python
+   environment, install Apple's SHARP and the file helpers:
+
+   ```bash
+   python -m pip install plyfile pillow-heif
+   python -m pip install --no-deps \
+     "git+https://github.com/apple-aiml-research/ml-sharp.git@aed6527499ef91cba3b54c18d49a870f25947190"
+   ```
+
+   Put `sharp_2572gikvuh.pt` where the node can find it — `/comfy/mnt/models/sharp/`
+   and `/basedir/tools/sharp/` are checked first — or let the node download it
+   into the torch hub cache. The weights are governed by Apple's
+   [`LICENSE_MODEL`](https://github.com/apple-aiml-research/ml-sharp/blob/main/LICENSE_MODEL),
+   which is research-only; they are not bundled with this node.
+
+3. **Optional — `MoGeVideoStream` (clip import).** The server must expose
+   ComfyUI's MoGe nodes (`LoadMoGeModel`, `MoGeInference` and `MoGeRender`) with
+   a MoGe checkpoint. This package consumes that model; it does not bundle MoGe.
+
+4. Verify that ComfyUI registered the nodes:
+
+   ```bash
+   curl -s http://127.0.0.1:8188/object_info \
+     | grep -o '"SharpStill"\|"MoGeVideoStream"'
+   ```
+
+   Use your own server/proxy address if it is not `8188`. The local container
+   recipe and the measured VRAM notes are in [Running it in this box's ComfyUI
+   container](#running-it-in-this-boxs-comfyui-container) below.
+
+---
+
 ## SharpStill
 
 Turns one image into a 3D Gaussian cloud in the 32 B/splat format the phone's

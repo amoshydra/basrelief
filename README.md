@@ -38,27 +38,32 @@ tuned in the studio is the photo on the home screen.
 
 [android/](android/) — Java and OpenGL ES, no AndroidX and no Maven
 dependencies. The maths and persistence live in `:core`, a pure-JVM module with
-no `android.*` imports, so the parts that are easy to get quietly wrong are
-tested without a device.
+no `android.*` imports, so the camera and library logic can be tested without a
+device.
 
 Install the signed APK from [Releases](https://github.com/amoshydra/basrelief/releases/latest);
 [Obtainium](https://github.com/ImranR98/Obtainium) tracks the tag.
 
 ### Web — the gallery
 
-A static Vite + TypeScript page that opens the app's own file formats. Drop a
-packed PNG and it becomes a relief; drop a `.splat` and it becomes a cloud. The
-library is saved in the browser (OPFS) — no account, no server, no cloud
-library — and the page mirrors the studio's sheet.
+A static Vite + TypeScript page that opens the app's own file formats. In the
+gallery, drag a packed PNG or a `.splat` anywhere onto the page, or use the
+**＋ Add photos** tile at the start of the grid. A packed PNG becomes a relief; a
+`.splat` becomes a cloud. A lone `.splat` is session-only (the library needs a
+poster photograph); pair it with a photo to keep it. The library is saved in the
+browser (OPFS) — no account, no server, no cloud library — and the page mirrors
+the studio's sheet.
 
 [web/](web/) — [open the gallery](https://amoshydra.github.io/basrelief/), or
-run it locally with `pnpm dev`.
+run it locally with `pnpm dev`. For a local ComfyUI, use the dev server's
+`/comfy` proxy; a public HTTPS page cannot reach `localhost` directly.
 
 ### ComfyUI — the generator
 
-Both clients talk to a ComfyUI server you run. A depth node the server exposes
-(MoGe, Depth Anything) can make a still depth map; this repository adds the nodes
-that write the assets the renderers want:
+ComfyUI is optional: the app and gallery open existing files without it. Use it
+when you want a server you run to generate a new depth map or cloud. A depth node
+the server exposes (MoGe, Depth Anything) can make a still depth map; this
+repository adds the nodes that write the assets the renderers want:
 
 - `SharpStill` — one still to a budgeted Gaussian cloud (`.splat` + sidecar).
 - `MoGeVideoStream` — a video range to depth and normal clips (the app's clip
@@ -171,8 +176,9 @@ proxy and needs ComfyUI's own CORS flag.
 
 Copy or symlink `server/comfy-node/basrelief_depth` into
 `ComfyUI/custom_nodes/`, restart ComfyUI, and point either client at that server.
-The node's [README](server/comfy-node/basrelief_depth/README.md) covers the SHARP
-weights and the container notes.
+The base node only needs ComfyUI's Python environment; the optional SHARP and
+MoGe paths need their own models. Follow the [node's install
+steps](server/comfy-node/basrelief_depth/README.md#install).
 
 ## Repository map
 

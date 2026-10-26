@@ -333,6 +333,16 @@ both routes explicitly ("a direct cross-origin
 request needs ComfyUI to allow CORS… or run pnpm dev and use /comfy"), and a
 static build's `/comfy` 404 says that this is what happened.
 
+A **public HTTPS deployment** such as the GitHub Pages build is also a public
+origin, and Chrome will not let it reach a loopback ComfyUI by default. Local
+Network Access permission is required, and the target must answer the Private
+Network Access preflight with `Access-Control-Allow-Private-Network: true`.
+There is no `/comfy` proxy on the static page. For a local ComfyUI, run
+`pnpm dev` locally and use `/comfy`; for a deployed page, expose ComfyUI over
+HTTPS (a tunnel or reverse proxy), not `http://localhost`. A reverse proxy in
+front of ComfyUI must also strip `Sec-Fetch-Site`; ComfyUI rejects a request
+that still advertises `cross-site` even after `Origin`/`Referer` are rewritten.
+
 ### The settings contract
 
 `SurfaceSettings` is the app's seventeen-value render body inside the `Library` v5
@@ -569,6 +579,11 @@ A fresh page starts with the app's own preload — the marble bust, as a
 photograph, a relief and a cloud. It is seeded only when `library.json` is
 absent, never when it is empty, because an empty gallery means the demo was
 deleted and a delete has to stick.
+
+Because the demo is present on a fresh page, the empty-state drop zone is
+hidden; the whole page is still a drop target, and the **＋** tile at the start
+of the grid opens the file picker. A lone `.splat` is session-only; pair it with
+a photo to keep it.
 
 The cloud's count comes from the file's length, not its bytes: a one-byte
 `Range` request reads `content-range` (GitHub Pages gzips the file, so `HEAD`
