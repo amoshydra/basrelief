@@ -1865,7 +1865,10 @@ body:not(.has-library) #add-tile {
 
 /* One `⋯` per tile, as the phone draws it; the actions live behind it. */
 /* `MENU_TARGET_DP = 48`: the TARGET is the platform minimum, the plate is not.
-   A 26px button was both, so the only way to reach the menu was to hit a dot. */
+   Android gets this from a TouchDelegate -- a hit area larger than the view. CSS
+   cannot hit-test outside a clipping ancestor, so the box IS the 48dp target and
+   the plate is drawn inside it by `::before`: the picture is unchanged, the
+   button is not. */
 .card-menu-btn {
   position: absolute;
   top: -4px;
@@ -1876,7 +1879,6 @@ body:not(.has-library) #add-tile {
   height: 48px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
   background: transparent;
   color: #fff;
   font-size: 14px;
@@ -1884,8 +1886,6 @@ body:not(.has-library) #add-tile {
   cursor: pointer;
 }
 
-/* The plate, inside the target: the visual size is unchanged, the hit area is
-   the 48dp the platform asks for. */
 .card-menu-btn::before {
   content: '';
   position: absolute;
@@ -1897,36 +1897,6 @@ body:not(.has-library) #add-tile {
 
 .card-menu-btn > * {
   position: relative;
-}
-
-.card-menu {
-  position: absolute;
-  top: 36px;
-  right: 7px;
-  z-index: 5;
-  min-width: 120px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #171b21;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
-}
-
-.card-menu-item {
-  display: block;
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: #fff;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.card-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08);
 }
 
 /* A popover is centred by the UA and sized to its content; a tile menu is anchored
