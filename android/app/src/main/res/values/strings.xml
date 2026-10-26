@@ -681,6 +681,12 @@
     <string name="depth_phase_queued">Queued on the server</string>
     <string name="depth_phase_working">Working</string>
     <string name="depth_phase_fetching">Fetching the map</string>
+    <!-- Stopping is a state, not a phase: the worker needs at most one poll (or
+         the request in flight) to notice. -->
+    <string name="depth_stopping">Stopping…</string>
+    <!-- The run slot is process-wide. Saying so is the difference between a
+         button that cannot act and one that looks live and silently does nothing. -->
+    <string name="depth_run_elsewhere">A build is already running for another photo — let it finish first.</string>
     <string name="depth_phase_saving">Saving</string>
     <string name="depth_phase_resuming">Asking the server what happened</string>
 
@@ -742,6 +748,7 @@
     <string name="depth_ai_button">Depth AI (ComfyUI)</string>
     <string name="apply_set_as_wallpaper">Set as wallpaper</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_stop">Stop</string>
     <string name="action_done">Done</string>
     <!-- The grip of every sheet that had none. The bar is now on all of them
          (the user asked for it on the small gallery popups too: without a handle

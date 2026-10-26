@@ -399,6 +399,8 @@ public final class BuildDialog {
     private LinearLayout serverEditor;
     /** The footer's ghost: Cancel while setup, Run in background while a run. */
     private Button cancelBtn;
+    /** The footer's other ghost, shown only while a depth run is in flight. */
+    private Button stopBtn;
     /** A typed address that has not been tested (or whose test failed). */
     private boolean addressDirty;
     /** The host the last SUCCESSFUL test reached; null before one. */
@@ -532,6 +534,12 @@ public final class BuildDialog {
          */
         volatile boolean normalExpected;
         volatile String promptId;
+        /**
+         * The user pressed Stop. The worker checks this between polls and before
+         * it fetches the map; once the map is on disk the work is done and the
+         * result applies.
+         */
+        volatile boolean cancelled;
         /**
          * When it was queued. Not final: a record read back from prefs carries the
          * original value, which is the whole point of storing it.
@@ -864,6 +872,15 @@ public final class BuildDialog {
         // a short screen. Cancel is in every state, because a panel with no way out
         // of it is a trap; the primary is the setup states' alone, and {@link
         // #render} says why the run state does without it.
+        stopBtn = ModalSheet.button(activity,
+                activity.getString(R.string.action_stop), false, true);
+        stopBtn.setVisibility(View.GONE);
+        stopBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestStop();
+            }
+        });
         cancelBtn = ModalSheet.button(activity,
                 activity.getString(R.string.action_cancel), false, true);
         cancelBtn.setOnClickListener(new View.OnClickListener() {
@@ -894,7 +911,7 @@ public final class BuildDialog {
         // truth: a run started is a run that continues.
         modal.grip(activity.getString(R.string.build_grip));
         modal.body(root);
-        modal.footerRow(cancelBtn, generateBtn);
+        modal.footerRow(stopBtn, cancelBtn, generateBtn);
         return modal;
     }
 
@@ -1464,6 +1481,14 @@ public final class BuildDialog {
         connectionBlock.setVisibility(chrome);
         cancelBtn.setText(depthRunning
                 ? R.string.fix_run_in_background : R.string.action_cancel);
+        stopBtn.setVisibility(depthRunning ? View.VISIBLE : View.GONE);
+        Run live;
+        synchronized (RUN_LOCK) {
+            live = run;
+        }
+        boolean stopping = depthRunning && live != null && live.cancelled;
+        stopBtn.setEnabled(!stopping);
+        stopBtn.setAlpha(stopping ? 0.4f : 1f);
 
         titleView.setText(R.string.build_title);
         styleTab(reliefTabBtn, !splatTab);
@@ -1496,7 +1521,33 @@ public final class BuildDialog {
         } else {
             generateBtn.setVisibility(View.GONE);
         }
-        if (depthRunning) renderRun();
+        if (depthRunning) {
+            renderRun();
+            if (stopping) runStatus.setText(R.string.depth_stopping);
+        }
+    }
+
+    /**
+     * Stop the run the panel is showing.
+     *
+     * <p>Not a failure: the map and the index are untouched, no cause is recorded
+     * and no notification is posted. The worker notices between polls or before it
+     * fetches the map, then releases the slot; the panel goes back to its setup
+     * state. The request in flight cannot be interrupted, so the wait is one poll
+     * at most.
+     */
+    private void requestStop() {
+        Run r;
+        synchronized (RUN_LOCK) {
+            r = run;
+        }
+        if (r == null || r.cancelled) return;
+        r.cancelled = true;
+        // Nothing left to report, and a percentage that keeps climbing while the
+        // run is ending is a progress bar arguing with the button.
+        stopWs();
+        progress = -1;
+        render();
     }
 
     /**
@@ -2050,7 +2101,17 @@ public final class BuildDialog {
     }
 
     public void startRun() {
-        if (isRunning()) return;
+        if (isRunning()) {
+            // The slot is process-wide: a run for another photo is exactly the
+            // state where the primary must not look live and then do nothing. A
+            // Toast, not the server note: that note lives inside an editor the
+            // summary may have collapsed.
+            if (!isRunningFor(targetItemId)) {
+                android.widget.Toast.makeText(activity, R.string.depth_run_elsewhere,
+                        android.widget.Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         // Whatever the panel last said about the connection was said about a probe,
         // and this is not that probe. Cleared before anything below can report, so
         // the line cannot be about to be replaced by a different one.
@@ -2153,8 +2214,16 @@ public final class BuildDialog {
     private static void submitAndPoll(final Run r) {
         try {
             ComfyApi api = new ComfyApi(r.host);
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             sayPhase(r.app, R.string.depth_phase_uploading);
             String up = api.uploadImage(new File(r.imagePath), new File(r.imagePath).getName());
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             JSONObject upObj = new JSONObject(up);
             String name = upObj.getString("name");
             String subfolder = upObj.optString("subfolder", "");
@@ -2162,6 +2231,13 @@ public final class BuildDialog {
 
             sayPhase(r.app, R.string.depth_phase_queued);
             String info = api.getObjectInfo();
+            // Stop BEFORE the prompt is submitted: a job stopped after submission
+            // still burns the server's run, which is the work the user just asked
+            // not to spend.
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             String workflow = ComfyWorkflow.buildWorkflow(info, r.model, uploadedName,
                     r.resolution, System.currentTimeMillis());
             // The graph's own decision, not a second heuristic: whether this run
@@ -2183,6 +2259,10 @@ public final class BuildDialog {
             pollAndFinish(r, api);
         } catch (final Exception e) {
             stopWs();
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             finishFailed(r, describe(e));
         }
     }
@@ -2203,13 +2283,19 @@ public final class BuildDialog {
             JSONObject history = null;
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(POLL_INTERVAL_MS);
+                if (r.cancelled) break;
                 JSONObject ho = new JSONObject(api.getHistory(r.promptId));
+                if (r.cancelled) break;
                 if (ho.has(r.promptId)) {
                     history = ho.getJSONObject(r.promptId);
                     break;
                 }
             }
             stopWs();
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             if (history == null) {
                 throw new Exception("the server did not answer within 10 minutes");
             }
@@ -2257,9 +2343,17 @@ public final class BuildDialog {
                 throw new Exception("the run produced no normal map");
             }
 
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             sayPhase(r.app, R.string.depth_phase_fetching);
             byte[] depthBytes = api.view(depthImg.getString("filename"),
                     depthImg.optString("subfolder", ""), depthImg.optString("type", "output"));
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             Bitmap depthBmp = BitmapFactory.decodeByteArray(depthBytes, 0, depthBytes.length);
             if (depthBmp == null) throw new Exception("the depth image could not be decoded");
 
@@ -2313,6 +2407,10 @@ public final class BuildDialog {
             finishApplied(r, packed, normalName);
         } catch (final Exception e) {
             stopWs();
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             finishFailed(r, describe(e));
         } catch (Throwable t) {
             // An OOM packing a 2048 map is the realistic one, and it is not an
@@ -2320,13 +2418,20 @@ public final class BuildDialog {
             // take the process with it, and — worse — leave `run` set, which
             // disables Generate forever with nothing on screen to say why.
             stopWs();
+            if (r.cancelled) {
+                finishCancelled(r);
+                return;
+            }
             finishFailed(r, describe(
                     new Exception(t.getClass().getSimpleName() + ": " + t.getMessage())));
         } finally {
             // Not on the success path: finishApplied's UI post has not run yet,
             // and freeing the slot before the map is applied would let a second
             // run start and overwrite it.
-            if (!reachedSuccess[0]) clearRunIfOurs(r);
+            // A cancelled run hands its slot to finishCancelled's UI post, which
+            // clears it together with the state that says "running". Clearing here
+            // first would make that post unable to tell this run from a newer one.
+            if (!reachedSuccess[0] && !r.cancelled) clearRunIfOurs(r);
         }
     }
 
@@ -2441,6 +2546,35 @@ public final class BuildDialog {
      * unable to tell whether their depth is gone, which is the worst outcome this
      * app has.
      */
+    /**
+     * The user stopped the run.
+     *
+     * <p>Not a failure: no cause, no failed id, no notification, and the photo is
+     * exactly as it was. The slot and the pending record are cleared so a later
+     * launch does not resume a run nobody wants, and the host is told so the pill
+     * and fix line drop "Generating".
+     */
+    private static void finishCancelled(final Run r) {
+        UI.post(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (RUN_LOCK) {
+                    if (run == r) run = null;
+                }
+                progress = -1;
+                result = Result.NONE;
+                failureCause = "";
+                runningItemId = "";
+                failedItemId = "";
+                clearPending(r.app);
+                android.util.Log.i(TAG, "depth: stopped by the user; map unchanged");
+                BuildDialog panel = openPanel();
+                if (panel != null) panel.render();
+                notifyRunStateChanged();
+            }
+        });
+    }
+
     private static void finishFailed(final Run r, final String cause) {
         final String label = labelFor(r.app, r.itemId);
         UI.post(new Runnable() {
