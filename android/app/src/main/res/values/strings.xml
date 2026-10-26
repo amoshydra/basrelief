@@ -637,6 +637,9 @@
     <string name="depth_testing">Testing connection…</string>
     <string name="depth_test_failed">Not reached: %1$s</string>
     <string name="depth_models_untested">Test the connection to load models</string>
+    <!-- The test runs on open now, so this is a state rather than an instruction:
+         the list is on its way and the rows under it are not yet true. -->
+    <string name="depth_models_loading">Looking for models…</string>
     <string name="depth_models_none">No depth models on this server</string>
     <!-- The server has depth nodes, but every one of them needs an input this
          app cannot supply (a model, a mask, or a second image), so the list is
@@ -796,15 +799,13 @@
 
     <!-- Make 3D: the one build dialog, its two tabs, and the sheet's Renderer row. -->
     <string name="build_title">Make it 3D</string>
-    <string name="build_subtitle_relief">Build a depth map from this photo on your own ComfyUI server.</string>
-    <string name="build_subtitle_splat">Reconstruct this photo as a Gaussian splat cloud on your own ComfyUI server.</string>
     <string name="build_grip">Close the 3D build sheet</string>
     <!-- The Relief tab's own state sentence. "Has a depth map" is true for a file,
          an embedded chunk and a clip's track; the last two offer no build, so the
          tab says which it is rather than leaving the user to wonder why the button
          is absent. -->
-    <string name="build_relief_none">No depth map yet</string>
-    <string name="build_relief_built">Has a depth map</string>
+    <string name="build_relief_none">No depth map</string>
+    <string name="build_relief_built">Depth map</string>
     <string name="build_relief_embedded">Depth is inside this photo — nothing to build here</string>
     <string name="build_relief_track">Depth is in the clip — nothing to build here</string>
 
@@ -812,9 +813,9 @@
     <string name="renderer_caption">Renderer</string>
     <string name="renderer_relief">Relief</string>
     <string name="renderer_splat">Splat</string>
-    <string name="splat_row_none">no cloud yet — make one?</string>
-    <string name="splat_row_building">reconstructs this photo · about 10 s</string>
-    <string name="splat_row_built">%1$s splats · %2$s</string>
+    <string name="splat_row_none">No cloud</string>
+    <string name="splat_row_building">Reconstructing…</string>
+    <string name="splat_row_built">%1$s splats</string>
     <string name="splat_row_failed">failed — %1$s</string>
     <!--
       The asset row's Relief sentence for a clip: the depth is a track, and the row
@@ -823,15 +824,13 @@
       false of this row, which is where the track's regeneration lives.
     -->
     <string name="asset_row_depth_track">Depth is in the clip</string>
-    <string name="splat_generator">SHARP</string>
-    <string name="splat_estimate">~10 s · ~4.8 MB</string>
     <string name="splat_action_make">Make one</string>
     <string name="action_rebuild">Rebuild</string>
     <string name="splat_action_delete">Delete</string>
     <string name="splat_confirm_grip">Close the 3D question</string>
     <string name="splat_confirm_title">Make this photo 3D?</string>
     <string name="splat_confirm_rebuild_title">Rebuild the 3D cloud?</string>
-    <string name="splat_confirm_body">%1$s on the configured server · %2$s splats · %3$s</string>
+    <string name="splat_confirm_body">≈ %1$s splats · %2$s</string>
     <string name="splat_confirm_not_now">Not now</string>
     <string name="splat_phase_uploading">Uploading</string>
     <string name="splat_phase_generating">Reconstructing…</string>

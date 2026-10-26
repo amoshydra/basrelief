@@ -402,7 +402,6 @@ public final class BuildDialog {
     private Button reliefTabBtn;
     private Button splatTabBtn;
     private TextView titleView;
-    private TextView subtitleView;
 
     private EditText hostInput;
     private TextView serverNote;
@@ -444,6 +443,17 @@ public final class BuildDialog {
     private final List<String> nodes = new ArrayList<String>();
     private final List<String> displayNames = new ArrayList<String>();
     private boolean modelsFetched;
+
+    /**
+     * A connection test is in flight.
+     *
+     * <p>The list and the button are derived from what the server last said, and
+     * while a new answer is on its way neither is true: the old rows would offer
+     * a checkpoint from a server that is not the one in the field. The model
+     * area says what it is doing instead of repeating the instruction that was
+     * already answered.
+     */
+    private boolean testing;
     /**
      * True when the server had depth-named nodes but none this app can drive.
      *
@@ -610,6 +620,14 @@ public final class BuildDialog {
         tab = wanted == null ? defaultTab() : wanted;
         openPanel = new WeakReference<BuildDialog>(this);
         render();
+        // Connect on open. A stored address is a decision the user already made,
+        // and making them press Test before Generate will work asks them to
+        // perform the app's handshake. `modelsFetched` keeps a reopen from
+        // re-fetching a list that is still valid; a server that changed is one
+        // Test away.
+        if (!modelsFetched && comfyBase != null && comfyBase.length() > 0) {
+            testConnection();
+        }
         sheet.show(activity);
     }
 
@@ -801,9 +819,9 @@ public final class BuildDialog {
         root.setOrientation(LinearLayout.VERTICAL);
         titleView = ModalSheet.title(activity, activity.getString(R.string.build_title));
         addRow(root, titleView);
-        subtitleView = ModalSheet.subtitle(activity,
-                activity.getString(R.string.build_subtitle_relief));
-        addRow(root, subtitleView);
+        // No subtitle. "Make it 3D" over Relief/Splat is the whole brief; the
+        // sentence that used to sit here restated the tabs and pushed the one
+        // control that matters off a phone's first screen.
         // The tab bar is ABOVE the connection and the tab bodies, so the choice of
         // what to build reads before what to build it with. The connection is shared
         // because both builds need the same server, and one field cannot disagree
@@ -1143,12 +1161,16 @@ public final class BuildDialog {
         return ComfyWorkflow.SHARP_BUDGET;
     }
 
-    /** The sheet's own sentence for a budget: one string, so it cannot be restated wrongly. */
+    /**
+     * The budget as a number a person can weigh: how many points, and how big the
+     * file they imply. The size is computed from the count (32 bytes a record), not
+     * a fixed estimate — the old line said "~4.8 MB" at every slider position,
+     * which is the slider claiming a value nothing reads.
+     */
     private String budgetSentence(int budget) {
+        String size = android.text.format.Formatter.formatShortFileSize(activity, budget * 32L);
         return activity.getString(R.string.splat_confirm_body,
-                activity.getString(R.string.splat_generator),
-                String.format(Locale.US, "%,d", budget),
-                activity.getString(R.string.splat_estimate));
+                String.format(Locale.US, "%,d", budget), size);
     }
 
     /**
@@ -1347,8 +1369,6 @@ public final class BuildDialog {
         connectionBlock.setVisibility(chrome);
 
         titleView.setText(R.string.build_title);
-        subtitleView.setText(splatTab
-                ? R.string.build_subtitle_splat : R.string.build_subtitle_relief);
         styleTab(reliefTabBtn, !splatTab);
         styleTab(splatTabBtn, splatTab);
 
@@ -1392,6 +1412,10 @@ public final class BuildDialog {
      */
     private void renderBodies(BuildTab.Answer relief, BuildTab.Answer splat) {
         modelEmpty.setVisibility(modelsFetched ? View.GONE : View.VISIBLE);
+        if (!modelsFetched) {
+            modelEmpty.setText(testing
+                    ? R.string.depth_models_loading : R.string.depth_models_untested);
+        }
         if (modelsFetched) {
             // Both texts are set whenever the list is known, because the list can
             // go from several models to none (the user pointed the app at a
@@ -1445,8 +1469,7 @@ public final class BuildDialog {
             case BUILDING:
                 return splatPhase(activity, subjectItem);
             case BUILT:
-                return activity.getString(R.string.splat_row_built, cloudCount(activity, subjectItem),
-                        activity.getString(R.string.splat_generator));
+                return activity.getString(R.string.splat_row_built, cloudCount(activity, subjectItem));
             case NONE:
             default:
                 return activity.getString(R.string.splat_row_none);
@@ -1603,9 +1626,12 @@ public final class BuildDialog {
         // Cleared as well as marked unfetched. A list left in place beside
         // "Testing..." is a list the user could act on, so Generate would offer a
         // model from a server that is not answering.
+        testing = true;
         modelsFetched = false;
         nodes.clear();
         displayNames.clear();
+        buildModelRows();
+        render();
         final String host = comfyBase;
         // A monotonic tag, for the reason ReliefRenderer.loadSeq has one: a second
         // Test (or a Test followed by an edited host) issues a second fetch, and the
@@ -1633,6 +1659,7 @@ public final class BuildDialog {
                         @Override
                         public void run() {
                             if (seq != testSeq) return;   // a newer test owns the panel
+                            testing = false;
                             modelsFetched = true;
                             modelsUnusable = filteredToEmpty;
                             // Most-recently-used first, then discovery order. The
@@ -1659,6 +1686,7 @@ public final class BuildDialog {
                         @Override
                         public void run() {
                             if (seq != testSeq) return;   // a newer test owns the panel
+                            testing = false;
                             modelsFetched = false;
                             modelsUnusable = false;
                             nodes.clear();
@@ -2599,7 +2627,39 @@ public final class BuildDialog {
     private static String describe(Exception e) {
         String m = e.getMessage();
         if (m == null || m.length() == 0) return "unknown";
-        return m.length() > 200 ? m.substring(0, 200) + "…" : m;
+        return readableDetail(m);
+    }
+
+    /**
+     * A server's own words, cut to what fits on a note.
+     *
+     * <p>A 404 or 500 body is usually an HTML page, and a thicket of tags is
+     * unreadable inside a one-line note. ComfyUI's own refusals are tiny JSON
+     * objects whose message is the sentence; the braces are not. Tags go, runs of
+     * whitespace fold, and anything past a short sentence is clipped.
+     */
+    private static String readableDetail(String detail) {
+        String trimmed = detail.trim();
+        if (trimmed.startsWith("{")) {
+            try {
+                JSONObject obj = new JSONObject(trimmed);
+                String message = obj.optString("message", "");
+                if (message.length() == 0) {
+                    Object err = obj.opt("error");
+                    if (err instanceof String) {
+                        message = (String) err;
+                    } else if (err instanceof JSONObject) {
+                        message = ((JSONObject) err).optString("message", "");
+                    }
+                }
+                if (message.trim().length() > 0) trimmed = message.trim();
+            } catch (Exception ignored) {
+                // Not JSON after all; the plain-text path below handles it.
+            }
+        }
+        String text = trimmed.replaceAll("<[^>]*>", " ").replaceAll("\\s+", " ").trim();
+        if (text.length() == 0) return "unknown";
+        return text.length() > 200 ? text.substring(0, 200) + "…" : text;
     }
 
     // --------------------------------------------------------------- views

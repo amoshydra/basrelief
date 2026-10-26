@@ -234,8 +234,7 @@ final class RendererRows {
             case DEPTH_TRACK:    return activity.getString(R.string.asset_row_depth_track);
             case NO_CLOUD:       return activity.getString(R.string.splat_row_none);
             case CLOUD:          return activity.getString(R.string.splat_row_built,
-                    BuildDialog.cloudCount(activity, item),
-                    activity.getString(R.string.splat_generator));
+                    BuildDialog.cloudCount(activity, item));
             case BUILDING:       return BuildDialog.splatPhase(activity, item);
             case FAILED: {
                 Jobs.Job job = activity.splatJob(item.id);
