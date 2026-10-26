@@ -624,13 +624,13 @@
     <string name="depth_panel_subtitle">Runs on your own ComfyUI server. Nothing is uploaded.</string>
     <string name="depth_server">Server</string>
     <string name="depth_server_hint">http://&lt;server&gt;:8188</string>
-    <!-- Three strings the panel no longer uses, kept because the PRD still asks for
-         them: R-PANEL5 wants the endpoint to be a LINK — a dot, the host, and
-         Change — and the signed-off mockup draws a plain field with the stored
-         address in it. The mockup wins, so there is no row to label and nothing
-         says "not tested" beside a field the user can read. See the class javadoc
-         of BuildDialog before putting any of them back. -->
+    <!-- The summary row. R-PANEL5's endpoint-as-a-link was kept unused while the
+         field was always on screen; the collapsed row is what it was waiting for.
+         `depth_server_untested` is still unused: a server that has never answered
+         is shown as the FIELD, not as a claim on one row. -->
     <string name="depth_server_change">Change</string>
+    <string name="depth_server_connected">connected</string>
+    <string name="depth_server_state">%1$s · %2$s</string>
     <string name="depth_server_untested">Not tested</string>
     <string name="depth_models_found">%1$d models on this server</string>
     <string name="depth_test_connection">Test connection</string>

@@ -26,7 +26,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -389,8 +391,18 @@ public final class BuildDialog {
     // the single switch that decides which are visible. Only the widgets
     // something else has to reach are fields: the rest are built and added in one
     // method, and a field nothing reads is a field nobody maintains.
-    /** Server + Test connection. Shared by both tabs, so both read one field. */
+    /** The server row and its editor. Shared by both tabs, so both read one field. */
     private LinearLayout connectionBlock;
+    /** The server as one row, once a test has named a host that answers. */
+    private LinearLayout serverSummary;
+    private TextView serverSummarySub;
+    private LinearLayout serverEditor;
+    /** The footer's ghost: Cancel while setup, Run in background while a run. */
+    private Button cancelBtn;
+    /** A typed address that has not been tested (or whose test failed). */
+    private boolean addressDirty;
+    /** The host the last SUCCESSFUL test reached; null before one. */
+    private String testedHost;
     /** The Relief tab's model list and resolution. Empty until a server is tested. */
     private LinearLayout setupBlock;
     /** The Splat tab's state line, budget line and budget slider. */
@@ -620,6 +632,9 @@ public final class BuildDialog {
         tab = wanted == null ? defaultTab() : wanted;
         openPanel = new WeakReference<BuildDialog>(this);
         render();
+        // A previous test already named a host and its models; a typed address
+        // that has not been reached keeps the field in front of the user.
+        setServerCollapsed(modelsFetched && testedHost != null && !addressDirty);
         // Connect on open. A stored address is a decision the user already made,
         // and making them press Test before Generate will work asks them to
         // perform the app's handshake. `modelsFetched` keeps a reopen from
@@ -849,11 +864,15 @@ public final class BuildDialog {
         // a short screen. Cancel is in every state, because a panel with no way out
         // of it is a trap; the primary is the setup states' alone, and {@link
         // #render} says why the run state does without it.
-        Button cancel = ModalSheet.button(activity,
+        cancelBtn = ModalSheet.button(activity,
                 activity.getString(R.string.action_cancel), false, true);
-        cancel.setOnClickListener(new View.OnClickListener() {
+        cancelBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // Dismissing never cancels. While a run is up, this is the same
+                // act as the old in-body button, so it says the same words and
+                // asks for the completion notification on the way out.
+                if (run != null) askNotifyOnce();
                 sheet.dismiss();
             }
         });
@@ -875,7 +894,7 @@ public final class BuildDialog {
         // truth: a run started is a run that continues.
         modal.grip(activity.getString(R.string.build_grip));
         modal.body(root);
-        modal.footerRow(cancel, generateBtn);
+        modal.footerRow(cancelBtn, generateBtn);
         return modal;
     }
 
@@ -926,25 +945,76 @@ public final class BuildDialog {
     }
 
     /**
-     * The server field, its Test connection button and the one note under it.
+     * The server: one summary row, or the field that changes it.
      *
      * <p>Shared by both tabs: a depth graph and a SHARP graph run on the same
      * ComfyUI server, so one field cannot disagree with another. It sits under the
      * tabs and above the tab bodies, and it is hidden with the bodies while a depth
      * run is in flight, because a run is queued with its host baked in.
+     *
+     * <p>After a test names a host that answers, the field, its Test button and the
+     * note collapse into one row: which server, and that it answered. The field is
+     * setup, not task; the row is the receipt.
      */
     private View buildConnection() {
         connectionBlock = new LinearLayout(activity);
         connectionBlock.setOrientation(LinearLayout.VERTICAL);
 
-        // --- server ---
+        // --- one row while the server is known to answer ---
         //
+        // The field belongs to setup, not to the task. A person who has already
+        // pointed the app at a server should not have to read the address, the
+        // Test button and a hint again on every build; the row says which server
+        // answered, and Change is the way back to the field. The web gallery now
+        // has the same shape, and this was the last screen where the two
+        // disagreed about it.
+        serverSummary = new LinearLayout(activity);
+        serverSummary.setOrientation(LinearLayout.HORIZONTAL);
+        serverSummary.setGravity(Gravity.CENTER_VERTICAL);
+        serverSummary.setPadding(0, dp(6), 0, 0);
+        serverSummary.setVisibility(View.GONE);
+
+        LinearLayout summaryText = new LinearLayout(activity);
+        summaryText.setOrientation(LinearLayout.VERTICAL);
+        TextView summaryTitle = text(R.string.depth_server, 14);
+        summaryTitle.setTextColor(ModalSheet.INK);
+        serverSummarySub = text("", 12);
+        serverSummarySub.setTextColor(ModalSheet.DIM);
+        serverSummarySub.setSingleLine(true);
+        serverSummarySub.setEllipsize(TextUtils.TruncateAt.END);
+        summaryText.addView(summaryTitle);
+        summaryText.addView(serverSummarySub);
+        serverSummary.addView(summaryText, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView change = text(R.string.depth_server_change, 13);
+        change.setTextColor(ModalSheet.ACCENT);
+        change.setGravity(Gravity.CENTER);
+        change.setMinHeight(dp(48));
+        change.setPadding(dp(12), 0, 0, 0);
+        change.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setServerCollapsed(false);
+                hostInput.requestFocus();
+            }
+        });
+        serverSummary.addView(change, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        addRow(connectionBlock, serverSummary);
+
+        // --- the editor ---
+        serverEditor = new LinearLayout(activity);
+        serverEditor.setOrientation(LinearLayout.VERTICAL);
+        addRow(connectionBlock, serverEditor);
+
         // The endpoint is enterable, not merely discovered. "Discovered
         // automatically" is a dead end the first time the server is on another
         // machine, which is the normal case: discovery only ever worked on this
         // LAN, and the server is usually elsewhere. See the class javadoc for why
         // this field is shown even when an address is already stored.
-        addRow(connectionBlock, ModalSheet.caption(activity,
+        addRow(serverEditor, ModalSheet.caption(activity,
                 activity.getString(R.string.depth_server), false));
 
         hostInput = ModalSheet.field(activity, comfyBase,
@@ -970,9 +1040,13 @@ public final class BuildDialog {
             @Override
             public void afterTextChanged(Editable s) {
                 persistTyped();
+                // A typed address is not the tested one until a test says so. The
+                // summary must never claim a connection to a host nobody reached.
+                String typed = hostInput.getText().toString().trim();
+                addressDirty = testedHost == null || !typed.equals(testedHost);
             }
         });
-        addRow(connectionBlock, hostInput);
+        addRow(serverEditor, hostInput);
 
         Button test = ModalSheet.button(activity,
                 activity.getString(R.string.depth_test_connection), false, false);
@@ -983,7 +1057,7 @@ public final class BuildDialog {
                 testConnection();
             }
         });
-        connectionBlock.addView(test);
+        serverEditor.addView(test);
 
         // The one line this panel reports on: the mockup's `.note` under the button.
         // It replaces the status line that used to sit beside the field, and it is
@@ -995,9 +1069,41 @@ public final class BuildDialog {
         // a connection problem needs to be able to paste it rather than
         // photograph it. Same reason the old status line was selectable.
         serverNote.setTextIsSelectable(true);
-        addRow(connectionBlock, serverNote);
+        addRow(serverEditor, serverNote);
 
         return connectionBlock;
+    }
+
+    /**
+     * Show the server as one row, or as the field that changes it.
+     *
+     * <p>Collapsed is a claim, so it is only used after a test succeeded, and the
+     * row names the host that was TESTED — never the one currently typed, which
+     * may not have been reached at all.
+     */
+    private void setServerCollapsed(boolean collapsed) {
+        if (serverSummary == null || serverEditor == null) return;
+        serverSummary.setVisibility(collapsed ? View.VISIBLE : View.GONE);
+        serverEditor.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (collapsed && hostInput != null) {
+            // Hiding a focused field is not the same as closing its keyboard: the
+            // IME can outlive the view and cover the rows the summary just freed.
+            hostInput.clearFocus();
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager)
+                            activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            android.os.IBinder token = hostInput.getWindowToken();
+            if (imm != null && token != null) imm.hideSoftInputFromWindow(token, 0);
+        }
+        if (!collapsed) return;
+        serverSummarySub.setText(activity.getString(R.string.depth_server_state,
+                shortHost(testedHost == null ? "" : testedHost),
+                activity.getString(R.string.depth_server_connected)));
+    }
+
+    /** `http://box:8188/` reads as `box:8188` in a one-line summary. */
+    private static String shortHost(String host) {
+        return host.trim().replaceFirst("^https?://", "").replaceAll("/+$", "");
     }
 
     /**
@@ -1298,9 +1404,9 @@ public final class BuildDialog {
      * The run frame. R-PANEL7: it carries no controls.
      *
      * <p>The job is queued with the model baked in, so a control that appeared
-     * to change it could not. The one button here is not a control — it is the
-     * way out, and it is the same thing as the back gesture, so hiding it would
-     * only trap the user.
+     * to change it could not. The way out is the footer's ghost, which is relabelled
+     * "Run in background" while this block is up — one dismissal for one gesture,
+     * in the place the thumb already is.
      *
      * <p><b>No progress bar.</b> There was one, and the design has none: the
      * percentage this panel was drawing twice is the same number the studio's fix
@@ -1323,20 +1429,9 @@ public final class BuildDialog {
         runPercent.setLayoutParams(topMargin(dp(4)));
         runBlock.addView(runPercent);
 
-        Button runInBackground = ModalSheet.button(activity,
-                activity.getString(R.string.fix_run_in_background), false, false);
-        runInBackground.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Collapsing never cancels anything (R-S4). The sheet is a window,
-                // not a job: the run continues on the server and the pill carries
-                // the percentage (R-BG2).
-                askNotifyOnce();
-                sheet.dismiss();
-            }
-        });
-        runInBackground.setLayoutParams(topMargin(dp(9)));
-        runBlock.addView(runInBackground);
+        // No button here. The foot's ghost is the way out, and it already says
+        // "Run in background" while this block is up; two controls for one dismissal
+        // was the duplication this file keeps removing.
 
         return runBlock;
     }
@@ -1367,6 +1462,8 @@ public final class BuildDialog {
         int chrome = depthRunning ? View.GONE : View.VISIBLE;
         tabBar.setVisibility(chrome);
         connectionBlock.setVisibility(chrome);
+        cancelBtn.setText(depthRunning
+                ? R.string.fix_run_in_background : R.string.action_cancel);
 
         titleView.setText(R.string.build_title);
         styleTab(reliefTabBtn, !splatTab);
@@ -1660,6 +1757,8 @@ public final class BuildDialog {
                         public void run() {
                             if (seq != testSeq) return;   // a newer test owns the panel
                             testing = false;
+                            testedHost = host;
+                            addressDirty = false;
                             modelsFetched = true;
                             modelsUnusable = filteredToEmpty;
                             // Most-recently-used first, then discovery order. The
@@ -1678,6 +1777,7 @@ public final class BuildDialog {
                             // longer true and would sit under the list it just
                             // fetched. The rows are the report.
                             sayNothing();
+                            setServerCollapsed(true);
                             render();
                         }
                     });
@@ -1687,6 +1787,8 @@ public final class BuildDialog {
                         public void run() {
                             if (seq != testSeq) return;   // a newer test owns the panel
                             testing = false;
+                            addressDirty = true;
+                            setServerCollapsed(false);
                             modelsFetched = false;
                             modelsUnusable = false;
                             nodes.clear();
