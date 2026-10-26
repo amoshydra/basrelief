@@ -7,6 +7,8 @@ It ships as an **Android live wallpaper** with a built-in studio, plus a **web
 gallery** that shows the same pictures in a browser. Depth maps come from MoGe
 and cloud reconstructions from SHARP, both through a ComfyUI node in this repo.
 
+<video src="https://github.com/user-attachments/assets/79e3e067-6ecc-483d-bf73-1d344f5ba9dd" loop="true"></video>
+
 ## What it does
 
 - **Relief** — the photo becomes a mesh, each vertex displaced by the depth map.
