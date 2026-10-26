@@ -1898,6 +1898,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       sub: 'Fetch /object_info and list what this page can drive',
       onClick: () => void testConnection(),
     });
+    testRow.disabled = false;
     dialog.body.append(testRow);
 
     dialog.body.append(caption('Build'));
@@ -2037,7 +2038,14 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       savedGoneNote = null;
       renderTab();
       try {
-        const info = await getObjectInfo(dialogAbort.signal);
+        // A server that never answers must not leave the button disabled for the
+        // life of the dialog: the fetch has a deadline of its own, and the abort
+        // from closing the panel still wins.
+        const info = await getObjectInfo(
+          typeof AbortSignal.any === 'function'
+            ? AbortSignal.any([dialogAbort.signal, AbortSignal.timeout(10000)])
+            : dialogAbort.signal,
+        );
         if (closed || seq !== testSeq || buildSheet !== dialog) return;
         nodeInfo = info;
         const usable = usableDepthModels(info);
