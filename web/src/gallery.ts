@@ -90,6 +90,12 @@ export interface GalleryItem {
   note: string | null;
   /** True for a card the schema cannot describe (a cloud with no photograph). */
   sessionOnly: boolean;
+  /**
+   * The build the viewer has in flight, or its failure, for the tile's corner
+   * mark. A run outlives its dialog, so after the sheet closes this is the only
+   * place it is visible.
+   */
+  build: { phase: string | null; failed: string | null } | null;
 }
 
 interface CardParts {
@@ -107,13 +113,16 @@ interface CardParts {
 
 export interface GalleryOptions {
   grid: HTMLElement;
-  empty: HTMLElement;
+  /** The empty-state block, when the page still draws one. */
+  empty?: HTMLElement;
   count: HTMLElement;
   clear: HTMLButtonElement;
   /** The index's own `sort`; the phone reads the same value. */
   sort: HTMLSelectElement;
   /** The store's own line: where the library lives and how much it uses. */
   storage: HTMLElement;
+  /** The storage card, shown only when it has something that needs saying. */
+  library: HTMLElement;
   /** Messages that need reading once: a corrupt blob, a full disk. */
   notice: HTMLElement;
 }
@@ -353,18 +362,16 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
   }
 
   function refreshStorage(): void {
-    const count = library.items.length;
-    const photos = `${count} ${count === 1 ? 'photo' : 'photos'}`;
+    // The storage card is a WARNING, not a badge. "Saved in this browser" is the
+    // intake's promise, said once; repeating it under a gallery that is already
+    // showing photographs is a line nobody reads. "Not saved" is the one state a
+    // person has to know before they trust the page with a library.
     if (store.kind === 'memory') {
-      options.storage.textContent = `Not saved — this tab only · ${photos}`;
+      options.storage.textContent = 'Not saved — this tab only';
+      options.library.hidden = false;
       return;
     }
-    options.storage.textContent = `Saved in this browser · ${photos}`;
-    void store.usage().then((usage) => {
-      if (usage === null || usage.usage <= 0) return;
-      if (store.kind === 'memory') return;
-      options.storage.textContent = `Saved in this browser · ${photos} · ${formatBytes(usage.usage)}`;
-    });
+    options.library.hidden = true;
   }
 
   // ---------------------------------------------------------------- the index
@@ -495,6 +502,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       cloud: null,
       note: null,
       sessionOnly: false,
+      build: null,
     };
     items.push(item);
     const parts = createCard(item);
@@ -1265,6 +1273,10 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
       },
       sheetPos: getSheetPosition(),
       onSheetResting: (fraction, collapsed) => setSheetPosition(fraction, collapsed),
+      onBuild: (state) => {
+        item.build = state;
+        renderCard(item);
+      },
       onSettings: (settings, mode) => {
         if (item.sessionOnly) return;
         const next: Row = {
@@ -1300,6 +1312,10 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     if (!parts) return;
 
     const { state } = item;
+    // `cornerState` on the phone: a ring while a build is in flight, amber when
+    // the last one failed. Both survive the sheet that started them.
+    parts.element.classList.toggle('is-running', item.build !== null && item.build.failed === null);
+    parts.element.classList.toggle('is-failed', item.build?.failed != null);
     parts.open.classList.toggle('card-open--disabled', !isOpenable(item));
     parts.open.setAttribute('aria-disabled', String(!isOpenable(item)));
 
@@ -1438,7 +1454,7 @@ export async function createGallery(options: GalleryOptions): Promise<Gallery> {
     }
 
     options.count.textContent = total === 0 ? 'No photos yet' : parts.join(' · ');
-    options.empty.hidden = total > 0;
+    if (options.empty) options.empty.hidden = total > 0;
     options.clear.disabled = total === 0 || readOnly;
     options.clear.title = readOnly
       ? 'library.json was written by a newer build; this page will not clear it.'

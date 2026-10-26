@@ -1122,6 +1122,44 @@ export async function runSplat(options: SplatRunOptions): Promise<SplatRunResult
 }
 
 /**
+ * A server's own words, cut down to what fits in a sheet.
+ *
+ * A 404 or 500 body is often an HTML page; pasted whole into a status line it is
+ * unreadable and unactionable. Tags go, runs of whitespace fold, and anything
+ * past a short sentence is clipped — the status line is a diagnosis, not a log.
+ */
+function readableDetail(detail: string): string {
+  const trimmed = detail.trim();
+  // ComfyUI answers a refusal with a small JSON body. The words are the message;
+  // the braces and quotes are not.
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>;
+        const nested = record.error;
+        const candidate =
+          typeof record.message === 'string'
+            ? record.message
+            : typeof nested === 'string'
+              ? nested
+              : nested && typeof nested === 'object' && typeof (nested as Record<string, unknown>).message === 'string'
+                ? ((nested as Record<string, unknown>).message as string)
+                : '';
+        if (candidate.trim() !== '') {
+          return candidate.length > 160 ? `${candidate.slice(0, 157)}…` : candidate;
+        }
+      }
+    } catch {
+      // Not JSON after all; fall through to the plain text.
+    }
+  }
+  const text = trimmed.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text === '') return '';
+  return text.length > 160 ? `${text.slice(0, 157)}…` : text;
+}
+
+/**
  * One sentence for any failure, including the CORS case a browser cannot name.
  *
  * A `fetch` that a preflight blocked throws the same bare `TypeError` as an
@@ -1135,32 +1173,39 @@ export function describeComfyError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') {
     return 'Stopped.';
   }
+  if (error instanceof DOMException && error.name === 'TimeoutError') {
+    return 'The server did not answer in time. Check that ComfyUI is running and reachable.';
+  }
   if (error instanceof ComfyError) {
     switch (error.kind) {
       case 'network': {
         const direct = !base.startsWith('/');
+        const cause = error.detail ? ` (${readableDetail(error.detail)})` : '';
+        // A blocked preflight throws the same bare TypeError as an unreachable
+        // host, so the sentence names both routes rather than pretending to know
+        // which it was — the browser cannot tell them apart either.
         return (
-          `The browser could not reach ${base} (${error.detail}). ` +
+          `Could not reach ${base}${cause}. ` +
           (direct
-            ? 'A direct cross-origin request needs ComfyUI to allow CORS — start it with ' +
-              '--enable-cors-header — or run pnpm dev and use /comfy, which the dev server proxies.'
-            : 'Check that ComfyUI is running and that this is the address you meant.')
+            ? 'Check the address, that ComfyUI is running, and that it allows CORS (--enable-cors-header) — or run pnpm dev and use /comfy.'
+            : 'Check that the dev server’s /comfy proxy is running and points at ComfyUI.')
         );
       }
       case 'http':
-        return (
-          `${error.message}${error.detail ? `: ${error.detail}` : ''}` +
-          (error.status === 404 && base.startsWith('/')
-            ? ' — /comfy is the dev server’s proxy; a static build has none, so give it the ComfyUI address and start ComfyUI with --enable-cors-header.'
-            : '')
-        );
+        // A static host answers `/comfy` with its own 404 page, and the body is
+        // five lines of HTML. Nobody needs to read that: the fact is that there is
+        // no proxy here, and the fix is to type the address.
+        if (error.status === 404 && base.startsWith('/')) {
+          return 'No ComfyUI proxy on this page. Enter your server’s address above — for example http://192.168.0.9:8188.';
+        }
+        return `${error.message}${error.detail ? ` — ${readableDetail(error.detail)}` : ''}`;
       case 'protocol':
       case 'server':
-        return `${error.message}${error.detail ? `: ${error.detail}` : ''}`;
+        return `${error.message}${error.detail ? `: ${readableDetail(error.detail)}` : ''}`;
       case 'timeout':
       case 'no-node':
       case 'no-output':
-        return `${error.message}${error.detail ? ` — ${error.detail}` : ''}`;
+        return `${error.message}${error.detail ? ` — ${readableDetail(error.detail)}` : ''}`;
     }
   }
   return error instanceof Error ? error.message : 'something went wrong';

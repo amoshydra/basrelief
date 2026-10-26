@@ -238,14 +238,20 @@ the option explains itself.
 
 ## Generate depth
 
-The photo sheet's asset row is the studio's: its **state** (`No depth map yet`,
-`Has a depth map`, embedded, a run in flight, or the server's own failure words)
-and its **actions** (**Generate**, and **Choose a map** for a depth file you
-already have). The ranking is `BuildTab`/`AssetRow`/`AssetActions`': a run in
-flight offers nothing, and a failure outranks the asset it left behind.
+The photo sheet's asset row is the studio's: its **state** (`No depth map`,
+`Depth map`, embedded, a run in flight, or the server's own failure words) and
+its **actions** (**Make one** / **Rebuild**, and **Choose a map** for a depth
+file you already have). The ranking is `BuildTab`/`AssetRow`/`AssetActions`': a
+run in flight offers nothing, and a failure outranks the asset it left behind.
 
-Generate opens a dialog with the ComfyUI address, a Test connection action and the
-model chooser. Then:
+The dialog connects to the ComfyUI server **on open** — the Server row reports
+the address and whether it answered, the model list arrives from it, and Test is
+there for a changed address rather than as a step. The dialog asks only what to
+build (the segment) and from what (the model, or the cloud budget); the address
+is one summary row that opens when it needs changing. **The run is stated in the
+footer**, beside the button that started it: the phase, the elapsed seconds and
+a five-step track, for as long as it runs. Closing the panel does not cancel it;
+**Stop** does. Then:
 
 1. **The graph is `ComfyWorkflow.java`'s still shape.** A classical depth node is
    `LoadImage → <node> → SaveImage`; MoGe is the seven-node pipeline
@@ -391,11 +397,13 @@ no server-side requirement.
   and the depth map it read into one PNG and downloads it as `<name>.packed.png`.
   A photo says why there is nothing to pack, and a cloud says a `.splat` is not a
   PNG — neither leaves a dead button.
-- **Generate depth** (a photo's asset row) opens the ComfyUI dialog: address,
-  Test connection, model chooser, Generate. It uploads the photo, builds the still
+- **Generate depth** (a photo's asset row) opens the ComfyUI dialog: the Server
+  row connects on open, the model chooser lists what that server can drive, and
+  Make one / Rebuild is the one action. It uploads the photo, builds the still
   graph, polls the returned prompt id, fetches the depth map, packs it and shows
   the relief. **Choose a map** does the same with a depth image you already have.
-  The dialog's **Splat** tab builds a SHARP cloud when the server has the node.
+  The dialog's **Splat** tab builds a SHARP cloud when the server has the node,
+  with the budget stated as points and file size.
 - **The strip**: drag it (or anywhere on the panel) to move the sheet; tap it to
   toggle — collapsed it is the pill, and tapping the pill springs back to where
   the sheet last rested. **← Gallery** or **Escape** closes the viewer (Escape

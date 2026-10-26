@@ -144,14 +144,17 @@ code {
   transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 
+/* The phone's primary is white with ink on it (`sheet-btn--primary`), not the
+   accent: the accent is a state colour on this page, and a filled accent button
+   reads as a selected segment. */
 .primary {
-  background: var(--accent);
+  background: #fff;
   border-color: transparent;
-  color: #0a1020;
+  color: #08110f;
 }
 
 .primary:hover {
-  background: #93b4ff;
+  background: #e2e2e2;
 }
 
 .quiet {
@@ -1106,9 +1109,13 @@ summary:focus-visible {
   cursor: pointer;
 }
 
+/* The phone's selected tab is filled white with ink on it
+   (`BuildDialog.styleTab`), not a lighter grey. A grey active tab reads as a
+   hover state, and on a photo the difference is the only thing saying which
+   half of the sheet is live. */
 .sheet-segment-btn.is-active {
-  background: rgba(255, 255, 255, 0.157);
-  color: #fff;
+  background: #fff;
+  color: #08110f;
 }
 
 .sheet-segment-btn:disabled {
@@ -1341,8 +1348,20 @@ summary:focus-visible {
   color: #08110f;
 }
 
+/* A control that cannot act must not look live: the primary is the one place
+   this matters most, because a bright white plate that ignores a tap reads as a
+   broken page rather than as an unmet condition. */
+.sheet-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .sheet-btn:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+
+.sheet-btn--primary:disabled:hover {
+  background: #fff;
 }
 
 .sheet-btn--ghost:hover {
@@ -1651,8 +1670,18 @@ body.has-library .intake {
 /* The phone's gallery is header, tiles, archive. The tagline and the storage card
    are web-only: an advert and an implementation detail, both above the shelf. They
    stay for the empty state, where a stranger needs them, and retire with the hero. */
-body.has-library .tagline,
-body.has-library .library {
+body.has-library .tagline {
+  display: none;
+}
+
+/* An empty gallery is the intake, and nothing else: a header over an empty grid
+   is a page that looks broken, and the phone's add tile is replaced here by the
+   drop target above. */
+body:not(.has-library) .gallery-head,
+body:not(.has-library) .gallery-sub,
+body:not(.has-library) #grid,
+body:not(.has-library) .archive-row,
+body:not(.has-library) #archived-grid {
   display: none;
 }
 
@@ -1990,6 +2019,9 @@ body:not(.has-library) #add-tile {
   box-shadow: 0 0 0 2px rgba(9, 12, 18, 0.55);
 }
 
+/* The corner mark REPLACES the depth dot: two marks in the same 10px corner
+   compose into a smudge, and during a run the spinner is the one that matters. */
+.card.is-running .cell-dot,
 .card.is-failed .cell-dot {
   display: none;
 }
@@ -2041,4 +2073,347 @@ body:not(.has-library) #add-tile {
 .card-open img {
   -webkit-user-drag: none;
   user-select: none;
+}
+
+/* ------------------------------------------------------------- Make it 3D */
+/*
+ * The dialog states one fact per row and asks one question at a time: what to
+ * build (the segment), from what (the model or the budget), and where the server
+ * is only when it needs looking at. The run is in the footer, beside the button
+ * that started it, so it cannot scroll away.
+ *
+ * The copy that used to live here -- prefs.json, comfy_url, /object_info, the
+ * measured budget ladder -- was documentation printed inside a control. It is
+ * replaced by the live value each row is about: "connected", "4 models", "≈ 741k
+ * splats · 23.7 MB".
+ */
+
+/* An author `display` beats the UA's `[hidden]` rule, and this page has paid for
+   that three times (the depth badge, the count, the selection bar). One rule that
+   cannot be outrun is cheaper than a `[hidden]` selector per component. */
+[hidden] {
+  display: none !important;
+}
+
+.build-head {
+  padding: 2px 0 12px;
+}
+
+.build-title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---- the server: one row while it works, a field while it does not */
+
+.build-server {
+  margin: 14px 0 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.build-server-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.build-server-summary:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.build-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.build-dot.is-ok {
+  background: #7fd1c1;
+}
+
+.build-dot.is-error {
+  background: #e2725b;
+}
+
+.build-dot.is-testing {
+  background: #e8b454;
+  animation: build-pulse 1s ease-in-out infinite;
+}
+
+.build-server-name {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.build-server-state {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.44);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-chevron {
+  flex: none;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 15px;
+  transition: transform 140ms ease;
+}
+
+.build-server.is-open .build-chevron {
+  transform: rotate(90deg);
+}
+
+.build-server-body {
+  padding: 0 12px 12px;
+}
+
+.build-server-body .sheet-input-row {
+  margin-bottom: 8px;
+}
+
+.build-server-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.build-chip {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.build-chip:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.build-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.build-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: #7aa2f7;
+  cursor: pointer;
+}
+
+.build-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.build-server-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.44);
+}
+
+.build-server-hint.is-warn {
+  color: #e8b454;
+}
+
+/* ---- the models: a name and a check, nothing to read */
+
+.build-models {
+  margin-top: 14px;
+}
+
+.build-model {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  margin: 0 0 6px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.build-model.is-selected {
+  border-color: rgba(127, 209, 193, 0.65);
+  background: rgba(127, 209, 193, 0.1);
+}
+
+.build-model:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.build-model-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-check {
+  flex: none;
+  color: #7fd1c1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.build-empty {
+  padding: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.44);
+}
+
+.build-empty.is-warn {
+  color: #e8b454;
+}
+
+.build-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* ---- the splat budget: a number and its size */
+
+.build-splat {
+  margin-top: 14px;
+}
+
+.build-value {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.44);
+  text-align: center;
+}
+
+/* ---- the run: stated where the hand is */
+
+.build-run {
+  margin: 0 0 4px;
+  padding-top: 12px;
+  /* A hairline separates the run from the sheet's content. Without it the line
+     sits on the glass with the dimmed panel behind it showing through. */
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.build-run-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.build-run-phase {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.build-run-elapsed {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+.build-run-note {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.build-run-note.is-cause {
+  color: #e8b454;
+}
+
+.build-track {
+  display: flex;
+  gap: 3px;
+  margin: 10px 0 0;
+}
+
+.build-seg {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background-color 160ms ease;
+}
+
+.build-seg.is-done {
+  background: rgba(127, 209, 193, 0.85);
+}
+
+.build-seg.is-active {
+  background: rgba(127, 209, 193, 0.55);
+  animation: build-pulse 1.2s ease-in-out infinite;
+}
+
+.build-run.is-failed .build-run-phase {
+  color: #e2725b;
+}
+
+.build-footer-row {
+  display: flex;
+  gap: 8px;
+}
+
+@keyframes build-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .build-dot.is-testing,
+  .build-seg.is-active {
+    animation: none;
+  }
+}
+
+/* The footer was a row; the run strip needs its width, and the buttons keep a row
+   of their own. */
+.sheet-footer {
+  flex-direction: column;
 }

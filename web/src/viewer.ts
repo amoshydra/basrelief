@@ -215,22 +215,6 @@ export interface ViewerHandle {
 type Medium = 'relief' | 'cloud' | 'photo';
 type Mode = 'relief' | 'splat';
 
-const PHASE_TEXT: Record<ComfyPhase, string> = {
-  connecting: 'Reading the server’s node list…',
-  uploading: 'Uploading the photo…',
-  queued: 'Prompt submitted — waiting for ComfyUI…',
-  generating: 'Waiting for ComfyUI — the prompt is queued or running…',
-  fetching: 'Fetching the depth map…',
-};
-
-const SPLAT_PHASE_TEXT: Record<ComfyPhase, string> = {
-  connecting: 'Reading the server’s node list…',
-  uploading: 'Uploading the photo…',
-  queued: 'Prompt submitted — waiting for ComfyUI…',
-  generating: 'SHARP is reconstructing the cloud — the prompt is queued or running…',
-  fetching: 'Fetching the cloud… (a dense cloud is several MB)',
-};
-
 /** The build dialog's two tabs, the app's `BuildTab.Kind`. */
 type BuildKind = 'relief' | 'splat';
 
@@ -242,8 +226,20 @@ interface BuildState {
   failed: string | null;
 }
 
-const NO_SERVER =
-  'No ComfyUI server configured. Enter an address, or this page can show and tune photos but not build them.';
+/**
+ * One deadline for a request, combined with any abort that already owns it.
+ *
+ * A request with no deadline is a dialog that can sit "connecting" for ever, which
+ * reads as a page that ignored the tap. `AbortSignal.any` is not in every browser
+ * this page supports; a missing one falls back to the caller's signal, which is
+ * still better than none — the deadline is the only thing lost.
+ */
+function withDeadline(base: AbortSignal, ms: number, extra?: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.timeout !== 'function') return base;
+  const signals: AbortSignal[] = [base, AbortSignal.timeout(ms)];
+  if (extra) signals.push(extra);
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any(signals) : base;
+}
 
 export function openViewer(item: OpenableItem): ViewerHandle {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -311,8 +307,8 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   let cardCloud: CloudAsset | null = item.cloud;
   let build: BuildState | null = null;
   /** The only place `build` is written, so the tile cannot be told a stale state. */
-  function setBuild(next: BuildState | null): void {
-    setBuild(next);
+  function setBuildState(next: BuildState | null): void {
+    build = next;
     item.onBuild?.(next === null ? null : { phase: next.phase, failed: next.failed });
   }
 
@@ -418,6 +414,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     closed = true;
     // The viewer is going away, so a run that lands now has no card to update.
     buildAbort?.abort();
+    // Nothing is running after that abort, and the tile must not spin for a job
+    // whose panel and subject are gone.
+    setBuildState(null);
     buildAbort = null;
     closeBuild();
     clearMount();
@@ -593,21 +592,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   /**
    * The Renderer segment, LIVE: it picks which asset this card draws.
    *
-   * A cloud-only card has no photograph, so its Relief option is disabled with a
-   * sentence — one option, not the whole segment: choosing Splat is a real
-   * action and the segment must not look broken.
+   * The segment IS the state, so it carries no sentence about itself. The one
+   * case that needs words is a cloud-only card, where Relief is disabled: an
+   * option that cannot act has to say why, and only the reason is written.
    */
-  function appendRenderer(panel: Sheet, drawn: Medium): void {
-    const sentence =
-      !hasColour()
-        ? 'This card is a .splat cloud — there is no photograph in it to displace, so Relief is not available.'
-        : mode === 'splat'
-          ? currentCloud()
-            ? 'Drawing the cloud built from this photo. Switching back draws the relief.'
-            : 'No cloud yet — the relief is drawn until one exists. Make one below.'
-          : drawn === 'relief'
-            ? 'Drawing the relief from this photo’s depth map. Splat draws a cloud, once one exists.'
-            : 'This photo has no depth map yet, so neither the relief nor a cloud can be drawn.';
+  function appendRenderer(panel: Sheet): void {
     panel.body.append(caption('Renderer'));
     panel.body.append(
       segmentRow({
@@ -617,7 +606,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         onSelect: (index) => switchMode(index === 1 ? 'splat' : 'relief'),
       }),
     );
-    panel.body.append(note(sentence));
+    if (!hasColour()) {
+      panel.body.append(note('This card is a cloud — there is no photograph to displace.'));
+    }
   }
 
   /**
@@ -875,23 +866,23 @@ export function openViewer(item: OpenableItem): ViewerHandle {
           // own words until the user acts on it.
           stateEl.textContent = `Build failed — ${build.failed}`;
           if (hasColour()) {
-            actions.push({ label: 'Regenerate', onClick: () => openBuild('relief') });
+            actions.push({ label: 'Try again', onClick: () => openBuild('relief') });
           }
         } else if (depth || colourState.kind === 'relief') {
           // A depth map this card has -- separate file or embedded in the PNG.
           // The earlier test asked only `depth`, which is null for an embedded
           // map, so a packed PNG read "No depth map yet" while the renderer drew
           // it: the sheet contradicted the picture.
-          stateEl.textContent = 'Has a depth map';
+          stateEl.textContent = 'Depth map';
           actions.push(
             { label: 'Choose a map', onClick: () => void chooseDepthMap(statusEl) },
-            { label: 'Generate', onClick: () => openBuild('relief') },
+            { label: 'Rebuild', onClick: () => openBuild('relief') },
           );
         } else {
-          stateEl.textContent = 'No depth map yet';
+          stateEl.textContent = 'No depth map';
           actions.push(
             { label: 'Choose a map', onClick: () => void chooseDepthMap(statusEl) },
-            { label: 'Generate', onClick: () => openBuild('relief') },
+            { label: 'Make one', onClick: () => openBuild('relief') },
           );
         }
       } else {
@@ -902,16 +893,16 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         } else if (build?.failed) {
           stateEl.textContent = `Build failed — ${build.failed}`;
           if (hasColour()) {
-            actions.push({ label: 'Regenerate', onClick: () => openBuild('splat') });
+            actions.push({ label: 'Try again', onClick: () => openBuild('splat') });
           }
         } else if (cloudNow) {
-          stateEl.textContent = `${formatSplatCount(cloudNow.splats)} · SHARP`;
+          stateEl.textContent = formatSplatCount(cloudNow.splats);
           if (hasColour()) {
             actions.push({ label: 'Rebuild', onClick: () => openBuild('splat') });
           }
           actions.push({ label: 'Delete', onClick: () => deleteCloud() });
         } else {
-          stateEl.textContent = 'no cloud yet — make one?';
+          stateEl.textContent = 'No cloud';
           if (hasColour()) {
             actions.push({ label: 'Make one', onClick: () => openBuild('splat') });
           }
@@ -967,7 +958,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   /** Delete the cloud off this card. A dropped cloud IS the card, so it goes too. */
   function deleteCloud(): void {
-    setBuild(null);
+    setBuildState(null);
     cardCloud = null;
     item.onCloud?.(null);
     if (!hasColour()) {
@@ -1022,7 +1013,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     const panel = newPanel('Picture settings');
 
     panel.body.append(caption('Standing out of the plane', true));
-    appendRenderer(panel, mediumFor());
+    appendRenderer(panel);
     appendFixLine(panel);
 
     const depthRow = sliderRow({
@@ -1252,7 +1243,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     const panel = newPanel('Photo settings');
 
     panel.body.append(caption('Standing out of the plane', true));
-    appendRenderer(panel, mediumFor());
+    appendRenderer(panel);
     appendFixLine(panel);
 
     const why = mode === 'splat'
@@ -1426,7 +1417,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     const panel = newPanel('Cloud settings');
 
     panel.body.append(caption('Standing out of the plane', true));
-    appendRenderer(panel, 'cloud');
+    appendRenderer(panel);
     appendFixLine(panel);
 
     // The four look knobs, wired. Their ranges are `contract/settings/`'s.
@@ -1802,328 +1793,566 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
   }
 
-  // --------------------------------------------------- Build 3D (two tabs)
-
-  /**
-   * The studio's one 3D-build dialog, with its two tabs.
-   *
-   * The tab a build runs on is the mode it writes (`BuildTab.modeFor`), and the
-   * button it offers is that tab's ranking: a run in flight offers nothing, a
-   * failure offers Regenerate, an asset offers Rebuild, and no asset offers
-   * Make one / Generate. The Splat tab carries the BUDGET slider and the app's
-   * measured ladder; the Relief tab the model chooser and the resolution.
-   */
   function openBuild(kind: BuildKind): void {
     if (buildSheet) return;
 
     const dialogAbort = new AbortController();
     buildAbort = dialogAbort;
+    /**
+     * A run's own abort.
+     *
+     * Stop must not be the same gesture as closing the panel: closing keeps the
+     * server job running, and the one control that throws the work away has to say
+     * so. Two controllers, two meanings.
+     */
+    let runAbort: AbortController | null = null;
 
     buildScrim = document.createElement('div');
     buildScrim.className = 'sheet-scrim';
     overlay.append(buildScrim);
 
     const dialog = createSheet({
-      label: 'Build 3D',
+      label: 'Make it 3D',
       // A transient card is `Snap.TO_STOPS`: every release lands on open or gone,
-      // because a half-height dialog is an unanswered question. Its Drag-to-dismiss
-      // reaches this, which tears the card and its scrim down.
+      // because a half-height dialog is an unanswered question.
       snap: 'stops',
-      onDismiss: closeBuild,
+      onDismiss: () => dismiss(),
     });
     dialog.element.classList.add('sheet--dialog');
     buildSheet = dialog;
     overlay.append(dialog.element);
 
     let tab: BuildKind = kind;
+    /** The tab the CURRENT run was started on. Switching tabs mid-run is blocked. */
+    let runTab: BuildKind = kind;
     let models: string[] = [];
     let chosen = '';
     let nodeInfo: ObjectInfo | null = null;
     let busy = false;
     let testSeq = 0;
-    /** The app's warning when `comfy_model` is no longer offered, or null. */
+    let serverOpen = false;
+    let serverPhase: 'idle' | 'testing' | 'ok' | 'error' = 'idle';
+    let serverMessage = '';
     let savedGoneNote: string | null = null;
+    let runPhase: ComfyPhase | null = null;
+    let runFailed: string | null = null;
+    let runStarted = 0;
+    let runTicker: number | null = null;
+    let stopped = false;
 
-    dialog.body.append(caption('Server', true));
-    const urlRow = inputRow({
-      label: 'ComfyUI address',
-      value: comfyUrlIsSet() ? getComfyUrl() : '',
-      placeholder: '/comfy or http://host:8188',
-      inputMode: 'url',
-      // Typing is not a commit; the blur and Enter handlers below are.
-      onInput: () => undefined,
-    });
-    dialog.body.append(urlRow.element);
-    // Committed on release, not on every keystroke: `onInput` would persist a
-    // half-typed `https://foo:818` and the next reload would present it as the
-    // user's own server being down. The sheet's rule for every other control.
-    const urlInput = urlRow.element.querySelector('input');
-    urlInput?.addEventListener('blur', () => setComfyUrl(urlInput.value));
-    urlInput?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        setComfyUrl(urlInput.value);
-        urlInput.blur();
+    /** The pipeline, in order. One segment each; no invented percentage. */
+    const STEP_ORDER: ComfyPhase[] = ['connecting', 'uploading', 'queued', 'generating', 'fetching'];
+
+    /** The phase as a person reads it: a step, not a status report. */
+    function phaseText(phase: ComfyPhase, forTab: BuildKind): string {
+      switch (phase) {
+        case 'connecting':
+          return 'Reaching the server…';
+        case 'uploading':
+          return 'Uploading the photo…';
+        case 'queued':
+          return 'Queued on the server…';
+        case 'generating':
+          return forTab === 'splat' ? 'Reconstructing the cloud…' : 'Building the depth map…';
+        case 'fetching':
+          return forTab === 'splat' ? 'Fetching the cloud…' : 'Fetching the depth map…';
       }
-    });
-    dialog.body.append(
-      note(
-        'Saved in this browser with the library (prefs.json) — the app’s `comfy_url`, ' +
-          'not a render value, so it survives a reload.',
-      ),
-    );
+    }
 
-    const clearRow = actionRow({
-      label: 'Clear address',
-      sub: 'Forget this server. The library, the photos and the look are untouched.',
-      onClick: () => {
-        setComfyUrl('');
-        if (urlInput) urlInput.value = '';
-        models = [];
-        chosen = '';
-        status.textContent = NO_SERVER;
-      },
-    });
-    dialog.body.append(clearRow);
+    // ------------------------------------------------------------ the heading
 
-    const status = note(
-      comfyUrlIsSet()
-        ? 'Not connected — test the address to see what this server can build.'
-        : NO_SERVER,
-    );
-    status.setAttribute('role', 'status');
-    dialog.body.append(status);
+    const head = document.createElement('div');
+    head.className = 'build-head';
+    const title = document.createElement('h2');
+    title.className = 'build-title';
+    title.textContent = 'Make it 3D';
+    head.append(title);
+    dialog.body.append(head);
 
-    const testRow = actionRow({
-      label: 'Test connection',
-      sub: 'Fetch /object_info and list what this page can drive',
-      onClick: () => void testConnection(),
-    });
-    testRow.disabled = false;
-    dialog.body.append(testRow);
-
-    dialog.body.append(caption('Build'));
+    // What am I building? The one choice that changes everything under it, so it
+    // comes before the server and the options rather than after them.
     const tabSegment = segmentRow({
       labels: ['Relief', 'Splat'],
       active: tab === 'splat' ? 1 : 0,
       onSelect: (index) => {
+        if (busy) return;
         tab = index === 1 ? 'splat' : 'relief';
         renderTab();
       },
     });
     dialog.body.append(tabSegment);
 
-    const tabBody = document.createElement('div');
-    dialog.body.append(tabBody);
+    // -------------------------------------------------------------- the server
+    //
+    // One row while it is working, a field while it is not. The address is a fact
+    // about this page, not a step in the task: a person who has already pointed it
+    // at a server should never have to read it again.
 
-    const cancel = sheetButton('Cancel', false, closeBuild);
-    const primary = sheetButton('Generate', true, () => void runBuild());
-    primary.disabled = true;
-    dialog.footer.append(cancel, primary);
+    const serverBlock = document.createElement('section');
+    serverBlock.className = 'build-server';
 
-    function updatePrimary(): void {
-      const canRun = hasColour() && !busy;
-      if (tab === 'relief') {
-        primary.textContent = 'Generate';
-        primary.disabled = !canRun || !chosen;
-      } else {
-        primary.textContent = currentCloud() ? 'Rebuild' : 'Make one';
-        primary.disabled = !canRun;
-      }
+    const serverSummary = document.createElement('button');
+    serverSummary.type = 'button';
+    serverSummary.className = 'build-server-summary';
+
+    const serverDot = document.createElement('span');
+    serverDot.className = 'build-dot';
+    const serverName = document.createElement('span');
+    serverName.className = 'build-server-name';
+    serverName.textContent = 'Server';
+    const serverState = document.createElement('span');
+    serverState.className = 'build-server-state';
+    serverState.setAttribute('aria-live', 'polite');
+    const serverChevron = document.createElement('span');
+    serverChevron.className = 'build-chevron';
+    serverChevron.setAttribute('aria-hidden', 'true');
+    serverChevron.textContent = '›';
+    serverSummary.append(serverDot, serverName, serverState, serverChevron);
+    serverSummary.addEventListener('click', () => {
+      if (busy) return;
+      setServerOpen(!serverOpen);
+    });
+
+    const serverBody = document.createElement('div');
+    serverBody.className = 'build-server-body';
+
+    const urlRow = inputRow({
+      label: 'Address',
+      value: comfyUrlIsSet() ? getComfyUrl() : '',
+      placeholder: 'e.g. http://192.168.0.9:8188',
+      inputMode: 'url',
+      // Typing is not a commit; the blur and Enter handlers below are.
+      onInput: () => undefined,
+    });
+    const urlInput = urlRow.input;
+
+    function commitAddress(): void {
+      const value = urlInput.value.trim();
+      const current = comfyUrlIsSet() ? getComfyUrl() : '';
+      if (value !== current) setComfyUrl(value);
     }
 
-    /** The tab's own content; the mode's numbers live here, not in the footer. */
-    function renderTab(): void {
-      tabBody.replaceChildren();
-      if (tab === 'relief') renderReliefTab();
-      else renderSplatTab();
-      updatePrimary();
+    urlInput.addEventListener('blur', commitAddress);
+    urlInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      commitAddress();
+      urlInput.blur();
+      void testConnection();
+    });
+
+    const serverActions = document.createElement('div');
+    serverActions.className = 'build-server-actions';
+    const testButton = document.createElement('button');
+    testButton.type = 'button';
+    testButton.className = 'build-chip';
+    testButton.textContent = 'Test';
+    testButton.addEventListener('click', () => {
+      commitAddress();
+      void testConnection();
+    });
+    const proxyButton = document.createElement('button');
+    proxyButton.type = 'button';
+    proxyButton.className = 'build-link';
+    proxyButton.textContent = 'Use this page’s proxy';
+    proxyButton.hidden = !comfyUrlIsSet();
+    proxyButton.addEventListener('click', () => {
+      setComfyUrl('');
+      urlInput.value = '';
+      void testConnection();
+    });
+    serverActions.append(testButton, proxyButton);
+
+    const serverHint = document.createElement('div');
+    serverHint.className = 'build-server-hint';
+    serverHint.hidden = true;
+
+    serverBody.append(urlRow.element, serverActions, serverHint);
+    serverBlock.append(serverSummary, serverBody);
+    dialog.body.append(serverBlock);
+
+    // --------------------------------------------------------------- tab body
+
+    const tabBody = document.createElement('div');
+    tabBody.className = 'build-body';
+    dialog.body.append(tabBody);
+
+    // One word, and it is the phone's word for the same list. A row of
+    // checkpoints under a "Server" row without it reads as another setting.
+    const modelCaption = caption('Model');
+    const modelList = document.createElement('div');
+    modelList.className = 'build-models';
+    modelList.setAttribute('role', 'group');
+    modelList.setAttribute('aria-label', 'Depth model');
+
+    const splatBody = document.createElement('div');
+    splatBody.className = 'build-splat';
+
+    tabBody.append(modelCaption, modelList, splatBody);
+
+    const budgetRow = sliderRow({
+      label: 'Cloud size',
+      value: Math.round(sharpBudget / 1000),
+      min: SHARP_BUDGET_MIN / 1000,
+      max: SHARP_BUDGET_MAX / 1000,
+      format: (v) => `${v}k`,
+      onInput: (v) => {
+        sharpBudget = clampSharpBudget(v * 1000);
+        paintBudget();
+      },
+    });
+    const budgetLine = document.createElement('div');
+    budgetLine.className = 'build-value';
+
+    function paintBudget(): void {
+      // A number a person can weigh: how many points, and how big the file is.
+      // The old copy was the measured ladder from the phone, which is research,
+      // not a control's label.
+      budgetLine.textContent = `≈ ${formatSplatCount(sharpBudget)} · ${formatBytes(sharpBudget * 32)}`;
+    }
+
+    splatBody.append(budgetRow.element, budgetLine);
+
+    // --------------------------------------------------------------- the footer
+    //
+    // The run is stated HERE, beside the button that started it, for the whole run.
+    // Above the fold it was a line that scrolled away; the answer to "nothing is
+    // happening" has to be where the hand is.
+
+    const clockLine = document.createElement('div');
+    clockLine.className = 'build-run-line';
+    const runPhaseText = document.createElement('span');
+    runPhaseText.className = 'build-run-phase';
+    runPhaseText.setAttribute('role', 'status');
+    runPhaseText.setAttribute('aria-live', 'polite');
+    const runElapsed = document.createElement('span');
+    runElapsed.className = 'build-run-elapsed';
+    clockLine.append(runPhaseText, runElapsed);
+
+    const runTrack = document.createElement('div');
+    runTrack.className = 'build-track';
+    for (let step = 0; step < STEP_ORDER.length; step++) {
+      const segment = document.createElement('span');
+      segment.className = 'build-seg';
+      runTrack.append(segment);
+    }
+
+    const runNote = document.createElement('div');
+    runNote.className = 'build-run-note';
+
+    const runStrip = document.createElement('div');
+    runStrip.className = 'build-run';
+    runStrip.hidden = true;
+    runStrip.append(clockLine, runTrack, runNote);
+    dialog.footer.append(runStrip);
+
+    const footerRow = document.createElement('div');
+    footerRow.className = 'build-footer-row';
+    dialog.footer.append(footerRow);
+
+    const cancelBtn = sheetButton('Cancel', false, () => dismiss());
+    const primary = sheetButton('Generate', true, () => void runBuild());
+    const stopBtn = sheetButton('Stop', false, () => {
+      stopped = true;
+      runAbort?.abort();
+    });
+    const backgroundBtn = sheetButton('Run in background', true, () => dismiss());
+    footerRow.append(cancelBtn, primary, stopBtn, backgroundBtn);
+
+    // --------------------------------------------------------------- rendering
+
+    function setServerOpen(open: boolean): void {
+      serverOpen = open;
+      paintServer();
       dialog.reapply();
     }
 
-    function renderReliefTab(): void {
-      tabBody.append(caption('Model'));
-      const list = document.createElement('div');
-      tabBody.append(list);
-      if (models.length === 0) {
-        list.append(readingRow('No model', 'Test a server to see the depth models it offers.'));
+    function hostLabel(): string {
+      if (!comfyUrlIsSet()) return 'this page’s proxy';
+      return getComfyUrl().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    }
+
+    function paintServer(): void {
+      serverDot.className = 'build-dot';
+      const host = hostLabel();
+      if (serverPhase === 'testing') {
+        serverDot.classList.add('is-testing');
+        serverState.textContent = `${host} · connecting`;
+      } else if (serverPhase === 'ok') {
+        serverDot.classList.add('is-ok');
+        serverState.textContent = `${host} · connected`;
+      } else if (serverPhase === 'error') {
+        serverDot.classList.add('is-error');
+        serverState.textContent = `${host} · not connected`;
       } else {
-        for (const model of models) {
-          const row = actionRow({
-            label: friendlyName(model),
-            sub: model,
-            onClick: () => {
-              chosen = model;
-              // The app records the SELECTION in the history, not the outcome:
-              // a checkpoint tapped and backed out of is still the one the user
-              // reaches for, so it heads the next Test connection's list. The
-              // saved model (`comfy_model`) moves at submission instead.
-              selectModel(model);
-              savedGoneNote = null;
-              renderReliefTab();
-              updatePrimary();
-            },
-          });
-          row.classList.toggle('is-selected', model === chosen);
-          list.append(row);
+        serverState.textContent = host;
+      }
+      serverSummary.setAttribute('aria-expanded', String(serverOpen));
+      serverSummary.disabled = busy;
+      testButton.disabled = busy;
+      proxyButton.disabled = busy;
+      proxyButton.hidden = !comfyUrlIsSet();
+      serverBody.hidden = !serverOpen;
+      serverHint.hidden = serverMessage === '';
+      serverHint.textContent = serverMessage;
+      serverHint.classList.toggle('is-warn', serverPhase === 'error');
+    }
+
+    function renderModels(): void {
+      modelList.replaceChildren();
+      modelCaption.hidden = tab !== 'relief';
+      modelList.hidden = tab !== 'relief';
+      if (tab !== 'relief') return;
+      if (models.length === 0) {
+        // While the server block itself is explaining what is wrong, an empty
+        // model list would repeat it one line lower. Silence is the second half
+        // of a diagnosis.
+        if (serverPhase === 'error') return;
+        const empty = document.createElement('div');
+        empty.className = 'build-empty';
+        empty.textContent =
+          serverPhase === 'testing' ? 'Looking for models…' : 'No depth model this page can drive.';
+        modelList.append(empty);
+        return;
+      }
+      for (const model of models) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'build-model';
+        row.classList.toggle('is-selected', model === chosen);
+        row.setAttribute('aria-pressed', String(model === chosen));
+        row.disabled = busy;
+        const name = document.createElement('span');
+        name.className = 'build-model-name';
+        name.textContent = friendlyName(model);
+        const check = document.createElement('span');
+        check.className = 'build-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = model === chosen ? '✓' : '';
+        row.append(name, check);
+        row.addEventListener('click', () => {
+          chosen = model;
+          // The app records the selection in the history, not the outcome: a
+          // checkpoint tapped and backed out of is still the one the user reaches
+          // for, so it heads the next list.
+          selectModel(model);
+          savedGoneNote = null;
+          renderModels();
+          updateFooter();
+        });
+        modelList.append(row);
+      }
+      if (savedGoneNote !== null) {
+        const gone = document.createElement('div');
+        gone.className = 'build-note';
+        gone.textContent = savedGoneNote;
+        modelList.append(gone);
+      }
+    }
+
+    function renderSplat(): void {
+      splatBody.hidden = tab !== 'splat';
+      if (tab !== 'splat') return;
+      paintBudget();
+      const missing = splatBody.querySelector('.build-empty');
+      if (nodeInfo !== null && !hasSharpStill(nodeInfo)) {
+        if (missing === null) {
+          const line = document.createElement('div');
+          line.className = 'build-empty is-warn';
+          line.textContent = 'This server has no SharpStill node, so it cannot build a cloud.';
+          splatBody.prepend(line);
         }
-        if (savedGoneNote !== null) tabBody.append(note(savedGoneNote));
-      }
-      tabBody.append(caption('Output'));
-      tabBody.append(
-        readingRow('Resolution', '1024 px — the app’s default for a classical node. MoGe uses its model’s native size.'),
-      );
-      tabBody.append(
-        readingRow(
-          'Packed PNG',
-          'The depth map is scaled to this photo, packed with the same `dePH` writer as Save packed PNG, and shown as a relief.',
-        ),
-      );
-      if (!hasColour()) {
-        tabBody.append(
-          readingRow('No photograph', 'This card is a cloud file; its relief cannot be built from it.'),
-        );
+      } else {
+        missing?.remove();
       }
     }
 
-    function renderSplatTab(): void {
-      tabBody.append(caption('Cloud'));
-      if (nodeInfo && !hasSharpStill(nodeInfo)) {
-        tabBody.append(
-          readingRow(
-            'No SharpStill node',
-            'This server cannot build a splat cloud: a depth node is not a cloud generator. Install server/comfy-node/basrelief_depth or point this page elsewhere.',
-          ),
-        );
+    function paintRun(): void {
+      if (runFailed !== null) {
+        runStrip.classList.add('is-failed');
+        runPhaseText.textContent = 'Build failed';
+        runElapsed.textContent = '';
+        runTrack.hidden = true;
+        runNote.textContent = runFailed;
+        runNote.classList.add('is-cause');
+        return;
       }
-      const budgetRow = sliderRow({
-        label: 'Budget',
-        value: Math.round(sharpBudget / 1000),
-        min: SHARP_BUDGET_MIN / 1000,
-        max: SHARP_BUDGET_MAX / 1000,
-        format: (v) => `${v}k`,
-        onInput: (v) => {
-          sharpBudget = clampSharpBudget(v * 1000);
-        },
+      runStrip.classList.remove('is-failed');
+      runNote.classList.remove('is-cause');
+      runTrack.hidden = false;
+      runNote.textContent = 'You can close this — the build keeps going.';
+      runPhaseText.textContent = runPhase === null ? '' : phaseText(runPhase, runTab);
+      const seconds = runStarted > 0 ? Math.round((performance.now() - runStarted) / 1000) : 0;
+      runElapsed.textContent = runStarted > 0 ? `${seconds} s` : '';
+      const index = runPhase === null ? -1 : STEP_ORDER.indexOf(runPhase);
+      Array.from(runTrack.children).forEach((segment, step) => {
+        segment.classList.toggle('is-done', index >= 0 && step < index);
+        segment.classList.toggle('is-active', step === index);
       });
-      tabBody.append(budgetRow.element);
-      tabBody.append(
-        note(
-          'The app’s ladder, measured on a phone: 150k soft, 741k right, 1.05M indistinguishable from full — and ~5 fps at 1M on a 2018 phone. A budget caps the file; the node rounds down to a whole 2048-splat block.',
-        ),
-      );
-      tabBody.append(
-        readingRow(
-          'Written',
-          'basrelief_<tag>.splat and its .splat.json sidecar — the cloud, and the lens it was reconstructed through.',
-        ),
-      );
-      tabBody.append(
-        readingRow(
-          'Source',
-          hasColour()
-            ? 'The photograph on this card. It is uploaded to the server you name above, and the result is held in this tab only.'
-            : 'This card is a cloud file; there is no photograph to rebuild it from.',
-        ),
-      );
     }
 
+    function updateFooter(): void {
+      const running = busy;
+      const failed = runFailed !== null && !busy;
+      runStrip.hidden = !running && !failed;
+      cancelBtn.hidden = running;
+      primary.hidden = running;
+      stopBtn.hidden = !running;
+      backgroundBtn.hidden = !running;
+      dialog.element.setAttribute('aria-busy', String(running));
+
+      if (!running) {
+        if (failed) {
+          primary.textContent = 'Try again';
+        } else if (tab === 'splat') {
+          primary.textContent = currentCloud() ? 'Rebuild' : 'Make one';
+        } else {
+          primary.textContent =
+            depth !== null || colourState.kind === 'relief' ? 'Rebuild' : 'Generate';
+        }
+        const canRun = hasColour();
+        const splatBlocked = tab === 'splat' && nodeInfo !== null && !hasSharpStill(nodeInfo);
+        primary.disabled =
+          !canRun || serverPhase === 'testing' || splatBlocked || (tab === 'relief' && chosen === '');
+      }
+
+      const tabButtons = Array.from(tabSegment.querySelectorAll('button'));
+      for (const button of tabButtons) button.disabled = running;
+      paintServer();
+      dialog.reapply();
+    }
+
+    function renderTab(): void {
+      const tabButtons = Array.from(tabSegment.querySelectorAll('button'));
+      tabButtons.forEach((button, index) => {
+        const active = (index === 1) === (tab === 'splat');
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      renderModels();
+      renderSplat();
+      paintRun();
+      updateFooter();
+    }
+
+    // ------------------------------------------------------------ the handshake
+
+    /**
+     * Connect, and say what is on the other end.
+     *
+     * Runs on open. A page that makes the user press "Test connection" before its
+     * own Generate button will work is asking them to perform its handshake; the
+     * handshake is the page's job. The row is the receipt, and the model list is
+     * the result.
+     */
     async function testConnection(): Promise<void> {
       if (busy) return;
       const seq = ++testSeq;
-      status.classList.remove('sheet-note--warn');
-      status.textContent = 'Testing connection…';
+      serverPhase = 'testing';
+      serverMessage = '';
       models = [];
       chosen = '';
       nodeInfo = null;
       savedGoneNote = null;
-      renderTab();
+      renderModels();
+      updateFooter();
       try {
-        // A server that never answers must not leave the button disabled for the
-        // life of the dialog: the fetch has a deadline of its own, and the abort
-        // from closing the panel still wins.
-        const info = await getObjectInfo(
-          typeof AbortSignal.any === 'function'
-            ? AbortSignal.any([dialogAbort.signal, AbortSignal.timeout(10000)])
-            : dialogAbort.signal,
-        );
+        const info = await getObjectInfo(withDeadline(dialogAbort.signal, 15_000));
         if (closed || seq !== testSeq || buildSheet !== dialog) return;
         nodeInfo = info;
+        serverPhase = 'ok';
         const usable = usableDepthModels(info);
         if (usable.length === 0) {
-          status.classList.add('sheet-note--warn');
-          status.textContent = hasDepthNode(info)
-            ? 'This server has depth nodes, but none this page can drive from one image plus its defaults.'
+          serverMessage = hasDepthNode(info)
+            ? 'This server has depth nodes, but none this page can drive from one image.'
             : 'This server has no depth node this page can use.';
         } else {
           // `ModelRanking.rank`: the history first, then discovery order. The
-          // selection is `BuildDialog.buildModelRows`': the saved model when the
-          // server still offers it, else the history's first entry — and when the
-          // saved one is gone the change is stated, because a swap nobody sees is
-          // a swap they blame the map for.
+          // selection is the saved model when the server still offers it, else the
+          // first; a swap nobody sees is a swap they blame the map for.
           models = rankModels(usable, getModelHistory());
           const saved = getModelChoice();
           const savedIdx = models.indexOf(saved);
-          if (savedIdx >= 0) {
-            chosen = models[savedIdx];
-          } else {
-            chosen = models[0];
-            if (saved !== '') {
-              savedGoneNote =
-                `The model this page ran last (${friendlyName(saved)}) is not on this server, ` +
-                `so the selection moved to ${friendlyName(models[0])}.`;
-            }
+          chosen = savedIdx >= 0 ? models[savedIdx] : models[0];
+          if (savedIdx < 0 && saved !== '') {
+            savedGoneNote =
+              `${friendlyName(saved)} is not on this server, so ${friendlyName(models[0])} is selected.`;
           }
+          const bits = [`${usable.length} depth ${usable.length === 1 ? 'model' : 'models'}`];
+          bits.push(hasSharpStill(info) ? 'SharpStill installed' : 'no cloud node');
+          serverMessage = bits.join(' · ');
         }
-        const parts: string[] = [];
-        parts.push(`${usable.length} usable depth ${usable.length === 1 ? 'model' : 'models'}`);
-        parts.push(hasSharpStill(info) ? 'SharpStill ✓' : 'no SharpStill node (no cloud builds)');
-        status.textContent = `Connected · ${parts.join(' · ')}.`;
-        if (usable.length > 0) status.classList.remove('sheet-note--warn');
-        renderTab();
+        setServerOpen(false);
       } catch (err) {
         if (closed || seq !== testSeq || buildSheet !== dialog) return;
-        status.classList.add('sheet-note--warn');
-        status.textContent = describeComfyError(err);
-        models = [];
-        chosen = '';
-        nodeInfo = null;
-        renderTab();
+        serverPhase = 'error';
+        serverMessage = describeComfyError(err);
+        setServerOpen(true);
       }
+      renderModels();
+      renderSplat();
+      updateFooter();
+    }
+
+    // ------------------------------------------------------------------- a run
+
+    function startClock(): void {
+      stopClock();
+      runTicker = window.setInterval(() => paintRun(), 500);
+    }
+
+    function stopClock(): void {
+      if (runTicker !== null) {
+        window.clearInterval(runTicker);
+        runTicker = null;
+      }
+    }
+
+    /** Close the panel WITHOUT cancelling the run. A server job is not the panel. */
+    function dismiss(): void {
+      stopClock();
+      closeBuild();
     }
 
     async function runBuild(): Promise<void> {
       if (busy || !hasColour()) return;
+      if (tab === 'relief' && chosen === '') {
+        // Nothing to run. Open the thing that fixes it instead of doing nothing.
+        setServerOpen(true);
+        return;
+      }
+
       busy = true;
-      updatePrimary();
-      testRow.disabled = true;
-      status.classList.remove('sheet-note--warn');
-      setBuild({ phase: tab === 'splat' ? 'Reading the server’s node list…' : PHASE_TEXT.connecting, failed: null });
-      // A run needs a deadline of its own. Without one, a server that accepts the
-      // connection and never replies leaves this dialog with Test connection
-      // greyed and no sentence -- the state the user reported.
-      const runSignal =
-        typeof AbortSignal.any === 'function'
-          ? AbortSignal.any([dialogAbort.signal, AbortSignal.timeout(180000)])
-          : dialogAbort.signal;
+      stopped = false;
+      runFailed = null;
+      runTab = tab;
+      runPhase = 'connecting';
+      runStarted = performance.now();
+      runAbort = new AbortController();
+      const runSignal = withDeadline(dialogAbort.signal, 180_000, runAbort.signal);
+      setBuildState({ phase: phaseText('connecting', runTab), failed: null });
+      startClock();
+      paintRun();
+      updateFooter();
       renderAsset();
 
       try {
-        if (tab === 'relief') {
-          if (!chosen) return;
-          status.textContent = PHASE_TEXT.connecting;
+        if (runTab === 'relief') {
           const result = await runDepth({
             file: item.file,
             model: chosen,
             signal: runSignal,
             onPhase: (phase) => {
-              status.textContent = PHASE_TEXT[phase];
+              runPhase = phase;
+              paintRun();
+              setBuildState({ phase: phaseText(phase, runTab), failed: null });
+              renderAsset();
             },
           });
-          status.textContent = 'Packing the depth map…';
           const packed = await packDepthPng(result.depthPng);
           if (closed || buildSheet !== dialog) return;
-          setBuild(null);
-          closeBuild();
+          setBuildState(null);
+          dismiss();
           if (generatedUrl) URL.revokeObjectURL(generatedUrl);
           generatedUrl = URL.createObjectURL(
             new Blob([new Uint8Array(packed.png)], { type: 'image/png' }),
@@ -2142,14 +2371,14 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             reencoded: packed.reencoded,
           });
         } else {
-          status.textContent = SPLAT_PHASE_TEXT.connecting;
           const result = await runSplat({
             file: item.file,
             budget: sharpBudget,
             signal: runSignal,
             onPhase: (phase) => {
-              status.textContent = SPLAT_PHASE_TEXT[phase];
-              setBuild({ phase: SPLAT_PHASE_TEXT[phase], failed: null });
+              runPhase = phase;
+              paintRun();
+              setBuildState({ phase: phaseText(phase, runTab), failed: null });
               renderAsset();
             },
           });
@@ -2162,36 +2391,54 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             lensFrom: result.sidecarName,
             splats: Math.floor(result.bytes.length / 32),
           };
-          setBuild(null);
+          setBuildState(null);
           cardCloud = asset;
           item.onCloud?.(asset);
-          closeBuild();
+          dismiss();
           mode = 'splat';
           mount();
         }
       } catch (err) {
-        if (closed || buildSheet !== dialog) return;
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        const sentence = describeComfyError(err);
-        status.classList.add('sheet-note--warn');
-        status.textContent = sentence;
-        setBuild({ phase: null, failed: sentence });
+        if (closed) return;
+        // An abort is either Stop or the viewer going away. Neither is a failure:
+        // Stop returns the panel to its setup state (nothing was built, nothing is
+        // wrong), and a teardown must not paint a failure on a card nobody is
+        // looking at. Amber means "a build failed", not "a person changed their
+        // mind".
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          if (stopped) {
+            setBuildState(null);
+            // The dialog is the only thing that was repainting the row while the
+            // run was in flight. Closing it with the phase still on the row is how
+            // "Uploading the photo…" outlived the run it described.
+            renderAsset();
+            dismiss();
+          }
+          return;
+        }
+        const sentence =
+          err instanceof DOMException && err.name === 'TimeoutError'
+            ? 'The server did not answer in three minutes. Check that ComfyUI is running, then try again.'
+            : describeComfyError(err);
+        runFailed = sentence;
+        runPhase = null;
+        runStarted = 0;
+        setBuildState({ phase: null, failed: sentence });
         renderAsset();
       } finally {
         busy = false;
-        testRow.disabled = false;
-        // A run that was cancelled (or a dialog closed mid-flight) leaves no
-        // phase behind: the asset row must not keep announcing a build nobody is
-        // doing. A FAILURE is kept — it is the row's own state until acted on.
-        if (build && build.phase !== null) {
-          setBuild(null);
-          renderAsset();
+        runAbort = null;
+        stopClock();
+        if (buildSheet === dialog) {
+          paintRun();
+          updateFooter();
         }
-        if (buildSheet === dialog) updatePrimary();
       }
     }
 
+    paintBudget();
     renderTab();
+    void testConnection();
   }
 
   // ----------------------------------------------------- generated/ chosen map

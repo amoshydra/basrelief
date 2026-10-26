@@ -9,11 +9,11 @@ function element<T extends HTMLElement>(id: string): T {
 
 const gallery = await createGallery({
   grid: element('grid'),
-  empty: element('empty'),
   count: element('count'),
   clear: element<HTMLButtonElement>('clear'),
   sort: element<HTMLSelectElement>('sort'),
   storage: element('storage-state'),
+  library: element('library'),
   notice: element('library-notice'),
 });
 
