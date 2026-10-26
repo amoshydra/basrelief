@@ -1082,6 +1082,10 @@ public final class BuildDialog {
         // ornament that teaches the eye to stop reading the line.
         serverNote = ModalSheet.note(activity, "");
         serverNote.setVisibility(View.GONE);
+        // The web marks this line `role="status"`; TalkBack gets the same courtesy.
+        // The sentence is the panel's only report of a probe, and it changes while
+        // the user is looking at the button rather than at the line.
+        serverNote.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         // Copyable: a ComfyUI refusal can be a stack trace, and a user reporting
         // a connection problem needs to be able to paste it rather than
         // photograph it. Same reason the old status line was selectable.
@@ -1440,6 +1444,9 @@ public final class BuildDialog {
 
         runStatus = text(R.string.depth_phase_queued, 14);
         runStatus.setTextColor(ModalSheet.INK);
+        // Phases, Stop and the failure headline all land here; a run the user
+        // cannot hear is a run they cannot tell from a crash.
+        runStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         addRow(runBlock, runStatus);
         runPercent = text("", 13);
         runPercent.setTextColor(ModalSheet.DIM);
