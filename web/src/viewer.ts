@@ -369,9 +369,14 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     crosshair.style.height = `${size}px`;
   }
 
+  /**
+   * Dismiss the build sheet WITHOUT cancelling the run.
+   *
+   * A run is a server job: closing the panel that started it must not throw the
+   * work away. The app's own rule is "Run in background"; the abort belongs to the
+   * viewer's teardown, where the card it would update no longer exists.
+   */
   function closeBuild(): void {
-    buildAbort?.abort();
-    buildAbort = null;
     buildSheet?.destroy();
     buildSheet = null;
     buildScrim?.remove();
@@ -398,6 +403,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
   function close(): void {
     if (closed) return;
     closed = true;
+    // The viewer is going away, so a run that lands now has no card to update.
+    buildAbort?.abort();
+    buildAbort = null;
     closeBuild();
     clearMount();
     if (generatedUrl) {
