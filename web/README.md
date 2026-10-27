@@ -390,8 +390,10 @@ no server-side requirement.
   follow the finger. A one-finger drag tilts when the sensor is off; **Device
   tilt** (a switch row on the sheet) is what swings the camera — it asks for
   orientation permission where the browser requires it (iOS). If the browser
-  exposes the API but emits no events, the switch turns itself back off and says
-  so; the rows and pan still work.
+  exposes the API but emits no events, the switch turns itself back off and is
+  disabled; the drag fallback still works. The switch waits for a real
+  `deviceorientation` reading after opening, so a desktop with no sensor does
+  not present an enabled tilt control.
 - **Desktop:** left-drag tilts; **Shift-drag** or **middle-drag** pans; the wheel
   or a trackpad's two-finger scroll pans too, with Shift-wheel for horizontal Pan.
   **Ctrl-wheel** (trackpad pinch) changes Pan Z. With the picture focused, arrow

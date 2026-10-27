@@ -1021,12 +1021,15 @@ export interface SwitchRow {
   set(on: boolean): void;
   /** The row's subtitle, for a capability that is discovered rather than given. */
   setSub(text: string): void;
+  /** Disable a capability the browser has said it cannot provide. */
+  setDisabled(disabled: boolean): void;
 }
 
 export interface SwitchRowOptions {
   title: string;
   sub: string;
   on: boolean;
+  disabled?: boolean;
   onToggle: (on: boolean) => void;
 }
 
@@ -1045,6 +1048,8 @@ export function switchRow(options: SwitchRowOptions): SwitchRow {
   row.type = 'button';
   row.className = 'sheet-switch';
   row.setAttribute('aria-pressed', String(options.on));
+  row.disabled = options.disabled === true;
+  row.classList.toggle('is-disabled', row.disabled);
 
   const text = document.createElement('span');
   text.className = 'sheet-switch-text';
@@ -1087,6 +1092,10 @@ export function switchRow(options: SwitchRowOptions): SwitchRow {
     },
     setSub(next: string): void {
       sub.textContent = next;
+    },
+    setDisabled(next: boolean): void {
+      row.disabled = next;
+      row.classList.toggle('is-disabled', next);
     },
   };
 }

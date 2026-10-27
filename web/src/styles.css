@@ -1284,6 +1284,16 @@ summary:focus-visible {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.sheet-switch:disabled,
+.sheet-switch.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.sheet-switch:disabled:hover {
+  background: transparent;
+}
+
 .sheet-switch-text {
   flex: 1;
   display: flex;
@@ -2425,4 +2435,14 @@ body:not(.has-library) #add-tile {
    of their own. */
 .sheet-footer {
   flex-direction: column;
+}
+
+/* The phone's three-column shelf is the right density up to a tablet. On a
+   desktop the same three columns become 380px cards; let the extra width buy
+   columns instead, while keeping the square cell and the add tile's slot. */
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+  }
 }

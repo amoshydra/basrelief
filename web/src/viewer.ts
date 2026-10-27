@@ -839,41 +839,26 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   /** The tilt row: a state you can flip, or a reason. */
   function tiltRow(): ReturnType<typeof switchRow> {
+    let tiltAttempt = 0;
+    let tiltProbe = 0;
     const row = switchRow({
       title: 'Device tilt',
-      sub: 'Tilt the device to swing the camera. Dragging pans.',
+      sub: 'Tilt the device to swing the camera. Dragging tilts when the sensor is off.',
       on: false,
       onToggle: (on) => {
         if (!tilt) return;
         if (!on) {
-          tilt.stop(); tiltLive = false;
+          tiltAttempt++;
+          stopTiltProbe();
+          tilt.stop();
+          tiltLive = false;
+          recentre.hidden = true;
           row.setSub('Tilt the device to swing the camera. Dragging tilts when the sensor is off.');
           return;
         }
-        void tilt.start().then((started) => {
-          if (closed) return;
-          if (!started) {
-            row.set(false); tiltLive = false;
-            row.setSub('This browser exposes no orientation sensor — drag tilts, the rows below frame.');
-            return;
-          }
-          tiltLive = true;
-          row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
-        });
+        armTilt(true);
       },
     });
-    // Android's studio has no tilt switch: the sensor is simply on. Ask on open
-    // instead, which is the one moment the platform accepts a permission prompt
-    // -- it must be inside the gesture that showed the picture. A browser that
-    // refuses leaves the row off and says so, and dragging still pans.
-    if (tilt) {
-      void tilt.start().then((started) => {
-        if (closed || !started) return;
-        tiltLive = true;
-        row.set(true);
-        row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
-      });
-    }
     // A re-centre beside the switch, on the same row: the app's Calibrate, which
     // neutralises the reading the tilt is measured from. Without it a phone held
     // at an angle reads as a permanent tilt until the sensor is recalibrated.
@@ -885,11 +870,84 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     recentre.title = 'Re-centre the tilt';
     recentre.setAttribute('aria-label', 'Re-centre the tilt');
     recentre.textContent = '⌖';
+    recentre.hidden = true;
     recentre.addEventListener('click', () => {
       tilt?.calibrate();
       row.setSub('Re-centred. Tilt from how the device is held now.');
     });
     wrap.append(row.element, recentre);
+
+    function stopTiltProbe(): void {
+      if (tiltProbe === 0) return;
+      window.clearInterval(tiltProbe);
+      tiltProbe = 0;
+    }
+
+    function disableTilt(reason: string): void {
+      tiltAttempt++;
+      stopTiltProbe();
+      tilt?.stop();
+      tiltLive = false;
+      row.set(false);
+      row.setDisabled(true);
+      recentre.hidden = true;
+      row.setSub(reason);
+    }
+
+    /**
+     * Start or probe the sensor. `start()` says the listener was accepted, not
+     * that the device has a sensor: a desktop can expose the API and never emit
+     * an event. Keep the switch off until `isActive()` sees a real reading; if
+     * none arrives, disable the row rather than leaving a control that cannot act.
+     */
+    function armTilt(fromGesture: boolean): void {
+      const sensor = tilt;
+      if (!sensor) return;
+      const attempt = ++tiltAttempt;
+      stopTiltProbe();
+      row.setDisabled(false);
+      row.setSub(fromGesture ? 'Waiting for the sensor…' : 'Checking for an orientation sensor…');
+      void sensor.start().then((started) => {
+        if (closed || attempt !== tiltAttempt) return;
+        if (!started) {
+          tiltLive = false;
+          row.set(false);
+          row.setDisabled(false);
+          recentre.hidden = true;
+          row.setSub('Tilt permission was denied — tap the switch to try again.');
+          return;
+        }
+        const deadline = performance.now() + 1200;
+        tiltProbe = window.setInterval(() => {
+          if (closed || attempt !== tiltAttempt) {
+            stopTiltProbe();
+            return;
+          }
+          if (sensor.isActive()) {
+            stopTiltProbe();
+            tiltLive = true;
+            row.set(true);
+            row.setDisabled(false);
+            recentre.hidden = false;
+            row.setSub('Using the sensor. Tilt the device, or drag to tilt when it is off.');
+          } else if (performance.now() >= deadline) {
+            disableTilt('No orientation sensor — drag tilts.');
+          }
+        }, 100);
+      });
+    }
+
+    // Android's studio has no tilt switch: the sensor is simply on. Probe on open
+    // instead, which is the one moment the platform accepts a permission prompt
+    // -- it must be inside the gesture that showed the picture. A browser that
+    // exposes the API but has no sensor gets a disabled row, not an on switch.
+    if (tilt) {
+      if (typeof window.DeviceOrientationEvent === 'undefined') {
+        disableTilt('No orientation sensor — drag tilts.');
+      } else {
+        armTilt(false);
+      }
+    }
     // The row's own `element` is the wrap now, so the caller appends one thing and
     // the switch keeps its methods.
     return { ...row, element: wrap };
