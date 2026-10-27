@@ -378,7 +378,8 @@ lives; this is the index, not a second copy of the implementation.
   claims the touch at `pointerdown` and sends `pointercancel` as soon as it
   scrolls, so a drag that reaches the top of the list can never become the
   sheet's. `touch-action: none` plus a handoff on each `pointermove` is the
-  design, not a preference; wheel and the desktop scrollbar still scroll.
+  design, not a preference; the wheel scrolls and hands off at either edge,
+  and the desktop scrollbar still scrolls.
 - **A gesture owns the renderer's values for its span; the index is told once, on
   release.** A release that moved nothing writes nothing. The prefs write belongs
   on the UI thread; only the unprojection needs the GL thread.

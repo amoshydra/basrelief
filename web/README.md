@@ -392,14 +392,20 @@ no server-side requirement.
   orientation permission where the browser requires it (iOS). If the browser
   exposes the API but emits no events, the switch turns itself back off and says
   so; the rows and pan still work.
+- **Desktop:** left-drag tilts; **Shift-drag** or **middle-drag** pans; the wheel
+  or a trackpad's two-finger scroll pans too, with Shift-wheel for horizontal Pan.
+  **Ctrl-wheel** (trackpad pinch) changes Pan Z. With the picture focused, arrow
+  keys pan and `+`/`-` change Pan Z. The **Pan X/Y/Pan Z** rows do the same and
+  also take arrow keys.
 - **The sheet** holds the render values. On a relief: **Depth**, **Motion**,
   **FOV**, **Brightness**, **Shadow**, the light's **Azimuth**/**Elevation**,
   **Origin X/Y** and **Pan X/Y/Pan Z**. On a cloud: **Depth**, **Size**, **Blur**,
   **Resolution**, **Motion**, **Brightness**, **Shadow**, Origin and Pan. On a
   photo the displacement controls are disabled until a map exists. Each slider is
   a fill with the value printed on it and a −/＋ pair; the track is draggable and
-  the arrow keys step it. **Reset view** returns every value, the tilt and the
-  neutral pose.
+  the arrow keys step it. Wheel scrolls the rows; at the top or bottom edge it
+  hands off to the sheet, matching a touch drag. **Reset view** returns every
+  value, the tilt and the neutral pose.
 - **Tap** the picture to set the orbit centre; a one-finger drag tilts when the
   sensor is off; **two fingers** pan by their midpoint and pinch Pan Z. The
   crosshair marks the centre of the frame that was drawn.
@@ -610,4 +616,8 @@ in this page: 720×1280, 30 fps and ten seconds.
 | tap | set the orbit centre |
 | one-finger drag | tilt the camera — only when the sensor is off, because the gyro owns the tilt |
 | two fingers | pan by their midpoint, pinch for the camera distance |
+| Shift-drag / middle-drag | pan X/Y with a mouse |
+| wheel / Shift-wheel | pan X/Y with a mouse or trackpad |
+| Ctrl-wheel | change Pan Z (trackpad pinch) |
+| arrows / `+` `-` while the picture is focused | pan / change Pan Z |
 | ⌖ beside *Device tilt* | re-centre the sensor's neutral pose |

@@ -562,6 +562,8 @@ export function createSheet(options: SheetOptions): Sheet {
   let gesture: Gesture | null = null;
   /** A claimed drag happened; the click the browser sends after it is not a tap. */
   let moved = false;
+  /** Wheel movement rests and stores the sheet after the wheel gesture stops. */
+  let wheelRestTimer = 0;
 
   /** The furthest the content can scroll. */
   function maxScroll(): number {
@@ -733,6 +735,37 @@ export function createSheet(options: SheetOptions): Sheet {
   element.addEventListener('click', onClickCapture, true);
   strip.addEventListener('click', onStripClick);
 
+  /**
+   * The wheel is the desktop analogue of the touch drag.
+   *
+   * It scrolls while the content has somewhere to go; at the top/bottom it hands
+   * off to the sheet, exactly as `onPointerMove` does for a finger. A wheel up at
+   * the top pulls the sheet down; a wheel down at the bottom pulls it up. The
+   * transient build card keeps native scrolling, because a half-height dialog is
+   * not a rest state.
+   */
+  const onWheel = (event: WheelEvent): void => {
+    if (!studio || event.ctrlKey || event.metaKey || event.deltaY === 0) return;
+    const insideScroll = event.target instanceof Node && scroller.contains(event.target);
+    const max = maxScroll();
+    if (insideScroll && max > 0) {
+      if (event.deltaY > 0 && scroller.scrollTop < max - 0.5) return;
+      if (event.deltaY < 0 && scroller.scrollTop > 0.5) return;
+    }
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+    const next = clamp01(fraction + (-event.deltaY * unit) / 1200);
+    if (next === fraction) return;
+    cancelMotion();
+    setFraction(next);
+    window.clearTimeout(wheelRestTimer);
+    wheelRestTimer = window.setTimeout(() => {
+      wheelRestTimer = 0;
+      if (!destroyed) rest();
+    }, 160);
+  };
+  element.addEventListener('wheel', onWheel, { passive: false });
+
   // --------------------------------------------------------------- the content
 
   const observer = new ResizeObserver(() => {
@@ -822,7 +855,10 @@ export function createSheet(options: SheetOptions): Sheet {
   // is the honest version: it follows the pointer, not the element, and it covers
   // every control that owns its own gesture.
   const dimmed = new Set<number>();
-  function syncDim() { element.classList.toggle('sheet--dimmed', dimmed.size > 0); }
+  // The studio sheet dims while a slider is held so the picture behind shows
+  // through. A transient dialog is a card over a scrim, not a sheet over the
+  // picture: dimming its own controls would make the question harder to read.
+  function syncDim() { element.classList.toggle('sheet--dimmed', studio && dimmed.size > 0); }
   // Sliders only. `dimWhileInteracting` is called with a `BasreliefSlider` in the
   // app -- a switch or a button does not own a drag, so there is nothing for the
   // render to show through and dimming would just flash the sheet on every tap.
@@ -879,12 +915,17 @@ export function createSheet(options: SheetOptions): Sheet {
     destroy(): void {
       destroyed = true;
       cancelMotion();
+      if (wheelRestTimer !== 0) {
+        window.clearTimeout(wheelRestTimer);
+        wheelRestTimer = 0;
+      }
       observer.disconnect();
       window.removeEventListener('resize', onResize);
       element.removeEventListener('pointerdown', onPointerDown);
       element.removeEventListener('pointermove', onPointerMove);
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('pointercancel', onPointerCancel);
+      element.removeEventListener('wheel', onWheel);
       removeDim();
       element.removeEventListener('click', onClickCapture, true);
       strip.removeEventListener('click', onStripClick);

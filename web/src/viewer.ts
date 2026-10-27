@@ -278,6 +278,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
 
   const stage = document.createElement('div');
   stage.className = 'viewer-stage';
+  stage.tabIndex = 0;
+  stage.setAttribute(
+    'aria-label',
+    'Picture. Drag to tilt; Shift-drag or middle-drag to pan; scroll to pan; Control-scroll to change Pan Z.',
+  );
 
   const crosshair = document.createElement('div');
   crosshair.className = 'orbit-marker';
@@ -813,7 +818,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     });
     panel.body.append(panXRow.element, panYRow.element, panZRow.element);
     panel.body.append(
-      note('Tap the picture to set the orbit centre. Drag tilts when the sensor is off; two fingers pan and pinch the camera distance.'),
+      note(
+        'Tap the picture to set the orbit centre. Drag tilts when the sensor is off. ' +
+          'On desktop: Shift-drag or middle-drag pans, scroll pans, Ctrl-scroll dollies; ' +
+          'the Pan rows take arrow keys.',
+      ),
     );
 
     // The gesture handlers push these rows, because a gesture changes the
@@ -1733,10 +1742,12 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     let downY = 0;
     let downAt = 0;
     let moved = false;
+    let panDrag = false;
     let pinchStartDist = 0;
     let pinchStartPanZ = 1;
     let lastMidX = 0;
     let lastMidY = 0;
+    let commitTimer = 0;
     /** Set by any gesture that moved a stored value; committed on the last lift. */
     let framingTouched = false;
 
@@ -1777,9 +1788,32 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       syncCrosshair();
     };
 
+    /** A wheel is many small changes; store the last one after the wheel stops. */
+    const commitSoon = (): void => {
+      if (commitTimer !== 0) window.clearTimeout(commitTimer);
+      commitTimer = window.setTimeout(() => {
+        commitTimer = 0;
+        if (closed || !framingTouched) return;
+        framingTouched = false;
+        persist();
+      }, 220);
+    };
+
+    const setPanZ = (next: number): void => {
+      const clamped = Math.max(PAN_Z_MIN, Math.min(PAN_Z_MAX, next));
+      if (clamped === settings.panZ) return;
+      settings.panZ = clamped;
+      framingTouched = true;
+      view.setPanZ(clamped);
+      pushFraming();
+      syncCrosshair();
+    };
+
     const onDown = (event: PointerEvent): void => {
+      if (event.button !== 0 && event.button !== 1) return;
       const p = local(event);
       pointers.set(event.pointerId, { x: p.x, y: p.y });
+      target.focus({ preventScroll: true });
       try {
         target.setPointerCapture(event.pointerId);
       } catch {
@@ -1790,8 +1824,16 @@ export function openViewer(item: OpenableItem): ViewerHandle {
         downY = p.y;
         downAt = event.timeStamp;
         moved = false;
+        // A two-finger pan has no mouse equivalent. Shift-drag and the middle
+        // button are the desktop stand-ins; left-drag keeps tilting.
+        panDrag = event.button === 1 || event.shiftKey;
+        if (panDrag) {
+          moved = true;
+          event.preventDefault();
+        }
       } else if (pointers.size === 2) {
         moved = true;
+        panDrag = false;
         pinchStartDist = distance();
         pinchStartPanZ = settings.panZ;
         const mid = midpoint();
@@ -1822,6 +1864,11 @@ export function openViewer(item: OpenableItem): ViewerHandle {
             syncCrosshair();
           }
         }
+        return;
+      }
+
+      if (panDrag) {
+        panBy(p.x - known.x, p.y - known.y);
         return;
       }
 
@@ -1875,6 +1922,7 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       }
       if (pointers.size === 0) {
         moved = false;
+        panDrag = false;
         pinchStartDist = 0;
         // A gesture owns the renderer's values for its span and the index is told
         // once, at the end — and a gesture that moved nothing writes nothing.
@@ -1888,15 +1936,70 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     const onUp = (event: PointerEvent): void => finish(event, false);
     const onCancel = (event: PointerEvent): void => finish(event, true);
 
+    /**
+     * The desktop wheel. A trackpad's two-finger scroll is Pan; its pinch is
+     * Ctrl-wheel (the browser's pinch event), which changes Pan Z. Shift-wheel
+     * gives a mouse a horizontal Pan.
+     */
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+      const dx = event.deltaX * unit;
+      const dy = event.deltaY * unit;
+      if (event.ctrlKey || event.metaKey) {
+        setPanZ(settings.panZ * (1 + dy / 1200));
+      } else {
+        panBy(-(event.shiftKey ? dy : dx), -(event.shiftKey ? 0 : dy));
+      }
+      if (framingTouched) commitSoon();
+    };
+
+    /** Arrow keys and +/- work once the picture has focus. */
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      const step = 24;
+      switch (event.key) {
+        case 'ArrowLeft':
+          panBy(-step, 0);
+          break;
+        case 'ArrowRight':
+          panBy(step, 0);
+          break;
+        case 'ArrowUp':
+          panBy(0, -step);
+          break;
+        case 'ArrowDown':
+          panBy(0, step);
+          break;
+        case '+':
+        case '=':
+          setPanZ(settings.panZ * 0.95);
+          break;
+        case '-':
+        case '_':
+          setPanZ(settings.panZ * 1.05);
+          break;
+        default:
+          return;
+      }
+      event.preventDefault();
+      if (framingTouched) commitSoon();
+    };
+
     target.addEventListener('pointerdown', onDown);
     target.addEventListener('pointermove', onMove);
     target.addEventListener('pointerup', onUp);
     target.addEventListener('pointercancel', onCancel);
+    target.addEventListener('wheel', onWheel, { passive: false });
+    target.addEventListener('keydown', onKeyDown);
     teardownList.push(() => {
+      if (commitTimer !== 0) window.clearTimeout(commitTimer);
       target.removeEventListener('pointerdown', onDown);
       target.removeEventListener('pointermove', onMove);
       target.removeEventListener('pointerup', onUp);
       target.removeEventListener('pointercancel', onCancel);
+      target.removeEventListener('wheel', onWheel);
+      target.removeEventListener('keydown', onKeyDown);
     });
   }
 

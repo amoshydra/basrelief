@@ -534,6 +534,14 @@ summary:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
+  outline: none;
+}
+
+/* The picture can take keyboard pan after a click; show the ring only for the
+   keyboard path, never around a mouse-clicked full-screen canvas. */
+.viewer-stage:focus-visible {
+  outline: 2px solid rgba(127, 209, 193, 0.75);
+  outline-offset: -4px;
 }
 
 .relief-canvas {
@@ -949,8 +957,9 @@ summary:focus-visible {
      it starts scrolling, so a drag that reaches the top of the list and keeps
      pulling can never become the sheet's: the pointer is already gone. Owning the
      gesture is the web's `BottomSheet.onIntercept`, and a continuous handoff from
-     a native scroller is the one thing it cannot do. Wheel and the desktop
-     scrollbar still scroll, because neither is a touch. */
+     a native scroller is the one thing it cannot do. Wheel scrolls the content
+     while it has somewhere to go; at an edge `sheet.ts` hands it to the sheet,
+     matching the touch drag. The desktop scrollbar still scrolls. */
   touch-action: none;
 }
 
