@@ -1286,7 +1286,9 @@ summary:focus-visible {
 
 .sheet-switch:disabled,
 .sheet-switch.is-disabled {
-  opacity: 0.42;
+  /* Disabled still has to explain itself: the subtext says why the sensor is
+     absent. 0.42 made that explanation the hardest thing to read on the row. */
+  opacity: 0.55;
   cursor: default;
 }
 
@@ -1619,11 +1621,15 @@ summary:focus-visible {
   display: flex;
   align-items: stretch;
   gap: 8px;
+  margin: 0 0 8px;
 }
 
 .sheet-switch-row > .sheet-switch {
   flex: 1;
   min-width: 0;
+  /* The row's own bottom margin would stretch the sibling re-centre button
+     through `align-items: stretch`; the wrapper owns the gap instead. */
+  margin-bottom: 0;
 }
 
 .sheet-icon-btn {

@@ -905,7 +905,9 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       if (!sensor) return;
       const attempt = ++tiltAttempt;
       stopTiltProbe();
-      row.setDisabled(false);
+      // The switch must not be flipped while the answer is unknown. It is enabled
+      // again once an event lands (or permission is denied and a retry is possible).
+      row.setDisabled(true);
       row.setSub(fromGesture ? 'Waiting for the sensor…' : 'Checking for an orientation sensor…');
       void sensor.start().then((started) => {
         if (closed || attempt !== tiltAttempt) return;

@@ -1058,6 +1058,7 @@ export function switchRow(options: SwitchRowOptions): SwitchRow {
   title.textContent = options.title;
   const sub = document.createElement('span');
   sub.className = 'sheet-switch-sub';
+  sub.setAttribute('aria-live', 'polite');
   sub.textContent = options.sub;
   text.append(title, sub);
 
