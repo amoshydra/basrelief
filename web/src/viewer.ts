@@ -80,6 +80,12 @@ import { NO_LENS_FOVY_DEG, cloudFovy, sourceFovy } from './splat.ts';
 import { createDeviceTilt, type DeviceTilt } from './tilt.ts';
 
 /**
+ * A user who turns Device tilt off does not want the next photo to re-arm it.
+ * Session-only on purpose: a reload starts from the browser's default again.
+ */
+let tiltDisabledForSession = false;
+
+/**
  * The viewer's ONE dispatch point.
  *
  * A card is the studio's row, one platform over: **a photograph (or a dropped
@@ -848,14 +854,16 @@ export function openViewer(item: OpenableItem): ViewerHandle {
       onToggle: (on) => {
         if (!tilt) return;
         if (!on) {
+          tiltDisabledForSession = true;
           tiltAttempt++;
           stopTiltProbe();
           tilt.stop();
           tiltLive = false;
           recentre.hidden = true;
-          row.setSub('Tilt the device to swing the camera. Dragging tilts when the sensor is off.');
+          row.setSub('Device tilt is off for this session — drag tilts.');
           return;
         }
+        tiltDisabledForSession = false;
         armTilt(true);
       },
     });
@@ -946,6 +954,10 @@ export function openViewer(item: OpenableItem): ViewerHandle {
     if (tilt) {
       if (typeof window.DeviceOrientationEvent === 'undefined') {
         disableTilt('No orientation sensor — drag tilts.');
+      } else if (tiltDisabledForSession) {
+        row.set(false);
+        recentre.hidden = true;
+        row.setSub('Device tilt is off for this session — drag tilts.');
       } else {
         armTilt(false);
       }

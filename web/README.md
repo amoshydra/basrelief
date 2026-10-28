@@ -393,7 +393,8 @@ no server-side requirement.
   exposes the API but emits no events, the switch turns itself back off and is
   disabled; the drag fallback still works. The switch waits for a real
   `deviceorientation` reading after opening, so a desktop with no sensor does
-  not present an enabled tilt control.
+  not present an enabled tilt control. Turning it off is session-wide: the next
+  photo keeps it off until it is turned back on.
 - **Desktop:** left-drag tilts; **Shift-drag** or **middle-drag** pans; the wheel
   or a trackpad's two-finger scroll pans too, with Shift-wheel for horizontal Pan.
   **Ctrl-wheel** (trackpad pinch) changes Pan Z. With the picture focused, arrow
