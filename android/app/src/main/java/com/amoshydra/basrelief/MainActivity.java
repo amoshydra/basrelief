@@ -1776,6 +1776,14 @@ public class MainActivity extends Activity {
         refreshStatus();
     }
 
+    /**
+     * Make the current pose the tilt neutral. Settings' Gyro action calls this;
+     * the controller owns the glide and the sensor-thread hand-off.
+     */
+    void recalibrateTilt() {
+        if (tilt != null) tilt.recalibrate();
+    }
+
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);

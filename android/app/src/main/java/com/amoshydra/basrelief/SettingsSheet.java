@@ -6,6 +6,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * The settings screen. Four groups, and nothing else.
@@ -271,14 +272,29 @@ final class SettingsSheet {
         box.addView(ModalSheet.note(activity,
                 activity.getString(R.string.settings_glide_note)));
 
-        // ---- Gyro. Both rows are the sensor's own lifecycle: when it re-reads
-        // neutral, and when it stops.
+        // ---- Gyro. The two switches are the sensor's lifecycle: when it re-reads
+        // neutral, and when it stops. The action below re-centres immediately.
         box.addView(ModalSheet.caption(activity,
                 activity.getString(R.string.group_gyro), false));
         box.addView(toggle(R.string.settings_calibrate_wake,
                 R.string.settings_calibrate_wake_sub, KEY_CALIBRATE_ON_WAKE));
         box.addView(toggle(R.string.settings_sleep_still,
                 R.string.settings_sleep_still_sub, KEY_SLEEP_WHEN_STILL));
+        // The switches change what future visits do; this one acts now. The
+        // controller glides from the drawn pose to the new neutral, and the toast
+        // is the only feedback while this sheet still covers the picture.
+        box.addView(ModalSheet.actionRow(activity,
+                activity.getString(R.string.settings_recentre),
+                activity.getString(R.string.settings_recentre_sub),
+                false,
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        activity.recalibrateTilt();
+                        Toast.makeText(activity, R.string.toast_tilt_recentred,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                }));
 
         // ---- About & diagnostics. This is a fact, not a control, so it is a
         // readingRow: no border, no pressed state, no mark, quieter ink. It used to

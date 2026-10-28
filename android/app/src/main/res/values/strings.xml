@@ -573,6 +573,8 @@
     <string name="settings_calibrate_wake_sub">re-read neutral every time it wakes</string>
     <string name="settings_sleep_still">Sleep when still</string>
     <string name="settings_sleep_still_sub">parks the sensor after 10 seconds</string>
+    <string name="settings_recentre">Re-centre now</string>
+    <string name="settings_recentre_sub">make the current pose the new neutral</string>
     <!-- The studio's on-glass performance readout. It is a debug instrument, so the
          label says what it is for rather than what it does; it defaults off. -->
     <string name="settings_perf_readout">Performance readout</string>
@@ -741,6 +743,7 @@
     <!-- Toasts -->
     <string name="toast_pick_photo_first">Pick a photo from the gallery first</string>
     <string name="toast_depth_updated">Depth updated</string>
+    <string name="toast_tilt_recentred">Tilt re-centred</string>
 
     <string name="action_choose_map">Depth</string>
     <string name="action_image">Image</string>
